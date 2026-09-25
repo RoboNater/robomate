@@ -1,0 +1,64 @@
+{
+  "account": "testuser",
+  "clone_repository": "$ORIGIN",
+  "configs": {
+    "bob": "$RUN_DIR/configs/bob.mcp.json",
+    "charlie": "$RUN_DIR/configs/codex/config.toml"
+  },
+  "harnesses": {
+    "bob": "claude-code",
+    "charlie": "codex"
+  },
+  "issue": 42,
+  "merge_method": "squash",
+  "models": {
+    "bob": "",
+    "charlie": ""
+  },
+  "policy": {
+    "allow_no_ci": true,
+    "max_review_rounds": 3,
+    "max_task_lease_min": 120,
+    "max_wall_minutes": 180,
+    "merge_method": "squash",
+    "pairing_wait_s": 120,
+    "role_policy": {
+      "implementer_capabilities": [],
+      "reviewer_capabilities": [],
+      "reviewer_harness_differs": true,
+      "reviewer_provider_differs": false
+    }
+  },
+  "providers": {
+    "bob": "anthropic",
+    "charlie": "openai"
+  },
+  "repository": "$ORIGIN",
+  "run_dir": "$RUN_DIR",
+  "schema_version": 1,
+  "slug": null,
+  "state_dir": "$RUN_DIR/hub-state",
+  "versions": {
+    "claude": "2.1.277 (Claude Code)",
+    "codex": "codex-cli 0.154.0"
+  },
+  "work": {
+    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.",
+    "path": null,
+    "sha256": null
+  },
+  "workspaces": {
+    "bob": {
+      "agent": "bob",
+      "path": "$RUN_DIR/bob",
+      "repository": "$ORIGIN",
+      "workspace_id": "$BOB_ID"
+    },
+    "charlie": {
+      "agent": "charlie",
+      "path": "$RUN_DIR/charlie",
+      "repository": "$ORIGIN",
+      "workspace_id": "$CHARLIE_ID"
+    }
+  }
+}

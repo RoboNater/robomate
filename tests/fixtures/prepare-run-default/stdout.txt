@@ -1,0 +1,44 @@
+{
+  "checks": {
+    "ci": "local repository has no GitHub workflows (allow_no_ci=true)",
+    "codex_auth": {
+      "charlie": "codex: Logged in using ChatGPT"
+    },
+    "gh_auth": "skipped",
+    "merge": "skipped (local repository or --skip-github-checks)",
+    "versions": {
+      "claude": "2.1.277 (Claude Code)",
+      "codex": "codex-cli 0.154.0"
+    }
+  },
+  "configs": {
+    "alice": "$RUN_DIR/configs/alice.mcp.json",
+    "bob": "$RUN_DIR/configs/bob.mcp.json",
+    "charlie": "$RUN_DIR/configs/codex/config.toml"
+  },
+  "issue": 42,
+  "prompts": {
+    "alice": "$RUN_DIR/alice.prompt.md",
+    "bob": "$RUN_DIR/bob.prompt.md",
+    "charlie": "$RUN_DIR/charlie.prompt.md"
+  },
+  "repository": "$ORIGIN",
+  "run_dir": "$RUN_DIR",
+  "slug": null,
+  "workspaces": {
+    "bob": "$RUN_DIR/bob",
+    "charlie": "$RUN_DIR/charlie"
+  }
+}
+
+Launch commands (paste in order):
+cd "$RUN_DIR/alice-runtime"
+claude --strict-mcp-config --mcp-config "$RUN_DIR/configs/alice.mcp.json"
+
+cd "$RUN_DIR/bob"
+claude --strict-mcp-config --mcp-config "$RUN_DIR/configs/bob.mcp.json"
+
+cd "$RUN_DIR/charlie"
+CODEX_HOME="$RUN_DIR/configs/codex" codex exec --ephemeral -C . --add-dir "$RUN_DIR/charlie/.git" --approve-for-me - < "$RUN_DIR/charlie.prompt.md"
+
+Alice kickoff prompt: $RUN_DIR/alice.prompt.md

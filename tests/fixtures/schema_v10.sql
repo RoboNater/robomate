@@ -1,0 +1,126 @@
+-- Schema of a real v10 database, dumped from the code that shipped it.
+-- Regenerate with `uv run python scripts/dump-schema.py`; edit the schema, not this file.
+
+CREATE TABLE agent (
+    name TEXT PRIMARY KEY,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK (status IN ('idle', 'busy', 'released', 'lost')),
+    context_id TEXT UNIQUE,
+    last_seen TEXT NOT NULL,
+    worker_instance_id TEXT NOT NULL DEFAULT '',
+    last_heartbeat TEXT NOT NULL DEFAULT '',
+    last_progress_at TEXT,
+    current_task_id TEXT,
+    harness TEXT NOT NULL DEFAULT 'unknown',
+    harness_version TEXT NOT NULL DEFAULT 'unknown',
+    provider TEXT NOT NULL DEFAULT 'unknown',
+    model TEXT NOT NULL DEFAULT 'unknown',
+    model_source TEXT NOT NULL DEFAULT 'unknown' CHECK (model_source IN ('declared', 'env', 'unknown')),
+    workspace_id TEXT,
+    FOREIGN KEY (current_task_id) REFERENCES task(id) ON DELETE SET NULL
+);
+
+CREATE TABLE call_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    boundary TEXT NOT NULL CHECK (boundary IN ('a2a', 'mcp')),
+    actor TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    status INTEGER,
+    bytes_in INTEGER NOT NULL,
+    bytes_out INTEGER NOT NULL,
+    content_bytes INTEGER,
+    repeat_bytes INTEGER,
+    task_id TEXT,
+    workflow_id TEXT,
+    started TEXT NOT NULL,
+    finished TEXT NOT NULL
+);
+
+CREATE TABLE decision (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    key TEXT
+);
+
+CREATE TABLE event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('agent_checked_in', 'task_progress', 'task_completed', 'task_failed', 'worker_question', 'lease_expired', 'agent_lost')),
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'delivered', 'acked')),
+    delivery_id TEXT,
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at TEXT,
+    delivery_expires TEXT,
+    acked_at TEXT,
+    ts TEXT NOT NULL
+);
+
+CREATE TABLE message (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    context_id TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('to_alice', 'from_alice')),
+    parts_json TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE
+);
+
+CREATE TABLE operation (
+    actor TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created TEXT NOT NULL,
+    PRIMARY KEY (actor, operation_id)
+);
+
+CREATE TABLE task (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    assignee TEXT,
+    role TEXT NOT NULL,
+    title TEXT NOT NULL,
+    instructions TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('submitted', 'working', 'input-required', 'completed', 'failed', 'canceled')),
+    lease_expires TEXT,
+    lease_duration_s REAL NOT NULL DEFAULT 1800,
+    result_json TEXT,
+    created TEXT NOT NULL,
+    updated TEXT NOT NULL,
+    pr_head_sha TEXT,
+    source_event_id INTEGER,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE,
+    FOREIGN KEY (assignee) REFERENCES agent(name) ON DELETE SET NULL,
+    FOREIGN KEY (source_event_id) REFERENCES event(id)
+);
+
+CREATE TABLE workflow (
+    id TEXT PRIMARY KEY,
+    goal TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'done', 'escalated')),
+    policy_json TEXT NOT NULL DEFAULT '{}',
+    created TEXT NOT NULL
+);
+
+CREATE INDEX idx_call_log_actor ON call_log(actor, tool);
+
+CREATE UNIQUE INDEX idx_decision_key ON decision(key) WHERE key IS NOT NULL;
+
+CREATE INDEX idx_event_delivery_id ON event(delivery_id);
+
+CREATE INDEX idx_event_state_id ON event(state, id);
+
+CREATE INDEX idx_message_context_ts ON message(context_id, ts);
+
+CREATE INDEX idx_task_assignee ON task(assignee);
+
+CREATE UNIQUE INDEX idx_task_source_event_id
+    ON task(source_event_id) WHERE source_event_id IS NOT NULL;
+
+CREATE INDEX idx_task_workflow_state ON task(workflow_id, state);
+
+PRAGMA user_version = 10;

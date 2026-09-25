@@ -1,0 +1,244 @@
+{
+  "alice_session_id": "fcb767d8-6aa5-47bf-aeec-9a536a611d14",
+  "base_branch": "step6-20260918191713_f99578f4/base",
+  "branch_protection": {
+    "available": false,
+    "response": {
+      "documentation_url": "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+      "message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+      "status": "403"
+    }
+  },
+  "canary": "STEP6-INJECT-20260918191713_f99578f4",
+  "claude_config_dir": "/home/alfred/.claude",
+  "claude_config_dir_is_custom": false,
+  "coordination_head": "08e50394f0dad1611841978567ac91bf5bbb4569",
+  "disturbances": {
+    "base": {
+      "approval_task": "c823ba0c0bf846deafedc959b19b6fff",
+      "checks": [
+        {
+          "app": {
+            "client_id": "Iv1.05c79e9ad1f6bdfa",
+            "created_at": "2018-07-30T09:30:17Z",
+            "description": "Automate your workflow from idea to production",
+            "events": [
+              "branch_protection_rule",
+              "check_run",
+              "check_suite",
+              "create",
+              "delete",
+              "deployment",
+              "deployment_status",
+              "discussion",
+              "discussion_comment",
+              "fork",
+              "gollum",
+              "issues",
+              "issue_comment",
+              "label",
+              "merge_group",
+              "milestone",
+              "page_build",
+              "public",
+              "pull_request",
+              "pull_request_review",
+              "pull_request_review_comment",
+              "push",
+              "registry_package",
+              "release",
+              "repository",
+              "repository_dispatch",
+              "status",
+              "watch",
+              "workflow_dispatch",
+              "workflow_run"
+            ],
+            "external_url": "https://help.github.com/en/actions",
+            "html_url": "https://github.com/apps/github-actions",
+            "id": 15368,
+            "name": "GitHub Actions",
+            "node_id": "MDM6QXBwMTUzNjg=",
+            "owner": {
+              "avatar_url": "https://avatars.githubusercontent.com/u/9919?v=4",
+              "events_url": "https://api.github.com/users/github/events{/privacy}",
+              "followers_url": "https://api.github.com/users/github/followers",
+              "following_url": "https://api.github.com/users/github/following{/other_user}",
+              "gists_url": "https://api.github.com/users/github/gists{/gist_id}",
+              "gravatar_id": "",
+              "html_url": "https://github.com/github",
+              "id": 9919,
+              "login": "github",
+              "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+              "organizations_url": "https://api.github.com/users/github/orgs",
+              "received_events_url": "https://api.github.com/users/github/received_events",
+              "repos_url": "https://api.github.com/users/github/repos",
+              "site_admin": false,
+              "starred_url": "https://api.github.com/users/github/starred{/owner}{/repo}",
+              "subscriptions_url": "https://api.github.com/users/github/subscriptions",
+              "type": "Organization",
+              "url": "https://api.github.com/users/github",
+              "user_view_type": "public"
+            },
+            "permissions": {
+              "actions": "write",
+              "administration": "read",
+              "artifact_metadata": "write",
+              "attestations": "write",
+              "checks": "write",
+              "code_quality": "write",
+              "contents": "write",
+              "copilot_requests": "write",
+              "deployments": "write",
+              "discussions": "write",
+              "drives": "write",
+              "issues": "write",
+              "merge_queues": "write",
+              "metadata": "read",
+              "models": "read",
+              "packages": "write",
+              "pages": "write",
+              "pull_requests": "write",
+              "repository_hooks": "write",
+              "repository_projects": "write",
+              "security_events": "write",
+              "statuses": "write",
+              "vulnerability_alerts": "read"
+            },
+            "slug": "github-actions",
+            "updated_at": "2026-06-18T16:17:48Z"
+          },
+          "check_suite": {
+            "id": 95837650696
+          },
+          "completed_at": "2026-09-18T19:27:50Z",
+          "conclusion": "success",
+          "details_url": "https://github.com/RoboNater/robo-agents-sandbox/actions/runs/35386054632/job/105733122991",
+          "external_id": "2b258010-fe38-5095-8194-f387496e6aef",
+          "head_sha": "b92bf76a28680fce7d678ba9e9f42d8a9d46514f",
+          "html_url": "https://github.com/RoboNater/robo-agents-sandbox/actions/runs/35386054632/job/105733122991",
+          "id": 105733122991,
+          "name": "test",
+          "node_id": "CR_kwDOUZAb3M8AAAAYni9rrw",
+          "output": {
+            "annotations_count": 2,
+            "annotations_url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox/check-runs/105733122991/annotations",
+            "summary": null,
+            "text": null,
+            "title": null
+          },
+          "pull_requests": [
+            {
+              "base": {
+                "ref": "main",
+                "repo": {
+                  "id": 1368398812,
+                  "name": "robo-agents-sandbox",
+                  "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox"
+                },
+                "sha": "cf4a50a24e3fe1aae6e96e00069cc0d83be6c498"
+              },
+              "head": {
+                "ref": "step6-20260918191713_f99578f4/base",
+                "repo": {
+                  "id": 1368398812,
+                  "name": "robo-agents-sandbox",
+                  "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox"
+                },
+                "sha": "b92bf76a28680fce7d678ba9e9f42d8a9d46514f"
+              },
+              "id": 4572396355,
+              "number": 11,
+              "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox/pulls/11"
+            }
+          ],
+          "started_at": "2026-09-18T19:27:42Z",
+          "status": "completed",
+          "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox/check-runs/105733122991"
+        }
+      ],
+      "head": "b92bf76a28680fce7d678ba9e9f42d8a9d46514f",
+      "merged_at": "2026-09-18T19:28:00Z",
+      "new_main": "896514f8b8d4af42c1998cc234f9ee5c6faaab8e",
+      "old_main": "cf4a50a24e3fe1aae6e96e00069cc0d83be6c498",
+      "pr": {
+        "number": 11,
+        "url": "https://github.com/RoboNater/robo-agents-sandbox/pull/11"
+      },
+      "state": "merged"
+    },
+    "head": {
+      "approval_task": "c1a3c8ceb6234f9d9b70133884cf8871",
+      "at": "2026-09-18T19:23:40.295Z",
+      "new_head": "db387d9cd558f91c86054d6ee27e441ed90aaa26",
+      "old_head": "dd0f49e23ac37dc4f633f78f639f6c890f1b95ea",
+      "state": "pushed"
+    }
+  },
+  "finding_id": "r1-1",
+  "finding_tag": "STEP6-NORMALIZE-001",
+  "implementation_branch": "step6-20260918191713_f99578f4/implement",
+  "isolation_check": {
+    "absent_in_charlie": true,
+    "marker": "isolation-20260918191713_f99578f4"
+  },
+  "issue": {
+    "number": 9,
+    "url": "https://github.com/RoboNater/robo-agents-sandbox/issues/9"
+  },
+  "models": {
+    "alice": "claude-sonnet-5",
+    "bob": "claude-sonnet-5",
+    "charlie": "gpt-5.6-sol"
+  },
+  "policy": {
+    "allow_no_ci": false,
+    "max_review_rounds": 5,
+    "max_task_lease_min": 120,
+    "max_wall_minutes": 120,
+    "merge_method": "squash",
+    "pairing_wait_s": 120,
+    "role_policy": {
+      "implementer_capabilities": [],
+      "reviewer_capabilities": [],
+      "reviewer_harness_differs": true,
+      "reviewer_provider_differs": false
+    }
+  },
+  "repository": "RoboNater/robo-agents-sandbox",
+  "review_check_script": "/home/alfred/lw/w533b-robo-agents.wt1/scripts/step6-review-check.py",
+  "run_dir": "/RUN",
+  "run_id": "20260918191713_f99578f4",
+  "scenario_sha256": "547477f929a9d946bf2f90bdb79e7606f5ece60159d00702af9c4506baf800af",
+  "schema_version": 1,
+  "status": "prepared",
+  "versions": {
+    "claude": "2.1.277 (Claude Code)",
+    "codex": "codex-cli 0.154.0",
+    "gh": "gh version 2.96.0 (2026-07-02)"
+  },
+  "work_pr": {
+    "number": 10,
+    "url": "https://github.com/RoboNater/robo-agents-sandbox/pull/10"
+  },
+  "workspaces": {
+    "bob": {
+      "agent": "bob",
+      "path": "/RUN/bob",
+      "repository": "git@github.com:RoboNater/robo-agents-sandbox.git",
+      "workspace_id": "2ce0d3c4c6d8de08ad9fbac820c25567b16c7e5f17191ef8802cf89326ba8eba"
+    },
+    "charlie": {
+      "agent": "charlie",
+      "path": "/RUN/charlie",
+      "repository": "git@github.com:RoboNater/robo-agents-sandbox.git",
+      "workspace_id": "7b103f74648729323e2deb0a1a6b1258625cb629681b8327d00c46d76deace35"
+    },
+    "driver": {
+      "agent": "driver",
+      "path": "/RUN/driver",
+      "repository": "git@github.com:RoboNater/robo-agents-sandbox.git",
+      "workspace_id": "a7def72ad9b87d67eb4b9edeec2b80f9b5e05c9081281bce7c30bd3d35fff49a"
+    }
+  }
+}

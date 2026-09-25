@@ -1,0 +1,50 @@
+{
+  "method": "message/send",
+  "request": {
+    "id": 5,
+    "jsonrpc": "2.0",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "contextId": "ctx-101",
+        "kind": "message",
+        "messageId": "msg-heartbeat-101",
+        "metadata": {
+          "hub.agent": "bob",
+          "hub.current_task_id": "task-101",
+          "hub.kind": "heartbeat",
+          "hub.schema_version": 1,
+          "hub.worker_instance_id": "worker-101"
+        },
+        "parts": [
+          {
+            "kind": "text",
+            "text": "HEARTBEAT"
+          }
+        ],
+        "role": "user"
+      }
+    }
+  },
+  "response": {
+    "id": 5,
+    "jsonrpc": "2.0",
+    "result": {
+      "contextId": "ctx-101",
+      "kind": "message",
+      "messageId": "msg-heartbeat-ack-101",
+      "metadata": {
+        "hub.accepted": true,
+        "hub.agent": "bob",
+        "hub.kind": "heartbeat_ack"
+      },
+      "parts": [
+        {
+          "kind": "text",
+          "text": "HEARTBEAT"
+        }
+      ],
+      "role": "agent"
+    }
+  }
+}

@@ -1,0 +1,639 @@
+{
+  "alice_session_id": "89f7b9cb-9a3e-40e3-8f77-85802be01ff2",
+  "base_branch": "step7-20260924210331_88a8a797/base",
+  "branch_protection": {
+    "available": false,
+    "response": {
+      "documentation_url": "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+      "message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+      "status": "403"
+    }
+  },
+  "canaries": {
+    "bob": {
+      "file": ".step7-canary-bob",
+      "token": "STEP7-CANARY-BOB-20260924210331_88a8a797"
+    },
+    "charlie": {
+      "file": ".step7-canary-charlie",
+      "token": "STEP7-CANARY-CHARLIE-20260924210331_88a8a797"
+    }
+  },
+  "canary": "STEP6-INJECT-20260924210331_88a8a797",
+  "claude_config_dir": "/home/alfred/.claude",
+  "claude_config_dir_is_custom": false,
+  "coordination_head": "cced6cc87ef17607beebb511cbe6a8fa9d02fe8d",
+  "disturbances": {
+    "base": {
+      "approval_task": "8e16ef417af3472a8e47aebcc673e215",
+      "checks": [
+        {
+          "app": {
+            "client_id": "Iv1.05c79e9ad1f6bdfa",
+            "created_at": "2018-07-30T09:30:17Z",
+            "description": "Automate your workflow from idea to production",
+            "events": [
+              "branch_protection_rule",
+              "check_run",
+              "check_suite",
+              "create",
+              "delete",
+              "deployment",
+              "deployment_status",
+              "discussion",
+              "discussion_comment",
+              "fork",
+              "gollum",
+              "issues",
+              "issue_comment",
+              "label",
+              "merge_group",
+              "milestone",
+              "page_build",
+              "public",
+              "pull_request",
+              "pull_request_review",
+              "pull_request_review_comment",
+              "push",
+              "registry_package",
+              "release",
+              "repository",
+              "repository_dispatch",
+              "status",
+              "watch",
+              "workflow_dispatch",
+              "workflow_run"
+            ],
+            "external_url": "https://help.github.com/en/actions",
+            "html_url": "https://github.com/apps/github-actions",
+            "id": 15368,
+            "name": "GitHub Actions",
+            "node_id": "MDM6QXBwMTUzNjg=",
+            "owner": {
+              "avatar_url": "https://avatars.githubusercontent.com/u/9919?v=4",
+              "events_url": "https://api.github.com/users/github/events{/privacy}",
+              "followers_url": "https://api.github.com/users/github/followers",
+              "following_url": "https://api.github.com/users/github/following{/other_user}",
+              "gists_url": "https://api.github.com/users/github/gists{/gist_id}",
+              "gravatar_id": "",
+              "html_url": "https://github.com/github",
+              "id": 9919,
+              "login": "github",
+              "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+              "organizations_url": "https://api.github.com/users/github/orgs",
+              "received_events_url": "https://api.github.com/users/github/received_events",
+              "repos_url": "https://api.github.com/users/github/repos",
+              "site_admin": false,
+              "starred_url": "https://api.github.com/users/github/starred{/owner}{/repo}",
+              "subscriptions_url": "https://api.github.com/users/github/subscriptions",
+              "type": "Organization",
+              "url": "https://api.github.com/users/github",
+              "user_view_type": "public"
+            },
+            "permissions": {
+              "actions": "write",
+              "administration": "read",
+              "artifact_metadata": "write",
+              "attestations": "write",
+              "checks": "write",
+              "code_quality": "write",
+              "contents": "write",
+              "copilot_requests": "write",
+              "deployments": "write",
+              "discussions": "write",
+              "drives": "write",
+              "issues": "write",
+              "merge_queues": "write",
+              "metadata": "read",
+              "models": "read",
+              "packages": "write",
+              "pages": "write",
+              "pull_requests": "write",
+              "repository_hooks": "write",
+              "repository_projects": "write",
+              "security_events": "write",
+              "statuses": "write",
+              "vulnerability_alerts": "read"
+            },
+            "slug": "github-actions",
+            "updated_at": "2026-06-18T16:17:48Z"
+          },
+          "check_suite": {
+            "id": 97653341123
+          },
+          "completed_at": "2026-09-24T21:14:30Z",
+          "conclusion": "success",
+          "details_url": "https://github.com/RoboNater/robo-agents-sandbox/actions/runs/36060160905/job/107836912373",
+          "external_id": "61caa6ad-40be-52f2-9c6c-7718ab75f9f8",
+          "head_sha": "775f62d070535d4e52e30f68fdbf4a99d0ff4bd7",
+          "html_url": "https://github.com/RoboNater/robo-agents-sandbox/actions/runs/36060160905/job/107836912373",
+          "id": 107836912373,
+          "name": "test",
+          "node_id": "CR_kwDOUZAb3M8AAAAZG5Sy9Q",
+          "output": {
+            "annotations_count": 2,
+            "annotations_url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox/check-runs/107836912373/annotations",
+            "summary": null,
+            "text": null,
+            "title": null
+          },
+          "pull_requests": [
+            {
+              "base": {
+                "ref": "main",
+                "repo": {
+                  "id": 1368398812,
+                  "name": "robo-agents-sandbox",
+                  "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox"
+                },
+                "sha": "bf10dca4adf3f39fd27e77f1baed659cfe1f380e"
+              },
+              "head": {
+                "ref": "step7-20260924210331_88a8a797/base",
+                "repo": {
+                  "id": 1368398812,
+                  "name": "robo-agents-sandbox",
+                  "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox"
+                },
+                "sha": "775f62d070535d4e52e30f68fdbf4a99d0ff4bd7"
+              },
+              "id": 4631147371,
+              "number": 17,
+              "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox/pulls/17"
+            }
+          ],
+          "started_at": "2026-09-24T21:14:22Z",
+          "status": "completed",
+          "url": "https://api.github.com/repos/RoboNater/robo-agents-sandbox/check-runs/107836912373"
+        }
+      ],
+      "head": "775f62d070535d4e52e30f68fdbf4a99d0ff4bd7",
+      "merged_at": "2026-09-24T21:14:41Z",
+      "new_main": "8c806b7fb144d2c6392c70f6f83153e444f2ff15",
+      "old_main": "bf10dca4adf3f39fd27e77f1baed659cfe1f380e",
+      "pr": {
+        "number": 17,
+        "url": "https://github.com/RoboNater/robo-agents-sandbox/pull/17"
+      },
+      "state": "merged"
+    },
+    "head": {
+      "approval_task": "22407fdb47ab458ebeb9f904d2c8db8c",
+      "at": "2026-09-24T21:11:51.849Z",
+      "new_head": "1310523f4bf769e19fc5c48aa5df4d4d92be9c27",
+      "old_head": "a4fda4faed86ccadc3037a3313dbd62aed47fcf7",
+      "state": "pushed"
+    }
+  },
+  "duplicate_probe": {
+    "agent": "bob-duplicate-probe",
+    "at": "2026-09-24T21:07:43.700Z",
+    "bob_after": {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "e8157062a471446d8c6c1811d08bfbd4",
+      "last_heartbeat": "2026-09-24T21:07:32.578Z",
+      "last_remote_addr": "172.26.112.1",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    "bob_before": {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "e8157062a471446d8c6c1811d08bfbd4",
+      "last_heartbeat": "2026-09-24T21:07:32.578Z",
+      "last_remote_addr": "172.26.112.1",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    "message": "workspace e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0 is occupied by live agent bob",
+    "refused": true,
+    "status_code": 409,
+    "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+  },
+  "evidence_prefix": "step7",
+  "finding_id": "r1-1",
+  "finding_tag": "STEP6-NORMALIZE-001",
+  "harnesses": {
+    "alice": "claude-code",
+    "bob": "claude-code",
+    "charlie": "codex"
+  },
+  "heartbeat_samples": [
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:07:32.578Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:07:37.440Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "e8157062a471446d8c6c1811d08bfbd4",
+      "last_heartbeat": "2026-09-24T21:07:32.578Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:07:42.447Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "e8157062a471446d8c6c1811d08bfbd4",
+      "last_heartbeat": "2026-09-24T21:08:01.187Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:08:03.732Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "e8157062a471446d8c6c1811d08bfbd4",
+      "last_heartbeat": "2026-09-24T21:08:31.102Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:08:31.615Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:08:31.102Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:08:44.559Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:09:01.220Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:09:01.336Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:09:31.292Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:09:33.012Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:10:01.314Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:10:04.522Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "5f7ff89babbb4fde995febd64d38fb60",
+      "last_heartbeat": "2026-09-24T21:10:01.314Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:10:13.616Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "5f7ff89babbb4fde995febd64d38fb60",
+      "last_heartbeat": "2026-09-24T21:10:31.413Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:10:35.875Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:10:31.413Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:10:39.329Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:11:01.517Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:11:07.062Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:11:31.507Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:11:32.805Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:12:01.652Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:12:02.356Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:12:31.627Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:12:33.785Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:13:01.676Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:13:05.277Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:13:31.887Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:13:36.752Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:14:01.946Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:14:02.505Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:14:31.928Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:14:49.146Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:15:01.980Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:15:04.157Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:15:32.062Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:15:32.081Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "3d1f700f3f0f42de9be6182fcb7bb243",
+      "last_heartbeat": "2026-09-24T21:16:02.081Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:16:04.976Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "3d1f700f3f0f42de9be6182fcb7bb243",
+      "last_heartbeat": "2026-09-24T21:16:32.156Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:16:32.863Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:16:32.156Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:16:45.718Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:17:02.073Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:17:05.738Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": "ee120ae019d8450fbe72ca4f12085639",
+      "last_heartbeat": "2026-09-24T21:17:02.073Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:17:18.688Z",
+      "status": "busy",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:17:32.222Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:17:33.705Z",
+      "status": "idle",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    {
+      "context_id": "6bb3942cb3d942c3ac9e959caec4ee88",
+      "current_task_id": null,
+      "last_heartbeat": "2026-09-24T21:17:32.222Z",
+      "last_remote_addr": "172.26.112.1",
+      "sampled_at": "2026-09-24T21:17:38.711Z",
+      "status": "released",
+      "worker_instance_id": "baf49ebd12e748e1add3f0f63428130c",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    }
+  ],
+  "implementation_branch": "step7-20260924210331_88a8a797/implement",
+  "isolation_check": {
+    "absent_in_charlie": true,
+    "marker": "isolation-20260924210331_88a8a797"
+  },
+  "issue": {
+    "number": 15,
+    "url": "https://github.com/RoboNater/robo-agents-sandbox/issues/15"
+  },
+  "models": {
+    "alice": "claude-sonnet-5",
+    "bob": "claude-sonnet-5",
+    "charlie": "gpt-6-sol"
+  },
+  "network": {
+    "charlie_url": "http://127.0.0.1:8431",
+    "hub_host": "0.0.0.0",
+    "hub_port": 8431,
+    "hub_url": "http://172.26.115.68:8431",
+    "lost_after_s": 180.0,
+    "public_url": "http://172.26.115.68:8431",
+    "remote_worker": "bob",
+    "wsl_distro": "Ubuntu-24.04",
+    "wsl_eth0": "172.26.115.68"
+  },
+  "policy": {
+    "allow_no_ci": false,
+    "max_review_rounds": 5,
+    "max_task_lease_min": 120,
+    "max_wall_minutes": 120,
+    "merge_method": "squash",
+    "pairing_wait_s": 120,
+    "role_policy": {
+      "implementer_capabilities": [],
+      "reviewer_capabilities": [],
+      "reviewer_harness_differs": true,
+      "reviewer_provider_differs": false
+    }
+  },
+  "preflight": {
+    "checks": [
+      {
+        "check": "wsl_distro",
+        "detail": "Ubuntu-24.04",
+        "passed": true
+      },
+      {
+        "check": "windows_bash",
+        "detail": "/mnt/c/Program Files/Git/bin/bash.exe",
+        "passed": true
+      },
+      {
+        "check": "windows_curl",
+        "detail": "/mnt/c/Windows/System32/curl.exe",
+        "passed": true
+      },
+      {
+        "check": "windows_checkout",
+        "detail": "C:/work/robo-agents at cced6cc87ef17607beebb511cbe6a8fa9d02fe8d; hub checkout at cced6cc87ef17607beebb511cbe6a8fa9d02fe8d",
+        "passed": true
+      },
+      {
+        "check": "hub_port_free",
+        "detail": "127.0.0.1:8431",
+        "passed": true
+      },
+      {
+        "check": "windows_healthz",
+        "detail": "{\"status\": \"ok\"}",
+        "passed": true
+      },
+      {
+        "check": "windows_agent_card_url",
+        "detail": "http://172.26.115.68:8431/a2a (expected http://172.26.115.68:8431/a2a)",
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "providers": {
+    "bob": "anthropic",
+    "charlie": "openai"
+  },
+  "remote_versions": {
+    "bob": "2.1.281 (Claude Code)"
+  },
+  "repository": "RoboNater/robo-agents-sandbox",
+  "review_check_script": "/home/alfred/lw/w533d-robo-agents.wtd/scripts/step6-review-check.py",
+  "roadmap_reservation": true,
+  "run_dir": "wsl:/RUN",
+  "run_id": "20260924210331_88a8a797",
+  "scenario": "scenarios/step7-networked-untrusted.json",
+  "scenario_sha256": "6350549ffa419a26e0579907dddbbb9d4a4d5dfa45fbe6fa7902c6061df57c1e",
+  "schema_version": 1,
+  "status": "prepared",
+  "topology": "networked",
+  "versions": {
+    "claude": "2.1.282 (Claude Code)",
+    "codex": "codex-cli 0.155.1",
+    "gh": "gh version 2.96.0 (2026-07-02)"
+  },
+  "windows": {
+    "bash": "/mnt/c/Program Files/Git/bin/bash.exe",
+    "checkout": "C:/work/robo-agents",
+    "curl": "/mnt/c/Windows/System32/curl.exe",
+    "run_dir": "windows:/RUN"
+  },
+  "work_pr": {
+    "number": 16,
+    "url": "https://github.com/RoboNater/robo-agents-sandbox/pull/16"
+  },
+  "workspaces": {
+    "bob": {
+      "agent": "bob",
+      "host": "windows",
+      "path": "windows:/RUN\\bob",
+      "qualified_path": "windows:/RUN/bob",
+      "repository": "git@github.com:RoboNater/robo-agents-sandbox.git",
+      "workspace_id": "e9ad6608aee63c7fd34e29cd84a4606cecd1f20a666123c09ea527db4cd7e9c0"
+    },
+    "charlie": {
+      "agent": "charlie",
+      "host": "wsl",
+      "path": "wsl:/RUN/charlie",
+      "qualified_path": "wsl:/RUN/charlie",
+      "repository": "git@github.com:RoboNater/robo-agents-sandbox.git",
+      "workspace_id": "4820cdd33226b9b3b6ec77262b828c2d5db949bb9de71ab3a2de3964acc614fb"
+    },
+    "driver": {
+      "agent": "driver",
+      "path": "wsl:/RUN/driver",
+      "repository": "git@github.com:RoboNater/robo-agents-sandbox.git",
+      "workspace_id": "6923a9ff0af99e2bb9082d8230d13e08c4562eb285c346ab8aa36aacae2b1174"
+    }
+  }
+}

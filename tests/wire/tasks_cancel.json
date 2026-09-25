@@ -1,0 +1,48 @@
+{
+  "method": "tasks/cancel",
+  "request": {
+    "id": 4,
+    "jsonrpc": "2.0",
+    "method": "tasks/cancel",
+    "params": {
+      "id": "task-101"
+    }
+  },
+  "response": {
+    "id": 4,
+    "jsonrpc": "2.0",
+    "result": {
+      "contextId": "ctx-101",
+      "id": "task-101",
+      "kind": "task",
+      "metadata": {
+        "hub.assignee": "bob",
+        "hub.lease_expires": "2026-09-09T13:00:00Z",
+        "hub.role": "implementer",
+        "hub.title": "Fix #1"
+      },
+      "status": {
+        "message": {
+          "contextId": "ctx-101",
+          "kind": "message",
+          "messageId": "msg-assign-101",
+          "metadata": {
+            "hub.kind": "assignment",
+            "hub.role": "implementer",
+            "hub.title": "Fix #1"
+          },
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Fix issue #1"
+            }
+          ],
+          "role": "agent",
+          "taskId": "task-101"
+        },
+        "state": "canceled",
+        "timestamp": "2026-09-09T12:10:00Z"
+      }
+    }
+  }
+}

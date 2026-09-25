@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "hub": {
+      "args": [
+        "run",
+        "--locked",
+        "--directory",
+        "$ROOT",
+        "hub"
+      ],
+      "command": "uv",
+      "env": {
+        "HUB_GUIDES_DIR": "$ROOT/guides",
+        "HUB_PUBLIC_URL": "http://127.0.0.1:8420",
+        "HUB_STATE_DIR": "$RUN_DIR/hub-state",
+        "HUB_TOKEN": "$TOKEN",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

@@ -1,0 +1,324 @@
+{
+  "kind": "scripted substitute, not a Step 6 acceptance run",
+  "call_sequence_source": "docs/evidence/step6-20260918191713_f99578f4.tool-audit.json",
+  "generated": "2026-09-21T03:24:14+00:00",
+  "replay_wall_s": 17.3,
+  "worker_hold_s": 2.0,
+  "worker_heartbeat_s": 5.0,
+  "skipped_calls": {
+    "check_merge_gate": 3
+  },
+  "per_actor": [
+    {
+      "actor": "alice",
+      "calls": 55,
+      "bytes_in": 27875,
+      "bytes_out": 95262
+    },
+    {
+      "actor": "bob",
+      "calls": 19,
+      "bytes_in": 10796,
+      "bytes_out": 32945
+    },
+    {
+      "actor": "charlie",
+      "calls": 18,
+      "bytes_in": 9635,
+      "bytes_out": 31094
+    }
+  ],
+  "per_tool": [
+    {
+      "boundary": "a2a",
+      "actor": "bob",
+      "tool": "await_assignment",
+      "calls": 9,
+      "bytes_in": 3123,
+      "bytes_out": 9433,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "bob",
+      "tool": "check_in",
+      "calls": 1,
+      "bytes_in": 534,
+      "bytes_out": 377,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "bob",
+      "tool": "get_role_guide",
+      "calls": 3,
+      "bytes_in": 0,
+      "bytes_out": 10960,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "bob",
+      "tool": "heartbeat",
+      "calls": 2,
+      "bytes_in": 788,
+      "bytes_out": 634,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "bob",
+      "tool": "submit_result",
+      "calls": 4,
+      "bytes_in": 6351,
+      "bytes_out": 11541,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "charlie",
+      "tool": "await_assignment",
+      "calls": 8,
+      "bytes_in": 2776,
+      "bytes_out": 8546,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "charlie",
+      "tool": "check_in",
+      "calls": 1,
+      "bytes_in": 597,
+      "bytes_out": 381,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "charlie",
+      "tool": "get_role_guide",
+      "calls": 3,
+      "bytes_in": 0,
+      "bytes_out": 10332,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "charlie",
+      "tool": "heartbeat",
+      "calls": 2,
+      "bytes_in": 796,
+      "bytes_out": 642,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "charlie",
+      "tool": "report_progress",
+      "calls": 1,
+      "bytes_in": 689,
+      "bytes_out": 318,
+      "content_bytes": null
+    },
+    {
+      "boundary": "a2a",
+      "actor": "charlie",
+      "tool": "submit_result",
+      "calls": 3,
+      "bytes_in": 4777,
+      "bytes_out": 10875,
+      "content_bytes": null
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "assign_task",
+      "calls": 7,
+      "bytes_in": 10110,
+      "bytes_out": 24552,
+      "content_bytes": 11809
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "get_state",
+      "calls": 3,
+      "bytes_in": 277,
+      "bytes_out": 20525,
+      "content_bytes": 10748
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "initialize",
+      "calls": 1,
+      "bytes_in": 153,
+      "bytes_out": 349,
+      "content_bytes": null
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "initialize_workflow",
+      "calls": 1,
+      "bytes_in": 549,
+      "bytes_out": 1235,
+      "content_bytes": 584
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "log_decision",
+      "calls": 18,
+      "bytes_in": 10667,
+      "bytes_out": 2482,
+      "content_bytes": 243
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "release_agent",
+      "calls": 2,
+      "bytes_in": 224,
+      "bytes_out": 2378,
+      "content_bytes": 1073
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "set_workflow_status",
+      "calls": 1,
+      "bytes_in": 3090,
+      "bytes_out": 143,
+      "content_bytes": 16
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "tools/list",
+      "calls": 1,
+      "bytes_in": 47,
+      "bytes_out": 5762,
+      "content_bytes": null
+    },
+    {
+      "boundary": "mcp",
+      "actor": "alice",
+      "tool": "wait_for_event",
+      "calls": 21,
+      "bytes_in": 2758,
+      "bytes_out": 37836,
+      "content_bytes": 18695
+    }
+  ],
+  "wait_for_event": {
+    "calls": 21,
+    "null_event": 11,
+    "null_share_calls": 0.524,
+    "bytes_out": 37836,
+    "null_bytes_out": 1638,
+    "null_bytes_each": [
+      148,
+      149
+    ],
+    "recorded_run_calls": 21,
+    "recorded_run_timeouts": 11
+  },
+  "get_state": [
+    {
+      "call": 1,
+      "bytes_out": 310,
+      "content_bytes": 102,
+      "repeat_bytes": 0
+    },
+    {
+      "call": 2,
+      "bytes_out": 4086,
+      "content_bytes": 2114,
+      "repeat_bytes": 44
+    },
+    {
+      "call": 3,
+      "bytes_out": 16129,
+      "content_bytes": 8532,
+      "repeat_bytes": 1748
+    }
+  ],
+  "workers": {
+    "bob": {
+      "await_assignment": {
+        "calls": 9,
+        "mcp_request_bytes": 153,
+        "mcp_result_bytes": 5129,
+        "http_request_bytes": 3123,
+        "http_response_bytes": 9433,
+        "http_retries": 0
+      },
+      "check_in": {
+        "calls": 1,
+        "mcp_request_bytes": 34,
+        "mcp_result_bytes": 315,
+        "http_request_bytes": 534,
+        "http_response_bytes": 377,
+        "http_retries": 0
+      },
+      "get_role_guide": {
+        "calls": 3,
+        "mcp_request_bytes": 61,
+        "mcp_result_bytes": 10960,
+        "http_request_bytes": 0,
+        "http_response_bytes": 10960,
+        "http_retries": 0
+      },
+      "submit_result": {
+        "calls": 4,
+        "mcp_request_bytes": 3020,
+        "mcp_result_bytes": 5074,
+        "http_request_bytes": 6351,
+        "http_response_bytes": 11541,
+        "http_retries": 0
+      }
+    },
+    "charlie": {
+      "await_assignment": {
+        "calls": 8,
+        "mcp_request_bytes": 136,
+        "mcp_result_bytes": 4797,
+        "http_request_bytes": 2776,
+        "http_response_bytes": 8546,
+        "http_retries": 0
+      },
+      "check_in": {
+        "calls": 1,
+        "mcp_request_bytes": 104,
+        "mcp_result_bytes": 404,
+        "http_request_bytes": 597,
+        "http_response_bytes": 381,
+        "http_retries": 0
+      },
+      "get_role_guide": {
+        "calls": 3,
+        "mcp_request_bytes": 57,
+        "mcp_result_bytes": 10332,
+        "http_request_bytes": 0,
+        "http_response_bytes": 10332,
+        "http_retries": 0
+      },
+      "report_progress": {
+        "calls": 1,
+        "mcp_request_bytes": 281,
+        "mcp_result_bytes": 255,
+        "http_request_bytes": 689,
+        "http_response_bytes": 318,
+        "http_retries": 0
+      },
+      "submit_result": {
+        "calls": 3,
+        "mcp_request_bytes": 2826,
+        "mcp_result_bytes": 3949,
+        "http_request_bytes": 4777,
+        "http_response_bytes": 10875,
+        "http_retries": 0
+      }
+    }
+  }
+}

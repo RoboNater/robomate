@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "hub": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/agent-hub",
+        "worker-mcp"
+      ],
+      "env": {
+        "HUB_URL": "http://alice-host:8420",
+        "HUB_TOKEN": "...",
+        "AGENT_NAME": "bob",
+        "HUB_WORKSPACE": "/absolute/path/to/bob-sandbox",
+        "HUB_HARNESS": "claude-code",
+        "HUB_HARNESS_VERSION": "",
+        "HUB_PROVIDER": "anthropic",
+        "HUB_MODEL": "",
+        "HUB_CAPABILITIES": "",
+        "HUB_TELEMETRY_LOG": ""
+      }
+    }
+  }
+}

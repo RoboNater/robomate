@@ -1,0 +1,33 @@
+# Codex CLI ~/.codex/config.toml
+# Replace /path/to/agent-hub with the absolute path to this checkout (e.g. C:/path/to/agent-hub on Windows).
+# HUB_HARNESS_VERSION and HUB_MODEL are left empty (reported as "unknown"); fill them
+# in when you pin them, e.g. from `codex --version` and the `model` you launch with.
+[mcp_servers.hub]
+command = "uv"
+args = ["run", "--directory", "/path/to/agent-hub", "worker-mcp"]
+# Codex CLI 0.154.0 fails an MCP tool call after 300 s by default (observed; spec §8).
+# The default hold is 100 s, but a worker may request up to HUB_MAX_WAIT_S (300 s)
+# and waits 15 s past the hold before giving up, so allow that with margin.
+tool_timeout_sec = 330
+env = { HUB_URL = "http://alice-host:8420", HUB_TOKEN = "...", AGENT_NAME = "charlie", HUB_WORKSPACE = "/absolute/path/to/charlie-sandbox", HUB_HARNESS = "codex", HUB_HARNESS_VERSION = "", HUB_PROVIDER = "openai", HUB_MODEL = "", HUB_CAPABILITIES = "", HUB_TELEMETRY_LOG = "" }
+
+# Unattended workers cannot answer interactive MCP approval prompts. These
+# approvals cover only worker-mcp's six coordination tools; shell commands and
+# every other Codex capability remain governed by the launcher's normal policy.
+[mcp_servers.hub.tools.check_in]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.get_role_guide]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.await_assignment]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.report_progress]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.ask_alice]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.submit_result]
+approval_mode = "approve"

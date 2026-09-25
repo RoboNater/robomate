@@ -1,0 +1,28 @@
+sandbox_mode = "workspace-write"
+[sandbox_workspace_write]
+network_access = true
+[mcp_servers.hub]
+command = "uv"
+args = ["run", "--locked", "--directory", "$ROOT", "worker-mcp"]
+startup_timeout_sec = 120
+tool_timeout_sec = 330
+enabled_tools = ["check_in", "get_role_guide", "await_assignment", "report_progress", "ask_alice", "submit_result"]
+env = { HUB_URL = "http://127.0.0.1:8420", HUB_TOKEN = "$TOKEN", AGENT_NAME = "charlie", HUB_WORKSPACE = "$RUN_DIR/charlie", HUB_HARNESS = "codex", HUB_HARNESS_VERSION = "0.154.0", HUB_PROVIDER = "openai", HUB_MODEL = "", HUB_CAPABILITIES = "", HUB_TELEMETRY_LOG = "$RUN_DIR/charlie-telemetry.jsonl", PYTHONUTF8 = "1" }
+
+[mcp_servers.hub.tools.check_in]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.get_role_guide]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.await_assignment]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.report_progress]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.ask_alice]
+approval_mode = "approve"
+
+[mcp_servers.hub.tools.submit_result]
+approval_mode = "approve"

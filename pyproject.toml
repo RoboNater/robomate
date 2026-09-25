@@ -1,0 +1,48 @@
+[project]
+name = "agent-hub-workspace"
+version = "0.1.0"
+description = "Networked agent coordination proof of concept"
+requires-python = ">=3.12"
+dependencies = [
+    "agent-hub",
+    "agent-hub-common",
+    "worker-mcp",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27,<1",
+    "mypy>=1.17,<2",
+    "pytest>=8,<9",
+    "pytest-asyncio>=1,<2",
+    "ruff>=0.12,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+agent-hub = { workspace = true }
+agent-hub-common = { workspace = true }
+worker-mcp = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["packages", "tests"]
