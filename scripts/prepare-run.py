@@ -404,13 +404,12 @@ def resolve_roadmap(roadmap: str | None, slug: str | None, repository: str) -> s
     """
     if roadmap is None:
         return None
-    value = roadmap.strip()
-    if not value:
+    if not roadmap.strip():
         raise ValueError("--roadmap must not be empty")
-    match = re.fullmatch(r"#?(\d+)", value)
+    match = re.fullmatch(r"#?(\d+)", roadmap)
     if match:
         return f"{slug or repository}#{match.group(1)}"
-    return value
+    return roadmap
 
 
 def render_goal(

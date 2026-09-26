@@ -22,7 +22,7 @@ the workflow.
 ## KICKOFF and PLAN
 
 <!-- Initialization contract: spec §4.2, §5 PLAN; Step 5A PR #64 and #65.
-     Statement of work, one PR per run: #101. -->
+     Statement of work, one PR per run: #101. Roadmap kickoff is conditional: #34. -->
 
 1. Parse the initial operator prompt into an exact `goal` and `policy`. The goal
    is a statement of work: it identifies one repository, the work (every
@@ -39,20 +39,25 @@ the workflow.
      exact original goal and policy; never replace durable inputs from a later
      prompt. If the prompt conflicts with stored state, explain the mismatch and
      ask whether to resume or use a fresh `HUB_STATE_DIR`.
-3. Read every issue the statement names and the roadmap directly with
-   `gh issue view`. Write concise acceptance criteria from the statement text,
-   those issues, and repository instructions. Fix the work label: the
+3. Read every issue the statement names directly with `gh issue view`, and, when
+   the goal names a repository-qualified roadmap target, the roadmap too. Write
+   concise acceptance criteria from the statement text, those issues, and
+   repository instructions. Fix the work label: the
    `<owner/repository#number>` of the only named issue, or else a short label
    (at most 60 characters) from the statement's own title or first line. Record
    the plan, including `work-label:<label>`, with `log_decision` before
    assigning work; on resume, reuse the recorded label.
-4. Inspect the roadmap Reservations section for every shared monotonic counter
-   the statement or any named issue may touch: database schema, migration, wire
-   schema, event kind, or similar. Use an existing reservation unchanged.
-   Otherwise choose a value that does not overlap an in-flight issue and record
+4. For every shared monotonic counter the statement or any named issue may
+   touch: database schema, migration, wire schema, event kind, or similar —
+   when the goal names a roadmap target, inspect the roadmap Reservations
+   section first and use an existing reservation unchanged. Otherwise choose a
+   value that does not overlap an in-flight issue and record
    `summary="reservation:<counter>"` with `log_decision`; include the value in
    the implementer assignment when the statement and its issues do not already
-   name it. If uniqueness cannot be established, escalate instead of guessing.
+   name it. When the goal states this throwaway run has no roadmap target,
+   there is no roadmap issue to read or update; the `log_decision` record and
+   the implementer assignment carry the reservation. If uniqueness cannot be
+   established, escalate instead of guessing.
 
 <!-- Reservation decision: spec §5 IMPLEMENT / #40. Relay template baseline: #43. -->
 

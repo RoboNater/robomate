@@ -638,6 +638,20 @@ def test_issue_goal_renders_bare_roadmap_numbers_against_the_target(roadmap: str
     assert goal == ISSUE_GOAL.format(repo="o/r", roadmap="o/r#2")
 
 
+def test_roadmap_passes_non_bare_numbers_through_verbatim() -> None:
+    """Only a bare N or #N resolves against the target repo (#34)."""
+    slug = "test-org/test-repo"
+    repository = "git@github.com:test-org/test-repo.git"
+    assert PREPARE_RUN.resolve_roadmap("other-org/other-repo#7", slug, repository) == (
+        "other-org/other-repo#7"
+    )
+    # Surrounding whitespace is not stripped: " 2 " is not a bare number.
+    assert PREPARE_RUN.resolve_roadmap(" 2 ", slug, repository) == " 2 "
+    assert PREPARE_RUN.resolve_roadmap("2", slug, repository) == "test-org/test-repo#2"
+    with pytest.raises(ValueError, match="must not be empty"):
+        PREPARE_RUN.resolve_roadmap("   ", slug, repository)
+
+
 @pytest.mark.parametrize(
     "kind,kwargs,check",
     [
