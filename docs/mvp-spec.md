@@ -3,10 +3,12 @@
 Design of record for **robomate** (`RoboNater/robomate`), the successor to the robo-agents
 proof of concept. The repository is seeded with the PoC files; [`docs/poc-spec.md`](poc-spec.md)
 is frozen as the PoC's historical design, and everything it established stays in force unless
-this document changes it. Issue numbers such as #113 refer to `RoboNater/robo-agents`, where
-the PoC was built; Appendix A says which of them carry over. PoC lessons are in
-[`docs/poc-lessons.md`](poc-lessons.md), exported from robo-agents #57; the PoC's README is
-[`docs/poc-readme.md`](poc-readme.md).
+this document changes it. Bare issue numbers such as #8 refer to robomate issues; issues in
+`RoboNater/robo-agents`, where the PoC was built, are written robo-agents #N, except in
+Appendix A, which lists robo-agents issues and says which of them carry over.
+[`docs/robo-agents-issues.md`](robo-agents-issues.md) maps each carried issue to its robomate
+number. PoC lessons are in [`docs/poc-lessons.md`](poc-lessons.md), exported from
+robo-agents #57; the PoC's README is [`docs/poc-readme.md`](poc-readme.md).
 
 **Naming.** Repository, Python distribution, CLI, MCP server name, and skill are all
 `robomate`. Tools appear to agents as `robomate` tools (e.g. `mcp__robomate__join` in Claude
@@ -43,7 +45,7 @@ restarts and laptop standby don't strand a run; token usage per run is measured 
 - Concurrent workflows in one hub (runs are sequential; a queue is in scope).
 - Hub-mediated forge operations. Agents run `gh`/`glab` themselves (§10).
 - Dashboard, epics/boards, assignment from a UI, a PM/lead agent (§16).
-- Non-PR deliverables (#102).
+- Non-PR deliverables (robo-agents #102).
 
 **Principles** (PoC principles plus what PoC use taught)
 1. **The hub waits; agents are disposable.** Durable state lives in the hub. Every
@@ -55,11 +57,12 @@ restarts and laptop standby don't strand a run; token usage per run is measured 
    The hub reads forge facts for the merge gate; it does not perform forge writes.
 4. **The hub checks facts; agents make judgment calls and record them.** A close-out rule
    either is checked in code (merge state) or is forced into a typed, validated result (every
-   leftover finding dispositioned) — never left to prose (#57: "what no step verifies, no one
-   does").
+   leftover finding dispositioned) — never left to prose
+   ([`docs/poc-lessons.md`](poc-lessons.md): "what no step verifies, no one does").
 5. **The operator's checkout is never touched.** Every agent, including the orchestrator,
    works in its own worktree.
-6. **Evidence belongs to its run** (#57). Runs have identity and a manifest by default.
+6. **Evidence belongs to its run** ([`docs/poc-lessons.md`](poc-lessons.md)). Runs have
+   identity and a manifest by default.
 7. **Nothing enters an agent's context that it doesn't need.** Payload size is a design
    constraint, not a later optimization.
 
@@ -116,7 +119,7 @@ robomate log --timeline    # drill down when something looks wrong
 | `worker-mcp` for workers; Alice speaks MCP to the hub directly | One bridge, `robomate mcp`, for every role; it discovers the hub, carries the heartbeat, and relays tool calls over HTTP |
 | Identity, workspace, token baked into per-agent env and config | Static MCP entry; identity and role given at `join`; token found by discovery |
 | Full clone per worker, created by `prepare-run.py` | Worktree per agent, created by the hub on demand; clone fallback for other hosts/OS |
-| Alice's goal and policy in her kickoff prompt | Statement of work submitted to the hub, stored verbatim with its SHA-256 (#143) |
+| Alice's goal and policy in her kickoff prompt | Statement of work submitted to the hub, stored verbatim with its SHA-256 (#9) |
 | Alice instructions in a Claude Code skill | `guides/orchestrator.md` served by the hub; any harness can orchestrate |
 | One workflow per hub state dir, fresh state per run | Persistent per-repo hub; sequential workflows with history and a queue |
 | Close-out rules in skill prose; operator reads agents' close-out reports and asks follow-ups in chat | Hub-built close-out task with a typed result, a rendered run report, and a `done` check on merge state (§7.3) |
@@ -242,7 +245,7 @@ unjoined session can call besides `whoami`. Its description is the install-free 
 | Risk | Mitigation |
 |---|---|
 | A branch can be checked out in only one worktree | Only the implementer checks out work branches; others detach at SHAs |
-| Worktree commits write into the main repo's `.git` (objects, `worktrees/<name>`); sandboxed harnesses (Codex `workspace-write`) may block that — the #84 shape, now in every run | `robomate certify` includes a commit-and-push test from the worktree; harness notes record the grant needed (e.g. `--add-dir <repo>/.git`) |
+| Worktree commits write into the main repo's `.git` (objects, `worktrees/<name>`); sandboxed harnesses (Codex `workspace-write`) may block that — the #11 shape, now in every run | `robomate certify` includes a commit-and-push test from the worktree; harness notes record the grant needed (e.g. `--add-dir <repo>/.git`) |
 | Shared refs and config: one agent's `git config`, hooks, `gc` affect all | Guides forbid changing git config; per-worktree config via `extensions.worktreeConfig` only if needed |
 | Local branch-name collisions | `robomate/<name>/…` namespace |
 | `gh pr merge --delete-branch` tries to delete the local branch, which may be checked out in the implementer's worktree | Verify in M2; default: orchestrator deletes the remote branch only and `robomate clean` prunes local branches after WRAP-UP |
@@ -258,12 +261,12 @@ permissions, which certification catches per harness.
 
 ### 7.1 Statement of work
 - `robomate submit <file>` / `robomate submit --issue N` / `robomate submit -` (stdin). Stored verbatim with its
-  SHA-256 (#143), size-capped with a clear error (#106). `--issue N` renders the standard
+  SHA-256 (#9), size-capped with a clear error (#10). `--issue N` renders the standard
   one-issue statement.
 - `start_workflow(statement?, policy?)` (orchestrator tool) starts the next queued statement;
   with `statement` it creates one from chat. The hub stores exactly what it received.
 - Assignments carry `statement_sha256`; workers read it with `get_statement(sha)` when they
-  need it (#113, #143). Nothing paraphrases the operator's text on its way to a worker.
+  need it (#8, #9). Nothing paraphrases the operator's text on its way to a worker.
 
 ### 7.2 Workflow states and sequencing
 - Statuses: `queued → active → (paused | escalated) → done | abandoned`. One `active` at a
@@ -274,14 +277,14 @@ permissions, which certification catches per harness.
 - **Carried context between runs** is explicit and small: the previous run's summary
   (PR/MR, merged SHA, follow-ups filed) is available in `get_state`; nothing else carries over.
 - Policy additions (to PoC `WorkflowPolicy`):
-  - `deliver: merge | pr` (default `merge`) — #114.
+  - `deliver: merge | pr` (default `merge`) — #14.
   - `closeout: true | false` (default `true`) — run the close-out task (§7.3).
   - `on_done: release | standby` (default `release`). Standby keeps workers joined for the
     next queued run; idle holds cost tokens, so `release` is the default when the queue is empty.
   - `forge` — detected, not normally set.
 - Operator policy defaults live in `config.toml`; `robomate submit --policy k=v` overrides per run.
 
-### 7.3 Close-out (#114, #91, #117)
+### 7.3 Close-out (#14, #15, #16)
 Automates the operator's PoC routine — skim the agents' close-out reports, ask the implementer
 about anything non-trivial, have it file issues or add to a nits list, confirm the merge —
 using mechanisms that already exist (a task role like `rebase`, a typed result with a
@@ -295,7 +298,7 @@ recorded.
 |---|---|
 | `nits_issue` | a standing issue where trivial items are added as a comment; without it, `nit` is not an allowed action |
 | `followup_label` | label applied to every follow-up issue (default `robomate-followup`), so the operator triages them in the forge |
-| `closeout_steps` | list of steps passed verbatim to every close-out task, e.g. `"Update the roadmap issue with current status"` (#117: nothing about roadmaps is hard-coded) |
+| `closeout_steps` | list of steps passed verbatim to every close-out task, e.g. `"Update the roadmap issue with current status"` (#16: nothing about roadmaps is hard-coded) |
 
 **The close-out task.** After MERGE (or after approval, with `deliver: pr`), the orchestrator
 assigns the run's implementer a `closeout` task (another implementer if that one is lost).
@@ -348,13 +351,13 @@ and the orchestrator receives a `user_answered` event. It is for escalations (th
 not routine close-out. An orchestrator in an interactive session may still simply ask in chat;
 the inbox makes a headless orchestrator possible and is the channel a future dashboard uses.
 
-### 7.5 Resume (#31, reduced; #131)
+### 7.5 Resume (#18, reduced; #19)
 - **Hub restart:** `robomate up` reuses port and state. Bridges reconnect with backoff under the same
   instance ID; an interrupted hold is re-issued. Agents see at most a retried call.
 - **Agent restart:** join with `takeover` → task reattached (§5).
 - **Orchestrator restart:** join as orchestrator → re-briefing in the join response; the guide's
   "On resume" procedure (PoC skill) reconciles with the forge before acting.
-- **Host standby (#131):** the sweeper detects a wall-clock jump against the monotonic clock and
+- **Host standby (#19):** the sweeper detects a wall-clock jump against the monotonic clock and
   grants a grace window before declaring anyone lost.
 - **Tests:** the existing crash-point harness at component level, plus one live kill/restart of
   each component in the MVP acceptance runs.
@@ -372,7 +375,7 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 | `await_assignment`, `get_role_guide`, `report_progress` | worker | unchanged semantics; hold capped by the harness profile |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
 | `ask_orchestrator` | worker | renamed from `ask_alice` |
-| `get_statement(sha)` | worker, orchestrator | **new** (#143) |
+| `get_statement(sha)` | worker, orchestrator | **new** (#9) |
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` |
@@ -405,7 +408,7 @@ config locations per scope, known grants (sandbox, auto-approve), whether a cont
 supervisor exists, and notes. The hub clamps every hold to the joined agent's profile.
 
 ### 9.3 Certification — `robomate certify <harness>`
-Generalizes the Step 4B endurance gate (#30, #61). `robomate certify` starts a throwaway hub on a
+Generalizes the Step 4B endurance gate (robo-agents #30; #13). `robomate certify` starts a throwaway hub on a
 scratch repo and prints a join line; the operator starts the harness and pastes it; `robomate`
 then drives a scripted orchestrator:
 - ≥ 3 assignment cycles over ≥ 30 min with no operator message;
@@ -416,7 +419,8 @@ then drives a scripted orchestrator:
 - a clean release.
 
 Report: `~/.local/state/robomate/certify/<harness>-<version>-<date>.md` with pass/fail per
-check, attempts, tool errors, and interventions (#57: record every attempt, classify failures).
+check, attempts, tool errors, and interventions
+([`docs/poc-lessons.md`](poc-lessons.md): record every attempt, classify failures).
 Results are summarized in `docs/harnesses.md`.
 
 ### 9.4 Tiers
@@ -460,15 +464,16 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
 - `robomate status`: one screen — repo, URL, forge, agents (role, harness, model, alive/listening),
   workflow phase and round, PR/MR and last gate result, close-out status, inbox count.
 - `robomate log [--timeline] [--follow]`: interleaved events, decisions, and results using closed-set
-  labels, never printing untrusted payload text (#121). This is the drill-down and the future
+  labels, never printing untrusted payload text (#20). This is the drill-down and the future
   dashboard's feed.
 - `robomate report [run]`: the rendered run report (§7.3).
 - Summaries come from typed results and events, not from agent prose.
 - **Run identity:** every workflow gets a run ID and a manifest in `.robomate/runs/<id>/`
-  (robomate version, git revision, harness profiles, policy, statement SHA) (#57).
-- **Accounting on by default** (#119); `call_log` retention bounded (#94), since hubs now live
+  (robomate version, git revision, harness profiles, policy, statement SHA)
+  ([`docs/poc-lessons.md`](poc-lessons.md)).
+- **Accounting on by default** (#7); `call_log` retention bounded (#23), since hubs now live
   for days.
-- **Token levers (#92):** longer holds where the harness allows; minimal timeout payloads;
+- **Token levers (#22):** longer holds where the harness allows; minimal timeout payloads;
   compact `get_state`; guides returned as "unchanged (hash)" when the bridge has already
   delivered them this session (with `force` to re-fetch); smaller tool schemas;
   `on_done: release`. Baseline first, then a target.
@@ -493,12 +498,12 @@ itself.
 | # | Milestone | Deliverable | Done when |
 |---|---|---|---|
 | M0 | Seed robomate | `RoboNater/robomate` created with the PoC files and this spec; `poc-spec.md` frozen; PoC acceptance scripts archived (Appendix B); robo-agents #57 exported to `docs/poc-lessons.md`; Python distribution renamed `robomate`; roadmap issue, a minor-nits issue, and one issue per carried item (Appendix A) opened; robo-agents archived with a pointer to robomate | CI green in robomate; the roadmap lists M1–M6 with the carried issues attached; robo-agents is read-only |
-| M1 | Standalone hub + `robomate` CLI | `robomate up/down/status/ls`, `.robomate/` layout, registry, port reuse; orchestrator JSON-RPC route; `robomate mcp` bridge for all roles (existing tool names) with heartbeat and discovery; accounting on (#119); fix flaky tests (#148) | A real run completes with the hub from `robomate up`, and the orchestrator's session is restarted mid-run without disturbing workers |
-| M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; worktree manager (§6); `robomate submit`, queue, `get_statement` (#113, #143); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean` | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated configs, no pasted launch prompts |
+| M1 | Standalone hub + `robomate` CLI | `robomate up/down/status/ls`, `.robomate/` layout, registry, port reuse; orchestrator JSON-RPC route; `robomate mcp` bridge for all roles (existing tool names) with heartbeat and discovery; accounting on (#7); fix flaky tests (#6) | A real run completes with the hub from `robomate up`, and the orchestrator's session is restarted mid-run without disturbing workers |
+| M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; worktree manager (§6); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean` | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated configs, no pasted launch prompts |
 | M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path | OpenCode and AntiGravity certified; Cline attempted and recorded; one real run with a non-Claude orchestrator |
-| M4 | Close-out and resilience | `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #31 reduced, #131); `robomate log --timeline` (#121) | Scripted tests: `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
+| M4 | Close-out and resilience | `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
-| M6 | Token budget + MVP acceptance | Baseline from accounting; #92 levers; retention (#94) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
+| M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
 **Parallelism:** M5's gate adapter and forge detection can start after M1 and run alongside
 M2–M3. M4 depends on M2. M3's certification needs M2's join and worktrees.
@@ -545,14 +550,15 @@ M2–M3. M4 depends on M2. M3's certification needs M2's join and worktrees.
   ID; the MVP registry already provides discovery.
 - **Dashboard:** runs, agents, inbox, and timeline; then epics/stories backed by forge issues,
   milestones, and labels (not a separate ticket store), with assignment to available agents.
-- **Lead / PM agent** (#44): sequencing, reservations, collision detection, status and
-  recommendations.
+- **Lead / PM agent** (robo-agents #44): sequencing, reservations, collision detection, status
+  and recommendations.
 - Multiple users; per-agent credentials; TLS; cloud harnesses (Devin, RooMote).
-- Concurrent workflows per hub; multiple reviewers per run; non-PR deliverables (#102).
-- A general obligation ledger (#100): owed work beyond findings and configured steps, with
-  operator-approved waivers — if the close-out task proves insufficient.
-- Multi-machine hardening (#127); log-analysis tooling (#115); call-accounting
-  reconciliation (#96); background/service mode.
+- Concurrent workflows per hub; multiple reviewers per run; non-PR deliverables
+  (robo-agents #102).
+- A general obligation ledger (robo-agents #100): owed work beyond findings and configured
+  steps, with operator-approved waivers — if the close-out task proves insufficient.
+- Multi-machine hardening (robo-agents #127); log-analysis tooling (robo-agents #115);
+  call-accounting reconciliation (robo-agents #96); background/service mode.
 
 ---
 
