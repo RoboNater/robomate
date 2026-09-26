@@ -43,6 +43,11 @@ class MonotonicClock:
     def __call__(self) -> datetime:
         return self.start + timedelta(seconds=monotonic() - self.started)
 
+    def advance(self, seconds: float) -> None:
+        """Move a test deadline forward without depending on scheduler delays."""
+
+        self.start += timedelta(seconds=seconds)
+
 
 @pytest.fixture
 def settings(tmp_path: Path) -> HubSettings:

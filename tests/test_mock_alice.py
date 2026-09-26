@@ -723,7 +723,8 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
 ) -> None:
     db_path = tmp_path / f"hub_crash_{backend_kind}_{crash_at}.db"
     initialize_database(db_path)
-    store = HubStore(db_path, default_event_lease_s=0.01)
+    clock = MonotonicClock()
+    store = HubStore(db_path, clock=clock, default_event_lease_s=0.01)
 
     async def run_worker() -> None:
         bob = store.check_in("bob", AgentProfile(harness="claude-code"))
@@ -753,7 +754,9 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
                     expected_harness="claude-code",
                     crash_at=crash_at,
                 )
-            await asyncio.sleep(0.03)
+            # Every crash leaves a delivery unacked. Expire its lease explicitly
+            # so recovery does not depend on a short wall-clock sleep.
+            clock.advance(1)
             result = await mock_alice.drive_one_task_with_backend(
                 backend=backend,
                 expected_agent="bob",
