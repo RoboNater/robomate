@@ -427,13 +427,13 @@ herself; she edits the roadmap only for reservations and sequencing.
 Verify the update directly with
 `gh issue view <number> --repo <owner>/<repository>`. If it is missing, send one
 correction task naming that same repository-qualified issue and verify again.
-When the goal names a supplied roadmap target that is not repository-qualified,
-resolve it to an `owner/repository#number` first; when the kickoff roadmap
-read failed, reuse that recorded failure instead. If the target resolves to a
-readable issue, proceed as above against the resolved issue; if it cannot be
-resolved, do not invent an issue — record the supplied value and the failed
-resolution in the workflow summary and escalate with a concrete operator
-question naming both.
+When the goal names a supplied roadmap target, first resolve it to an
+`owner/repository#number` when it is not repository-qualified already, then
+read that issue directly: if it resolves to a readable issue, proceed as above
+against the resolved issue; if it cannot be resolved, do not invent an
+issue — record the supplied value and the failed read in the workflow summary,
+citing the recorded kickoff failure as context when present, and escalate with
+a concrete operator question naming them.
 When the goal explicitly says a throwaway run has no roadmap target, do not
 invent or edit an issue; record close-out only in the workflow summary.
 
