@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -93,7 +94,7 @@ def fake_runner(
 
 def printed_report(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     out = capsys.readouterr().out
-    report = json.loads(out.split("\nLaunch commands")[0])
+    report = json.loads(out.split("\nStart scripts")[0])
     assert isinstance(report, dict)
     return report
 
@@ -268,34 +269,64 @@ def test_same_harness_pair_renders_both_claude_configs(
         )
 
 
-@pytest.mark.parametrize("bob_harness", ["claude-code", "codex"])
-@pytest.mark.parametrize("charlie_harness", ["claude-code", "codex"])
-def test_launch_lines_point_at_rendered_configs(
-    tmp_path: Path, bob_harness: str, charlie_harness: str
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_claude_launch_lines_carry_model_effort_and_prompt(
+    tmp_path: Path, auto_start: bool
 ) -> None:
     run_dir = (tmp_path / "run").resolve()
-    configs = run_dir / "configs"
+    config = run_dir / "configs" / "bob.mcp.json"
+    prompt = run_dir / "bob.prompt.md"
     lines = PREPARE_RUN.launch_lines(
-        run_dir,
-        configs,
-        run_dir / "alice-runtime",
-        run_dir / "bob",
-        run_dir / "charlie",
-        bob_harness,
-        charlie_harness,
+        "claude-code", run_dir / "bob", config, prompt, run_dir / "bob" / ".git",
+        "opus[1m]", "high", auto_start,
     )
-    text = "\n".join(lines)
-    assert f'cd "{run_dir / "alice-runtime"}"' in text
-    if bob_harness == "codex":
-        assert "bob-codex" in text
-        assert "bob.mcp.json" not in text
+    assert lines[0] == f"cd {run_dir / 'bob'}"
+    command = lines[1]
+    assert command.startswith("claude --model 'opus[1m]' --effort high ")
+    assert f"--mcp-config {config} --add-dir {run_dir}" in command
+    if auto_start:
+        assert "--permission-mode auto" in command
+        assert command.endswith(f"-p 'Read {prompt} and follow the instructions in it'")
     else:
-        assert f'--mcp-config "{configs / "bob.mcp.json"}"' in text
-    if charlie_harness == "codex":
-        assert f'--add-dir "{run_dir / "charlie" / ".git"}"' in text
-        assert "charlie.mcp.json" not in text
+        assert "--permission-mode" not in command and " -p " not in command
+    assert len(lines) == 2
+
+
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
+    tmp_path: Path, auto_start: bool
+) -> None:
+    run_dir = (tmp_path / "run").resolve()
+    home = run_dir / "configs" / "codex"
+    prompt = run_dir / "charlie.prompt.md"
+    git_dir = run_dir / "charlie" / ".git"
+    lines = PREPARE_RUN.launch_lines(
+        "codex", run_dir / "charlie", home, prompt, git_dir, "gpt-6-sol", "high", auto_start
+    )
+    flags = (
+        f"-C . --add-dir {git_dir} --approve-for-me --model gpt-6-sol "
+        "-c 'model_reasoning_effort=\"high\"'"
+    )
+    if auto_start:
+        expected = f"CODEX_HOME={home} codex exec {flags} - < {prompt}"
     else:
-        assert f'--mcp-config "{configs / "charlie.mcp.json"}"' in text
+        expected = f"CODEX_HOME={home} codex {flags}"
+    assert lines == [f"cd {run_dir / 'charlie'}", expected]
+    assert "--ephemeral" not in expected
+
+
+def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
+    run_dir = (tmp_path / "run").resolve()
+    alice = PREPARE_RUN.launch_lines(
+        "codex", run_dir / "alice-runtime", run_dir / "configs" / "alice-codex",
+        run_dir / "alice.prompt.md", None,
+    )
+    assert "--add-dir" not in alice[1] and "--model" not in alice[1] and " -c " not in alice[1]
+    claude = PREPARE_RUN.launch_lines(
+        "claude-code", run_dir / "alice-runtime", run_dir / "configs" / "alice.mcp.json",
+        run_dir / "alice.prompt.md", None,
+    )
+    assert claude[1].startswith("claude --permission-mode auto --strict-mcp-config")
 
 
 def test_launch_lines_windows_powershell(
@@ -303,35 +334,60 @@ def test_launch_lines_windows_powershell(
 ) -> None:
     monkeypatch.setattr(os, "name", "nt")
     run_dir = (tmp_path / "run").resolve()
+    prompt = run_dir / "charlie.prompt.md"
     lines = PREPARE_RUN.launch_lines(
-        run_dir,
-        run_dir / "configs",
-        run_dir / "alice-runtime",
-        run_dir / "bob",
-        run_dir / "charlie",
-        "claude-code",
-        "codex",
+        "codex", run_dir / "charlie", run_dir / "configs" / "codex", prompt,
+        run_dir / "charlie" / ".git", "gpt-6-sol", "high",
     )
     text = "\n".join(lines)
     assert "$env:CODEX_HOME" in text
-    assert "Get-Content -Raw" in text
+    assert f"Get-Content -Raw '{prompt}' | codex exec" in text
     assert "CODEX_HOME=" not in text.replace("$env:CODEX_HOME", "")
+    # PowerShell expands $ inside double quotes too, so paths are single-quoted.
+    assert '"' not in text
+    # PowerShell strips embedded double quotes; -c falls back to the raw string.
+    assert "-c 'model_reasoning_effort=high'" in text
+    assert PREPARE_RUN.model_flags("claude-code", "opus[1m]", "max", powershell=True) == [
+        "--model", "'opus[1m]'", "--effort", "max",
+    ]
 
 
-def test_launch_lines_quote_paths_with_spaces(tmp_path: Path) -> None:
-    run_dir = (tmp_path / "my run").resolve()
+@pytest.mark.parametrize("auto_start", [True, False])
+@pytest.mark.parametrize("harness", ["claude-code", "codex"])
+def test_start_scripts_take_metacharacter_paths_literally(
+    tmp_path: Path, harness: str, auto_start: bool
+) -> None:
+    # $HOME, a backquote and quotes would expand or break inside double quotes.
+    run_dir = (tmp_path / "my run $HOME `x` \"q\" 'a'").resolve()
+    workdir = run_dir / "bob"
+    workdir.mkdir(parents=True)
+    config = run_dir / "configs" / ("bob.mcp.json" if harness == "claude-code" else "bob-codex")
+    prompt = run_dir / "bob.prompt.md"
+    prompt.write_text("prompt\n", encoding="utf-8")
     lines = PREPARE_RUN.launch_lines(
-        run_dir,
-        run_dir / "configs",
-        run_dir / "alice-runtime",
-        run_dir / "bob",
-        run_dir / "charlie",
-        "claude-code",
-        "codex",
+        harness, workdir, config, prompt, workdir / ".git", "opus[1m]", "high", auto_start
     )
-    for line in lines:
-        if "my run" in line:
-            assert line.count('"') >= 2, line
+    assert lines[0] == f"cd {shlex.quote(str(workdir))}"
+    words = shlex.split(lines[1])
+    if harness == "codex":
+        assert words[0] == f"CODEX_HOME={config}"
+        assert words[words.index("--add-dir") + 1] == str(workdir / ".git")
+        if auto_start:
+            assert words[-3:] == ["-", "<", str(prompt)]
+    else:
+        assert words[words.index("--mcp-config") + 1] == str(config)
+        assert words[words.index("--add-dir") + 1] == str(run_dir)
+        if auto_start:
+            assert words[-1] == f"Read {prompt} and follow the instructions in it"
+    # Run the script with the agent CLI stubbed: it must reach the real
+    # directory, and Codex's stdin redirect the real prompt file.
+    stub = "claude() { pwd; }; codex() { pwd; }"
+    script = PREPARE_RUN.start_script([stub, *lines])
+    result = subprocess.run(
+        ["bash"], input=script, text=True, capture_output=True, cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(workdir)
 
 
 def test_bare_slug_expands_via_gh_protocol(
@@ -537,22 +593,30 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
     assert saved["work"] == manifest["work"]
 
 
-def test_issue_goal_is_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+ISSUE_GOAL = (
+    "Address issue `{repo}#42`, merge its pull request, and close out. The implementer bob "
+    "should make a decision on what roadmap ({repo}#2) updates are necessary, if any, when "
+    "they open the PR and include it as a PR comment so it can be reviewed. After the merge "
+    "the implementer bob should update the roadmap per the adjudicated PR if necessary. "
+    "Make sure you include that in bob's initial tasking."
+)
+
+
+def test_issue_goal_asks_bob_to_decide_the_roadmap_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     origin = make_origin(tmp_path)
     fake_runner(monkeypatch)
     run_dir = (tmp_path / "run").resolve()
     manifest = PREPARE_RUN.prepare(str(origin), run_dir, issue=42, account="testuser")
-    expected = (
-        f"Address issue `{origin}#42`, merge its pull request, and close out with no "
-        "roadmap edit; record the merge only in the workflow summary.\n\n"
-    )
-    assert durable_goal(run_dir) == expected
+    expected = ISSUE_GOAL.format(repo=origin)
+    assert durable_goal(run_dir) == expected + "\n\n"
     assert manifest["issue"] == 42
-    assert manifest["work"] == {"goal": expected.strip(), "path": None, "sha256": None}
-    assert PREPARE_RUN.render_goal("acme/app", str(origin), 42, None) == (
-        "Address issue `acme/app#42`, merge its pull request, and close out with no "
-        "roadmap edit; record the merge only in the workflow summary."
-    )
+    assert manifest["work"] == {"goal": expected, "path": None, "sha256": None}
+    # The roadmap is the target repository's #2 (robomate's roadmap issue).
+    assert PREPARE_RUN.render_goal(
+        "RoboNater/robomate", "git@github.com:RoboNater/robomate.git", 42, None
+    ) == ISSUE_GOAL.format(repo="RoboNater/robomate")
 
 
 def run_main(monkeypatch: pytest.MonkeyPatch, run_dir: Path, *extra: str) -> str:
@@ -609,6 +673,9 @@ GOLDEN_FILES = {
     "bob.mcp.json": Path("configs/bob.mcp.json"),
     "codex.config.toml": Path("configs/codex/config.toml"),
     "run.json": Path("run.json"),
+    "start-alice.sh": Path("start-alice.sh"),
+    "start-bob.sh": Path("start-bob.sh"),
+    "start-charlie.sh": Path("start-charlie.sh"),
 }
 
 
@@ -640,7 +707,7 @@ def default_rendering(
     return rendered
 
 
-def test_default_rendering_is_byte_for_byte_unchanged(
+def test_default_rendering_matches_the_golden_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rendered = default_rendering(tmp_path, monkeypatch, capsys)
@@ -684,7 +751,7 @@ def test_networked_run_renders_addresses_consistently(
     out = capsys.readouterr().out
     assert f"curl.exe -fsS {WSL_URL}/healthz" in out
     assert "changes whenever WSL restarts" in out
-    report = json.loads(out.split("\nLaunch commands")[0])
+    report = json.loads(out.split("\nStart scripts")[0])
     assert report["network"] == manifest["network"]
 
 
@@ -907,7 +974,10 @@ def test_remote_worker_is_left_to_its_host(
     assert f"--hub-url '{WSL_URL}'" in command
     assert "--hub-port" not in command
     assert f"--token-file '{run_dir / 'hub-state' / 'token'}'" in command
-    assert "--bob claude-code" in command and "--bob-model 'claude-opus-5-5'" in command
+    assert "--bob-harness claude-code" in command
+    assert "--bob-model 'claude-opus-5-5'" in command
+    assert "--bob-effort" not in command and "--no-auto-start" not in command
+    assert not (run_dir / "start-bob.sh").exists()
     token = (run_dir / "hub-state" / "token").read_text(encoding="utf-8").strip()
     assert token not in out
 
@@ -956,23 +1026,38 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert bundle["config"] == "C:/Users/Bob/runs/step7/configs/bob.mcp.json"
     assert "$AGENT_NAME" not in (out_dir / "bob.prompt.md").read_text(encoding="utf-8")
     assert bundle["launch"] == [
-        'cd "/c/Users/Bob/runs/step7/bob"',
-        'claude --strict-mcp-config --mcp-config "C:/Users/Bob/runs/step7/configs/bob.mcp.json"',
+        "cd /c/Users/Bob/runs/step7/bob",
+        "claude --permission-mode auto --strict-mcp-config "
+        "--mcp-config C:/Users/Bob/runs/step7/configs/bob.mcp.json "
+        "--add-dir C:/Users/Bob/runs/step7 "
+        "-p 'Read C:/Users/Bob/runs/step7/bob.prompt.md and follow the instructions in it'",
     ]
+    assert bundle["script"] == "C:/Users/Bob/runs/step7/start-bob.sh"
+    assert (out_dir / "start-bob.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\n# Generated by scripts/prepare-run.py\nset -e\n"
+        + "\n".join(bundle["launch"])
+        + "\n"
+    )
 
 
 def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it() -> None:
-    lines = PREPARE_RUN.worker_launch("bob", "codex", WINDOWS_RUN, WINDOWS_RUN / "bob")
+    lines = PREPARE_RUN.worker_launch(
+        "bob", "codex", WINDOWS_RUN, WINDOWS_RUN / "bob", "gpt-6-sol", "high"
+    )
     assert lines == [
-        'cd "/c/Users/Bob/runs/step7/bob"',
-        'CODEX_HOME="C:/Users/Bob/runs/step7/configs/bob-codex" codex exec --ephemeral '
-        '-C . --add-dir "C:/Users/Bob/runs/step7/bob/.git" --approve-for-me - '
-        '< "/c/Users/Bob/runs/step7/bob.prompt.md"',
+        "cd /c/Users/Bob/runs/step7/bob",
+        "CODEX_HOME=C:/Users/Bob/runs/step7/configs/bob-codex codex exec "
+        "-C . --add-dir C:/Users/Bob/runs/step7/bob/.git --approve-for-me "
+        "--model gpt-6-sol -c 'model_reasoning_effort=\"high\"' - "
+        "< /c/Users/Bob/runs/step7/bob.prompt.md",
     ]
     posix = PurePosixPath("/srv/run")
-    assert PREPARE_RUN.worker_launch("charlie", "claude-code", posix, posix / "charlie") == [
-        'cd "/srv/run/charlie"',
-        'claude --strict-mcp-config --mcp-config "/srv/run/configs/charlie.mcp.json"',
+    assert PREPARE_RUN.worker_launch(
+        "charlie", "claude-code", posix, posix / "charlie", auto_start=False
+    ) == [
+        "cd /srv/run/charlie",
+        "claude --strict-mcp-config --mcp-config /srv/run/configs/charlie.mcp.json "
+        "--add-dir /srv/run",
     ]
 
 
@@ -1050,7 +1135,10 @@ def test_worker_only_renders_one_worker_from_the_hub_token(
     # The hub run may advertise a --public-url this host was never told.
     assert "its url must be the hub run's --public-url + /a2a" in out
     assert f"{WSL_URL}/a2a" not in out
-    assert f'claude --strict-mcp-config --mcp-config "{written}"' in out
+    script = run_dir / "start-bob.sh"
+    assert str(script) in out
+    assert f"--strict-mcp-config --mcp-config {written}" in script.read_text(encoding="utf-8")
+    assert manifest["launch"]["agents"]["bob"]["script"] == str(script)
     assert token not in out
     # A rerun reuses the clone and identity.
     again = PREPARE_RUN.prepare_worker(
@@ -1125,3 +1213,189 @@ def test_worker_only_refuses_hub_flags(tmp_path: Path, monkeypatch: pytest.Monke
 def test_git_bash_path_only_rewrites_windows_drives() -> None:
     assert PREPARE_RUN.git_bash_path(PureWindowsPath("D:/Runs/x")) == "/d/Runs/x"
     assert PREPARE_RUN.git_bash_path(PurePosixPath("/srv/run")) == "/srv/run"
+
+
+WAIT_TEXT = "Use a 100 second wait time for all hub waits including"
+
+
+def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    origin = make_origin(tmp_path)
+    fake_runner(monkeypatch)
+    run_dir = (tmp_path / "run").resolve()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare-run.py",
+            "--repository",
+            str(origin),
+            "--run-dir",
+            str(run_dir),
+            "--issue",
+            "42",
+            "--alice-harness",
+            "Claude",
+            "--alice-model",
+            "sonnet",
+            "--alice-effort",
+            "high",
+            "--bob-harness",
+            "CLAUDE",
+            "--bob-model",
+            "claude-opus-5-5",
+            "--bob-effort",
+            "max",
+            "--charlie-harness",
+            "claude",
+            "--charlie-effort",
+            "medium",
+        ],
+    )
+    PREPARE_RUN.main()
+    out = capsys.readouterr().out
+    report = json.loads(out.split("\nStart scripts")[0])
+    manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert manifest["harnesses"] == {"bob": "claude-code", "charlie": "claude-code"}
+    assert manifest["launch"]["auto_start"] is True
+    expected = {
+        "alice": ("sonnet", "high", run_dir / "alice-runtime"),
+        "bob": ("claude-opus-5-5", "max", run_dir / "bob"),
+        "charlie": ("", "medium", run_dir / "charlie"),
+    }
+    for name, (model, effort, workdir) in expected.items():
+        script = run_dir / f"start-{name}.sh"
+        assert report["start_scripts"][name] == str(script) and str(script) in out
+        assert manifest["launch"]["agents"][name] == {
+            "harness": "claude-code",
+            "model": model,
+            "effort": effort,
+            "script": str(script),
+        }
+        assert os.access(script, os.X_OK)
+        lines = script.read_text(encoding="utf-8").splitlines()
+        assert lines[:3] == [
+            "#!/usr/bin/env bash",
+            "# Generated by scripts/prepare-run.py",
+            "set -e",
+        ]
+        assert lines[3] == f"cd {workdir}"
+        flags = (f"--model {model} " if model else "") + f"--effort {effort} "
+        assert lines[4] == (
+            f"claude {flags}--permission-mode auto --strict-mcp-config "
+            f"--mcp-config {run_dir / 'configs' / f'{name}.mcp.json'} --add-dir {run_dir} "
+            f"-p 'Read {run_dir / f'{name}.prompt.md'} and follow the instructions in it'"
+        )
+        assert len(lines) == 5
+        prompt = (run_dir / f"{name}.prompt.md").read_text(encoding="utf-8")
+        assert WAIT_TEXT in prompt
+        assert f"`closeout-report-{name}.md`" in prompt
+        ending = "closeout report." if name == "alice" else "left uncommitted."
+        assert prompt.rstrip().endswith(ending)
+    bob_env = json.loads((run_dir / "configs" / "bob.mcp.json").read_text(encoding="utf-8"))
+    assert bob_env["mcpServers"]["hub"]["env"]["HUB_MODEL"] == "claude-opus-5-5"
+    assert durable_goal(run_dir) == ISSUE_GOAL.format(repo=origin) + "\n\n"
+    alice_prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
+    assert "After you release bob and charlie" in alice_prompt
+    assert "`wait_for_event`" in alice_prompt
+
+
+async def test_codex_alice_gets_a_codex_home_with_every_hub_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agent_hub.database import initialize_database
+    from agent_hub.mcp import create_mcp
+    from agent_hub.store import HubStore
+
+    origin = make_origin(tmp_path)
+    fake_runner(monkeypatch)
+    run_dir = (tmp_path / "run").resolve()
+    manifest = PREPARE_RUN.prepare(
+        str(origin),
+        run_dir,
+        issue=42,
+        alice_harness="codex",
+        alice_model="gpt-6-luna",
+        alice_effort="xhigh",
+    )
+    home = run_dir / "configs" / "alice-codex"
+    config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    assert (home / "config.toml").stat().st_mode & 0o077 == 0
+    assert (home / "skills" / "alice-orchestrator" / "SKILL.md").exists()
+    assert not (run_dir / "configs" / "alice.mcp.json").exists()
+    hub = config["mcp_servers"]["hub"]
+    assert hub["args"] == ["run", "--locked", "--directory", str(ROOT), "hub"]
+    assert hub["env"]["HUB_STATE_DIR"] == str(run_dir / "hub-state")
+    initialize_database(tmp_path / "hub.db")
+    served = {tool.name for tool in await create_mcp(HubStore(tmp_path / "hub.db")).list_tools()}
+    assert set(hub["enabled_tools"]) == set(hub["tools"]) == served
+
+    script = (run_dir / "start-alice.sh").read_text(encoding="utf-8")
+    assert f"cd {run_dir / 'alice-runtime'}" in script
+    assert (
+        f"CODEX_HOME={home} codex exec -C . --approve-for-me --model gpt-6-luna "
+        f"-c 'model_reasoning_effort=\"xhigh\"' - < {run_dir / 'alice.prompt.md'}"
+    ) in script
+    prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
+    assert "Codex runtime note" in prompt and WAIT_TEXT not in prompt
+    assert WAIT_TEXT not in (run_dir / "charlie.prompt.md").read_text(encoding="utf-8")
+    assert manifest["launch"]["agents"]["alice"]["harness"] == "codex"
+    report = printed_report(capsys)
+    assert report["configs"]["alice"] == str(home / "config.toml")
+    assert report["checks"]["codex_auth"]["alice"] == "alice-codex: Logged in using ChatGPT"
+
+
+def test_no_auto_start_opens_each_agent_without_its_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    origin = make_origin(tmp_path)
+    fake_runner(monkeypatch)
+    run_dir = (tmp_path / "run").resolve()
+    manifest = PREPARE_RUN.prepare(
+        str(origin), run_dir, alice_harness="codex", charlie_model="gpt-6-sol", auto_start=False
+    )
+    assert manifest["launch"]["auto_start"] is False
+    for name in ("alice", "bob", "charlie"):
+        script = (run_dir / f"start-{name}.sh").read_text(encoding="utf-8")
+        assert "prompt.md" not in script and " -p " not in script and "exec" not in script
+        assert "--permission-mode" not in script
+    assert (
+        f"CODEX_HOME={run_dir / 'configs' / 'codex'} codex -C . "
+        f"--add-dir {run_dir / 'charlie' / '.git'} --approve-for-me --model gpt-6-sol\n"
+    ) in (run_dir / "start-charlie.sh").read_text(encoding="utf-8")
+    assert "Auto-start is off" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("value", ["gemini", "claude-desktop", ""])
+def test_unsupported_harness_names_fail_before_any_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    run_dir = (tmp_path / "run").resolve()
+    message = run_main(monkeypatch, run_dir, "--alice-harness", value)
+    assert message.startswith("prepare-run: error: --alice-harness")
+    assert "expected claude or codex" in message
+    assert not run_dir.exists()
+
+
+def test_remote_worker_command_forwards_effort_and_auto_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    origin = make_origin(tmp_path)
+    fake_runner(monkeypatch)
+    run_dir = (tmp_path / "run").resolve()
+    PREPARE_RUN.prepare(
+        str(origin),
+        run_dir,
+        hub_host="0.0.0.0",
+        hub_url=WSL_URL,
+        remote_worker="charlie",
+        charlie_effort="high",
+        auto_start=False,
+    )
+    out = capsys.readouterr().out
+    command = next(line for line in out.splitlines() if "--worker-only charlie" in line)
+    assert "--charlie-harness codex" in command
+    assert "--charlie-effort 'high'" in command and command.endswith("--no-auto-start")
+    assert not (run_dir / "start-charlie.sh").exists()
+    assert (run_dir / "start-bob.sh").exists()

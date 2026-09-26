@@ -10,6 +10,29 @@
     "charlie": "codex"
   },
   "issue": 42,
+  "launch": {
+    "agents": {
+      "alice": {
+        "effort": "",
+        "harness": "claude-code",
+        "model": "",
+        "script": "$RUN_DIR/start-alice.sh"
+      },
+      "bob": {
+        "effort": "",
+        "harness": "claude-code",
+        "model": "",
+        "script": "$RUN_DIR/start-bob.sh"
+      },
+      "charlie": {
+        "effort": "",
+        "harness": "codex",
+        "model": "",
+        "script": "$RUN_DIR/start-charlie.sh"
+      }
+    },
+    "auto_start": true
+  },
   "merge_method": "squash",
   "models": {
     "bob": "",
@@ -43,7 +66,7 @@
     "codex": "codex-cli 0.154.0"
   },
   "work": {
-    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.",
+    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out. The implementer bob should make a decision on what roadmap ($ORIGIN#2) updates are necessary, if any, when they open the PR and include it as a PR comment so it can be reviewed. After the merge the implementer bob should update the roadmap per the adjudicated PR if necessary. Make sure you include that in bob's initial tasking.",
     "path": null,
     "sha256": null
   },

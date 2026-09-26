@@ -25,20 +25,20 @@
   "repository": "$ORIGIN",
   "run_dir": "$RUN_DIR",
   "slug": null,
+  "start_scripts": {
+    "alice": "$RUN_DIR/start-alice.sh",
+    "bob": "$RUN_DIR/start-bob.sh",
+    "charlie": "$RUN_DIR/start-charlie.sh"
+  },
   "workspaces": {
     "bob": "$RUN_DIR/bob",
     "charlie": "$RUN_DIR/charlie"
   }
 }
 
-Launch commands (paste in order):
-cd "$RUN_DIR/alice-runtime"
-claude --strict-mcp-config --mcp-config "$RUN_DIR/configs/alice.mcp.json"
-
-cd "$RUN_DIR/bob"
-claude --strict-mcp-config --mcp-config "$RUN_DIR/configs/bob.mcp.json"
-
-cd "$RUN_DIR/charlie"
-CODEX_HOME="$RUN_DIR/configs/codex" codex exec --ephemeral -C . --add-dir "$RUN_DIR/charlie/.git" --approve-for-me - < "$RUN_DIR/charlie.prompt.md"
+Start scripts (run each in its own terminal, alice first):
+$RUN_DIR/start-alice.sh
+$RUN_DIR/start-bob.sh
+$RUN_DIR/start-charlie.sh
 
 Alice kickoff prompt: $RUN_DIR/alice.prompt.md
