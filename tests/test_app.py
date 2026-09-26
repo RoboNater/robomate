@@ -48,6 +48,9 @@ def test_operator_rpc_requires_token_and_exposes_identity(settings: HubSettings)
         headers = {"Authorization": f"Bearer {settings.token}"}
         response = client.post("/rpc", json=request, headers=headers)
         assert response.json()["result"] == info
+        for request_id in (None, 1.5):  # Valid, if discouraged, JSON-RPC ids.
+            body = client.post("/rpc", json={**request, "id": request_id}, headers=headers).json()
+            assert body == {"jsonrpc": "2.0", "id": request_id, "result": info}
         request["method"] = "hub.shutdown"
         assert client.post("/rpc", json=request, headers=headers).json()["result"] == {
             "stopping": True

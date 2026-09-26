@@ -135,8 +135,8 @@ class RpcDispatcher:
             not isinstance(payload, dict)
             or payload.get("jsonrpc") != "2.0"
             or not isinstance(payload.get("method"), str)
-            or not isinstance(payload.get("id"), str | int)
-            or isinstance(payload["id"], bool)
+            or "id" not in payload
+            or not _valid_id(payload["id"])
         ):
             raise RpcError(INVALID_REQUEST, "Invalid Request")
         caller = parse_caller(headers)
@@ -149,9 +149,8 @@ class RpcDispatcher:
         operation = self._operations.get(method)
         if operation is None:
             raise RpcError(METHOD_NOT_FOUND, "Method not found")
+        # Omitted params mean no arguments; an explicit null is not an object.
         params = payload.get("params", {})
-        if params is None:
-            params = {}
         if not isinstance(params, dict):
             raise RpcError(INVALID_PARAMS, "params must be an object")
         unexpected = sorted(params.keys() - self._params[method])
@@ -163,7 +162,15 @@ class RpcDispatcher:
         return await operation(**params)
 
 
+def _valid_id(request_id: Any) -> bool:
+    """JSON-RPC 2.0 ids are a string, a number, or null."""
+
+    return request_id is None or (
+        isinstance(request_id, str | int | float) and not isinstance(request_id, bool)
+    )
+
+
 def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
-    if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+    if not _valid_id(request_id):
         request_id = None
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}

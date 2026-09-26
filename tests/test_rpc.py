@@ -79,14 +79,35 @@ async def test_unknown_methods_and_malformed_requests_are_refused(
     response = await client.post("/rpc", content=b"{not json")
     assert error_of(response.json()) == (INVALID_REQUEST, "Invalid Request")
 
-    positional = {"jsonrpc": "2.0", "id": 2, "method": "get_state", "params": [1]}
-    assert error_of((await client.post("/rpc", json=positional)).json()) == (
-        INVALID_PARAMS,
-        "params must be an object",
-    )
+    for params in ([1], None, "x"):
+        # r1-1: an explicit null is not "no params"; wait_for_event would hold 100 s.
+        for method in ("get_state", "wait_for_event"):
+            request = {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}
+            assert error_of((await client.post("/rpc", json=request)).json()) == (
+                INVALID_PARAMS,
+                "params must be an object",
+            )
     omitted = {"jsonrpc": "2.0", "id": "a", "method": "get_state"}
     body = (await client.post("/rpc", json=omitted)).json()
     assert body["id"] == "a" and body["result"]["workflow"]["status"] == "active"
+
+
+async def test_every_json_rpc_id_is_echoed_and_other_ids_are_refused(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    # JSON-RPC 2.0 allows a string, a number, or null (the last two discouraged).
+    for request_id in ("a", 7, 1.5, None):
+        request = {"jsonrpc": "2.0", "id": request_id, "method": "get_state"}
+        body = (await client.post("/rpc", json=request)).json()
+        assert body["id"] == request_id and "result" in body, body
+        request["method"] = "no_such_method"
+        body = (await client.post("/rpc", json=request)).json()
+        assert body["id"] == request_id and body["error"]["code"] == METHOD_NOT_FOUND
+    for invalid_id in (True, {"a": 1}, [1]):
+        invalid = {"jsonrpc": "2.0", "id": invalid_id, "method": "get_state"}
+        body = (await client.post("/rpc", json=invalid)).json()
+        assert body["id"] is None
+        assert error_of(body) == (INVALID_REQUEST, "Invalid Request")
 
 
 @pytest.mark.parametrize(
