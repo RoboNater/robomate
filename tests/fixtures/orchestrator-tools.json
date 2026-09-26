@@ -1,0 +1,348 @@
+[
+  {
+    "name": "get_state",
+    "description": "Read the workflow, agents and compact task summaries.",
+    "inputSchema": {
+      "properties": {},
+      "title": "get_stateArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "get_stateDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "initialize_workflow",
+    "description": "Persist the initial prompt's goal and policy, or confirm them on restart.\n\n        This must be Alice's first mutating call. Goal and policy are immutable;\n        use get_state to resume the stored workflow after a restart.\n        ",
+    "inputSchema": {
+      "properties": {
+        "goal": {
+          "title": "Goal",
+          "type": "string"
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Policy"
+        }
+      },
+      "required": [
+        "goal"
+      ],
+      "title": "initialize_workflowArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "initialize_workflowDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "wait_for_event",
+    "description": "Wait for and lease the oldest event. On event=null, call again.\n\n        ack: the delivery_id of the event just handled. It still acks after\n        the delivery lease has expired, so a long action \u2014 merging, say \u2014 is\n        not redone once it has finished.\n        ",
+    "inputSchema": {
+      "properties": {
+        "timeout_s": {
+          "default": 100,
+          "maximum": 120,
+          "minimum": 0,
+          "title": "Timeout S",
+          "type": "number"
+        },
+        "ack": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ack"
+        }
+      },
+      "title": "wait_for_eventArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "wait_for_eventDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "assign_task",
+    "description": "Assign work to an idle worker and wake its pending NEXT.\n\n        event_id: the durable event whose handling causes this assignment.\n        role: implementer, reviewer or rebase \u2014 the guide the worker fetches.\n        pr_head_sha: the PR head a review or rebase is bound to.\n        ",
+    "inputSchema": {
+      "properties": {
+        "agent": {
+          "title": "Agent",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "instructions": {
+          "title": "Instructions",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "integer"
+        },
+        "lease_min": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "maximum": 525600,
+          "title": "Lease Min",
+          "type": "number"
+        },
+        "pr_head_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-fA-F]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pr Head Sha"
+        }
+      },
+      "required": [
+        "agent",
+        "role",
+        "title",
+        "instructions",
+        "event_id"
+      ],
+      "title": "assign_taskArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "assign_taskDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "check_merge_gate",
+    "description": "Read the PR's head, CI, base freshness and mergeability before merging.\n\n        expected_head_sha: the approved head \u2014 the reviewer's reviewed_head_sha,\n        or the head_sha of a rebase that reported no conflict_files.\n        Waits up to 60 s while CI or mergeability is still settling. Call it\n        immediately before merging; earlier results are advisory.\n        ",
+    "inputSchema": {
+      "properties": {
+        "pr_url": {
+          "title": "Pr Url",
+          "type": "string"
+        },
+        "expected_head_sha": {
+          "pattern": "^[0-9a-fA-F]{40}$",
+          "title": "Expected Head Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pr_url",
+        "expected_head_sha"
+      ],
+      "title": "check_merge_gateArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "check_merge_gateDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "reply",
+    "description": "Answer the named worker question and return its task to working.",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task_id",
+        "text",
+        "message_id"
+      ],
+      "title": "replyArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "replyDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "set_task_state",
+    "description": "Cancel or fail an open task, retaining the note and freeing its worker.",
+    "inputSchema": {
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "canceled",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "note": {
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "state",
+        "note"
+      ],
+      "title": "set_task_stateArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "set_task_stateDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "release_agent",
+    "description": "Release a worker; its next NEXT returns the release marker.",
+    "inputSchema": {
+      "properties": {
+        "agent": {
+          "title": "Agent",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "title": "release_agentArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "release_agentDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "set_workflow_status",
+    "description": "Set active/paused/done/escalated and save the summary in the audit log.",
+    "inputSchema": {
+      "$defs": {
+        "WorkflowStatus": {
+          "enum": [
+            "active",
+            "paused",
+            "done",
+            "escalated"
+          ],
+          "title": "WorkflowStatus",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/WorkflowStatus"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "summary"
+      ],
+      "title": "set_workflow_statusArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "title": "set_workflow_statusDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "log_decision",
+    "description": "Append a durable audit entry explaining Alice's decision.",
+    "inputSchema": {
+      "properties": {
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        }
+      },
+      "required": [
+        "summary",
+        "rationale"
+      ],
+      "title": "log_decisionArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "log_decisionDictOutput",
+      "type": "object"
+    }
+  }
+]
