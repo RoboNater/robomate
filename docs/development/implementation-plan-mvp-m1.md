@@ -381,7 +381,8 @@ mode 0600. `down` stops the hub over `/rpc`, and `/rpc` without a token is 401.
 ```sh
 uv run --locked pytest tests/test_cli.py tests/test_discovery.py tests/test_registry.py tests/test_app.py
 # manual, in a scratch clone of any GitHub repo:
-cd /tmp/scratch-repo && uv run --project <robomate checkout> robomate up &
+cd /tmp/scratch-repo
+uv run --project <robomate checkout> robomate up &
 cat .robomate/hub.json; grep robomate .git/info/exclude; curl -s localhost:8420/healthz
 uv run --project <robomate checkout> robomate down   # hub exits; hub.json keeps port, pid cleared
 uv run --project <robomate checkout> robomate up     # same port again
