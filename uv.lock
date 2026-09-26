@@ -12,6 +12,7 @@ members = [
     "agent-hub",
     "agent-hub-common",
     "robomate",
+    "robomate-cli",
     "worker-mcp",
 ]
 
@@ -1036,6 +1037,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "agent-hub" },
     { name = "agent-hub-common" },
+    { name = "robomate-cli" },
     { name = "worker-mcp" },
 ]
 
@@ -1052,6 +1054,7 @@ dev = [
 requires-dist = [
     { name = "agent-hub", editable = "packages/hub" },
     { name = "agent-hub-common", editable = "packages/common" },
+    { name = "robomate-cli", editable = "packages/cli" },
     { name = "worker-mcp", editable = "packages/worker_mcp" },
 ]
 
@@ -1062,6 +1065,23 @@ dev = [
     { name = "pytest", specifier = ">=8,<9" },
     { name = "pytest-asyncio", specifier = ">=1,<2" },
     { name = "ruff", specifier = ">=0.12,<1" },
+]
+
+[[package]]
+name = "robomate-cli"
+version = "0.1.0"
+source = { editable = "packages/cli" }
+dependencies = [
+    { name = "agent-hub" },
+    { name = "agent-hub-common" },
+    { name = "worker-mcp" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-hub", editable = "packages/hub" },
+    { name = "agent-hub-common", editable = "packages/common" },
+    { name = "worker-mcp", editable = "packages/worker_mcp" },
 ]
 
 [[package]]

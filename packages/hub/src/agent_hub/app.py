@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
 from agent_hub_common import HubSettings, load_or_create_token
 from agent_hub_common.clock import utcnow_iso
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .accounting import (
     A2ACall,
@@ -36,10 +37,16 @@ logger = logging.getLogger(__name__)
 AGENT_HEADER = "X-Hub-Agent"
 
 
-def create_app(settings: HubSettings | None = None) -> FastAPI:
+def create_app(
+    settings: HubSettings | None = None,
+    *,
+    hub_info: Mapping[str, Any] | None = None,
+    shutdown: Callable[[], None] | None = None,
+) -> FastAPI:
     """Create a configured hub application without starting a server."""
 
     resolved = settings or HubSettings.from_env()
+    hub_id = str(hub_info["hub_id"]) if hub_info is not None else uuid.uuid4().hex
     card = build_agent_card(resolved.public_url)
     store = HubStore(
         path=resolved.database_path,
@@ -142,7 +149,34 @@ def create_app(settings: HubSettings | None = None) -> FastAPI:
 
     @app.get("/healthz", include_in_schema=False)
     async def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "hub_id": hub_id}
+
+    @app.post("/rpc", include_in_schema=False, dependencies=[Depends(require_bearer)])
+    async def rpc(request: Request, background: BackgroundTasks) -> Response:
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = None
+        request_id = payload.get("id") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("jsonrpc") != "2.0"
+            or not isinstance(payload.get("method"), str)
+            or "id" not in payload
+        ):
+            return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                                 "error": {"code": -32600, "message": "Invalid Request"}})
+        method = payload["method"]
+        if method == "hub.info" and hub_info is not None:
+            result: Any = dict(hub_info)
+        elif method == "hub.shutdown" and shutdown is not None:
+            background.add_task(shutdown)
+            result = {"stopping": True}
+        else:
+            return JSONResponse({"jsonrpc": "2.0", "id": request_id,
+                                 "error": {"code": -32601, "message": "Method not found"}})
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
+                            background=background)
 
     @app.get("/guides/{role}.md", include_in_schema=False, dependencies=[Depends(require_bearer)])
     async def role_guide(role: str, request: Request) -> Response:

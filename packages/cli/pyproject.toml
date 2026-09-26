@@ -1,0 +1,21 @@
+[project]
+name = "robomate-cli"
+version = "0.1.0"
+description = "Operator CLI for per-repository robomate hubs"
+requires-python = ">=3.12"
+dependencies = ["agent-hub", "agent-hub-common", "worker-mcp"]
+
+[project.scripts]
+robomate = "robomate.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robomate"]
+
+[tool.uv.sources]
+agent-hub = { workspace = true }
+agent-hub-common = { workspace = true }
+worker-mcp = { workspace = true }

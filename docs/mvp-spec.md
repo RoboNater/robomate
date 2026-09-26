@@ -136,11 +136,16 @@ tracked `.gitignore`):
 
 | Path | Contents |
 |---|---|
-| `hub.json` | `repo_root`, `origin`, `forge`, `default_branch`, `url`, `port`, `pid`, `started_at`, `ra_version` |
+| `hub.json` | `repo_root`, `origin`, `forge`, `default_branch`, `url`, `port`, `pid`, `started_at`, `robomate_version`, `hub_id` |
 | `hub.db` | SQLite state (schema continues from PoC v12; reserve versions per the roadmap rule) |
 | `token` | per-hub bearer token, mode 0600 |
+| `up.lock` | OS-held per-repo lock while a hub starts or runs; prevents concurrent `up` |
 | `config.toml` | optional operator settings: worktree root, agent defaults, policy defaults, forge hosts, setup command |
 | `runs/<run-id>/` | run manifest and exported evidence (§11) |
+
+`hub_id` is retained across restarts and returned by the public `/healthz` route
+for live-hub checks. `hub.info` and `hub.shutdown` are authenticated `/rpc`
+operator methods.
 
 **Machine registry** — `$XDG_STATE_HOME/robomate/hubs.json` (Windows:
 `%LOCALAPPDATA%\robomate\hubs.json`): one entry per running hub; stale entries pruned by
@@ -388,6 +393,7 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same
 route with an operator identity; `robomate abandon` and `robomate report` are operator-only.
+The first operator methods on this route are `hub.info` and `hub.shutdown` (M1 Step 2).
 
 ---
 

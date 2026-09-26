@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "agent-hub",
     "agent-hub-common",
+    "robomate-cli",
     "worker-mcp",
 ]
 
@@ -24,6 +25,7 @@ package = false
 [tool.uv.sources]
 agent-hub = { workspace = true }
 agent-hub-common = { workspace = true }
+robomate-cli = { workspace = true }
 worker-mcp = { workspace = true }
 
 [tool.uv.workspace]
