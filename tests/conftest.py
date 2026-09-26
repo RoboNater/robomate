@@ -27,7 +27,7 @@ TEST_MAX_WAIT_S = 1.0
 
 
 class MonotonicClock:
-    """Wall-clock time that advances only as `time.monotonic()` does.
+    """Wall-clock time based on `time.monotonic()`, with optional test advances.
 
     A test that sleeps past a lease, or waits for a heartbeat stamp to move,
     measures the sleep on the monotonic clock, while the store stamps on the
@@ -44,7 +44,7 @@ class MonotonicClock:
         return self.start + timedelta(seconds=monotonic() - self.started)
 
     def advance(self, seconds: float) -> None:
-        """Move a test deadline forward without depending on scheduler delays."""
+        """Move this clock forward without waiting for real time."""
 
         self.start += timedelta(seconds=seconds)
 
