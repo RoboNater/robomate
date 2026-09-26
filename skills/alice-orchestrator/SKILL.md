@@ -43,7 +43,9 @@ the workflow.
 3. Read every issue the statement names directly with `gh issue view`, and, when
    the goal names a repository-qualified roadmap target, the roadmap too. A
    supplied roadmap target that is not repository-qualified is carried
-   unresolved to close-out instead of read as an issue. Write concise
+   unresolved to close-out instead of read as an issue. If the roadmap read
+   fails, record the failure with `log_decision` and carry it to close-out;
+   the run still has a roadmap target. Write concise
    acceptance criteria from the statement text, those issues, and
    repository instructions. Fix the work label: the
    `<owner/repository#number>` of the only named issue, or else a short label
@@ -426,10 +428,12 @@ Verify the update directly with
 `gh issue view <number> --repo <owner>/<repository>`. If it is missing, send one
 correction task naming that same repository-qualified issue and verify again.
 When the goal names a supplied roadmap target that is not repository-qualified,
-resolve it to an `owner/repository#number` first: if it resolves, proceed as
-above against the resolved issue; if it cannot be resolved, do not invent an
-issue — record the supplied value and the failed resolution in the workflow
-summary and escalate with a concrete operator question naming both.
+resolve it to an `owner/repository#number` first; when the kickoff roadmap
+read failed, reuse that recorded failure instead. If the target resolves to a
+readable issue, proceed as above against the resolved issue; if it cannot be
+resolved, do not invent an issue — record the supplied value and the failed
+resolution in the workflow summary and escalate with a concrete operator
+question naming both.
 When the goal explicitly says a throwaway run has no roadmap target, do not
 invent or edit an issue; record close-out only in the workflow summary.
 
