@@ -71,8 +71,9 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
     try:
         info = await_hub(root, first)
         assert info["hub_id"]
-        assert (root / ".robomate").stat().st_mode & 0o777 == 0o700
-        assert (root / ".robomate/token").stat().st_mode & 0o777 == 0o600
+        if sys.platform != "win32":
+            assert (root / ".robomate").stat().st_mode & 0o777 == 0o700
+            assert (root / ".robomate/token").stat().st_mode & 0o777 == 0o600
         assert "/.robomate/" in (root / ".git/info/exclude").read_text()
         with urllib.request.urlopen(f"{info['url']}/healthz") as response:
             assert json.load(response)["hub_id"] == info["hub_id"]
@@ -144,3 +145,46 @@ def test_first_free_port_is_selected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("robomate.cli.socket.socket", lambda *_args: FakeSocket())
     _, port = _bind("127.0.0.1", None)
     assert (attempted, port) == ([8420, 8421], 8421)
+
+
+def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str]]) -> None:
+    root, env = repository
+    processes = [start(root, env), start(root, env)]
+    try:
+        for _ in range(200):
+            states = [process.poll() is None for process in processes]
+            if sum(states) == 1 and read_hub_json(root):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("expected exactly one live hub")
+        winner = next(process for process in processes if process.poll() is None)
+        loser = next(process for process in processes if process.poll() is not None)
+        assert await_hub(root, winner)["pid"] == winner.pid
+        assert loser.stderr is not None
+        assert "already" in loser.stderr.read()
+        stop(root, env, winner)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+
+
+def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> None:
+    root, env = repository
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        wrong = {**env, "ROBOMATE_HUB_URL": str(info["url"]), "ROBOMATE_TOKEN": "wrong"}
+        response = subprocess.run(
+            [CLI, "down"], cwd=root, env=wrong, capture_output=True, text=True, timeout=10
+        )
+        assert response.returncode == 1
+        assert "HTTP 401" in response.stderr
+        assert "unreachable" not in response.stderr
+        stop(root, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)

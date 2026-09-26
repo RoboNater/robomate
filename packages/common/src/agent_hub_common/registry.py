@@ -84,6 +84,8 @@ def _write(path: Path, entries: list[dict[str, Any]]) -> None:
 def process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        return _windows_process_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -91,6 +93,35 @@ def process_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _windows_process_alive(pid: int) -> bool:
+    """Probe a Windows process handle without delivering a console event."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    wait_for_single = kernel32.WaitForSingleObject
+    wait_for_single.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    wait_for_single.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    handle = open_process(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        # Access denied means a process exists; other failures (notably an
+        # invalid PID) mean it does not. The health check still verifies ID.
+        return int(ctypes.get_last_error()) == 5  # type: ignore[attr-defined]
+    try:
+        # Zero timeout is a nonblocking state check. A signaled process has
+        # exited; WAIT_TIMEOUT (or an indeterminate failure) is treated alive.
+        return int(wait_for_single(handle, 0)) != 0  # WAIT_OBJECT_0
+    finally:
+        close_handle(handle)
 
 
 def hub_healthy(url: str, hub_id: str) -> bool:

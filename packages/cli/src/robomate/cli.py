@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 import socket
@@ -11,6 +12,8 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +22,7 @@ from agent_hub.main import serve_http
 from agent_hub_common import HubSettings, load_or_create_token
 from agent_hub_common.discovery import (
     DiscoveryError,
+    Repository,
     discover,
     ensure_excluded,
     read_hub_json,
@@ -37,14 +41,15 @@ def _bind(host: str, port: int | None) -> tuple[socket.socket, int]:
     for candidate in ports:
         assert candidate is not None
         sock = socket.socket(family, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name != "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, candidate))
             sock.listen()
             return sock, candidate
         except OSError as exc:
             sock.close()
-            if port is not None or exc.errno not in (98, 10048):
+            if port is not None or exc.errno not in (errno.EADDRINUSE, 10048):
                 raise RuntimeError(
                     f"port {candidate} is unavailable; choose --port: {exc}"
                 ) from exc
@@ -67,11 +72,54 @@ def _rpc(url: str, token: str, method: str) -> dict[str, Any]:
     return value
 
 
+@contextmanager
+def _repo_lock(directory: Path) -> Iterator[None]:
+    """Hold an OS file lock for the hub lifetime, including startup."""
+
+    fd = os.open(directory / "up.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    locked = False
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"0")
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except OSError as exc:
+            info = read_hub_json(directory.parent) or {}
+            url = info.get("url")
+            message = f"hub already running at {url}" if url else "hub already starting"
+            raise RuntimeError(message) from exc
+        yield
+    finally:
+        try:
+            if locked:
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 async def _up(args: argparse.Namespace) -> None:
     repo = resolve_repository(Path.cwd())
     directory = state_dir(repo.root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
+    with _repo_lock(directory):
+        await _run_up(args, repo, directory)
+
+
+async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -> None:
     ensure_excluded(repo.git_common_dir)
     old = read_hub_json(repo.root) or {}
     old_pid = int(old.get("pid") or 0)
@@ -128,19 +176,25 @@ def _down() -> None:
     endpoint = discover(Path.cwd())
     try:
         result = _rpc(endpoint.url, endpoint.token, "hub.shutdown")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"hub at {endpoint.url} rejected shutdown (HTTP {exc.code})") from exc
     except (OSError, urllib.error.URLError) as exc:
-        try:
-            repo = resolve_repository(Path.cwd())
-            info = read_hub_json(repo.root) or {}
-            pid = int(info.get("pid") or 0)
-        except DiscoveryError:
-            pid = 0
+        pid = 0
+        if not os.environ.get("ROBOMATE_HUB_URL"):
+            try:
+                repo = resolve_repository(Path.cwd())
+                info = read_hub_json(repo.root) or {}
+                pid = int(info.get("pid") or 0)
+            except DiscoveryError:
+                pass
         if process_alive(pid):
             raise RuntimeError(
                 f"hub at {endpoint.url} is unreachable; pid {pid} is still alive"
             ) from exc
         raise RuntimeError(f"hub at {endpoint.url} is not running") from exc
-    print(f"Stopping hub at {endpoint.url}: {result['stopping']}")
+    if not result.get("stopping"):
+        raise RuntimeError("hub did not acknowledge shutdown")
+    print(f"Stopping hub at {endpoint.url}")
 
 
 def main() -> None:
