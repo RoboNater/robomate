@@ -21,7 +21,8 @@ def test_app_initializes_state_and_serves_agent_card(settings: HubSettings) -> N
     assert card["url"] == "http://hub.example:8420/a2a"
     assert card["capabilities"]["streaming"] is True
     assert card["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
-    assert health.json() == {"status": "ok"}
+    assert health.json()["status"] == "ok"
+    assert isinstance(health.json()["hub_id"], str)
     assert settings.database_path.exists()
 
 
@@ -34,6 +35,24 @@ def test_startup_provisions_a_token_file_when_none_is_injected(
         client.get("/healthz")
 
     assert provisioned.token_file.exists()
+
+
+def test_operator_rpc_requires_token_and_exposes_identity(settings: HubSettings) -> None:
+    stopped = []
+    info = {"hub_id": "test-hub", "repo_root": "/repo", "robomate_version": "0.1.0"}
+    app = create_app(settings, hub_info=info, shutdown=lambda: stopped.append(True))
+    with TestClient(app) as client:
+        assert client.get("/healthz").json() == {"status": "ok", "hub_id": "test-hub"}
+        request = {"jsonrpc": "2.0", "id": 1, "method": "hub.info"}
+        assert client.post("/rpc", json=request).status_code == 401
+        headers = {"Authorization": f"Bearer {settings.token}"}
+        response = client.post("/rpc", json=request, headers=headers)
+        assert response.json()["result"] == info
+        request["method"] = "hub.shutdown"
+        assert client.post("/rpc", json=request, headers=headers).json()["result"] == {
+            "stopping": True
+        }
+    assert stopped == [True]
 
 
 async def test_the_sweeper_runs_only_for_the_lifetime_of_the_app(app: FastAPI) -> None:

@@ -121,7 +121,8 @@ async def fake_mcp(store, stdout, accounting):
         traceback.print_exc(file=sys.stdout)
     async with httpx.AsyncClient() as client:
         response = await client.get(f"http://127.0.0.1:{port}/healthz")
-        assert response.json() == {"status": "ok"}
+        assert response.json()["status"] == "ok"
+        assert response.json()["hub_id"]
     print("stray shutdown print")
     return True
 

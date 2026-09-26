@@ -4,12 +4,13 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
-from typing import TextIO
+from typing import Any, TextIO
 
 import uvicorn
 from agent_hub_common import HubSettings
@@ -19,6 +20,41 @@ from .app import create_app
 from .mcp import run_mcp
 
 MCP_SHUTDOWN_TIMEOUT_S = 1.0
+
+
+async def serve_http(
+    settings: HubSettings,
+    sockets: list[socket.socket],
+    hub_info: Mapping[str, Any],
+    on_started: Callable[[], None],
+) -> None:
+    """Serve the standalone CLI hub, retaining the legacy stdio entry point."""
+
+    log_config = deepcopy(uvicorn.config.LOGGING_CONFIG)
+    for handler in log_config["handlers"].values():
+        handler["stream"] = "ext://sys.stderr"
+    server: HubServer
+    app = create_app(
+        settings, hub_info=hub_info, shutdown=lambda: setattr(server, "should_exit", True)
+    )
+    server = HubServer(
+        uvicorn.Config(
+            app, host=settings.host, port=settings.port, log_config=log_config,
+            access_log=False, timeout_graceful_shutdown=2, proxy_headers=False,
+        )
+    )
+    serving = asyncio.create_task(server.serve(sockets=sockets))
+    try:
+        while not server.started:
+            if serving.done():
+                await serving
+                raise RuntimeError("HTTP server stopped before startup")
+            await asyncio.sleep(0.01)
+        on_started()
+        await serving
+    finally:
+        server.should_exit = True
+        await asyncio.gather(serving, return_exceptions=True)
 
 
 class HubServer(uvicorn.Server):
