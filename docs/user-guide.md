@@ -90,6 +90,9 @@ To keep credentials, MCP configurations, and worker clones cleanly separated, cr
 ├── bob.prompt.md            # Bob's rendered launch prompt
 ├── bob-telemetry.jsonl      # Bob's worker telemetry log
 ├── charlie.prompt.md        # Charlie's rendered launch prompt
+├── start-alice.sh           # Per-agent start scripts (start-*.ps1 on Windows)
+├── start-bob.sh
+├── start-charlie.sh
 └── run.json                 # Preparation manifest (workspaces, versions, policy)
 ```
 
@@ -136,8 +139,8 @@ per issue. One run delivers one pull request; work that needs several PRs takes
 one run per PR.
 
 It produces the layout above, sharing its rendering code with the Step 6 demo so
-the two paths cannot drift. Supported worker harnesses are `claude-code` and
-`codex` (the paste-ready pair). Specifically it:
+the two paths cannot drift. Each agent runs under Claude Code or Codex.
+Specifically it:
 
 1. Bootstraps the `bob` and `charlie` clones via `scripts/bootstrap-workspace.py`,
    never touching an existing clone. `--repository` accepts a clone URL or a
@@ -155,41 +158,61 @@ the two paths cannot drift. Supported worker harnesses are `claude-code` and
 5. Renders `bob.prompt.md` / `charlie.prompt.md` from `prompts/worker.md` with
    `$AGENT_NAME` substituted, and links the `alice-orchestrator` skill into
    `alice-runtime/.claude/skills/` so Alice needs no user-wide skill install.
+   Every prompt ends with a post-release close-out section asking the agent to
+   write `closeout-report-<agent>.md` in its working directory (workers leave
+   theirs uncommitted); a Claude Code agent's prompt also asks for 100-second
+   hub waits, since Claude Code backgrounds any tool call still running at 120 s.
 6. Checks `gh auth status`, each harness's `--version`, whether the repository
    allows `--merge-method` (default `squash`), and whether it has CI workflows
    (which decides `allow_no_ci` when `--allow-no-ci auto`). Failures exit as a
    `prepare-run: error: ...` message (exit 1), not a traceback.
-7. Prints the three launch commands below plus the Alice kickoff prompt
-   (`alice.prompt.md`) with the issue or statement of work and the account
-   filled in.
+7. Writes one start script per agent (`start-alice.sh`, `start-bob.sh`,
+   `start-charlie.sh`; `start-*.ps1` for PowerShell on Windows) and prints their
+   paths plus the Alice kickoff prompt (`alice.prompt.md`) with the issue or
+   statement of work and the account filled in.
 
-Then paste the three commands it prints (Linux / macOS shown; Windows
-PowerShell equivalent for the Codex line follows):
+Then run each start script in its own terminal, Alice first. Each one changes
+to the agent's working directory and starts its CLI on its rendered config,
+handing it its prompt file (auto-start). For the default topology they run:
 
 ```sh
-cd /absolute/path/to/my-run/alice-runtime
-claude --strict-mcp-config --mcp-config /absolute/path/to/my-run/configs/alice.mcp.json
+# start-alice.sh
+cd "/absolute/path/to/my-run/alice-runtime"
+claude --permission-mode auto --strict-mcp-config \
+  --mcp-config "/absolute/path/to/my-run/configs/alice.mcp.json" \
+  --add-dir "/absolute/path/to/my-run" \
+  -p "Read /absolute/path/to/my-run/alice.prompt.md and follow the instructions in it"
 
-cd /absolute/path/to/my-run/bob
-claude --strict-mcp-config --mcp-config /absolute/path/to/my-run/configs/bob.mcp.json
+# start-bob.sh: the same, with bob.mcp.json and bob.prompt.md, from my-run/bob
 
-cd /absolute/path/to/my-run/charlie
-CODEX_HOME=/absolute/path/to/my-run/configs/codex codex exec --ephemeral -C . \
+# start-charlie.sh
+cd "/absolute/path/to/my-run/charlie"
+CODEX_HOME="/absolute/path/to/my-run/configs/codex" codex exec -C . \
   --add-dir "/absolute/path/to/my-run/charlie/.git" --approve-for-me - \
-  < /absolute/path/to/my-run/charlie.prompt.md
+  < "/absolute/path/to/my-run/charlie.prompt.md"
 ```
 
-On Windows PowerShell, the Codex launch is instead:
+(The scripts hold each command on one line.) Codex sessions are not
+`--ephemeral`, so they can be inspected after the run. On Windows PowerShell
+the Codex script sets `$env:CODEX_HOME` and pipes the prompt through
+`Get-Content -Raw` instead.
 
-```powershell
-cd C:\my-run\charlie
-$env:CODEX_HOME = "C:\my-run\configs\codex"
-Get-Content -Raw C:\my-run\charlie.prompt.md | codex exec --ephemeral -C . --add-dir "C:\my-run\charlie\.git" --approve-for-me -
-```
+Per-agent flags choose how each agent starts:
 
-Harness choice is a flag (`--bob claude-code --charlie codex`, the default mixed
-pair); `--bob-provider` / `--charlie-provider` and `--bob-capabilities` /
-`--charlie-capabilities` override the identity profile. Reruns against the same
+| Flag | Effect |
+|---|---|
+| `--alice-harness`, `--bob-harness`, `--charlie-harness` | `claude` or `codex`, case-insensitive (defaults: Claude Code Alice and Bob, Codex Charlie). `--bob` / `--charlie` are accepted as older spellings. |
+| `--alice-model`, `--bob-model`, `--charlie-model` | Passed to the CLI's `--model` unchecked. A worker's model also pins its `HUB_MODEL`; without one it stays empty and the worker declares its own model at check-in. |
+| `--alice-effort`, `--bob-effort`, `--charlie-effort` | Reasoning effort, passed unchecked: `--effort` for Claude Code, `-c 'model_reasoning_effort="..."'` for Codex. |
+| `--no-auto-start` | Start each agent interactively without its prompt: Claude Code without `-p` or `--permission-mode auto`, Codex as `codex` rather than `codex exec` with no piped prompt. Tell each agent to read and follow its prompt file once it is up. |
+
+A Codex Alice gets her own `configs/alice-codex/` home, holding the hub's MCP
+config and the linked `alice-orchestrator` skill, in place of
+`configs/alice.mcp.json`. For an issue, Alice's goal asks bob to decide in a PR
+comment which updates the roadmap needs, taken to be issue #2 of the target
+repository, and to make them after the merge. `--bob-provider` /
+`--charlie-provider` and `--bob-capabilities` / `--charlie-capabilities`
+override the identity profile. Reruns against the same
 `--run-dir` are idempotent and never rewrite an existing clone, token, or
 identity file. Nothing is ever written inside either clone. The manual
 walkthrough in Steps 1-5 below is kept as an appendix for custom topologies.
@@ -231,8 +254,8 @@ uv run --locked python scripts/prepare-run.py \
   --remote-worker bob
 ```
 
-It renders Alice and Charlie as usual and prints, in place of Bob's launch
-lines, the command to run on Bob's host from a robo-agents checkout at the same
+It renders Alice and Charlie as usual and prints, in place of Bob's start
+script, the command to run on Bob's host from a robo-agents checkout at the same
 commit. Fill in the run directory; the token file is the hub's, read in place
 through `\\wsl.localhost\<distro>\...`:
 
@@ -241,12 +264,13 @@ through `\\wsl.localhost\<distro>\...`:
 uv run --locked python scripts/prepare-run.py --worker-only bob \
   --repository 'git@github.com:your-org/your-repo.git' --run-dir 'C:/runs/my-run' \
   --hub-url 'http://172.26.115.68:8420' \
-  --token-file '\\wsl.localhost\Ubuntu\home\you\my-run\hub-state\token' --bob claude-code
+  --token-file '\\wsl.localhost\Ubuntu\home\you\my-run\hub-state\token' --bob-harness claude-code
 ```
 
 `--worker-only` bootstraps Bob's clone with that host's git, reads the harness
 version from that host's CLI, and renders `configs/bob.mcp.json`,
-`bob.prompt.md` and the launch lines with that host's paths: forward-slash
+`bob.prompt.md` and a bash (on Windows, Git Bash) `start-bob.sh` with that
+host's paths: forward-slash
 Windows paths in the config (see "Windows paths in JSON configs" below), and
 Git Bash `/c/...` spellings where the shell itself reads a path (`cd`, `<`).
 It never mints or copies a token; the token lives only inside the rendered
@@ -604,7 +628,6 @@ Render Charlie's launch prompt by copying [`prompts/worker.md`](../prompts/worke
 ```bash
 cd /absolute/path/to/workspaces/charlie-repo
 CODEX_HOME=/path/to/my-run/configs/codex codex exec \
-  --ephemeral \
   -C . \
   --add-dir "/absolute/path/to/workspaces/charlie-repo/.git" \
   --approve-for-me \
@@ -615,7 +638,7 @@ CODEX_HOME=/path/to/my-run/configs/codex codex exec \
 ```powershell
 cd C:\workspaces\charlie-repo
 $env:CODEX_HOME = "C:\my-run\configs\codex"
-Get-Content -Raw C:\my-run\charlie.prompt.md | codex exec --ephemeral -C . --add-dir "C:\workspaces\charlie-repo\.git" --approve-for-me -
+Get-Content -Raw C:\my-run\charlie.prompt.md | codex exec -C . --add-dir "C:\workspaces\charlie-repo\.git" --approve-for-me -
 ```
 
 > [!IMPORTANT]
