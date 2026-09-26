@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -163,10 +164,16 @@ class RpcDispatcher:
 
 
 def _valid_id(request_id: Any) -> bool:
-    """JSON-RPC 2.0 ids are a string, a number, or null."""
+    """JSON-RPC 2.0 ids are a string, a number, or null.
 
+    Python's parser reads `1e400` as inf and accepts `NaN`; neither can be
+    echoed as JSON, so such an id is as unusable as an object would be.
+    """
+
+    if isinstance(request_id, float):
+        return math.isfinite(request_id)
     return request_id is None or (
-        isinstance(request_id, str | int | float) and not isinstance(request_id, bool)
+        isinstance(request_id, str | int) and not isinstance(request_id, bool)
     )
 
 

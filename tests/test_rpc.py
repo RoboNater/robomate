@@ -108,6 +108,16 @@ async def test_every_json_rpc_id_is_echoed_and_other_ids_are_refused(
         body = (await client.post("/rpc", json=invalid)).json()
         assert body["id"] is None
         assert error_of(body) == (INVALID_REQUEST, "Invalid Request")
+    # r2-1: numbers Python parses as non-finite, sent raw since json= refuses them.
+    for raw_id in ("1e400", "-1e400", "NaN", "Infinity"):
+        raw = f'{{"jsonrpc": "2.0", "id": {raw_id}, "method": "get_state"}}'
+        response = await client.post(
+            "/rpc", content=raw, headers={"Content-Type": "application/json"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["id"] is None
+        assert error_of(body) == (INVALID_REQUEST, "Invalid Request")
 
 
 @pytest.mark.parametrize(
