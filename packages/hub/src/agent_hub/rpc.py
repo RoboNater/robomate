@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -107,6 +108,10 @@ class RpcDispatcher:
         self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
             name: validate_call(getattr(ops, name)) for name in OPERATIONS
         }
+        self._params = {
+            name: frozenset(inspect.signature(getattr(ops, name)).parameters)
+            for name in OPERATIONS
+        }
 
     async def dispatch(
         self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks
@@ -149,6 +154,9 @@ class RpcDispatcher:
             params = {}
         if not isinstance(params, dict):
             raise RpcError(INVALID_PARAMS, "params must be an object")
+        unexpected = sorted(params.keys() - self._params[method])
+        if unexpected:
+            raise RpcError(INVALID_PARAMS, f"unexpected params for {method}: {unexpected}")
         if caller is not None:
             actor, session = caller
             self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
