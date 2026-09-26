@@ -1,7 +1,7 @@
 [project]
-name = "agent-hub-workspace"
+name = "robomate"
 version = "0.1.0"
-description = "Networked agent coordination proof of concept"
+description = "Local hub that coordinates AI coding agents from issue to merged PR"
 requires-python = ">=3.12"
 dependencies = [
     "agent-hub",
