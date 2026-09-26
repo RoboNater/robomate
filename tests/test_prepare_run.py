@@ -588,35 +588,148 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
         "goal": goal.strip(),
         "path": str(work_file.resolve()),
         "sha256": hashlib.sha256(STATEMENT.encode("utf-8")).hexdigest(),
+        "roadmap": None,
     }
     saved = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     assert saved["work"] == manifest["work"]
 
 
+ISSUE_GOAL_NO_ROADMAP = (
+    "Address issue `{repo}#42`, merge its pull request, and close out with no roadmap "
+    "edit; record the merge only in the workflow summary."
+)
+
+
 ISSUE_GOAL = (
     "Address issue `{repo}#42`, merge its pull request, and close out. The implementer bob "
-    "should make a decision on what roadmap ({repo}#2) updates are necessary, if any, when "
+    "should make a decision on what roadmap ({roadmap}) updates are necessary, if any, when "
     "they open the PR and include it as a PR comment so it can be reviewed. After the merge "
     "the implementer bob should update the roadmap per the adjudicated PR if necessary. "
     "Make sure you include that in bob's initial tasking."
 )
 
 
-def test_issue_goal_asks_bob_to_decide_the_roadmap_update(
+def test_issue_goal_defaults_to_no_roadmap_edit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     origin = make_origin(tmp_path)
     fake_runner(monkeypatch)
     run_dir = (tmp_path / "run").resolve()
     manifest = PREPARE_RUN.prepare(str(origin), run_dir, issue=42, account="testuser")
-    expected = ISSUE_GOAL.format(repo=origin)
+    expected = ISSUE_GOAL_NO_ROADMAP.format(repo=origin)
     assert durable_goal(run_dir) == expected + "\n\n"
     assert manifest["issue"] == 42
-    assert manifest["work"] == {"goal": expected, "path": None, "sha256": None}
-    # The roadmap is the target repository's #2 (robomate's roadmap issue).
+    assert manifest["work"] == {
+        "goal": expected,
+        "path": None,
+        "sha256": None,
+        "roadmap": None,
+    }
     assert PREPARE_RUN.render_goal(
         "RoboNater/robomate", "git@github.com:RoboNater/robomate.git", 42, None
-    ) == ISSUE_GOAL.format(repo="RoboNater/robomate")
+    ) == ISSUE_GOAL_NO_ROADMAP.format(repo="RoboNater/robomate")
+
+
+@pytest.mark.parametrize("roadmap", ["2", "#2"])
+def test_issue_goal_renders_bare_roadmap_numbers_against_the_target(roadmap: str) -> None:
+    goal = PREPARE_RUN.render_goal(
+        "o/r", "git@github.com:o/r.git", 42, None, roadmap
+    )
+    assert goal == ISSUE_GOAL.format(repo="o/r", roadmap="o/r#2")
+
+
+def test_roadmap_passes_non_bare_numbers_through_verbatim() -> None:
+    """Only a bare N or #N resolves against the target repo (#34)."""
+    slug = "test-org/test-repo"
+    repository = "git@github.com:test-org/test-repo.git"
+    assert PREPARE_RUN.resolve_roadmap("other-org/other-repo#7", slug, repository) == (
+        "other-org/other-repo#7"
+    )
+    # Surrounding whitespace is not stripped: " 2 " is not a bare number.
+    assert PREPARE_RUN.resolve_roadmap(" 2 ", slug, repository) == " 2 "
+    assert PREPARE_RUN.resolve_roadmap("2", slug, repository) == "test-org/test-repo#2"
+    with pytest.raises(ValueError, match="must not be empty"):
+        PREPARE_RUN.resolve_roadmap("   ", slug, repository)
+
+
+@pytest.mark.parametrize(
+    "kind,kwargs,check",
+    [
+        ("issue", {"issue": 42}, "Address issue"),
+        ("work", {"work": "Do the thing."}, "Do the thing."),
+        ("neither", {}, "Address issue `<issue-owner>"),
+    ],
+)
+@pytest.mark.parametrize(
+    "roadmap,expected_roadmap,has_roadmap_instructions",
+    [
+        (None, None, False),
+        ("2", "test-org/test-repo#2", True),
+        ("#2", "test-org/test-repo#2", True),
+        ("other-org/other-repo#7", "other-org/other-repo#7", True),
+    ],
+)
+def test_render_goal_roadmap_combinations(
+    kind: str, kwargs: dict[str, object], check: str,
+    roadmap: str | None, expected_roadmap: str | None,
+    has_roadmap_instructions: bool,
+) -> None:
+    """Each {--issue, --work-file, neither} x {no roadmap, N, #N, OWNER/REPO#N} goal (#34)."""
+    slug = "test-org/test-repo"
+    repository = "git@github.com:test-org/test-repo.git"
+    goal = PREPARE_RUN.render_goal(
+        slug, repository,
+        kwargs.get("issue"), kwargs.get("work"), roadmap,
+    )
+    assert check in goal
+    if not has_roadmap_instructions:
+        assert "no roadmap edit" in goal
+        assert "should make a decision on what roadmap" not in goal
+        assert PREPARE_RUN.resolve_roadmap(roadmap, slug, repository) is None
+    else:
+        assert "no roadmap edit" not in goal
+        assert "should make a decision on what roadmap" in goal
+        assert f"({expected_roadmap})" in goal
+        assert PREPARE_RUN.resolve_roadmap(roadmap, slug, repository) == expected_roadmap
+    # Bare numbers render against the target repo; other values pass through verbatim.
+    if roadmap in ("2", "#2"):
+        assert "(test-org/test-repo#2)" in goal
+    if roadmap == "other-org/other-repo#7":
+        assert "(other-org/other-repo#7)" in goal
+
+
+def test_prepare_records_the_rendered_roadmap_in_run_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = make_origin(tmp_path)
+    fake_runner(monkeypatch)
+    run_dir = (tmp_path / "run").resolve()
+    manifest = PREPARE_RUN.prepare(
+        str(origin), run_dir, issue=42, account="testuser", roadmap="2"
+    )
+    assert manifest["work"]["roadmap"] == f"{origin}#2"
+    assert f"({origin}#2)" in manifest["work"]["goal"]
+    saved = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert saved["work"] == manifest["work"]
+
+
+def test_work_file_with_roadmap_appends_bob_instructions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = make_origin(tmp_path)
+    fake_runner(monkeypatch)
+    work_file = tmp_path / "sow.md"
+    work_file.write_text(STATEMENT, encoding="utf-8")
+    run_dir = (tmp_path / "run").resolve()
+    manifest = PREPARE_RUN.prepare(
+        str(origin), run_dir, account="testuser", work_file=work_file, roadmap="5"
+    )
+    goal = durable_goal(run_dir)
+    assert goal.startswith(STATEMENT.strip())
+    assert "no roadmap edit" not in goal
+    assert f"roadmap ({origin}#5)" in goal
+    assert "should make a decision on what roadmap" in goal
+    assert manifest["work"]["roadmap"] == f"{origin}#5"
 
 
 def run_main(monkeypatch: pytest.MonkeyPatch, run_dir: Path, *extra: str) -> str:
@@ -1194,6 +1307,7 @@ def test_worker_only_refuses_hub_flags(tmp_path: Path, monkeypatch: pytest.Monke
     run_dir = (tmp_path / "run").resolve()
     for extra in (
         ["--worker-only", "bob", "--token-file", str(token_file), "--issue", "42"],
+        ["--worker-only", "bob", "--token-file", str(token_file), "--roadmap", "2"],
         ["--worker-only", "bob", "--token-file", str(token_file), "--hub-port", "8521"],
         ["--worker-only", "bob"],
         ["--token-file", str(token_file)],
@@ -1295,7 +1409,7 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
         assert prompt.rstrip().endswith(ending)
     bob_env = json.loads((run_dir / "configs" / "bob.mcp.json").read_text(encoding="utf-8"))
     assert bob_env["mcpServers"]["hub"]["env"]["HUB_MODEL"] == "claude-opus-5-5"
-    assert durable_goal(run_dir) == ISSUE_GOAL.format(repo=origin) + "\n\n"
+    assert durable_goal(run_dir) == ISSUE_GOAL_NO_ROADMAP.format(repo=origin) + "\n\n"
     alice_prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
     assert "After you release bob and charlie" in alice_prompt
     assert "`wait_for_event`" in alice_prompt

@@ -117,8 +117,6 @@ ALICE_TOOLS = [
     "set_workflow_status",
     "log_decision",
 ]
-#: The roadmap issue the goal asks bob to update, in the target repository.
-ROADMAP_ISSUE = 2
 DEFAULT_HUB_HOST = "127.0.0.1"
 DEFAULT_HUB_PORT = 8420
 DEFAULT_HUB_URL = f"http://127.0.0.1:{DEFAULT_HUB_PORT}"
@@ -396,24 +394,55 @@ def read_work_file(path: Path) -> dict[str, str]:
     return {"text": text, "path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def resolve_roadmap(roadmap: str | None, slug: str | None, repository: str) -> str | None:
+    """Render ``--roadmap`` as Alice's goal names it, or None when omitted (#34).
+
+    A bare number (digits, optionally with a leading ``#``) names that issue of
+    the repository prepare-run is operating on (``slug or repository``); any
+    other value (``OWNER/REPO#N`` and the like) passes through verbatim for
+    Alice and bob to resolve at close-out.
+    """
+    if roadmap is None:
+        return None
+    if not roadmap.strip():
+        raise ValueError("--roadmap must not be empty")
+    match = re.fullmatch(r"#?(\d+)", roadmap)
+    if match:
+        return f"{slug or repository}#{match.group(1)}"
+    return roadmap
+
+
 def render_goal(
-    slug: str | None, repository: str, issue: int | None, work: str | None
+    slug: str | None,
+    repository: str,
+    issue: int | None,
+    work: str | None,
+    roadmap: str | None = None,
 ) -> str:
-    """The durable goal: the statement of work, or the one-issue sentence."""
+    """The durable goal: the statement of work, or the one-issue sentence (#34)."""
+    rendered = resolve_roadmap(roadmap, slug, repository)
+    if rendered is not None:
+        instructions = (
+            f"The implementer bob should make a decision on what roadmap ({rendered}) "
+            "updates are necessary, if any, when they open the PR and include it as a "
+            "PR comment so it can be reviewed. After the merge the implementer bob "
+            "should update the roadmap per the adjudicated PR if necessary. Make sure "
+            "you include that in bob's initial tasking."
+        )
+        if work is not None:
+            return f"{work}\n\nWhen done, close out. {instructions}"
+        if issue is not None:
+            target = f"{slug or repository}#{issue}"
+        else:
+            target = "<issue-owner>/<issue-repository>#<issue>"
+        return f"Address issue `{target}`, merge its pull request, and close out. {instructions}"
     if work is not None:
         return f"{work}\n\nWhen done, {THROWAWAY_CLOSE_OUT}."
     if issue is not None:
         target = f"{slug or repository}#{issue}"
     else:
         target = "<issue-owner>/<issue-repository>#<issue>"
-    roadmap = f"{slug or repository}#{ROADMAP_ISSUE}"
-    return (
-        f"Address issue `{target}`, merge its pull request, and close out. The implementer "
-        f"bob should make a decision on what roadmap ({roadmap}) updates are necessary, "
-        "if any, when they open the PR and include it as a PR comment so it can be "
-        "reviewed. After the merge the implementer bob should update the roadmap per the "
-        "adjudicated PR if necessary. Make sure you include that in bob's initial tasking."
-    )
+    return f"Address issue `{target}`, merge its pull request, and {THROWAWAY_CLOSE_OUT}."
 
 
 def render_alice_prompt(goal: str, account: str | None, policy: dict[str, Any]) -> str:
@@ -832,12 +861,15 @@ def prepare(
     bob_effort: str = "",
     charlie_effort: str = "",
     auto_start: bool = True,
+    roadmap: str | None = None,
 ) -> dict[str, Any]:
     if work_file is not None and issue is not None:
         raise ValueError(
             "--work-file and --issue are mutually exclusive; name the issue inside "
             "the statement of work, or pass --issue alone"
         )
+    if roadmap is not None and not roadmap.strip():
+        raise ValueError("--roadmap must not be empty")
     statement = read_work_file(work_file.resolve()) if work_file is not None else None
     work_text = statement["text"] if statement is not None else None
     if not run_dir.is_absolute() or run_dir != run_dir.resolve():
@@ -1049,7 +1081,7 @@ def prepare(
         "max_wall_minutes": 180,
         "max_task_lease_min": 120,
     }
-    goal = render_goal(slug, repository, issue, work_text)
+    goal = render_goal(slug, repository, issue, work_text, roadmap)
     (run_dir / "alice.prompt.md").write_text(
         render_alice_prompt(goal, account, policy) + prompt_sections("alice", alice_harness),
         encoding="utf-8",
@@ -1059,6 +1091,7 @@ def prepare(
         "goal": goal,
         "path": statement["path"] if statement is not None else None,
         "sha256": statement["sha256"] if statement is not None else None,
+        "roadmap": resolve_roadmap(roadmap, slug, repository),
     }
 
     manifest = {
@@ -1335,6 +1368,13 @@ def main() -> None:
         help="text or Markdown statement of work used as Alice's goal (not with --issue)",
     )
     parser.add_argument("--account", default=None)
+    parser.add_argument(
+        "--roadmap",
+        default=None,
+        metavar="ROADMAP",
+        help="roadmap issue bob may update: bare N or #N of the target repository, "
+        "or OWNER/REPO#N verbatim (default: no roadmap update required)",
+    )
     for name, default in (("alice", "claude"), ("bob", "claude"), ("charlie", "codex")):
         # --bob / --charlie are the earlier spellings of the worker harness flags.
         aliases = [] if name == "alice" else [f"--{name}"]
@@ -1425,6 +1465,7 @@ def main() -> None:
             "--issue": args.issue is not None,
             "--work-file": args.work_file is not None,
             "--account": args.account is not None,
+            "--roadmap": args.roadmap is not None,
             "--state-dir": args.state_dir is not None,
             "--remote-worker": args.remote_worker is not None,
             "--hub-host": args.hub_host != DEFAULT_HUB_HOST,
@@ -1491,6 +1532,7 @@ def main() -> None:
             bob_effort=args.bob_effort,
             charlie_effort=args.charlie_effort,
             auto_start=args.auto_start,
+            roadmap=args.roadmap,
         )
     except ValueError as exc:
         sys.exit(f"prepare-run: error: {exc}")

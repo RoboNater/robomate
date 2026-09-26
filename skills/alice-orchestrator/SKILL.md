@@ -22,12 +22,13 @@ the workflow.
 ## KICKOFF and PLAN
 
 <!-- Initialization contract: spec §4.2, §5 PLAN; Step 5A PR #64 and #65.
-     Statement of work, one PR per run: #101. -->
+     Statement of work, one PR per run: #101. Roadmap kickoff is conditional: #34. -->
 
 1. Parse the initial operator prompt into an exact `goal` and `policy`. The goal
    is a statement of work: it identifies one repository, the work (every
    repository-qualified issue it names, or a described job naming none), the
-   required outcome, and either a repository-qualified roadmap target or an
+   required outcome, and either a repository-qualified roadmap target, a
+   supplied roadmap target carried unresolved for close-out resolution, or an
    explicit statement that this throwaway run has no roadmap target. Never infer
    issue `#2` in the implementation repository. Do not add scope. One run
    delivers one PR: if the work needs more than one PR, do not initialize;
@@ -39,20 +40,29 @@ the workflow.
      exact original goal and policy; never replace durable inputs from a later
      prompt. If the prompt conflicts with stored state, explain the mismatch and
      ask whether to resume or use a fresh `HUB_STATE_DIR`.
-3. Read every issue the statement names and the roadmap directly with
-   `gh issue view`. Write concise acceptance criteria from the statement text,
-   those issues, and repository instructions. Fix the work label: the
+3. Read every issue the statement names directly with `gh issue view`, and, when
+   the goal names a repository-qualified roadmap target, the roadmap too. A
+   supplied roadmap target that is not repository-qualified is carried
+   unresolved to close-out instead of read as an issue. If the roadmap read
+   fails, record the failure with `log_decision` and carry it to close-out;
+   the run still has a roadmap target. Write concise
+   acceptance criteria from the statement text, those issues, and
+   repository instructions. Fix the work label: the
    `<owner/repository#number>` of the only named issue, or else a short label
    (at most 60 characters) from the statement's own title or first line. Record
    the plan, including `work-label:<label>`, with `log_decision` before
    assigning work; on resume, reuse the recorded label.
-4. Inspect the roadmap Reservations section for every shared monotonic counter
-   the statement or any named issue may touch: database schema, migration, wire
-   schema, event kind, or similar. Use an existing reservation unchanged.
+4. For every shared monotonic counter the statement or any named issue may
+   touch: database schema, migration, wire schema, event kind, or similar —
+   when the goal names a repository-qualified roadmap target, inspect the
+   roadmap Reservations section first and use an existing reservation unchanged.
    Otherwise choose a value that does not overlap an in-flight issue and record
    `summary="reservation:<counter>"` with `log_decision`; include the value in
    the implementer assignment when the statement and its issues do not already
-   name it. If uniqueness cannot be established, escalate instead of guessing.
+   name it. When the goal states this throwaway run has no roadmap target,
+   there is no roadmap issue to read or update; the `log_decision` record and
+   the implementer assignment carry the reservation. If uniqueness cannot be
+   established, escalate instead of guessing.
 
 <!-- Reservation decision: spec §5 IMPLEMENT / #40. Relay template baseline: #43. -->
 
@@ -405,7 +415,8 @@ the workflow active before executing the named action.
 
 ## WRAP-UP
 
-<!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42. -->
+<!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42.
+     Unresolved supplied roadmap targets: #34. -->
 
 After a verified merge, follow the close-out target from the durable goal. When
 it names a repository-qualified roadmap issue, assign the implementer a
@@ -416,6 +427,13 @@ herself; she edits the roadmap only for reservations and sequencing.
 Verify the update directly with
 `gh issue view <number> --repo <owner>/<repository>`. If it is missing, send one
 correction task naming that same repository-qualified issue and verify again.
+When the goal names a supplied roadmap target, first resolve it to an
+`owner/repository#number` when it is not repository-qualified already, then
+read that issue directly: if it resolves to a readable issue, proceed as above
+against the resolved issue; if it cannot be resolved, do not invent an
+issue — record the supplied value and the failed read in the workflow summary,
+citing the recorded kickoff failure as context when present, and escalate with
+a concrete operator question naming them.
 When the goal explicitly says a throwaway run has no roadmap target, do not
 invent or edit an issue; record close-out only in the workflow summary.
 

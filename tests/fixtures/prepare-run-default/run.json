@@ -66,8 +66,9 @@
     "codex": "codex-cli 0.154.0"
   },
   "work": {
-    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out. The implementer bob should make a decision on what roadmap ($ORIGIN#2) updates are necessary, if any, when they open the PR and include it as a PR comment so it can be reviewed. After the merge the implementer bob should update the roadmap per the adjudicated PR if necessary. Make sure you include that in bob's initial tasking.",
+    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.",
     "path": null,
+    "roadmap": null,
     "sha256": null
   },
   "workspaces": {

@@ -132,8 +132,9 @@ uv run --locked python scripts/prepare-run.py \
 ```
 
 The statement text becomes Alice's durable goal, followed by the throwaway
-close-out clause, and `run.json` records it under `work` with the file's path
-and SHA-256. Name issues repository-qualified: Alice reads every one for
+close-out clause (`--roadmap` replaces it with the bob roadmap instructions
+below), and `run.json` records it under `work` with the file's path, SHA-256,
+and the rendered roadmap (or `null`). Name issues repository-qualified: Alice reads every one for
 acceptance criteria and asks the implementer for a `Closes owner/repo#N` line
 per issue. One run delivers one pull request; work that needs several PRs takes
 one run per PR.
@@ -210,9 +211,11 @@ Per-agent flags choose how each agent starts:
 
 A Codex Alice gets her own `configs/alice-codex/` home, holding the hub's MCP
 config and the linked `alice-orchestrator` skill, in place of
-`configs/alice.mcp.json`. For an issue, Alice's goal asks bob to decide in a PR
-comment which updates the roadmap needs, taken to be issue #2 of the target
-repository, and to make them after the merge. `--bob-provider` /
+`configs/alice.mcp.json`. By default Alice's goal closes out with no roadmap
+edit. Pass `--roadmap N` (or `#N`) to name issue N of the target repository as
+the roadmap, or `OWNER/REPO#N` to name one elsewhere verbatim; Alice's goal
+then asks bob to decide in a PR comment which updates that roadmap needs and
+to make them after the merge. `--bob-provider` /
 `--charlie-provider` and `--bob-capabilities` / `--charlie-capabilities`
 override the identity profile. Reruns against the same
 `--run-dir` are idempotent and never rewrite an existing clone, token, or
@@ -693,9 +696,9 @@ requires a concrete question for the operator.
 
 ### Understanding the Policy Parameters
 
-- `Goal`:
+- `Goal` (driven by `--roadmap`; default: no roadmap update required):
   - Standard throwaway run: `Address issue <owner>/<repo>#<number>, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.`
-  - Roadmap-tracked run: `Address issue <owner>/<repo>#<number>, merge its pull request, and close out by updating roadmap issue <roadmap-owner>/<roadmap-repo>#<roadmap-number>.`
+  - Roadmap-tracked run (`--roadmap 2`, `--roadmap #2`, or `--roadmap other-org/other-repo#7`): `Address issue <owner>/<repo>#<number>, merge its pull request, and close out. The implementer bob should make a decision on what roadmap (<roadmap>) updates are necessary, if any, when they open the PR and include it as a PR comment so it can be reviewed. After the merge the implementer bob should update the roadmap per the adjudicated PR if necessary. Make sure you include that in bob's initial tasking.` A bare `N` or `#N` renders as `<target repo>#N`; any other value renders verbatim. For `--work-file`, the statement of work is followed by the same close-out: the throwaway `close out with no roadmap edit; record the merge only in the workflow summary` by default, or `close out.` plus the same bob roadmap instructions when `--roadmap` is given.
 - `GitHub comment identity account`: Your GitHub username (used in comments like `Implementation agent bob on behalf of <username>`).
 - `allow_no_ci`: Set to `false` if your repo runs CI (GitHub Actions). Set to `true` if your repository has no automated CI workflows configured so the merge gate will not block on missing workflows.
 - `reviewer_harness_differs`:
@@ -780,7 +783,7 @@ Once Alice receives the kickoff prompt, she executes the autonomous orchestratio
    ```
 9. **Wrap-Up**:
    - Alice logs the final merge details via `log_decision`.
-   - If the goal named a roadmap target, Alice assigns a `CLOSE-OUT for <merged sha7>` task to Bob to update checkboxes and reservations on that issue. For throwaway runs with no roadmap target, close-out is recorded solely in the workflow summary.
+   - If the goal names a roadmap target, bob has already posted a proposed decision on what roadmap updates are necessary as a PR comment when opening the PR; after the merge Alice assigns a `CLOSE-OUT for <merged sha7>` task to Bob to update that issue's checkboxes and reservations per the adjudicated decision. For throwaway runs with no roadmap target, close-out is recorded solely in the workflow summary.
    - Alice releases Bob and Charlie via `release_agent()`.
    - Alice marks workflow status as `done` via `set_workflow_status()`.
    - Workers observe `release: true` on their next `await_assignment()` and exit.

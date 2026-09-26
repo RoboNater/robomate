@@ -220,6 +220,8 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
             "Read every issue the statement names",
             "acceptance criteria from the statement text, those issues",
             "or any named issue may touch",
+            "carried unresolved to close-out",
+            "record the failure with `log_decision`",
             "`work-label:<label>`",
             "ask the operator to split it into one run per PR",
             "Repeat the `Closes` line once per issue the statement names",
@@ -228,7 +230,13 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
         ),
     )
     wrap_up = section(skill, "## WRAP-UP", "Ack the final processed event")
-    assert_fragments(wrap_up, ("listing every issue the statement names and every PR",))
+    assert_fragments(
+        wrap_up,
+        (
+            "listing every issue the statement names and every PR",
+            "if it cannot be resolved",
+        ),
+    )
 
     prompt = read("prompts/alice.md")
     durable_goal = section(prompt, "Goal:", "GitHub comment identity account:")
