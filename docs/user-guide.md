@@ -781,9 +781,9 @@ Once Alice receives the kickoff prompt, she executes the autonomous orchestratio
    ```bash
    gh pr merge <pr_url> --<merge_method> --delete-branch --match-head-commit <approved_head_sha>
    ```
- 9. **Wrap-Up**:
-    - Alice logs the final merge details via `log_decision`.
-    - If the goal names a roadmap target, bob has already posted the needed roadmap updates as a PR comment when opening the PR; after the merge Alice assigns a `CLOSE-OUT for <merged sha7>` task to Bob to update that issue's checkboxes and reservations per the adjudicated decision. For throwaway runs with no roadmap target, close-out is recorded solely in the workflow summary.
+9. **Wrap-Up**:
+   - Alice logs the final merge details via `log_decision`.
+   - If the goal names a roadmap target, bob has already posted a proposed decision on what roadmap updates are necessary as a PR comment when opening the PR; after the merge Alice assigns a `CLOSE-OUT for <merged sha7>` task to Bob to update that issue's checkboxes and reservations per the adjudicated decision. For throwaway runs with no roadmap target, close-out is recorded solely in the workflow summary.
    - Alice releases Bob and Charlie via `release_agent()`.
    - Alice marks workflow status as `done` via `set_workflow_status()`.
    - Workers observe `release: true` on their next `await_assignment()` and exit.
