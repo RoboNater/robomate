@@ -1,0 +1,161 @@
+"""The `/rpc` JSON-RPC route: orchestrator operations and `hub.*` operator methods (§8)."""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from fastapi import BackgroundTasks
+from pydantic import ValidationError, validate_call
+from pydantic_core import to_jsonable_python
+
+from .merge_gate import MergeGateError
+from .orchestrator import OPERATIONS, OrchestratorOps
+from .store import ConflictError, InvalidPolicyError, NotFoundError, PayloadTooLargeError
+
+logger = logging.getLogger(__name__)
+
+# Self-declared by the orchestrator bridge (§12 threat model): they identify a
+# session for the one-orchestrator rule and accounting, never authorize.
+ACTOR_HEADER = "X-Robomate-Actor"
+SESSION_HEADER = "X-Robomate-Session"
+MAX_ACTOR_LENGTH = 128
+
+# JSON-RPC 2.0 codes, then this route's server errors. The codes are stable;
+# the message is the original error text, so the bridge can hand Alice the
+# same tool error she saw over stdio.
+INVALID_REQUEST = -32600
+METHOD_NOT_FOUND = -32601
+INVALID_PARAMS = -32602
+INTERNAL_ERROR = -32603
+NOT_FOUND = -32001
+CONFLICT = -32002
+PAYLOAD_TOO_LARGE = -32003
+MERGE_GATE_UNAVAILABLE = -32004
+
+
+class RpcError(Exception):
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True, slots=True)
+class OrchestratorSession:
+    """The latest orchestrator session seen on `/rpc`; held in memory only."""
+
+    actor: str
+    session: str
+    last_seen: datetime
+
+
+def parse_caller(headers: Mapping[str, str]) -> tuple[str, str] | None:
+    """Return (actor, session) from the headers, or None when neither is sent."""
+
+    actor = headers.get(ACTOR_HEADER)
+    session = headers.get(SESSION_HEADER)
+    if actor is None and session is None:
+        return None
+    if actor is None or session is None:
+        raise RpcError(INVALID_REQUEST, f"{ACTOR_HEADER} and {SESSION_HEADER} go together")
+    actor = actor.strip()
+    if not actor or len(actor) > MAX_ACTOR_LENGTH:
+        raise RpcError(
+            INVALID_REQUEST, f"{ACTOR_HEADER} must be 1 to {MAX_ACTOR_LENGTH} characters"
+        )
+    try:
+        parsed = uuid.UUID(session)
+    except ValueError:
+        raise RpcError(INVALID_REQUEST, f"{SESSION_HEADER} must be a UUID") from None
+    return actor, str(parsed)
+
+
+def _error_code(exc: Exception) -> int:
+    if isinstance(exc, ValidationError | InvalidPolicyError | ValueError):
+        return INVALID_PARAMS
+    if isinstance(exc, NotFoundError):
+        return NOT_FOUND
+    if isinstance(exc, ConflictError):
+        return CONFLICT
+    if isinstance(exc, PayloadTooLargeError):
+        return PAYLOAD_TOO_LARGE
+    if isinstance(exc, MergeGateError):
+        return MERGE_GATE_UNAVAILABLE
+    return INTERNAL_ERROR
+
+
+class RpcDispatcher:
+    """Validate and route one JSON-RPC request body."""
+
+    def __init__(
+        self,
+        ops: OrchestratorOps,
+        *,
+        hub_info: Mapping[str, Any] | None = None,
+        shutdown: Callable[[], None] | None = None,
+    ) -> None:
+        self.ops = ops
+        self.hub_info = hub_info
+        self.shutdown = shutdown
+        # Recorded for the newest-session-wins rule (M1 Step 4), not yet enforced.
+        self.orchestrator: OrchestratorSession | None = None
+        self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
+            name: validate_call(getattr(ops, name)) for name in OPERATIONS
+        }
+
+    async def dispatch(
+        self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks
+    ) -> dict[str, Any]:
+        request_id = payload.get("id") if isinstance(payload, dict) else None
+        try:
+            result = await self._dispatch(payload, headers, background)
+        except RpcError as exc:
+            return _error(request_id, exc.code, exc.message)
+        except Exception as exc:
+            code = _error_code(exc)
+            if code == INTERNAL_ERROR:
+                logger.exception("Unhandled error serving /rpc")
+            return _error(request_id, code, str(exc))
+        return {"jsonrpc": "2.0", "id": request_id, "result": to_jsonable_python(result)}
+
+    async def _dispatch(
+        self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks
+    ) -> Any:
+        if (
+            not isinstance(payload, dict)
+            or payload.get("jsonrpc") != "2.0"
+            or not isinstance(payload.get("method"), str)
+            or not isinstance(payload.get("id"), str | int)
+            or isinstance(payload["id"], bool)
+        ):
+            raise RpcError(INVALID_REQUEST, "Invalid Request")
+        caller = parse_caller(headers)
+        method = payload["method"]
+        if method == "hub.info" and self.hub_info is not None:
+            return dict(self.hub_info)
+        if method == "hub.shutdown" and self.shutdown is not None:
+            background.add_task(self.shutdown)
+            return {"stopping": True}
+        operation = self._operations.get(method)
+        if operation is None:
+            raise RpcError(METHOD_NOT_FOUND, "Method not found")
+        params = payload.get("params", {})
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise RpcError(INVALID_PARAMS, "params must be an object")
+        if caller is not None:
+            actor, session = caller
+            self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
+        return await operation(**params)
+
+
+def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    if not isinstance(request_id, str | int) or isinstance(request_id, bool):
+        request_id = None
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}

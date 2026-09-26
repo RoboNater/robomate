@@ -1,4 +1,4 @@
-"""FastAPI application: A2A discovery, the worker protocol, and role guides."""
+"""FastAPI application: A2A discovery, the worker protocol, role guides, and `/rpc`."""
 
 from __future__ import annotations
 
@@ -25,7 +25,9 @@ from .accounting import (
 from .card import build_agent_card
 from .database import initialize_database
 from .guides import guide_response
+from .orchestrator import OrchestratorOps
 from .protocol import A2AProtocol, parse_error_response
+from .rpc import RpcDispatcher
 from .security import require_bearer
 from .signals import Signals
 from .store import HubStore
@@ -54,6 +56,8 @@ def create_app(
         default_event_lease_s=resolved.event_lease_s,
     )
     protocol = A2AProtocol(store=store, settings=resolved)
+    orchestrator = OrchestratorOps(store)
+    dispatcher = RpcDispatcher(orchestrator, hub_info=hub_info, shutdown=shutdown)
     accounting = CallAccounting(
         resolved.database_path,
         enabled=resolved.call_accounting,
@@ -103,6 +107,8 @@ def create_app(
     )
     app.state.settings = resolved
     app.state.store = store
+    app.state.orchestrator = orchestrator
+    app.state.rpc = dispatcher
     app.state.accounting = accounting
 
     def record_http(call: A2ACall, status: int, bytes_in: int, bytes_out: int) -> None:
@@ -157,26 +163,8 @@ def create_app(
             payload = await request.json()
         except ValueError:
             payload = None
-        request_id = payload.get("id") if isinstance(payload, dict) else None
-        if (
-            not isinstance(payload, dict)
-            or payload.get("jsonrpc") != "2.0"
-            or not isinstance(payload.get("method"), str)
-            or "id" not in payload
-        ):
-            return JSONResponse({"jsonrpc": "2.0", "id": request_id,
-                                 "error": {"code": -32600, "message": "Invalid Request"}})
-        method = payload["method"]
-        if method == "hub.info" and hub_info is not None:
-            result: Any = dict(hub_info)
-        elif method == "hub.shutdown" and shutdown is not None:
-            background.add_task(shutdown)
-            result = {"stopping": True}
-        else:
-            return JSONResponse({"jsonrpc": "2.0", "id": request_id,
-                                 "error": {"code": -32601, "message": "Method not found"}})
-        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
-                            background=background)
+        body = await dispatcher.dispatch(payload, request.headers, background)
+        return JSONResponse(body, background=background)
 
     @app.get("/guides/{role}.md", include_in_schema=False, dependencies=[Depends(require_bearer)])
     async def role_guide(role: str, request: Request) -> Response:
