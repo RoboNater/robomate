@@ -394,6 +394,11 @@ The orchestrator operations move from in-process MCP to an authenticated HTTP JS
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same
 route with an operator identity; `robomate abandon` and `robomate report` are operator-only.
 The first operator methods on this route are `hub.info` and `hub.shutdown` (M1 Step 2).
+From M1 Step 3 it also serves the orchestrator operations, named after today's tools, with
+the tool arguments as `params` (an object) and the tool's dict as `result`. Errors carry a
+stable `code` and the original message: -32602 invalid params (including argument
+validation), -32001 not found, -32002 conflict, -32003 payload too large, -32004 merge gate
+unavailable, -32603 anything else.
 
 ---
 
