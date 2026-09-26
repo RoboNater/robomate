@@ -5,8 +5,8 @@ Takes a target repository and a run directory and produces the layout the
 user guide describes: bootstrapped bob/charlie clones, a state directory with
 a reused bearer token, rendered MCP configs from the ``runtimes/`` templates,
 a run-local Codex home with its auth link, rendered worker prompts, cheap
-prerequisite checks, and paste-ready launch commands plus the Alice kickoff
-prompt.
+prerequisite checks, and one ``start-<agent>.sh`` script per agent plus the
+Alice kickoff prompt.
 
 Example:
     uv run --locked python scripts/prepare-run.py \\
@@ -17,8 +17,11 @@ Example:
 ``--work-file PATH`` replaces ``--issue N`` when the job is not exactly one
 issue: the file's text or Markdown statement of work becomes Alice's goal.
 
-Supported worker harnesses are ``claude-code`` and ``codex`` (the paste-ready
-pair); anything else fails up front with an actionable message.
+Each agent runs under Claude Code or Codex (``--<agent>-harness claude|codex``,
+case-insensitive), with an optional ``--<agent>-model`` and ``--<agent>-effort``
+passed through to its CLI unchecked. Start scripts hand each agent its prompt
+file (auto-start) unless ``--no-auto-start`` is given (#30). Any other harness
+fails up front with an actionable message.
 
 Networked runs (#125) separate three addresses: ``--hub-host`` is the hub's
 bind address (``HUB_HOST``), ``--hub-url`` the address every worker dials
@@ -53,6 +56,8 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path, PurePath, PureWindowsPath
@@ -69,6 +74,8 @@ from run_common import (  # noqa: E402
     bootstrap_clone,
     clone_source,
     codex_home,
+    codex_mcp,
+    codex_sandbox,
     ensure_token,
     link_or_copy,
     parse_github_slug,
@@ -82,14 +89,36 @@ from run_common import (  # noqa: E402
     write_private_text,
 )
 
+DEFAULT_ALICE_HARNESS = "claude-code"
 DEFAULT_BOB_HARNESS = "claude-code"
 DEFAULT_CHARLIE_HARNESS = "codex"
-#: Worker harnesses prepare-run can render configs *and* print verified
-#: paste-ready launch lines for. opencode needs its serve/attach supervisor
-#: loop and gemini CLI flags are unverified, so those topologies stay on the
-#: manual walkthrough in docs/user-guide.md.
-SUPPORTED_HARNESSES = ("claude-code", "codex")
+DEFAULT_HARNESSES = {
+    "alice": DEFAULT_ALICE_HARNESS,
+    "bob": DEFAULT_BOB_HARNESS,
+    "charlie": DEFAULT_CHARLIE_HARNESS,
+}
+#: Harnesses prepare-run can render configs *and* verified start scripts for,
+#: by the case-insensitive spellings ``--<agent>-harness`` accepts. opencode
+#: needs its serve/attach supervisor loop and gemini CLI flags are unverified,
+#: so those topologies stay on the manual walkthrough in docs/user-guide.md.
+HARNESS_NAMES = {"claude": "claude-code", "claude-code": "claude-code", "codex": "codex"}
 WORKERS = ("bob", "charlie")
+AGENTS = ("alice", *WORKERS)
+#: The hub's MCP tools, which a Codex Alice's config enables and approves.
+ALICE_TOOLS = [
+    "get_state",
+    "initialize_workflow",
+    "wait_for_event",
+    "assign_task",
+    "check_merge_gate",
+    "reply",
+    "set_task_state",
+    "release_agent",
+    "set_workflow_status",
+    "log_decision",
+]
+#: The roadmap issue the goal asks bob to update, in the target repository.
+ROADMAP_ISSUE = 2
 DEFAULT_HUB_HOST = "127.0.0.1"
 DEFAULT_HUB_PORT = 8420
 DEFAULT_HUB_URL = f"http://127.0.0.1:{DEFAULT_HUB_PORT}"
@@ -315,6 +344,18 @@ def check_manifest(manifest_path: Path, run_dir: Path, repository: str) -> None:
             )
 
 
+def harness_name(flag: str, value: str) -> str:
+    """The harness ``value`` names, case-insensitively; ``claude`` is ``claude-code``."""
+    harness = HARNESS_NAMES.get(value.strip().lower())
+    if harness is None:
+        raise ValueError(
+            f"{flag} {value!r} is not yet supported by prepare-run; expected claude or "
+            "codex (assemble other topologies via the manual walkthrough in "
+            "docs/user-guide.md)"
+        )
+    return harness
+
+
 def probe_versions(harnesses: set[str]) -> tuple[dict[str, str], dict[str, str]]:
     """Each harness's ``--version`` output by CLI, and its parsed version by harness."""
     versions: dict[str, str] = {}
@@ -365,7 +406,14 @@ def render_goal(
         target = f"{slug or repository}#{issue}"
     else:
         target = "<issue-owner>/<issue-repository>#<issue>"
-    return f"Address issue `{target}`, merge its pull request, and {THROWAWAY_CLOSE_OUT}."
+    roadmap = f"{slug or repository}#{ROADMAP_ISSUE}"
+    return (
+        f"Address issue `{target}`, merge its pull request, and close out. The implementer "
+        f"bob should make a decision on what roadmap ({roadmap}) updates are necessary, "
+        "if any, when they open the PR and include it as a PR comment so it can be "
+        "reviewed. After the merge the implementer bob should update the roadmap per the "
+        "adjudicated PR if necessary. Make sure you include that in bob's initial tasking."
+    )
 
 
 def render_alice_prompt(goal: str, account: str | None, policy: dict[str, Any]) -> str:
@@ -380,79 +428,157 @@ def render_alice_prompt(goal: str, account: str | None, policy: dict[str, Any]) 
     return prompt
 
 
-def codex_launch(home: Path, git_dir: Path, prompt: Path) -> list[str]:
-    """Paste-ready ``codex exec`` lines for the current platform.
+def prompt_sections(name: str, harness: str) -> str:
+    """Harness notes and the post-release close-out appended to a rendered prompt (#30).
 
-    The ``VAR=value cmd ... < file`` prefix and ``<`` redirection are POSIX
+    Claude Code backgrounds any tool call still running at 120 s, so a Claude
+    agent is told to keep every hub wait at 100 s.
+    """
+    sections = []
+    if harness == "claude-code":
+        waits = "`wait_for_event`" if name == "alice" else "`await_assignment`"
+        sections.append(
+            f"Use a 100 second wait time for all hub waits including {waits}. This "
+            "prevents the wait from being shifted to a background task by the harness."
+        )
+    elif name == "alice":
+        skill = ROOT / "skills/alice-orchestrator/SKILL.md"
+        sections.append(
+            "Codex runtime note: if the alice-orchestrator skill is not already loaded, "
+            f"read {skill} in full and follow it. Hub tools are the MCP server `hub`."
+        )
+    if name == "alice":
+        sections.append(
+            "After you release bob and charlie, please write your summary/closeout report "
+            "to `closeout-report-alice.md`. Also add any outstanding items which weren't "
+            "addressed, and any lessons learned worth mentioning to the closeout report."
+        )
+    else:
+        sections.append(
+            "After you are released by Alice, please write your summary/closeout report to "
+            f"`closeout-report-{name}.md`. Also add any outstanding items which weren't "
+            "addressed, and any lessons learned worth mentioning to the closeout report. "
+            "This file should be left uncommitted."
+        )
+    return "".join(f"\n{section}\n" for section in sections)
+
+
+def shell_word(value: str, powershell: bool = False) -> str:
+    """``value`` as one shell word, quoted only when it needs it."""
+    if not powershell:
+        return shlex.quote(value)
+    return value if re.fullmatch(r"[\w.-]+", value) else "'" + value.replace("'", "''") + "'"
+
+
+def model_flags(harness: str, model: str, effort: str, powershell: bool = False) -> list[str]:
+    """The CLI flags selecting ``model`` and reasoning ``effort``; empty ones are omitted."""
+    flags = ["--model", shell_word(model, powershell)] if model else []
+    if effort and harness == "codex":
+        # -c parses its value as TOML, falling back to the raw string, so the
+        # bare form serves PowerShell, which strips embedded double quotes.
+        quoted = effort if powershell else f'"{effort}"'
+        flags += ["-c", shell_word(f"model_reasoning_effort={quoted}", powershell)]
+    elif effort:
+        flags += ["--effort", shell_word(effort, powershell)]
+    return flags
+
+
+def claude_launch(
+    config: str, prompt: str, prompt_dir: str, flags: list[str], auto_start: bool
+) -> list[str]:
+    """A ``claude`` launch; auto-start runs it in print mode on its prompt file.
+
+    ``--add-dir`` lets Claude read the prompt when it is outside the clone.
+    """
+    words = ["claude", *flags]
+    if auto_start:
+        words += ["--permission-mode", "auto"]
+    words += ["--strict-mcp-config", f'--mcp-config "{config}"', f'--add-dir "{prompt_dir}"']
+    if auto_start:
+        words.append(f'-p "Read {prompt} and follow the instructions in it"')
+    return [" ".join(words)]
+
+
+def codex_launch(
+    home: str,
+    git_dir: str | None,
+    prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    powershell: bool = False,
+) -> list[str]:
+    """A ``codex`` launch; auto-start pipes the prompt file into ``codex exec``.
+
+    Sessions are kept (no ``--ephemeral``) so they can be inspected after the
+    run. The ``VAR=value cmd ... < file`` prefix and ``<`` redirection are POSIX
     shell syntax; PowerShell needs ``$env:`` assignments and pipes the prompt
     through ``Get-Content`` instead.
     """
-    if os.name == "nt":
+    words = ["codex", "exec"] if auto_start else ["codex"]
+    words += ["-C", "."]
+    if git_dir is not None:
+        words.append(f'--add-dir "{git_dir}"')
+    words += ["--approve-for-me", *flags]
+    command = " ".join(words)
+    if powershell:
         return [
             f'$env:CODEX_HOME = "{home}"',
-            f'Get-Content -Raw "{prompt}" | codex exec --ephemeral -C . '
-            f'--add-dir "{git_dir}" --approve-for-me -',
+            f'Get-Content -Raw "{prompt}" | {command} -' if auto_start else command,
         ]
-    return [
-        f'CODEX_HOME="{home}" codex exec --ephemeral -C . '
-        f'--add-dir "{git_dir}" --approve-for-me - < "{prompt}"',
-    ]
+    command = f'CODEX_HOME="{home}" {command}'
+    return [f'{command} - < "{prompt}"' if auto_start else command]
+
+
+def launch_lines(
+    harness: str,
+    workdir: Path,
+    config: Path,
+    prompt: Path,
+    git_dir: Path | None,
+    model: str = "",
+    effort: str = "",
+    auto_start: bool = True,
+) -> list[str]:
+    """One local agent's start lines for this platform; paths are quoted.
+
+    ``config`` is the MCP config for Claude Code and ``CODEX_HOME`` for Codex.
+    """
+    powershell = os.name == "nt"
+    flags = model_flags(harness, model, effort, powershell)
+    if harness == "codex":
+        lines = codex_launch(
+            str(config),
+            None if git_dir is None else str(git_dir),
+            str(prompt),
+            flags,
+            auto_start,
+            powershell,
+        )
+    else:
+        lines = claude_launch(str(config), str(prompt), str(prompt.parent), flags, auto_start)
+    return [f'cd "{workdir}"', *lines]
+
+
+def start_script(lines: list[str], powershell: bool = False) -> str:
+    """A start script running ``lines``, stopping if its ``cd`` fails."""
+    if powershell:
+        header = ["# Generated by scripts/prepare-run.py", '$ErrorActionPreference = "Stop"']
+    else:
+        header = ["#!/usr/bin/env bash", "# Generated by scripts/prepare-run.py", "set -e"]
+    return "\n".join([*header, *lines]) + "\n"
+
+
+def write_script(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
+    path.chmod(0o700)
 
 
 def remote_note(name: str) -> str:
     return f"# {name} runs on the worker host: render and launch it there (below)"
 
 
-def launch_lines(
-    run_dir: Path,
-    configs: Path,
-    alice_runtime: Path,
-    bob_dir: Path | None,
-    charlie_dir: Path | None,
-    bob_harness: str,
-    charlie_harness: str,
-    remote_worker: str | None = None,
-) -> list[str]:
-    """Paste-ready launch commands, one block per agent; paths are quoted.
-
-    A remote worker's directory is None; its block is a note pointing at the
-    ``--worker-only`` command printed after the launch commands.
-    """
-    lines = [
-        f'cd "{alice_runtime}"',
-        f'claude --strict-mcp-config --mcp-config "{configs / "alice.mcp.json"}"',
-        "",
-    ]
-    if remote_worker == "bob" or bob_dir is None:
-        lines.append(remote_note("bob"))
-    elif bob_harness == "codex":
-        lines.append(f'cd "{bob_dir}"')
-        lines += codex_launch(
-            configs / "bob-codex", bob_dir / ".git", run_dir / "bob.prompt.md"
-        )
-    else:
-        lines.append(f'cd "{bob_dir}"')
-        lines.append(
-            f'claude --strict-mcp-config --mcp-config "{configs / "bob.mcp.json"}"'
-        )
-    lines.append("")
-    if remote_worker == "charlie" or charlie_dir is None:
-        lines.append(remote_note("charlie"))
-        return lines
-    lines.append(f'cd "{charlie_dir}"')
-    if charlie_harness == "codex":
-        lines += codex_launch(
-            configs / "codex", charlie_dir / ".git", run_dir / "charlie.prompt.md"
-        )
-    else:
-        lines.append(
-            f'claude --strict-mcp-config --mcp-config "{configs / "charlie.mcp.json"}"'
-        )
-    return lines
-
-
 def codex_home_name(name: str) -> str:
-    return "codex" if name == "charlie" else "bob-codex"
+    return "codex" if name == "charlie" else f"{name}-codex"
 
 
 def git_bash_path(path: PurePath) -> str:
@@ -463,26 +589,41 @@ def git_bash_path(path: PurePath) -> str:
     return path.as_posix()
 
 
-def worker_launch(name: str, harness: str, run_dir: PurePath, workspace: PurePath) -> list[str]:
+def worker_launch(
+    name: str,
+    harness: str,
+    run_dir: PurePath,
+    workspace: PurePath,
+    model: str = "",
+    effort: str = "",
+    auto_start: bool = True,
+) -> list[str]:
     """A remote worker's launch lines, spelled for its host.
 
     On a Windows host the lines are for Git Bash: the shell's own ``cd`` and
     ``<`` take Git Bash spellings, while arguments and variables handed to
     native programs (claude, codex) keep forward-slash Windows paths (#75).
     """
-    lines = [f'cd "{git_bash_path(workspace)}"']
     configs = run_dir / "configs"
+    prompt = run_dir / f"{name}.prompt.md"
+    flags = model_flags(harness, model, effort)
     if harness == "codex":
-        home = configs / codex_home_name(name)
-        prompt = git_bash_path(run_dir / f"{name}.prompt.md")
-        lines.append(
-            f'CODEX_HOME="{home.as_posix()}" codex exec --ephemeral -C . '
-            f'--add-dir "{(workspace / ".git").as_posix()}" --approve-for-me - < "{prompt}"'
+        lines = codex_launch(
+            (configs / codex_home_name(name)).as_posix(),
+            (workspace / ".git").as_posix(),
+            git_bash_path(prompt),
+            flags,
+            auto_start,
         )
     else:
-        config = (configs / f"{name}.mcp.json").as_posix()
-        lines.append(f'claude --strict-mcp-config --mcp-config "{config}"')
-    return lines
+        lines = claude_launch(
+            (configs / f"{name}.mcp.json").as_posix(),
+            prompt.as_posix(),
+            run_dir.as_posix(),
+            flags,
+            auto_start,
+        )
+    return [f'cd "{git_bash_path(workspace)}"', *lines]
 
 
 def require_owner_only(path: Path) -> None:
@@ -528,12 +669,15 @@ def render_worker_bundle(
     run_dir: PurePath,
     workspace: PurePath,
     out_dir: Path,
+    effort: str = "",
+    auto_start: bool = True,
 ) -> dict[str, Any]:
-    """Render one worker's config and prompt for the host that runs it.
+    """Render one worker's config, prompt and start script for the host that runs it.
 
     ``root``, ``run_dir`` and ``workspace`` are that host's paths, written with
     forward slashes; ``out_dir`` is where this process writes ``run_dir``'s
-    files. They are the same directory under ``--worker-only``.
+    files. They are the same directory under ``--worker-only``. The start
+    script is for bash, which on Windows means Git Bash.
     """
     configs = out_dir / "configs"
     configs.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -559,11 +703,16 @@ def render_worker_bundle(
         mcp = render_claude_mcp(env, root.as_posix())
         write_secret(configs / f"{name}.mcp.json", lambda path: save(path, mcp))
         config = run_dir / "configs" / f"{name}.mcp.json"
-    (out_dir / f"{name}.prompt.md").write_text(render_worker_prompt(name), encoding="utf-8")
+    (out_dir / f"{name}.prompt.md").write_text(
+        render_worker_prompt(name) + prompt_sections(name, harness), encoding="utf-8"
+    )
+    launch = worker_launch(name, harness, run_dir, workspace, model, effort, auto_start)
+    write_script(out_dir / f"start-{name}.sh", start_script(launch))
     return {
         "config": config.as_posix(),
         "prompt": (run_dir / f"{name}.prompt.md").as_posix(),
-        "launch": worker_launch(name, harness, run_dir, workspace),
+        "launch": launch,
+        "script": (run_dir / f"start-{name}.sh").as_posix(),
     }
 
 
@@ -604,6 +753,8 @@ def worker_only_command(
     model: str,
     provider: str | None,
     capabilities: str,
+    effort: str = "",
+    auto_start: bool = True,
 ) -> str:
     """The ``--worker-only`` command to run on the remote worker's host.
 
@@ -616,10 +767,14 @@ def worker_only_command(
         "--run-dir '<absolute run directory on the worker host>'",
         f"--hub-url '{hub_url}'",
         f"--token-file '{remote_token_path(token_path)}'",
-        f"--{name} {harness}",
+        f"--{name}-harness {harness}",
     ]
     if model:
         args.append(f"--{name}-model '{model}'")
+    if effort:
+        args.append(f"--{name}-effort '{effort}'")
+    if not auto_start:
+        args.append("--no-auto-start")
     if provider:
         args.append(f"--{name}-provider '{provider}'")
     if capabilities:
@@ -652,6 +807,12 @@ def prepare(
     hub_url: str = DEFAULT_HUB_URL,
     remote_worker: str | None = None,
     hub_port: int | None = None,
+    alice_harness: str = DEFAULT_ALICE_HARNESS,
+    alice_model: str = "",
+    alice_effort: str = "",
+    bob_effort: str = "",
+    charlie_effort: str = "",
+    auto_start: bool = True,
 ) -> dict[str, Any]:
     if work_file is not None and issue is not None:
         raise ValueError(
@@ -666,14 +827,9 @@ def prepare(
         raise ValueError("RUN_DIR must be outside the coordination checkout")
     if not repository:
         raise ValueError("--repository must not be empty")
-    for label, harness in (("bob", bob_harness), ("charlie", charlie_harness)):
-        if harness not in SUPPORTED_HARNESSES:
-            raise ValueError(
-                f"--{label} harness {harness!r} is not yet supported by prepare-run; "
-                f"expected one of {list(SUPPORTED_HARNESSES)} "
-                "(assemble other topologies via the manual walkthrough in "
-                "docs/user-guide.md)"
-            )
+    alice_harness = harness_name("--alice-harness", alice_harness)
+    bob_harness = harness_name("--bob-harness", bob_harness)
+    charlie_harness = harness_name("--charlie-harness", charlie_harness)
     if merge_method not in ("squash", "merge", "rebase"):
         raise ValueError("--merge-method must be one of squash, merge, rebase")
     if allow_no_ci not in ("auto", "true", "false"):
@@ -820,10 +976,23 @@ def prepare(
     if network["hub_port"] != DEFAULT_HUB_PORT:
         hub_env["HUB_PORT"] = str(network["hub_port"])
     hub_args = ["run", "--locked", "--directory", str(ROOT), "hub"]
-    save(
-        configs / "alice.mcp.json",
-        {"mcpServers": {"hub": {"command": "uv", "args": hub_args, "env": hub_env}}},
-    )
+    if alice_harness == "codex":
+        alice_home = codex_home(configs, codex_home_name("alice"))
+        (alice_home / "skills").mkdir(exist_ok=True)
+        link_or_copy(
+            ROOT / "skills/alice-orchestrator", alice_home / "skills" / "alice-orchestrator"
+        )
+        write_private_text(
+            alice_home / "config.toml",
+            codex_sandbox() + codex_mcp("uv", hub_args, hub_env, ALICE_TOOLS, 330),
+        )
+        alice_config = alice_home / "config.toml"
+    else:
+        alice_config = configs / "alice.mcp.json"
+        save(
+            alice_config,
+            {"mcpServers": {"hub": {"command": "uv", "args": hub_args, "env": hub_env}}},
+        )
 
     # Alice's working directory, kept apart from the worker clones and the
     # token: the orchestrator skill is linked in run-locally (as in step6), so
@@ -837,7 +1006,8 @@ def prepare(
 
     for name in local:
         (run_dir / f"{name}.prompt.md").write_text(
-            render_worker_prompt(name), encoding="utf-8"
+            render_worker_prompt(name) + prompt_sections(name, harnesses[name]),
+            encoding="utf-8",
         )
 
     policy = {
@@ -862,7 +1032,8 @@ def prepare(
     }
     goal = render_goal(slug, repository, issue, work_text)
     (run_dir / "alice.prompt.md").write_text(
-        render_alice_prompt(goal, account, policy), encoding="utf-8"
+        render_alice_prompt(goal, account, policy) + prompt_sections("alice", alice_harness),
+        encoding="utf-8",
     )
     # The goal text is what Alice initializes with; path and hash tie it to the file.
     work = {
@@ -892,11 +1063,52 @@ def prepare(
     }
     if networked:
         manifest["network"] = {**network, "remote_worker": remote_worker}
+
+    # One start script per local agent; a remote worker's is rendered on its host.
+    launch = {
+        "alice": (alice_harness, alice_model, alice_effort),
+        "bob": (bob_harness, bob_model, bob_effort),
+        "charlie": (charlie_harness, charlie_model, charlie_effort),
+    }
+    workdirs = {"alice": alice_runtime, **{name: Path(workspaces[name]["path"]) for name in local}}
+    suffix = "ps1" if os.name == "nt" else "sh"
+    scripts: dict[str, str] = {}
+    for name in ("alice", *local):
+        harness, model, effort = launch[name]
+        if harness == "codex":
+            config = configs / codex_home_name(name)
+        else:
+            config = configs / f"{name}.mcp.json"
+        lines = launch_lines(
+            harness,
+            workdirs[name],
+            config,
+            run_dir / f"{name}.prompt.md",
+            None if name == "alice" else workdirs[name] / ".git",
+            model,
+            effort,
+            auto_start,
+        )
+        script = run_dir / f"start-{name}.{suffix}"
+        write_script(script, start_script(lines, os.name == "nt"))
+        scripts[name] = str(script)
+    manifest["launch"] = {
+        "auto_start": auto_start,
+        "agents": {
+            name: {
+                "harness": launch[name][0],
+                "model": launch[name][1],
+                "effort": launch[name][2],
+                "script": scripts[name],
+            }
+            for name in scripts
+        },
+    }
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
-    for name in local:
-        if harnesses[name] == "codex":
+    for name in ("alice", *local):
+        if launch[name][0] == "codex":
             home_name = codex_home_name(name)
             codex_auth[name] = f"{home_name}: {codex_login_status(configs / home_name)}"
     if not codex_auth:
@@ -908,10 +1120,11 @@ def prepare(
         "slug": slug,
         "issue": issue,
         "workspaces": {name: workspaces[name]["path"] for name in local},
-        "configs": {"alice": str(configs / "alice.mcp.json"), **rendered_configs},
+        "configs": {"alice": str(alice_config), **rendered_configs},
         "prompts": {
             name: str(run_dir / f"{name}.prompt.md") for name in ("alice", *local)
         },
+        "start_scripts": scripts,
         "checks": {
             "gh_auth": "ok" if not skip_github_checks else "skipped",
             "versions": versions,
@@ -923,18 +1136,16 @@ def prepare(
     if networked:
         report["network"] = manifest["network"]
     print(json.dumps(report, indent=2, sort_keys=True))
-    print("\nLaunch commands (paste in order):")
-    for line in launch_lines(
-        run_dir,
-        configs,
-        alice_runtime,
-        Path(workspaces["bob"]["path"]) if "bob" in workspaces else None,
-        Path(workspaces["charlie"]["path"]) if "charlie" in workspaces else None,
-        bob_harness,
-        charlie_harness,
-        remote_worker,
-    ):
-        print(line if line else "")
+    print("\nStart scripts (run each in its own terminal, alice first):")
+    for script in scripts.values():
+        print(script)
+    if remote_worker is not None:
+        print(remote_note(remote_worker))
+    if not auto_start:
+        print(
+            "Auto-start is off: once each agent is up, tell it to read and follow its "
+            "prompt file (see prompts above)."
+        )
     if remote_worker is not None:
         print(
             f"\nRemote worker {remote_worker}: on its host, from a robo-agents checkout "
@@ -950,6 +1161,8 @@ def prepare(
                 models[remote_worker],
                 bob_provider if remote_worker == "bob" else charlie_provider,
                 capabilities[remote_worker],
+                launch[remote_worker][2],
+                auto_start,
             )
         )
     if not is_loopback(url_host(network["hub_url"], "--hub-url")):
@@ -975,19 +1188,17 @@ def prepare_worker(
     provider: str | None = None,
     capabilities: str = "",
     worker_dir: Path | None = None,
+    effort: str = "",
+    auto_start: bool = True,
 ) -> dict[str, Any]:
     """Render one remote worker on the host that runs it (``--worker-only``).
 
     Reads the hub's token file in place, bootstraps the clone with this host's
-    git, and renders the config, prompt and launch lines with this host's paths.
+    git, and renders the config, prompt and start script with this host's paths.
     """
     if name not in WORKERS:
         raise ValueError(f"--worker-only must be one of {list(WORKERS)}")
-    if harness not in SUPPORTED_HARNESSES:
-        raise ValueError(
-            f"--{name} harness {harness!r} is not yet supported by prepare-run; "
-            f"expected one of {list(SUPPORTED_HARNESSES)}"
-        )
+    harness = harness_name(f"--{name}-harness", harness)
     if not repository:
         raise ValueError("--repository must not be empty")
     if not run_dir.is_absolute() or run_dir != run_dir.resolve():
@@ -1028,6 +1239,8 @@ def prepare_worker(
         run_dir,
         Path(identity["path"]),
         run_dir,
+        effort,
+        auto_start,
     )
     manifest = {
         "schema_version": 1,
@@ -1043,6 +1256,17 @@ def prepare_worker(
         "models": {name: model},
         "versions": versions,
         "configs": {name: bundle["config"]},
+        "launch": {
+            "auto_start": auto_start,
+            "agents": {
+                name: {
+                    "harness": harness,
+                    "model": model,
+                    "effort": effort,
+                    "script": bundle["script"],
+                }
+            },
+        },
     }
     save(manifest_path, manifest)
     checks: dict[str, Any] = {"versions": versions}
@@ -1060,6 +1284,7 @@ def prepare_worker(
                 "workspace": identity["path"],
                 "config": bundle["config"],
                 "prompt": bundle["prompt"],
+                "start_script": bundle["script"],
                 "checks": checks,
             },
             indent=2,
@@ -1069,9 +1294,13 @@ def prepare_worker(
     print()
     for line in preflight_lines(dial, None):
         print(line)
-    print(f"\nLaunch command for {name} (paste after the preflight passes):")
-    for line in bundle["launch"]:
-        print(line)
+    print(f"\nStart script for {name} (run it in bash or Git Bash once the preflight passes):")
+    print(bundle["script"])
+    if not auto_start:
+        print(
+            f"Auto-start is off: once {name} is up, tell it to read and follow "
+            f"{bundle['prompt']}."
+        )
     return manifest
 
 
@@ -1087,10 +1316,38 @@ def main() -> None:
         help="text or Markdown statement of work used as Alice's goal (not with --issue)",
     )
     parser.add_argument("--account", default=None)
-    parser.add_argument("--bob", default=DEFAULT_BOB_HARNESS)
-    parser.add_argument("--charlie", default=DEFAULT_CHARLIE_HARNESS)
-    parser.add_argument("--bob-model", default="")
-    parser.add_argument("--charlie-model", default="")
+    for name, default in (("alice", "claude"), ("bob", "claude"), ("charlie", "codex")):
+        # --bob / --charlie are the earlier spellings of the worker harness flags.
+        aliases = [] if name == "alice" else [f"--{name}"]
+        parser.add_argument(
+            f"--{name}-harness",
+            *aliases,
+            dest=f"{name}_harness",
+            metavar="HARNESS",
+            default=None,
+            help=f"claude or codex, case-insensitive (default: {default})",
+        )
+    for name in AGENTS:
+        pins = "" if name == "alice" else f"; also pins {name}'s HUB_MODEL"
+        parser.add_argument(
+            f"--{name}-model",
+            metavar="MODEL",
+            default="",
+            help=f"passed to the CLI's --model unchecked{pins}",
+        )
+    for name in AGENTS:
+        parser.add_argument(
+            f"--{name}-effort",
+            metavar="EFFORT",
+            default="",
+            help="reasoning effort, passed to the CLI unchecked",
+        )
+    parser.add_argument(
+        "--no-auto-start",
+        dest="auto_start",
+        action="store_false",
+        help="start scripts open each agent without handing it its prompt file",
+    )
     parser.add_argument("--bob-provider", default=None)
     parser.add_argument("--charlie-provider", default=None)
     parser.add_argument("--bob-capabilities", default="")
@@ -1139,6 +1396,11 @@ def main() -> None:
         help="with --worker-only: the hub's token file as this host reads it",
     )
     args = parser.parse_args()
+    # None means the flag was not given; an empty value is still validated.
+    harnesses = dict(DEFAULT_HARNESSES)
+    for name in AGENTS:
+        if (value := getattr(args, f"{name}_harness")) is not None:
+            harnesses[name] = value
     if args.worker_only is not None:
         hub_only = {
             "--issue": args.issue is not None,
@@ -1149,6 +1411,9 @@ def main() -> None:
             "--hub-host": args.hub_host != DEFAULT_HUB_HOST,
             "--hub-port": args.hub_port is not None,
             "--public-url": args.public_url is not None,
+            "--alice-harness": args.alice_harness is not None,
+            "--alice-model": bool(args.alice_model),
+            "--alice-effort": bool(args.alice_effort),
         }
         if given := [flag for flag, present in hub_only.items() if present]:
             parser.error(f"hub-host flags do not apply to --worker-only: {', '.join(given)}")
@@ -1162,11 +1427,13 @@ def main() -> None:
                 args.run_dir,
                 args.hub_url,
                 args.token_file,
-                getattr(args, name),
+                harnesses[name],
                 getattr(args, f"{name}_model"),
                 getattr(args, f"{name}_provider"),
                 getattr(args, f"{name}_capabilities"),
                 getattr(args, f"{name}_dir"),
+                getattr(args, f"{name}_effort"),
+                args.auto_start,
             )
         except ValueError as exc:
             sys.exit(f"prepare-run: error: {exc}")
@@ -1179,8 +1446,8 @@ def main() -> None:
             args.run_dir,
             args.issue,
             args.account,
-            args.bob,
-            args.charlie,
+            harnesses["bob"],
+            harnesses["charlie"],
             args.bob_model,
             args.charlie_model,
             args.bob_provider,
@@ -1199,6 +1466,12 @@ def main() -> None:
             args.hub_url,
             args.remote_worker,
             args.hub_port,
+            alice_harness=harnesses["alice"],
+            alice_model=args.alice_model,
+            alice_effort=args.alice_effort,
+            bob_effort=args.bob_effort,
+            charlie_effort=args.charlie_effort,
+            auto_start=args.auto_start,
         )
     except ValueError as exc:
         sys.exit(f"prepare-run: error: {exc}")
