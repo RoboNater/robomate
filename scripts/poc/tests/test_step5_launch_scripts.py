@@ -2,12 +2,12 @@ import os
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = [
-    ROOT / "scripts" / "prepare-step5-demo.sh",
-    ROOT / "scripts" / "launch-step5-alice.sh",
-    ROOT / "scripts" / "launch-step5-workers.sh",
-    ROOT / "scripts" / "verify-step5-demo.sh",
+    ROOT / "scripts" / "poc" / "prepare-step5-demo.sh",
+    ROOT / "scripts" / "poc" / "launch-step5-alice.sh",
+    ROOT / "scripts" / "poc" / "launch-step5-workers.sh",
+    ROOT / "scripts" / "poc" / "verify-step5-demo.sh",
 ]
 
 
@@ -25,7 +25,7 @@ def test_step5_launch_scripts_are_executable_and_parse() -> None:
 
 
 def test_alice_launcher_is_interactive_and_uses_the_checked_in_skill() -> None:
-    text = (ROOT / "scripts" / "launch-step5-alice.sh").read_text(encoding="utf-8")
+    text = (ROOT / "scripts" / "poc" / "launch-step5-alice.sh").read_text(encoding="utf-8")
 
     assert 'skills/alice-orchestrator"' in text
     assert "exec claude" in text
@@ -35,8 +35,8 @@ def test_alice_launcher_is_interactive_and_uses_the_checked_in_skill() -> None:
 
 
 def test_prepare_and_verify_keep_evidence_outside_the_checkout() -> None:
-    prepare = (ROOT / "scripts" / "prepare-step5-demo.sh").read_text(encoding="utf-8")
-    verify = (ROOT / "scripts" / "verify-step5-demo.sh").read_text(encoding="utf-8")
+    prepare = (ROOT / "scripts" / "poc" / "prepare-step5-demo.sh").read_text(encoding="utf-8")
+    verify = (ROOT / "scripts" / "poc" / "verify-step5-demo.sh").read_text(encoding="utf-8")
 
     assert "RUN_DIR" in prepare
     assert "--seed" in prepare

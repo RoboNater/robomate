@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("step6", ROOT / "scripts/step6.py")
+ROOT = Path(__file__).resolve().parents[3]
+SPEC = importlib.util.spec_from_file_location("step6", ROOT / "scripts/poc/step6.py")
 assert SPEC and SPEC.loader
 STEP6 = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(STEP6)
@@ -31,7 +31,7 @@ def proof() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, A
     manifest: dict[str, Any] = {
         "run_id": "test",
         "coordination_head": "2" * 40,
-        "review_check_script": str(ROOT / "scripts/step6-review-check.py"),
+        "review_check_script": str(ROOT / "scripts/poc/step6-review-check.py"),
         "issue": {"number": 9},
         "work_pr": {"url": url, "number": 10},
         "repository": STEP6.SANDBOX,
@@ -487,7 +487,7 @@ def test_local_prepare_and_all_launchers(tmp_path: Path, fake_step6_cli: Path) -
     directory = tmp_path / "persistent run"
     subprocess.run(
         [
-            str(ROOT / "scripts/prepare-step6-demo.sh"),
+            str(ROOT / "scripts/poc/prepare-step6-demo.sh"),
             str(directory),
             "--local-repository",
             str(origin),
@@ -521,7 +521,7 @@ def test_local_prepare_and_all_launchers(tmp_path: Path, fake_step6_cli: Path) -
     env = os.environ.copy()
     for name in ("alice", "bob", "charlie"):
         output = subprocess.run(
-            [str(ROOT / f"scripts/launch-step6-{name}.sh"), str(directory)],
+            [str(ROOT / f"scripts/poc/launch-step6-{name}.sh"), str(directory)],
             env=env,
             capture_output=True,
             text=True,
@@ -552,7 +552,7 @@ def test_local_prepare_and_all_launchers(tmp_path: Path, fake_step6_cli: Path) -
     transcript.write_text("{}\n")
     STEP6.save(directory / "run.json", manifest)
     resumed = subprocess.run(
-        [str(ROOT / "scripts/launch-step6-alice.sh"), str(directory)],
+        [str(ROOT / "scripts/poc/launch-step6-alice.sh"), str(directory)],
         env=env,
         capture_output=True,
         text=True,
@@ -566,7 +566,9 @@ def test_local_prepare_and_all_launchers(tmp_path: Path, fake_step6_cli: Path) -
     # Execute both remaining script entry points against an incomplete fixture: fail closed.
     for filename in ("run-step6-disturbances.py", "verify-step6-demo.sh"):
         output = subprocess.run(
-            [str(ROOT / "scripts" / filename), str(directory)], capture_output=True, text=True
+            [str(ROOT / "scripts" / "poc" / filename), str(directory)],
+            capture_output=True,
+            text=True,
         )
         assert output.returncode != 0
     with pytest.raises(ValueError, match="reuse"):
@@ -578,7 +580,7 @@ def test_local_prepare_and_all_launchers(tmp_path: Path, fake_step6_cli: Path) -
 
 
 def test_shell_scripts_parse_and_are_executable() -> None:
-    for script in ROOT.glob("scripts/*step6*.sh"):
+    for script in ROOT.glob("scripts/poc/*step6*.sh"):
         assert os.access(script, os.X_OK)
         subprocess.run(["bash", "-n", str(script)], check=True)
 
@@ -1288,7 +1290,7 @@ def test_review_check_entry_point_records_real_clone_test_execution(
     ).strip()
     command = [
         "python3",
-        str(ROOT / "scripts/step6-review-check.py"),
+        str(ROOT / "scripts/poc/step6-review-check.py"),
         str(workspace),
         head,
         "test-run",
@@ -1672,7 +1674,9 @@ def test_codex_exec_windows_command_is_unwrapped() -> None:
 
 
 def test_telemetry_ignores_partially_written_records(tmp_path: Path) -> None:
-    spec = importlib.util.spec_from_file_location("step6_launch", ROOT / "scripts/step6_launch.py")
+    spec = importlib.util.spec_from_file_location(
+        "step6_launch", ROOT / "scripts/poc/step6_launch.py"
+    )
     assert spec and spec.loader
     launch = importlib.util.module_from_spec(spec)
     import sys

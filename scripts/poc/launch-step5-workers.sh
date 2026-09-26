@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "usage: $0 RUN_DIR [CRASH_POINT]" >&2
   exit 2

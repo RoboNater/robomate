@@ -46,7 +46,7 @@ codex --version
 codex login status
 gh repo view RoboNater/robo-agents-sandbox --json viewerPermission,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed
 gh workflow list --repo RoboNater/robo-agents-sandbox
-scripts/prepare-step6-demo.sh /absolute/persistent/step6-attempt --seed
+scripts/poc/prepare-step6-demo.sh /absolute/persistent/step6-attempt --seed
 ```
 
 Preparation refuses a measured run directory, creates independent full clones
@@ -59,10 +59,10 @@ or deleted. A new measured attempt uses a fresh directory and namespace.
 Start these in separate long-lived PTYs and capture output beneath the run root:
 
 ```sh
-scripts/launch-step6-alice.sh /absolute/persistent/step6-attempt
-scripts/launch-step6-bob.sh /absolute/persistent/step6-attempt > /absolute/persistent/step6-attempt/bob.transcript.jsonl 2> /absolute/persistent/step6-attempt/bob.stderr
-scripts/launch-step6-charlie.sh /absolute/persistent/step6-attempt > /absolute/persistent/step6-attempt/charlie.transcript.jsonl 2> /absolute/persistent/step6-attempt/charlie.stderr
-scripts/run-step6-disturbances.py /absolute/persistent/step6-attempt > /absolute/persistent/step6-attempt/driver.stdout 2> /absolute/persistent/step6-attempt/driver.stderr
+scripts/poc/launch-step6-alice.sh /absolute/persistent/step6-attempt
+scripts/poc/launch-step6-bob.sh /absolute/persistent/step6-attempt > /absolute/persistent/step6-attempt/bob.transcript.jsonl 2> /absolute/persistent/step6-attempt/bob.stderr
+scripts/poc/launch-step6-charlie.sh /absolute/persistent/step6-attempt > /absolute/persistent/step6-attempt/charlie.transcript.jsonl 2> /absolute/persistent/step6-attempt/charlie.stderr
+scripts/poc/run-step6-disturbances.py /absolute/persistent/step6-attempt > /absolute/persistent/step6-attempt/driver.stdout 2> /absolute/persistent/step6-attempt/driver.stderr
 ```
 
 Alice launches the hub through her stdio MCP server. Wait for `/healthz`, inspect
@@ -91,7 +91,7 @@ WRAP-UP. The driver never writes these audit records.
 After done and both workers have observed release:
 
 ```sh
-scripts/verify-step6-demo.sh /absolute/persistent/step6-attempt
+scripts/poc/verify-step6-demo.sh /absolute/persistent/step6-attempt
 ```
 
 The verifier reads a consistent SQLite snapshot, durable GitHub issue/PR/comment,
@@ -132,7 +132,7 @@ all artifacts for the bearer token and recognized credential formats, and refuse
 to overwrite an earlier export:
 
 ```sh
-python3 scripts/step6.py export /absolute/persistent/step6-attempt --destination docs/evidence
+python3 scripts/poc/step6.py export /absolute/persistent/step6-attempt --destination docs/evidence
 ```
 
 Review the five JSON artifacts before committing and add the concise narrative.
@@ -164,7 +164,7 @@ ordering rather than invented timestamp precision. Extra merge options such as
 
 For every REVIEW or RE-REVIEW, Charlie's trusted launch prompt requires fetching
 and checking out the assigned head in his own full clone, then running
-`scripts/step6-review-check.py <absolute-charlie-clone> <assigned-full-sha> <run-id>`
+`scripts/poc/step6-review-check.py <absolute-charlie-clone> <assigned-full-sha> <run-id>`
 through its absolute coordination-checkout path. The helper runs the standard
 unittest command in that clone and records its actual identity, before/after
 HEAD, test return code, clean state, source commit, and UTC interval under
@@ -186,11 +186,11 @@ STEP6_CHARLIE_MODEL=openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
 STEP6_PYENV_VERSION=3.12.10        # pyenv-win python3 shim for every clone
 STEP6_SKIP_ROADMAP_RESERVATION=1   # when not authorized to comment on #2
 PYTHONUTF8=1
-uv run --locked python scripts/step6.py prepare 'C:\absolute\run' --seed
+uv run --locked python scripts/poc/step6.py prepare 'C:\absolute\run' --seed
 ```
 
-Launch with `scripts/step6_launch.py {alice,bob,charlie} RUN_DIR` in separate
-processes (Alice first), then `scripts/run-step6-disturbances.py RUN_DIR`. Codex
+Launch with `scripts/poc/step6_launch.py {alice,bob,charlie} RUN_DIR` in separate
+processes (Alice first), then `scripts/poc/run-step6-disturbances.py RUN_DIR`. Codex
 Alice runs under a `codex app-server` supervisor so one process keeps the hub
 alive across turns; OpenCode Charlie runs `opencode serve` with `run --attach`
 turns so his `worker-mcp` instance persists. Supervisors send only fixed
@@ -204,13 +204,13 @@ The same harness runs the Step 7 topology from
 [`docs/plan-for-step-7-and-issue-70.md`](plan-for-step-7-and-issue-70.md)
 (#140). The hub, Alice and Charlie run in WSL2 (NAT mode). Bob runs natively on
 the Windows host and dials WSL's `eth0` address. The helpers live in
-`scripts/step7.py`, and `scripts/step6.py` stays the entry point. The port comes
+`scripts/poc/step7.py`, and `scripts/poc/step6.py` stays the entry point. The port comes
 from `--hub-port`; pick one no other checkout's hub holds.
 
 ```sh
 # From WSL. The Windows checkout must be clean and at this checkout's commit,
 # with `uv sync --locked --all-packages` run there.
-uv run --locked python scripts/step6.py prepare /abs/run \
+uv run --locked python scripts/poc/step6.py prepare /abs/run \
   --scenario scenarios/step7-networked-untrusted.json --hub-port 8431 \
   --windows-run-dir C:/work/step7-run --windows-checkout C:/work/robo-agents \
   [--local-repository /abs/sandbox-clone | --seed]
@@ -234,12 +234,12 @@ hub token in place over `//wsl.localhost` and writes it only into
 `prepare` prints the launch lines. Run them from WSL in this order:
 
 ```sh
-scripts/launch-step6-alice.sh /abs/run
-scripts/launch-step6-charlie.sh /abs/run
-uv run --locked python scripts/step6_launch.py bob /abs/run   # Bob's supervisor runs on Windows
-uv run --locked python scripts/run-step6-disturbances.py /abs/run
-uv run --locked python scripts/step6.py verify /abs/run
-uv run --locked python scripts/step6.py export /abs/run --destination docs/evidence
+scripts/poc/launch-step6-alice.sh /abs/run
+scripts/poc/launch-step6-charlie.sh /abs/run
+uv run --locked python scripts/poc/step6_launch.py bob /abs/run   # Bob's supervisor runs on Windows
+uv run --locked python scripts/poc/run-step6-disturbances.py /abs/run
+uv run --locked python scripts/poc/step6.py verify /abs/run
+uv run --locked python scripts/poc/step6.py export /abs/run --destination docs/evidence
 ```
 
 Besides the disturbances, the driver samples Bob's hub row until he is

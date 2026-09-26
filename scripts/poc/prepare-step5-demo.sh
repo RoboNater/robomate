@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 if [[ $# -lt 1 || $# -gt 3 ]]; then
   echo "usage: $0 RUN_DIR [RUN_ID] [--allow-repeat]" >&2
   exit 2
@@ -41,5 +41,5 @@ fi
 UV_CACHE_DIR=${UV_CACHE_DIR:-/tmp/robo-step5-uv-cache} "${seed_args[@]}"
 
 echo "Prepared Step 5C run in $run_dir" >&2
-echo "Next: scripts/launch-step5-alice.sh $run_dir" >&2
-echo "Then, from a second terminal: scripts/launch-step5-workers.sh $run_dir" >&2
+echo "Next: scripts/poc/launch-step5-alice.sh $run_dir" >&2
+echo "Then, from a second terminal: scripts/poc/launch-step5-workers.sh $run_dir" >&2

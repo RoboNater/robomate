@@ -1,6 +1,6 @@
 """Step 7 networked topology (#140): addressing, preflight, launch, checks 1-5, export.
 
-The helpers live in ``scripts/step7.py``; ``scripts/step6.py`` stays the entry
+The helpers live in ``scripts/poc/step7.py``; ``scripts/poc/step6.py`` stays the entry
 point, so these tests drive both through the module ``step6`` imports.
 """
 
@@ -25,7 +25,7 @@ from conftest import TOKEN, message, rpc
 from fastapi import FastAPI
 from worker_mcp.config import WorkerSettings
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 STEP6 = test_step6.STEP6
 STEP7 = STEP6.step7
 stamp = test_step6.stamp
@@ -41,7 +41,7 @@ BOB_ID = "b" * 64
 CHARLIE_ID = "c" * 64
 
 LAUNCH_SPEC = importlib.util.spec_from_file_location(
-    "step6_launch", ROOT / "scripts/step6_launch.py"
+    "step6_launch", ROOT / "scripts/poc/step6_launch.py"
 )
 assert LAUNCH_SPEC and LAUNCH_SPEC.loader
 LAUNCH = importlib.util.module_from_spec(LAUNCH_SPEC)
@@ -308,7 +308,7 @@ def test_step6_launchers_use_the_run_port(tmp_path: Path, fake_step6_cli: Path) 
     curl = fake_step6_cli / "curl"
     curl.write_text(f'#!/usr/bin/env bash\necho "$@" >> {probes}\nexit 1\n')
     alice = subprocess.run(
-        [str(ROOT / "scripts/launch-step6-alice.sh"), str(directory)],
+        [str(ROOT / "scripts/poc/launch-step6-alice.sh"), str(directory)],
         capture_output=True,
         text=True,
     )
@@ -316,13 +316,13 @@ def test_step6_launchers_use_the_run_port(tmp_path: Path, fake_step6_cli: Path) 
     assert probes.read_text().split()[-1] == f"http://127.0.0.1:{PORT}/healthz"
     curl.write_text("#!/usr/bin/env bash\nexit 0\n")  # the run's port is taken
     occupied = subprocess.run(
-        [str(ROOT / "scripts/launch-step6-alice.sh"), str(directory)],
+        [str(ROOT / "scripts/poc/launch-step6-alice.sh"), str(directory)],
         capture_output=True,
         text=True,
     )
     assert occupied.returncode == 1 and f"port {PORT} occupied" in occupied.stderr
     bob = subprocess.run(
-        [str(ROOT / "scripts/launch-step6-bob.sh"), str(directory)],
+        [str(ROOT / "scripts/poc/launch-step6-bob.sh"), str(directory)],
         capture_output=True,
         text=True,
     )
@@ -357,7 +357,7 @@ def test_networked_bob_launches_the_same_supervisor_on_windows(
     assert captured["cwd"] == "/mnt/c/work/robo-agents"
     assert captured["command"][:2] == [STEP7.WINDOWS_BASH, "-lc"]
     assert captured["command"][2].endswith(
-        "exec uv run --locked python scripts/step6_launch.py bob C:/work/step7-run "
+        "exec uv run --locked python scripts/poc/step6_launch.py bob C:/work/step7-run "
         "--max-turns 3 --delay 1.0"
     )
 
@@ -1292,7 +1292,7 @@ def test_step7_helpers_import_without_the_workspace_packages() -> None:
         "        raise ImportError(name)\n"
         "    return real(name, *args, **kwargs)\n"
         "builtins.__import__ = guard\n"
-        f"sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+        f"sys.path.insert(0, {str(ROOT / 'scripts/poc')!r})\n"
         "import step6, step7\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)

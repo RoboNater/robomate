@@ -3,13 +3,13 @@
 
 The hub, Alice and Charlie run in WSL2. Bob runs natively on the Windows host
 and dials the hub at WSL's ``eth0`` address across the Hyper-V vSwitch.
-``scripts/step6.py`` stays the one entry point. It calls into this module only
+``scripts/poc/step6.py`` stays the one entry point. It calls into this module only
 when the scenario's ``topology`` is ``networked``, so a Step 6 (localhost) run
 takes none of these paths.
 
 This is a helper module, not an entry point. At module level it imports only
 the standard library and ``run_common``, because
-``scripts/prepare-step6-demo.sh`` runs ``step6.py`` under a bare ``python3``.
+``scripts/poc/prepare-step6-demo.sh`` runs ``step6.py`` under a bare ``python3``.
 ``prepare-run.py`` and the workspace packages are loaded where they are used.
 """
 
@@ -273,10 +273,11 @@ def local_hub(manifest, default):
 
 def launch_lines(directory):
     return [
-        f"scripts/launch-step6-alice.sh {shlex.quote(str(directory))}",
-        f"scripts/launch-step6-charlie.sh {shlex.quote(str(directory))}",
-        f"uv run --locked python scripts/step6_launch.py bob {shlex.quote(str(directory))}",
-        f"uv run --locked python scripts/run-step6-disturbances.py {shlex.quote(str(directory))}",
+        f"scripts/poc/launch-step6-alice.sh {shlex.quote(str(directory))}",
+        f"scripts/poc/launch-step6-charlie.sh {shlex.quote(str(directory))}",
+        f"uv run --locked python scripts/poc/step6_launch.py bob {shlex.quote(str(directory))}",
+        "uv run --locked python scripts/poc/run-step6-disturbances.py "
+        f"{shlex.quote(str(directory))}",
     ]
 
 
