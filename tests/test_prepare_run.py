@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -279,13 +280,13 @@ def test_claude_launch_lines_carry_model_effort_and_prompt(
         "claude-code", run_dir / "bob", config, prompt, run_dir / "bob" / ".git",
         "opus[1m]", "high", auto_start,
     )
-    assert lines[0] == f'cd "{run_dir / "bob"}"'
+    assert lines[0] == f"cd {run_dir / 'bob'}"
     command = lines[1]
     assert command.startswith("claude --model 'opus[1m]' --effort high ")
-    assert f'--mcp-config "{config}" --add-dir "{run_dir}"' in command
+    assert f"--mcp-config {config} --add-dir {run_dir}" in command
     if auto_start:
         assert "--permission-mode auto" in command
-        assert command.endswith(f'-p "Read {prompt} and follow the instructions in it"')
+        assert command.endswith(f"-p 'Read {prompt} and follow the instructions in it'")
     else:
         assert "--permission-mode" not in command and " -p " not in command
     assert len(lines) == 2
@@ -303,14 +304,14 @@ def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
         "codex", run_dir / "charlie", home, prompt, git_dir, "gpt-6-sol", "high", auto_start
     )
     flags = (
-        f'-C . --add-dir "{git_dir}" --approve-for-me --model gpt-6-sol '
+        f"-C . --add-dir {git_dir} --approve-for-me --model gpt-6-sol "
         "-c 'model_reasoning_effort=\"high\"'"
     )
     if auto_start:
-        expected = f'CODEX_HOME="{home}" codex exec {flags} - < "{prompt}"'
+        expected = f"CODEX_HOME={home} codex exec {flags} - < {prompt}"
     else:
-        expected = f'CODEX_HOME="{home}" codex {flags}'
-    assert lines == [f'cd "{run_dir / "charlie"}"', expected]
+        expected = f"CODEX_HOME={home} codex {flags}"
+    assert lines == [f"cd {run_dir / 'charlie'}", expected]
     assert "--ephemeral" not in expected
 
 
@@ -340,8 +341,10 @@ def test_launch_lines_windows_powershell(
     )
     text = "\n".join(lines)
     assert "$env:CODEX_HOME" in text
-    assert f'Get-Content -Raw "{prompt}" | codex exec' in text
+    assert f"Get-Content -Raw '{prompt}' | codex exec" in text
     assert "CODEX_HOME=" not in text.replace("$env:CODEX_HOME", "")
+    # PowerShell expands $ inside double quotes too, so paths are single-quoted.
+    assert '"' not in text
     # PowerShell strips embedded double quotes; -c falls back to the raw string.
     assert "-c 'model_reasoning_effort=high'" in text
     assert PREPARE_RUN.model_flags("claude-code", "opus[1m]", "max", powershell=True) == [
@@ -349,18 +352,42 @@ def test_launch_lines_windows_powershell(
     ]
 
 
-def test_launch_lines_quote_paths_with_spaces(tmp_path: Path) -> None:
-    run_dir = (tmp_path / "my run").resolve()
-    for harness, config in (("claude-code", "bob.mcp.json"), ("codex", "bob-codex")):
-        lines = PREPARE_RUN.launch_lines(
-            harness, run_dir / "bob", run_dir / "configs" / config,
-            run_dir / "bob.prompt.md", run_dir / "bob" / ".git",
-        )
-        for line in lines:
-            if "my run" in line:
-                assert line.count('"') >= 2, line
-        script = PREPARE_RUN.start_script(lines)
-        assert subprocess.run(["bash", "-n"], input=script, text=True).returncode == 0
+@pytest.mark.parametrize("auto_start", [True, False])
+@pytest.mark.parametrize("harness", ["claude-code", "codex"])
+def test_start_scripts_take_metacharacter_paths_literally(
+    tmp_path: Path, harness: str, auto_start: bool
+) -> None:
+    # $HOME, a backquote and quotes would expand or break inside double quotes.
+    run_dir = (tmp_path / "my run $HOME `x` \"q\" 'a'").resolve()
+    workdir = run_dir / "bob"
+    workdir.mkdir(parents=True)
+    config = run_dir / "configs" / ("bob.mcp.json" if harness == "claude-code" else "bob-codex")
+    prompt = run_dir / "bob.prompt.md"
+    prompt.write_text("prompt\n", encoding="utf-8")
+    lines = PREPARE_RUN.launch_lines(
+        harness, workdir, config, prompt, workdir / ".git", "opus[1m]", "high", auto_start
+    )
+    assert lines[0] == f"cd {shlex.quote(str(workdir))}"
+    words = shlex.split(lines[1])
+    if harness == "codex":
+        assert words[0] == f"CODEX_HOME={config}"
+        assert words[words.index("--add-dir") + 1] == str(workdir / ".git")
+        if auto_start:
+            assert words[-3:] == ["-", "<", str(prompt)]
+    else:
+        assert words[words.index("--mcp-config") + 1] == str(config)
+        assert words[words.index("--add-dir") + 1] == str(run_dir)
+        if auto_start:
+            assert words[-1] == f"Read {prompt} and follow the instructions in it"
+    # Run the script with the agent CLI stubbed: it must reach the real
+    # directory, and Codex's stdin redirect the real prompt file.
+    stub = "claude() { pwd; }; codex() { pwd; }"
+    script = PREPARE_RUN.start_script([stub, *lines])
+    result = subprocess.run(
+        ["bash"], input=script, text=True, capture_output=True, cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(workdir)
 
 
 def test_bare_slug_expands_via_gh_protocol(
@@ -999,11 +1026,11 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert bundle["config"] == "C:/Users/Bob/runs/step7/configs/bob.mcp.json"
     assert "$AGENT_NAME" not in (out_dir / "bob.prompt.md").read_text(encoding="utf-8")
     assert bundle["launch"] == [
-        'cd "/c/Users/Bob/runs/step7/bob"',
+        "cd /c/Users/Bob/runs/step7/bob",
         "claude --permission-mode auto --strict-mcp-config "
-        '--mcp-config "C:/Users/Bob/runs/step7/configs/bob.mcp.json" '
-        '--add-dir "C:/Users/Bob/runs/step7" '
-        '-p "Read C:/Users/Bob/runs/step7/bob.prompt.md and follow the instructions in it"',
+        "--mcp-config C:/Users/Bob/runs/step7/configs/bob.mcp.json "
+        "--add-dir C:/Users/Bob/runs/step7 "
+        "-p 'Read C:/Users/Bob/runs/step7/bob.prompt.md and follow the instructions in it'",
     ]
     assert bundle["script"] == "C:/Users/Bob/runs/step7/start-bob.sh"
     assert (out_dir / "start-bob.sh").read_text(encoding="utf-8") == (
@@ -1018,19 +1045,19 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it() -> No
         "bob", "codex", WINDOWS_RUN, WINDOWS_RUN / "bob", "gpt-6-sol", "high"
     )
     assert lines == [
-        'cd "/c/Users/Bob/runs/step7/bob"',
-        'CODEX_HOME="C:/Users/Bob/runs/step7/configs/bob-codex" codex exec '
-        '-C . --add-dir "C:/Users/Bob/runs/step7/bob/.git" --approve-for-me '
+        "cd /c/Users/Bob/runs/step7/bob",
+        "CODEX_HOME=C:/Users/Bob/runs/step7/configs/bob-codex codex exec "
+        "-C . --add-dir C:/Users/Bob/runs/step7/bob/.git --approve-for-me "
         "--model gpt-6-sol -c 'model_reasoning_effort=\"high\"' - "
-        '< "/c/Users/Bob/runs/step7/bob.prompt.md"',
+        "< /c/Users/Bob/runs/step7/bob.prompt.md",
     ]
     posix = PurePosixPath("/srv/run")
     assert PREPARE_RUN.worker_launch(
         "charlie", "claude-code", posix, posix / "charlie", auto_start=False
     ) == [
-        'cd "/srv/run/charlie"',
-        'claude --strict-mcp-config --mcp-config "/srv/run/configs/charlie.mcp.json" '
-        '--add-dir "/srv/run"',
+        "cd /srv/run/charlie",
+        "claude --strict-mcp-config --mcp-config /srv/run/configs/charlie.mcp.json "
+        "--add-dir /srv/run",
     ]
 
 
@@ -1110,7 +1137,7 @@ def test_worker_only_renders_one_worker_from_the_hub_token(
     assert f"{WSL_URL}/a2a" not in out
     script = run_dir / "start-bob.sh"
     assert str(script) in out
-    assert f'--strict-mcp-config --mcp-config "{written}"' in script.read_text(encoding="utf-8")
+    assert f"--strict-mcp-config --mcp-config {written}" in script.read_text(encoding="utf-8")
     assert manifest["launch"]["agents"]["bob"]["script"] == str(script)
     assert token not in out
     # A rerun reuses the clone and identity.
@@ -1253,12 +1280,12 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
             "# Generated by scripts/prepare-run.py",
             "set -e",
         ]
-        assert lines[3] == f'cd "{workdir}"'
+        assert lines[3] == f"cd {workdir}"
         flags = (f"--model {model} " if model else "") + f"--effort {effort} "
         assert lines[4] == (
             f"claude {flags}--permission-mode auto --strict-mcp-config "
-            f'--mcp-config "{run_dir / "configs" / f"{name}.mcp.json"}" --add-dir "{run_dir}" '
-            f'-p "Read {run_dir / f"{name}.prompt.md"} and follow the instructions in it"'
+            f"--mcp-config {run_dir / 'configs' / f'{name}.mcp.json'} --add-dir {run_dir} "
+            f"-p 'Read {run_dir / f'{name}.prompt.md'} and follow the instructions in it'"
         )
         assert len(lines) == 5
         prompt = (run_dir / f"{name}.prompt.md").read_text(encoding="utf-8")
@@ -1305,10 +1332,10 @@ async def test_codex_alice_gets_a_codex_home_with_every_hub_tool(
     assert set(hub["enabled_tools"]) == set(hub["tools"]) == served
 
     script = (run_dir / "start-alice.sh").read_text(encoding="utf-8")
-    assert f'cd "{run_dir / "alice-runtime"}"' in script
+    assert f"cd {run_dir / 'alice-runtime'}" in script
     assert (
-        f'CODEX_HOME="{home}" codex exec -C . --approve-for-me --model gpt-6-luna '
-        f"-c 'model_reasoning_effort=\"xhigh\"' - < \"{run_dir / 'alice.prompt.md'}\""
+        f"CODEX_HOME={home} codex exec -C . --approve-for-me --model gpt-6-luna "
+        f"-c 'model_reasoning_effort=\"xhigh\"' - < {run_dir / 'alice.prompt.md'}"
     ) in script
     prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
     assert "Codex runtime note" in prompt and WAIT_TEXT not in prompt
@@ -1334,8 +1361,8 @@ def test_no_auto_start_opens_each_agent_without_its_prompt(
         assert "prompt.md" not in script and " -p " not in script and "exec" not in script
         assert "--permission-mode" not in script
     assert (
-        f'CODEX_HOME="{run_dir / "configs" / "codex"}" codex -C . '
-        f'--add-dir "{run_dir / "charlie" / ".git"}" --approve-for-me --model gpt-6-sol\n'
+        f"CODEX_HOME={run_dir / 'configs' / 'codex'} codex -C . "
+        f"--add-dir {run_dir / 'charlie' / '.git'} --approve-for-me --model gpt-6-sol\n"
     ) in (run_dir / "start-charlie.sh").read_text(encoding="utf-8")
     assert "Auto-start is off" in capsys.readouterr().out
 

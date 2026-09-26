@@ -177,22 +177,24 @@ handing it its prompt file (auto-start). For the default topology they run:
 
 ```sh
 # start-alice.sh
-cd "/absolute/path/to/my-run/alice-runtime"
+cd /absolute/path/to/my-run/alice-runtime
 claude --permission-mode auto --strict-mcp-config \
-  --mcp-config "/absolute/path/to/my-run/configs/alice.mcp.json" \
-  --add-dir "/absolute/path/to/my-run" \
-  -p "Read /absolute/path/to/my-run/alice.prompt.md and follow the instructions in it"
+  --mcp-config /absolute/path/to/my-run/configs/alice.mcp.json \
+  --add-dir /absolute/path/to/my-run \
+  -p 'Read /absolute/path/to/my-run/alice.prompt.md and follow the instructions in it'
 
 # start-bob.sh: the same, with bob.mcp.json and bob.prompt.md, from my-run/bob
 
 # start-charlie.sh
-cd "/absolute/path/to/my-run/charlie"
-CODEX_HOME="/absolute/path/to/my-run/configs/codex" codex exec -C . \
-  --add-dir "/absolute/path/to/my-run/charlie/.git" --approve-for-me - \
-  < "/absolute/path/to/my-run/charlie.prompt.md"
+cd /absolute/path/to/my-run/charlie
+CODEX_HOME=/absolute/path/to/my-run/configs/codex codex exec -C . \
+  --add-dir /absolute/path/to/my-run/charlie/.git --approve-for-me - \
+  < /absolute/path/to/my-run/charlie.prompt.md
 ```
 
-(The scripts hold each command on one line.) Codex sessions are not
+(The scripts hold each command on one line, and single-quote any path that
+needs it, so a run directory containing spaces or `$` is taken literally.)
+Codex sessions are not
 `--ephemeral`, so they can be inspected after the run. On Windows PowerShell
 the Codex script sets `$env:CODEX_HOME` and pipes the prompt through
 `Get-Content -Raw` instead.

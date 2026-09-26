@@ -464,7 +464,10 @@ def prompt_sections(name: str, harness: str) -> str:
 
 
 def shell_word(value: str, powershell: bool = False) -> str:
-    """``value`` as one shell word, quoted only when it needs it."""
+    """``value`` as one literal shell word, quoted only when it needs it.
+
+    Both shells expand ``$`` inside double quotes, so a path is single-quoted.
+    """
     if not powershell:
         return shlex.quote(value)
     return value if re.fullmatch(r"[\w.-]+", value) else "'" + value.replace("'", "''") + "'"
@@ -484,7 +487,12 @@ def model_flags(harness: str, model: str, effort: str, powershell: bool = False)
 
 
 def claude_launch(
-    config: str, prompt: str, prompt_dir: str, flags: list[str], auto_start: bool
+    config: str,
+    prompt: str,
+    prompt_dir: str,
+    flags: list[str],
+    auto_start: bool,
+    powershell: bool = False,
 ) -> list[str]:
     """A ``claude`` launch; auto-start runs it in print mode on its prompt file.
 
@@ -493,9 +501,16 @@ def claude_launch(
     words = ["claude", *flags]
     if auto_start:
         words += ["--permission-mode", "auto"]
-    words += ["--strict-mcp-config", f'--mcp-config "{config}"', f'--add-dir "{prompt_dir}"']
+    words += [
+        "--strict-mcp-config",
+        "--mcp-config",
+        shell_word(config, powershell),
+        "--add-dir",
+        shell_word(prompt_dir, powershell),
+    ]
     if auto_start:
-        words.append(f'-p "Read {prompt} and follow the instructions in it"')
+        instruction = f"Read {prompt} and follow the instructions in it"
+        words += ["-p", shell_word(instruction, powershell)]
     return [" ".join(words)]
 
 
@@ -517,16 +532,18 @@ def codex_launch(
     words = ["codex", "exec"] if auto_start else ["codex"]
     words += ["-C", "."]
     if git_dir is not None:
-        words.append(f'--add-dir "{git_dir}"')
+        words += ["--add-dir", shell_word(git_dir, powershell)]
     words += ["--approve-for-me", *flags]
     command = " ".join(words)
+    home_word = shell_word(home, powershell)
+    prompt_word = shell_word(prompt, powershell)
     if powershell:
         return [
-            f'$env:CODEX_HOME = "{home}"',
-            f'Get-Content -Raw "{prompt}" | {command} -' if auto_start else command,
+            f"$env:CODEX_HOME = {home_word}",
+            f"Get-Content -Raw {prompt_word} | {command} -" if auto_start else command,
         ]
-    command = f'CODEX_HOME="{home}" {command}'
-    return [f'{command} - < "{prompt}"' if auto_start else command]
+    command = f"CODEX_HOME={home_word} {command}"
+    return [f"{command} - < {prompt_word}" if auto_start else command]
 
 
 def launch_lines(
@@ -539,7 +556,7 @@ def launch_lines(
     effort: str = "",
     auto_start: bool = True,
 ) -> list[str]:
-    """One local agent's start lines for this platform; paths are quoted.
+    """One local agent's start lines for this platform; paths are shell-quoted.
 
     ``config`` is the MCP config for Claude Code and ``CODEX_HOME`` for Codex.
     """
@@ -555,8 +572,10 @@ def launch_lines(
             powershell,
         )
     else:
-        lines = claude_launch(str(config), str(prompt), str(prompt.parent), flags, auto_start)
-    return [f'cd "{workdir}"', *lines]
+        lines = claude_launch(
+            str(config), str(prompt), str(prompt.parent), flags, auto_start, powershell
+        )
+    return [f"cd {shell_word(str(workdir), powershell)}", *lines]
 
 
 def start_script(lines: list[str], powershell: bool = False) -> str:
@@ -623,7 +642,7 @@ def worker_launch(
             flags,
             auto_start,
         )
-    return [f'cd "{git_bash_path(workspace)}"', *lines]
+    return [f"cd {shell_word(git_bash_path(workspace))}", *lines]
 
 
 def require_owner_only(path: Path) -> None:
