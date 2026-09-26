@@ -106,7 +106,9 @@ def test_alice_prompt_uses_the_validated_default_policy() -> None:
 
 
 def test_readme_documents_durable_alice_initialization() -> None:
-    readme = read("README.md")
+    # The PoC README, which documented this contract, moved to docs/ when robomate
+    # was seeded; README.md now describes the MVP.
+    readme = read("docs/poc-readme.md")
     assert_fragments(
         readme,
         (
