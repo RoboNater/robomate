@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared run-directory preparation helpers for Step 6 and user runs.
 
-Step 6 (``scripts/step6.py``) and user runs (``scripts/prepare-run.py``) render
+Step 6 (``scripts/poc/step6.py``) and user runs (``scripts/prepare-run.py``) render
 the same MCP configs, Codex home, and worker prompts. This module holds the
 generic pieces so the two entry points cannot drift; sandbox seeding,
 disturbances, and measurement stay in ``step6.py``.

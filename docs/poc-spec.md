@@ -1,5 +1,11 @@
 # Agent Comms PoC — Spec & Implementation Plan
 
+> **Frozen.** This is the robo-agents proof of concept's design, kept as a historical
+> record and no longer edited. robomate's design of record is
+> [`docs/mvp-spec.md`](mvp-spec.md); what this document established stays in force unless
+> that spec changes it. Issue numbers here refer to `RoboNater/robo-agents`. See also the
+> [PoC README](poc-readme.md) and [PoC lessons](poc-lessons.md).
+
 Working name: **hub** (rename later). Python, uv workspace, A2A-shaped data model, MCP-facing tools.
 
 ---

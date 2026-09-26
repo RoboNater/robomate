@@ -66,7 +66,9 @@ The PoC's evidence and design are kept in [`docs/evidence/`](docs/evidence/) and
 
 - [MVP spec](docs/mvp-spec.md): goals, architecture, interfaces, and plan
 - [PoC spec](docs/poc-spec.md): the original design, frozen
+- [PoC README](docs/poc-readme.md): the PoC's README, as it stood at the move to robomate
 - [PoC lessons](docs/poc-lessons.md): what building and running the PoC taught us
+- [robo-agents issues](docs/robo-agents-issues.md): which PoC issues were carried into robomate
 
 ## License
 

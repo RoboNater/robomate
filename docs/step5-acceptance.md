@@ -25,15 +25,15 @@ Alice runtime state cannot be committed accidentally.
 
 ```sh
 gh auth status
-scripts/prepare-step5-demo.sh /tmp/robo-step5c-001 step5c-001
-scripts/launch-step5-alice.sh /tmp/robo-step5c-001
+scripts/poc/prepare-step5-demo.sh /tmp/robo-step5c-001 step5c-001
+scripts/poc/launch-step5-alice.sh /tmp/robo-step5c-001
 ```
 
 The canonical scenario's first-merge guard is intentionally one-shot. After
 the first acceptance merge has been preserved, use an explicit rehearsal run:
 
 ```sh
-scripts/prepare-step5-demo.sh /tmp/robo-step5c-rehearsal step5c-rehearsal --allow-repeat
+scripts/poc/prepare-step5-demo.sh /tmp/robo-step5c-rehearsal step5c-rehearsal --allow-repeat
 ```
 
 `--allow-repeat` records the already-merged PRs in the manifest and marks that
@@ -53,7 +53,7 @@ is retained and the unchanged manifest renders the same prompt.
 After Alice's session opens, start the scripted workers in a second terminal:
 
 ```sh
-scripts/launch-step5-workers.sh /tmp/robo-step5c-001
+scripts/poc/launch-step5-workers.sh /tmp/robo-step5c-001
 ```
 
 Bob reports the seeded PR, Charlie requests the one scripted marker change,
@@ -68,7 +68,7 @@ PR is insufficient.
 When Alice exits, verify and materialize the evidence:
 
 ```sh
-scripts/verify-step5-demo.sh /tmp/robo-step5c-001
+scripts/poc/verify-step5-demo.sh /tmp/robo-step5c-001
 ```
 
 Keep `run.json`, `evidence.json`, Alice's session transcript, and the hub
@@ -83,7 +83,7 @@ remote evidence referenced by those files.
 The worker launcher accepts one optional deterministic crash point:
 
 ```sh
-scripts/launch-step5-workers.sh /tmp/robo-step5c-001 after_changes_requested
+scripts/poc/launch-step5-workers.sh /tmp/robo-step5c-001 after_changes_requested
 ```
 
 Supported points are `bob:after_check_in`, `charlie:after_check_in`,
@@ -99,5 +99,5 @@ first-merge guards, canonical-text expansion, self-contained Alice prompts,
 manifest updates, phase/routing verification, and evidence emission:
 
 ```sh
-uv run --locked pytest tests/test_mock_worker.py tests/test_step5_launch_scripts.py
+uv run --locked pytest tests/test_mock_worker.py scripts/poc/tests/test_step5_launch_scripts.py
 ```

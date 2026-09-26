@@ -31,6 +31,8 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
+# run_common stays in scripts/ beside prepare-run.py; the PoC scripts live in scripts/poc/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import step7
 from run_common import executable
@@ -222,7 +224,7 @@ class AppServer:
 
 def alice(directory, manifest, max_turns, delay):
     if topology(manifest)[0]["alice"] != "codex":
-        raise SystemExit("use scripts/launch-step6-alice.sh for interactive Claude Code Alice")
+        raise SystemExit("use scripts/poc/launch-step6-alice.sh for interactive Claude Code Alice")
     hub = step7.local_hub(manifest, HUB)
     if hub_healthy(hub):
         raise SystemExit(f"{hub} occupied; leave other checkout listeners alone")
@@ -306,7 +308,7 @@ def bob_on_windows(manifest, max_turns, delay):
             "run",
             "--locked",
             "python",
-            "scripts/step6_launch.py",
+            "scripts/poc/step6_launch.py",
             "bob",
             windows["run_dir"],
             "--max-turns",
@@ -417,7 +419,7 @@ def free_port():
 
 def charlie(directory, manifest, max_turns, delay):
     if topology(manifest)[0]["charlie"] != "opencode":
-        raise SystemExit("use scripts/launch-step6-charlie.sh for the Codex reviewer")
+        raise SystemExit("use scripts/poc/launch-step6-charlie.sh for the Codex reviewer")
     telemetry = Telemetry(directory / "charlie.telemetry.jsonl")
     clone = manifest["workspaces"]["charlie"]["path"]
     binary = opencode_binary()

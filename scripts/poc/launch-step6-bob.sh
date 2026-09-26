@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 if [[ $# -ne 1 || $1 != /* ]]; then
   echo "usage: $0 ABSOLUTE_RUN_DIR" >&2; exit 2
 fi
@@ -9,7 +9,7 @@ readarray -t settings < <(python3 - "$run_dir/run.json" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
 assert m['repository'] == 'RoboNater/robo-agents-sandbox' and m.get('issue')
-assert not m.get('network'), 'networked run: launch bob with scripts/step6_launch.py bob RUN_DIR'
+assert not m.get('network'), 'networked run: launch bob with scripts/poc/step6_launch.py bob RUN_DIR'
 print(m['workspaces']['bob']['path'])
 print(m['models']['bob'])
 PY

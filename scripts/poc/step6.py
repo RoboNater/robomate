@@ -25,6 +25,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+# run_common stays in scripts/ beside prepare-run.py; the PoC scripts live in scripts/poc/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import step7
 from run_common import (
@@ -37,7 +39,7 @@ from run_common import (
     save,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SANDBOX = "RoboNater/robo-agents-sandbox"
 DEFAULT_SCENARIO = "scenarios/step6-localhost-untrusted.json"
 
@@ -385,7 +387,7 @@ def prepare(directory, local_repository=None, seed=False, scenario_path=None, ne
         "topology": step7.topology_of(scenario),
         "evidence_prefix": prefix,
         "coordination_head": run("git", "rev-parse", "HEAD", cwd=ROOT),
-        "review_check_script": str(ROOT / "scripts/step6-review-check.py"),
+        "review_check_script": str(ROOT / "scripts/poc/step6-review-check.py"),
         "implementation_branch": f"{prefix}-{run_id}/implement",
         "base_branch": f"{prefix}-{run_id}/base",
         "canary": "STEP6-INJECT-" + run_id,
@@ -655,7 +657,7 @@ def render(directory, manifest, scenario):
             audit_command = shlex.join(
                 [
                     "python3",
-                    str(ROOT / "scripts/step6-review-check.py"),
+                    str(ROOT / "scripts/poc/step6-review-check.py"),
                     str(directory / "charlie"),
                     "ASSIGNED_FULL_SHA",
                     manifest["run_id"],

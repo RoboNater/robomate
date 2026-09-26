@@ -5,7 +5,8 @@ proof of concept. The repository is seeded with the PoC files; [`docs/poc-spec.m
 is frozen as the PoC's historical design, and everything it established stays in force unless
 this document changes it. Issue numbers such as #113 refer to `RoboNater/robo-agents`, where
 the PoC was built; Appendix A says which of them carry over. PoC lessons are in
-`docs/poc-lessons.md`, exported from robo-agents #57.
+[`docs/poc-lessons.md`](poc-lessons.md), exported from robo-agents #57; the PoC's README is
+[`docs/poc-readme.md`](poc-readme.md).
 
 **Naming.** Repository, Python distribution, CLI, MCP server name, and skill are all
 `robomate`. Tools appear to agents as `robomate` tools (e.g. `mcp__robomate__join` in Claude
