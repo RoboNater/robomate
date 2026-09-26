@@ -19,6 +19,7 @@ from agent_hub_common import (
     TaskState,
     TestResult,
 )
+from conftest import MonotonicClock
 
 
 def _rpc(
@@ -990,6 +991,9 @@ async def test_worker_client_clears_pending_ids_after_success(
     from worker_mcp.client import WorkerHubClient
     from worker_mcp.config import WorkerSettings
 
+    clock = MonotonicClock()
+    hub_store.clock = clock
+
     settings = WorkerSettings(
         agent_name="alice-worker",
         hub_url="http://hub.test",
@@ -1046,7 +1050,8 @@ async def test_worker_client_clears_pending_ids_after_success(
     assert worker._pending_progress.get(task.id) is None
 
     # 4. Re-admission test: simulate heartbeat timeout marking worker LOST
-    hub_store.sweep(lost_after_s=-1)
+    clock.advance(2)
+    hub_store.sweep(lost_after_s=1)
     agent_lost = hub_store.agent_by_name("alice-worker")
     assert agent_lost is not None and agent_lost.status == AgentStatus.LOST
 
