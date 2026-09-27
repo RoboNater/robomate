@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import errno
 import json
+import logging
 import os
 import socket
 import sys
@@ -18,8 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import anyio
 from agent_hub.main import serve_http
-from agent_hub_common import HubSettings, load_or_create_token
+from agent_hub_common import HubSettings, load_or_create_token, reserve_stdout
 from agent_hub_common.discovery import (
     DiscoveryError,
     Repository,
@@ -31,6 +33,8 @@ from agent_hub_common.discovery import (
     write_hub_json,
 )
 from agent_hub_common.registry import deregister, hub_healthy, process_alive, register
+from worker_mcp.main import run_worker_bridge, serve_mcp
+from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
 VERSION = "0.1.0"
 
@@ -197,6 +201,17 @@ def _down() -> None:
     print(f"Stopping hub at {endpoint.url}")
 
 
+async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
+    if args.role == "worker":
+        await run_worker_bridge(stdout, name=args.name, harness=args.harness)
+    else:
+        bridge = OrchestratorBridge(args.name or "alice")
+        try:
+            await serve_mcp(create_orchestrator_mcp(bridge), stdout)
+        finally:
+            await bridge.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="robomate")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -206,12 +221,20 @@ def main() -> None:
     up.add_argument("--port", type=int)
     up.add_argument("--no-call-accounting", action="store_true")
     commands.add_parser("down", help="stop the discovered hub")
+    mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
+    mcp.add_argument("--role", choices=("orchestrator", "worker"), required=True)
+    mcp.add_argument("--name")
+    mcp.add_argument("--harness")
     args = parser.parse_args()
     try:
         if args.command == "up":
             asyncio.run(_up(args))
-        else:
+        elif args.command == "down":
             _down()
+        else:
+            logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+            with reserve_stdout() as protocol_stdout:
+                anyio.run(_mcp, args, protocol_stdout)
     except (DiscoveryError, RuntimeError, ValueError, OSError) as exc:
         print(f"robomate: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

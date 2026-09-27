@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from agent_hub_common import AgentProfile, ConfigurationError, ModelSource
+from agent_hub_common.discovery import HubEndpoint
 from worker_mcp.config import WorkerSettings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,31 @@ def test_worker_settings_custom_overrides(tmp_path: Path) -> None:
     assert settings.max_retries == 5
     assert settings.backoff_factor_s == 1.5
     assert settings.telemetry_log == telemetry_path
+
+
+def test_discovered_worker_keeps_profile_and_workspace_configuration(tmp_path: Path) -> None:
+    settings = WorkerSettings.from_discovered(
+        HubEndpoint("http://discovered.test/", "discovered-token"),
+        agent_name="bob",
+        harness="codex",
+        environ={
+            "HUB_URL": "http://old.test", "HUB_TOKEN": "old-token",
+            "HUB_MODEL": "configured-model",
+            "HUB_HEARTBEAT_S": "7", "HUB_MAX_RETRIES": "2",
+        },
+    )
+    assert (settings.hub_url, settings.token, settings.agent_name) == (
+        "http://discovered.test", "discovered-token", "bob"
+    )
+    assert settings.profile.harness == "codex"
+    assert settings.profile.model == "configured-model"
+    assert (settings.heartbeat_s, settings.max_retries) == (7, 2)
+    # Discovery does not bypass the legacy full-clone identity check.
+    with pytest.raises(ConfigurationError, match="HUB_WORKSPACE"):
+        WorkerSettings.from_discovered(
+            HubEndpoint("http://discovered.test", "token"), agent_name="bob",
+            environ={"HUB_WORKSPACE": str(tmp_path)},
+        )
 
 
 @pytest.mark.parametrize(
