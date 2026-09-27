@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 from agent_hub_common.discovery import read_hub_json, write_hub_json
+from agent_hub_common.registry import process_alive
 from robomate.cli import _bind
 
-CLI = str(Path(sys.executable).with_name("robomate"))
+CLI = str(Path(sys.executable).with_name("robomate.exe" if sys.platform == "win32" else "robomate"))
 
 
 @pytest.fixture
@@ -42,10 +43,17 @@ def start(root: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
 
 
 def await_hub(root: Path, process: subprocess.Popen[str]) -> dict[str, object]:
-    for _ in range(100):
+    for _ in range(200):
         data = read_hub_json(root)
-        if data and data.get("pid") == process.pid:
-            return data
+        pid = int((data or {}).get("pid") or 0)
+        if data and pid:
+            if pid == process.pid:
+                return data
+            if sys.platform == "win32" and process.poll() is None and process_alive(pid):
+                # On Windows the console-script launcher spawns the hub in a
+                # child python process, so hub.json records the server PID
+                # rather than the launcher PID tracked by Popen.
+                return data
         if process.poll() is not None:
             assert process.stderr is not None
             raise AssertionError(f"hub exited early: {process.stderr.read()}")
@@ -160,7 +168,12 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
             raise AssertionError("expected exactly one live hub")
         winner = next(process for process in processes if process.poll() is None)
         loser = next(process for process in processes if process.poll() is not None)
-        assert await_hub(root, winner)["pid"] == winner.pid
+        winner_info = await_hub(root, winner)
+        if sys.platform != "win32":
+            assert winner_info["pid"] == winner.pid
+        else:
+            winner_pid = winner_info.get("pid")
+            assert isinstance(winner_pid, int) and process_alive(winner_pid)
         assert loser.stderr is not None
         assert "already" in loser.stderr.read()
         stop(root, env, winner)
