@@ -2,12 +2,10 @@
 
 import asyncio
 import time
-from dataclasses import replace
 from typing import Any, cast
 
 import httpx
 import pytest
-from agent_hub.app import create_app
 from agent_hub.database import database
 from agent_hub.merge_gate import MergeGate, MergeGateError
 from agent_hub.orchestrator import OrchestratorOps
@@ -62,10 +60,9 @@ async def test_rpc_requires_the_bearer_token(app: FastAPI) -> None:
 
 
 async def test_bridge_call_rows_are_recorded_as_mcp_for_the_session_actor(
-    settings: HubSettings,
+    app: FastAPI, hub_store: HubStore,
 ) -> None:
-    configured = replace(settings, call_accounting=True)
-    app = create_app(configured)
+    app.state.accounting.enabled = True
     headers = {"Authorization": f"Bearer {TOKEN}", ACTOR_HEADER: "alice",
                SESSION_HEADER: SESSION}
     row = {
@@ -80,17 +77,37 @@ async def test_bridge_call_rows_are_recorded_as_mcp_for_the_session_actor(
                           base_url=BASE_URL, headers=headers) as client,
     ):
         assert (await call(client, "hub.record_calls", calls=[row]))["result"] == {
-            "recorded": 1
+            "recorded": 1, "rejected": 0,
         }
         bad = {**row, "actor": "bob"}
-        assert error_of(await call(client, "hub.record_calls", calls=[bad]))[0] == INVALID_PARAMS
+        assert (await call(client, "hub.record_calls", calls=[bad, row]))["result"] == {
+            "recorded": 1, "rejected": 1,
+        }
+        backwards = {**row, "started": "2026-01-01T00:00:02Z"}
+        assert (await call(client, "hub.record_calls", calls=[backwards]))["result"] == {
+            "recorded": 1, "rejected": 0,
+        }
         assert error_of(await call(client, "hub.record_calls", headers={SESSION_HEADER: ""},
                                    calls=[row]))[0] == INVALID_REQUEST
-    with database(settings.database_path) as connection:
+    with database(hub_store.path) as connection:
         rows = connection.execute(
             "SELECT boundary, actor, content_bytes FROM call_log"
         ).fetchall()
-    assert [tuple(row) for row in rows] == [("mcp", "alice", 100)]
+    assert [tuple(row) for row in rows] == [("mcp", "alice", 100)] * 3
+
+
+async def test_disabled_hub_identifies_accounting_as_off(
+    client: httpx.AsyncClient,
+) -> None:
+    row = {
+        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
+        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z", "status": None,
+        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+    }
+    result = await call(client, "hub.record_calls", headers={ACTOR_HEADER: "alice",
+                                                      SESSION_HEADER: SESSION}, calls=[row])
+    assert result["result"] == {"recorded": 0, "rejected": 0, "disabled": True}
 
 
 async def test_unknown_methods_and_malformed_requests_are_refused(

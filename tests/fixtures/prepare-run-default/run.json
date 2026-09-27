@@ -9,6 +9,7 @@
     "bob": "claude-code",
     "charlie": "codex"
   },
+  "hub_repo": "$HUB_REPO",
   "issue": 42,
   "launch": {
     "agents": {
@@ -60,7 +61,6 @@
   "run_dir": "$RUN_DIR",
   "schema_version": 1,
   "slug": null,
-  "hub_repo": "$HUB_REPO",
   "state_dir": "$HUB_REPO/.robomate",
   "versions": {
     "claude": "2.1.277 (Claude Code)",

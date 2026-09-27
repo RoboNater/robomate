@@ -43,6 +43,7 @@ class OrchestratorBridge:
         self._heartbeat: asyncio.Task[None] | None = None
         self._accounting_task: asyncio.Task[None] | None = None
         self._calls: asyncio.Queue[CallRecord] = asyncio.Queue(maxsize=256)
+        self._accounting_disabled = False
         self.dropped_calls = 0
 
     async def accounting(self, server: FastMCP) -> McpAccounting:
@@ -50,6 +51,8 @@ class OrchestratorBridge:
         return McpAccounting(self.record_call, tools, self.name)
 
     def record_call(self, record: CallRecord) -> None:
+        if self._accounting_disabled:
+            return
         try:
             self._calls.put_nowait(record)
         except asyncio.QueueFull:
@@ -63,12 +66,19 @@ class OrchestratorBridge:
             batch = [self._calls.get_nowait() for _ in range(min(32, self._calls.qsize()))]
             try:
                 result = await self.call("hub.record_calls", {"calls": [asdict(r) for r in batch]})
+                if result.get("disabled") is True:
+                    self._accounting_disabled = True
+                    self._calls = asyncio.Queue(maxsize=256)
+                    return
                 recorded = result.get("recorded", 0)
                 if recorded != len(batch):
                     self.dropped_calls += len(batch) - recorded
             except asyncio.CancelledError:
                 for record in batch:
-                    self._calls.put_nowait(record)
+                    try:
+                        self._calls.put_nowait(record)
+                    except asyncio.QueueFull:
+                        self.dropped_calls += 1
                 raise
             except Exception:
                 self.dropped_calls += len(batch)

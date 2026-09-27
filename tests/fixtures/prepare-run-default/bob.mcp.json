@@ -6,7 +6,10 @@
         "--locked",
         "--project",
         "$ROOT",
-        "robomate", "mcp", "--role", "worker"
+        "robomate",
+        "mcp",
+        "--role",
+        "worker"
       ],
       "command": "uv",
       "env": {
@@ -17,10 +20,10 @@
         "HUB_MODEL": "",
         "HUB_PROVIDER": "anthropic",
         "HUB_TELEMETRY_LOG": "$RUN_DIR/bob-telemetry.jsonl",
-        "ROBOMATE_TOKEN_FILE": "$HUB_REPO/.robomate/token",
-        "ROBOMATE_HUB_URL": "http://127.0.0.1:8420",
         "HUB_WORKSPACE": "$RUN_DIR/bob",
-        "PYTHONUTF8": "1"
+        "PYTHONUTF8": "1",
+        "ROBOMATE_HUB_URL": "http://127.0.0.1:8420",
+        "ROBOMATE_TOKEN_FILE": "$HUB_REPO/.robomate/token"
       }
     }
   }

@@ -165,12 +165,21 @@ class RpcDispatcher:
             rows = params.get("calls") if isinstance(params, dict) else None
             if not isinstance(rows, list) or len(rows) > 32:
                 raise RpcError(INVALID_PARAMS, "calls must be a list of at most 32 rows")
-            records = [self._call_record(row, caller[0]) for row in rows]
-            self._accept_session(*caller)
-            recorded = sum(
-                self.accounting.record(record) for record in records
-            ) if self.accounting is not None else 0
-            return {"recorded": recorded}
+            records = []
+            rejected = 0
+            for row in rows:
+                try:
+                    records.append(self._call_record(row, caller[0]))
+                except RpcError as exc:
+                    if exc.code != INVALID_PARAMS:
+                        raise
+                    rejected += 1
+            if records:
+                self._accept_session(*caller)
+            if self.accounting is None or not self.accounting.enabled:
+                return {"recorded": 0, "rejected": rejected, "disabled": True}
+            recorded = sum(self.accounting.record(record) for record in records)
+            return {"recorded": recorded, "rejected": rejected}
         operation = self._operations.get(method)
         if operation is None:
             raise RpcError(METHOD_NOT_FOUND, "Method not found")
@@ -227,7 +236,7 @@ class RpcDispatcher:
             finished = datetime.fromisoformat(row["finished"].replace("Z", "+00:00"))
         except ValueError:
             raise RpcError(INVALID_PARAMS, "invalid call timestamps") from None
-        if started.tzinfo is None or finished.tzinfo is None or finished < started:
+        if started.tzinfo is None or finished.tzinfo is None:
             raise RpcError(INVALID_PARAMS, "invalid call timestamps")
         if row["repeat_bytes"] is not None and (
             row["content_bytes"] is None or row["repeat_bytes"] > row["content_bytes"]

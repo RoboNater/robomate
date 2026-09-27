@@ -6,13 +6,16 @@
         "--locked",
         "--project",
         "$ROOT",
-        "robomate", "mcp", "--role", "orchestrator"
+        "robomate",
+        "mcp",
+        "--role",
+        "orchestrator"
       ],
       "command": "uv",
       "env": {
+        "PYTHONUTF8": "1",
         "ROBOMATE_HUB_URL": "http://127.0.0.1:8420",
-        "ROBOMATE_TOKEN_FILE": "$HUB_REPO/.robomate/token",
-        "PYTHONUTF8": "1"
+        "ROBOMATE_TOKEN_FILE": "$HUB_REPO/.robomate/token"
       }
     }
   }
