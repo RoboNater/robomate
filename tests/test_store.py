@@ -846,10 +846,11 @@ def test_initial_workflow_policy_is_immutable_durable_and_used_by_rails(
     task = restarted.assign_task("bob", "implementer", "Task", "Work", lease_min=30)
     assert task.lease_expires == to_iso(clock.now + timedelta(minutes=10))
 
-    with pytest.raises(ConflictError, match="fresh HUB_STATE_DIR"):
+    with pytest.raises(ConflictError, match="fresh dedicated target clone") as error:
         restarted.initialize_workflow(
             "Address issue #5", {"max_task_lease_min": 20, "merge_method": "merge"}
         )
+    assert "HUB_STATE_DIR" not in str(error.value)
 
 
 @pytest.mark.parametrize(

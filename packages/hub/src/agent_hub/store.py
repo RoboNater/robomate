@@ -435,8 +435,8 @@ class HubStore:
                 raise ConflictError(
                     "workflow is already initialized with "
                     f"status={row['status']!r}, goal={row['goal']!r}, and a different goal "
-                    "or policy; use get_state to resume it, or use a fresh HUB_STATE_DIR "
-                    "for a different workflow"
+                    "or policy; use get_state to resume it, or run robomate up "
+                    "in a fresh dedicated target clone for a different workflow"
                 )
             return str(row["id"])
 
