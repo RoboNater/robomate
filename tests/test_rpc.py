@@ -59,6 +59,64 @@ async def test_rpc_requires_the_bearer_token(app: FastAPI) -> None:
         assert response.json()["result"]["workflow"] is None
 
 
+async def test_hub_status_is_compact_and_reports_open_work(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo", "origin": "git@github.com:example/repo.git",
+        "forge": "github", "url": "http://hub.test", "default_branch": "main",
+    }
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
+    hub_store.open_question(task.id, "bob", "question text", "q1")
+    headers = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
+    await call(client, "hub.heartbeat", headers)
+    result = (await call(client, "hub.status"))["result"]
+    assert {key: result[key] for key in (
+        "repo_root", "origin", "forge", "url", "default_branch"
+    )} == dispatcher.hub_info
+    assert result["workflow"]["status"] == "active"
+    assert result["orchestrator"]["name"] == "alice"
+    assert result["orchestrator"]["session"] == SESSION
+    assert result["orchestrator"]["last_seen"]
+    assert result["agents"] == [{
+        "name": "bob", "harness": "codex", "model": "gpt-6-sol",
+        "status": "busy", "alive": True, "current_task": task.id,
+    }]
+    assert result["tasks"] == [{
+        "id": task.id, "role": "implementer", "assignee": "bob",
+        "state": "input-required", "pr_url": None, "head_sha": None,
+    }]
+    assert result["pending_questions"] == 1
+    assert "secret instructions" not in str(result)
+    assert "question text" not in str(result)
+    assert error_of(await call(client, "hub.status", unexpected=True)) == (
+        INVALID_PARAMS, "hub.status takes no params"
+    )
+
+
+async def test_hub_status_shows_known_review_pr_and_head(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    cast(RpcDispatcher, app.state.rpc).hub_info = {
+        "repo_root": "/repo", "origin": "git@github.com:example/repo.git",
+        "forge": "github", "url": "http://hub.test", "default_branch": "main",
+    }
+    hub_store.check_in("bob", AgentProfile())
+    implement = hub_store.assign_task("bob", "implementer", "Build", "build")
+    hub_store.submit_result(implement.id, "bob", {
+        "outcome": "completed", "summary": "done", "pr_url": PR, "head_sha": HEAD,
+    })
+    review = hub_store.assign_task("bob", "reviewer", "Review", "review",
+                                   pr_head_sha=HEAD)
+    result = (await call(client, "hub.status"))["result"]
+    assert result["tasks"] == [{
+        "id": review.id, "role": "reviewer", "assignee": "bob", "state": "submitted",
+        "pr_url": PR, "head_sha": HEAD,
+    }]
+
+
 async def test_bridge_call_rows_are_recorded_as_mcp_for_the_session_actor(
     app: FastAPI, hub_store: HubStore,
 ) -> None:

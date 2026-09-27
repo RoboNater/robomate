@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from agent_hub_common.discovery import read_hub_json, write_hub_json
+from agent_hub_common.registry import register, registry_path
 from robomate.cli import _bind
 
 CLI = str(Path(sys.executable).with_name("robomate"))
@@ -188,3 +189,77 @@ def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> N
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=10)
+
+
+def test_status_from_nested_directory_and_worktree(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    root, env = repository
+    nested = root / "nested"
+    nested.mkdir()
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "--allow-empty", "-m", "start"], cwd=root, check=True,
+                   capture_output=True)
+    worktree = tmp_path / "linked"
+    subprocess.run(["git", "worktree", "add", "-b", "linked", str(worktree)],
+                   cwd=root, check=True, capture_output=True)
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        for cwd in (nested, worktree):
+            result = subprocess.run([CLI, "status"], cwd=cwd, env=env, text=True,
+                                    capture_output=True, timeout=10)
+            assert result.returncode == 0, result.stderr
+            assert str(root) in result.stdout and str(info["url"]) in result.stdout
+            assert "Workflow: none" in result.stdout
+            result = subprocess.run([CLI, "status", "--json"], cwd=cwd, env=env,
+                                    text=True, capture_output=True, timeout=10)
+            assert json.loads(result.stdout)["repo_root"] == str(root)
+        stop(root, env, process)
+        stopped = subprocess.run([CLI, "status"], cwd=worktree, env=env, text=True,
+                                 capture_output=True, timeout=10)
+        assert stopped.returncode != 0
+        assert "not running" in stopped.stdout
+        assert str(info["url"]) in stopped.stdout
+        assert str(info["port"]) in stopped.stdout
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+
+
+def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    root, env = repository
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=other, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:example/other.git"],
+                   cwd=other, check=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD",
+                    "refs/remotes/origin/main"], cwd=other, check=True)
+    first = start(root, env)
+    second = start(other, env)
+    try:
+        first_info = await_hub(root, first)
+        second_info = await_hub(other, second)
+        register({"repo_root": "/stale", "url": "http://127.0.0.1:1",
+                  "hub_id": "stale", "pid": 999999}, env)
+        result = subprocess.run([CLI, "ls"], cwd=root, env=env, text=True,
+                                capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        lines = result.stdout.splitlines()
+        assert len(lines) == 2
+        assert any(str(root) in line and str(first_info["url"]) in line for line in lines)
+        assert any(str(other) in line and str(second_info["url"]) in line for line in lines)
+        assert all("agents 0" in line and "workflow none" in line for line in lines)
+        assert "stale" not in registry_path(env).read_text()
+        result = subprocess.run([CLI, "ls", "--json"], cwd=root, env=env, text=True,
+                                capture_output=True, timeout=10)
+        assert len(json.loads(result.stdout)) == 2
+    finally:
+        for repo, process in ((root, first), (other, second)):
+            if process.poll() is None:
+                stop(repo, env, process)
