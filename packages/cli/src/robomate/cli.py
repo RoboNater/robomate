@@ -11,6 +11,7 @@ import os
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterator
@@ -203,27 +204,46 @@ def _down() -> None:
 
 
 def _status(as_json: bool) -> None:
-    root, _ = repo_root(Path.cwd())
-    info = read_hub_json(root)
-    if info is None:
-        raise RuntimeError(f"not running: no hub recorded for {root}")
-    url = str(info.get("url") or "unknown")
-    port = info.get("port")
-    pid = int(info.get("pid") or 0)
-    running = process_alive(pid) and hub_healthy(url, str(info.get("hub_id") or ""))
-    if running:
-        try:
-            token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()
-            status = _rpc(url, token, "hub.status")
-        except (OSError, urllib.error.URLError):
-            running = False
-    if not running:
-        stopped = {"running": False, "repo_root": str(root), "url": url, "port": port}
+    """Show the discovered hub, retaining local metadata for stopped hubs."""
+    try:
+        root, _ = repo_root(Path.cwd())
+    except DiscoveryError:
+        root = None
+    info = read_hub_json(root) if root is not None else None
+    explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
+
+    def stopped(url: str, port: object) -> None:
+        stopped = {"running": False, "repo_root": str(root) if root else None,
+                   "url": url, "port": port}
         if as_json:
             print(json.dumps(stopped))
         else:
-            print(f"{root}: not running (URL: {url}, port: {port})")
+            print(f"{root or 'Hub'}: not running (URL: {url}, port: {port})")
         raise SystemExit(1)
+
+    if info is not None and not explicit:
+        url = str(info.get("url") or "unknown")
+        port = info.get("port")
+        pid = int(info.get("pid") or 0)
+        if not process_alive(pid) or not hub_healthy(url, str(info.get("hub_id") or "")):
+            stopped(url, port)
+        assert root is not None
+        token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()
+    else:
+        try:
+            endpoint = discover(Path.cwd())
+        except DiscoveryError as exc:
+            if info is None and root is not None and not explicit:
+                raise RuntimeError(f"not running: no hub recorded for {root}") from exc
+            raise
+        url, token = endpoint.url, endpoint.token
+        port = urllib.parse.urlparse(url).port
+    try:
+        status = _rpc(url, token, "hub.status")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"hub at {url} rejected status (HTTP {exc.code})") from exc
+    except (OSError, urllib.error.URLError):
+        stopped(url, port)
     if as_json:
         print(json.dumps(status))
         return
@@ -244,7 +264,8 @@ def _status(as_json: bool) -> None:
         print("Orchestrator: none")
     print(f"Agents: {len(status['agents'])}")
     for agent in status["agents"]:
-        life = "alive" if agent["alive"] else "lost"
+        life = ("released" if agent["status"] == "released"
+                else "alive" if agent["alive"] else "lost")
         print(f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
               f"  task {agent['current_task'] or '-'}")
     print(f"Open tasks: {len(status['tasks'])}")

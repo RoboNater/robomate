@@ -522,34 +522,35 @@ class HubStore:
                     " ORDER BY created"
                 )
             ]
-            # A review or rebase task follows a completed implementer task in
-            # this single-workflow hub. Its PR is the latest reported PR.
+            # Bind a review or rebase to the PR whose reported head matches
+            # its assigned head. A workflow may have reported several PRs.
             if tasks and workflow is not None:
                 results = connection.execute(
                     "SELECT result_json FROM task WHERE workflow_id = ?"
                     " AND result_json IS NOT NULL ORDER BY created DESC",
                     (workflow["id"],),
                 )
-                pr_url = None
-                head_sha = None
+                pr_by_head: dict[str, str] = {}
                 for row in results:
                     result = _json_object(row["result_json"])
                     if result and isinstance(result.get("pr_url"), str):
-                        pr_url = result["pr_url"]
-                        head_sha = result.get("head_sha")
-                        break
+                        for key in ("head_sha", "reviewed_head_sha"):
+                            head = result.get(key)
+                            if isinstance(head, str):
+                                pr_by_head.setdefault(head.lower(), result["pr_url"])
                 for task in tasks:
-                    if task["role"] in ("reviewer", "rebase"):
-                        task["pr_url"] = pr_url
-                        task["head_sha"] = task["head_sha"] or head_sha
+                    if task["role"] in ("reviewer", "rebase") and task["head_sha"]:
+                        task["pr_url"] = pr_by_head.get(task["head_sha"].lower())
             pending_questions = sum(
                 task["state"] == TaskState.INPUT_REQUIRED.value for task in tasks
             )
         return {
             "workflow": None if workflow is None else {
                 "status": workflow["status"],
-                "headline": workflow["goal"].splitlines()[0][:160]
-                if workflow["goal"].splitlines() else "",
+                "headline": next(
+                    (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
+                    "",
+                )[:160],
             },
             "agents": agents, "tasks": tasks,
             "pending_questions": pending_questions,

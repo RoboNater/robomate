@@ -104,16 +104,35 @@ async def test_hub_status_shows_known_review_pr_and_head(
         "forge": "github", "url": "http://hub.test", "default_branch": "main",
     }
     hub_store.check_in("bob", AgentProfile())
+    hub_store.check_in("dave", AgentProfile())
     implement = hub_store.assign_task("bob", "implementer", "Build", "build")
     hub_store.submit_result(implement.id, "bob", {
         "outcome": "completed", "summary": "done", "pr_url": PR, "head_sha": HEAD,
     })
+    other_pr = "https://github.com/octo/sandbox/pull/8"
+    other_head = "b" * 40
+    second = hub_store.assign_task("dave", "implementer", "Build other", "build")
+    hub_store.submit_result(second.id, "dave", {
+        "outcome": "completed", "summary": "done", "pr_url": other_pr,
+        "head_sha": other_head,
+    })
+    prior_review = hub_store.assign_task("dave", "reviewer", "Prior review", "review",
+                                         pr_head_sha=other_head)
+    hub_store.submit_result(prior_review.id, "dave", {
+        "verdict": "changes_requested", "summary": "needs changes",
+        "pr_url": other_pr, "reviewed_head_sha": other_head,
+    })
     review = hub_store.assign_task("bob", "reviewer", "Review", "review",
                                    pr_head_sha=HEAD)
+    unknown = hub_store.assign_task("dave", "reviewer", "Review unknown", "review",
+                                    pr_head_sha="c" * 40)
     result = (await call(client, "hub.status"))["result"]
     assert result["tasks"] == [{
         "id": review.id, "role": "reviewer", "assignee": "bob", "state": "submitted",
         "pr_url": PR, "head_sha": HEAD,
+    }, {
+        "id": unknown.id, "role": "reviewer", "assignee": "dave", "state": "submitted",
+        "pr_url": None, "head_sha": "c" * 40,
     }]
 
 
