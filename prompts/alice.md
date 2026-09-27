@@ -1,6 +1,10 @@
 Use the `alice-orchestrator` skill to carry this work through a reviewed,
 gate-checked merge and roadmap close-out.
 
+Connect through `robomate mcp --role orchestrator` to the existing HTTP hub
+started by `robomate up` in the target repository. The hub and its durable
+`.robomate/` state remain available if this harness session restarts.
+
 Goal: Address issue `<issue-owner>/<issue-repository>#<issue>`, merge its pull
 request, and close out by updating roadmap issue
 `<roadmap-owner>/<roadmap-repository>#<roadmap-issue>`.

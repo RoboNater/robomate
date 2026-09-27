@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from agent_hub.accounting import CallRecord
 from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
@@ -27,6 +29,60 @@ from worker_mcp.orchestrator import (
     create_orchestrator_mcp,
 )
 from worker_mcp.tools import create_worker_mcp
+
+
+def _mcp_row() -> CallRecord:
+    return CallRecord(
+        boundary="mcp", actor="alice", tool="get_state", outcome="ok",
+        bytes_in=10, bytes_out=20, started="2026-01-01T00:00:00Z",
+        finished="2026-01-01T00:00:01Z", content_bytes=5, repeat_bytes=0,
+    )
+
+
+async def test_disabled_hub_stops_bridge_accounting_without_drop_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    requests = 0
+
+    def disabled(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": "x", "result": {
+            "recorded": 0, "rejected": 0, "disabled": True,
+        }})
+
+    bridge = OrchestratorBridge()
+    bridge._endpoint = cast(Any, object())
+    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(disabled),
+                                       base_url=BASE_URL)
+    bridge.record_call(_mcp_row())
+    await bridge.flush_accounting()
+    bridge.record_call(_mcp_row())
+    await bridge.close()
+    assert requests == 1 and bridge.dropped_calls == 0
+    assert "MCP accounting dropped" not in caplog.text
+
+
+async def test_cancelled_flush_counts_rows_it_cannot_requeue() -> None:
+    bridge = OrchestratorBridge()
+    bridge._endpoint = cast(Any, object())
+    bridge._calls = asyncio.Queue(maxsize=1)
+    entered = asyncio.Event()
+
+    async def pending(_method: str, _params: dict[str, Any]) -> dict[str, Any]:
+        entered.set()
+        await asyncio.Event().wait()
+        return {"recorded": 1}
+
+    bridge.call = pending  # type: ignore[assignment]
+    bridge.record_call(_mcp_row())
+    task = asyncio.create_task(bridge.flush_accounting())
+    await entered.wait()
+    bridge.record_call(_mcp_row())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert bridge.dropped_calls == 1 and bridge._calls.qsize() == 1
 
 
 async def _call(server: Any, name: str, **arguments: Any) -> dict[str, Any]:
@@ -281,6 +337,14 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             reply = await pending
             assert reply.structuredContent is not None
             assert reply.structuredContent["reply"] == "This one"
+        with sqlite3.connect(repo / ".robomate/hub.db") as connection:
+            rows = connection.execute(
+                "SELECT tool, content_bytes FROM call_log "
+                "WHERE boundary = 'mcp' AND actor = 'alice'"
+            ).fetchall()
+        assert rows
+        assert any(tool == "initialize_workflow" and content_bytes > 0
+                   for tool, content_bytes in rows)
     finally:
         if hub.poll() is None:
             stopped = subprocess.run(

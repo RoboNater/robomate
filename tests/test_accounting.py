@@ -7,11 +7,12 @@ from typing import Any
 import httpx
 import pytest
 from agent_hub import create_app
-from agent_hub.accounting import CallAccounting, McpAccounting, a2a_tool
+from agent_hub.accounting import CallAccounting, a2a_tool
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, HubSettings
 from conftest import BASE_URL, TOKEN
+from worker_mcp.accounting import McpAccounting
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 from worker_mcp.tools import create_worker_mcp
@@ -191,7 +192,8 @@ def _mcp(tmp_path: Path) -> tuple[McpAccounting, Path]:
     path = tmp_path / "hub.db"
     initialize_database(path)
     accounting = CallAccounting(path, enabled=True)
-    return McpAccounting(accounting, frozenset({"wait_for_event", "get_state", "reply"})), path
+    return McpAccounting(accounting.record,
+                         frozenset({"wait_for_event", "get_state", "reply"})), path
 
 
 def _call(tool: str, request_id: int, **arguments: Any) -> dict[str, Any]:
@@ -270,7 +272,8 @@ def test_nothing_is_recorded_while_accounting_is_off(tmp_path: Path) -> None:
     path = tmp_path / "hub.db"
     initialize_database(path)
     jsonl = tmp_path / "calls.jsonl"
-    mcp = McpAccounting(CallAccounting(path, enabled=False, jsonl_path=jsonl), frozenset())
+    mcp = McpAccounting(CallAccounting(path, enabled=False, jsonl_path=jsonl).record,
+                        frozenset())
     mcp.observe_request(_call("get_state", 1), 10)
     mcp.observe_response(_result(1, {}), 10)
 
@@ -282,7 +285,7 @@ def test_a_failure_to_record_never_breaks_the_call(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     accounting = CallAccounting(tmp_path / "missing" / "hub.db", enabled=True)
-    mcp = McpAccounting(accounting, frozenset({"get_state"}))
+    mcp = McpAccounting(accounting.record, frozenset({"get_state"}))
     mcp.observe_request(_call("get_state", 1), 10)
     mcp.observe_response(_result(1, {}), 10)
 

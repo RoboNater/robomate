@@ -762,8 +762,9 @@ def build_report(
     notes = []
     if not snapshot["has_call_log"] or not snapshot["call_log"]:
         notes.append(
-            "call_log is empty: the hub ran without HUB_CALL_ACCOUNTING=1, so Alice's MCP "
-            "bytes are not measured and worker wire bytes come from telemetry (no heartbeats)"
+            "call_log is empty: no accounted calls were recorded (robomate up may have "
+            "used --no-call-accounting); Alice's MCP bytes are unavailable and worker "
+            "wire bytes come from telemetry (no heartbeats)"
         )
     if not paths:
         notes.append("no worker telemetry found; pass --telemetry for worker call figures")

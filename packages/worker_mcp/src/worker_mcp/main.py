@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
+from collections.abc import AsyncIterator
 from contextlib import suppress
 from io import TextIOWrapper
 from pathlib import Path
@@ -16,12 +18,50 @@ from agent_hub_common.discovery import discover
 from mcp.server.fastmcp import FastMCP
 from mcp.server.stdio import stdio_server
 
+from .accounting import McpAccounting
 from .client import WorkerHubClient
 from .config import WorkerSettings
 from .tools import create_worker_mcp
 
 
-async def serve_mcp(server: FastMCP, stdout: TextIO) -> None:
+class _ObservedInput(anyio.AsyncFile[str]):
+    def __init__(self, source: anyio.AsyncFile[str], observer: McpAccounting) -> None:
+        self.source = source
+        self.observer = observer
+
+    async def __aiter__(self) -> AsyncIterator[str]:
+        async for line in self.source:
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                self.observer.observe_request(payload, len(line.encode("utf-8")))
+            yield line
+
+
+class _ObservedOutput(anyio.AsyncFile[str]):
+    def __init__(self, source: anyio.AsyncFile[str], observer: McpAccounting) -> None:
+        self.source = source
+        self.observer = observer
+
+    async def write(self, value: str) -> int:
+        written = await self.source.write(value)
+        try:
+            payload = json.loads(value)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            self.observer.observe_response(payload, len(value.encode("utf-8")))
+        return written
+
+    async def flush(self) -> None:
+        await self.source.flush()
+
+
+async def serve_mcp(
+    server: FastMCP, stdout: TextIO, accounting: McpAccounting | None = None
+) -> None:
     """Run one MCP server with stdout reserved for protocol framing."""
 
     buffer = getattr(stdout, "buffer", None)
@@ -36,6 +76,9 @@ async def serve_mcp(server: FastMCP, stdout: TextIO) -> None:
         if stdin_buffer is not None
         else anyio.wrap_file(sys.stdin)
     )
+    if accounting is not None:
+        stdin_stream = _ObservedInput(stdin_stream, accounting)
+        stdout_stream = _ObservedOutput(stdout_stream, accounting)
     async with stdio_server(stdin=stdin_stream, stdout=stdout_stream) as (read, write):
         await server._mcp_server.run(
             read, write, server._mcp_server.create_initialization_options()

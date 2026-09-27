@@ -39,7 +39,8 @@ the workflow.
    - With stored state, resume it. Repeat initialization only to confirm the
      exact original goal and policy; never replace durable inputs from a later
      prompt. If the prompt conflicts with stored state, explain the mismatch and
-     ask whether to resume or use a fresh `HUB_STATE_DIR`.
+     ask whether to resume the current hub or start a fresh target repository
+     hub with its own `.robomate/` state.
 3. Read every issue the statement names directly with `gh issue view`, and, when
    the goal names a repository-qualified roadmap target, the roadmap too. A
    supplied roadmap target that is not repository-qualified is carried

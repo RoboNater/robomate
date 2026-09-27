@@ -57,11 +57,13 @@ def create_app(
     )
     protocol = A2AProtocol(store=store, settings=resolved)
     orchestrator = OrchestratorOps(store)
-    dispatcher = RpcDispatcher(orchestrator, hub_info=hub_info, shutdown=shutdown)
     accounting = CallAccounting(
         resolved.database_path,
         enabled=resolved.call_accounting,
         jsonl_path=resolved.call_log_jsonl,
+    )
+    dispatcher = RpcDispatcher(
+        orchestrator, hub_info=hub_info, shutdown=shutdown, accounting=accounting
     )
 
     @asynccontextmanager

@@ -207,7 +207,8 @@ async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
     else:
         bridge = OrchestratorBridge(args.name or "alice")
         try:
-            await serve_mcp(create_orchestrator_mcp(bridge), stdout)
+            server = create_orchestrator_mcp(bridge)
+            await serve_mcp(server, stdout, await bridge.accounting(server))
         finally:
             await bridge.close()
 

@@ -1,14 +1,15 @@
-"""Per-call byte accounting on the hub's two boundaries (#78).
+"""Per-call byte accounting persisted by the HTTP hub (#78).
 
-Every A2A request a worker makes and every MCP message Alice exchanges is
+Every A2A request a worker makes and every MCP row the bridge ships is
 recorded as byte counts, never as payload text: issue bodies, questions and
 results are untrusted, and the accounting must not become a second place they
 land. The labels a record carries — actor, tool, outcome, task id — are either
 drawn from closed sets or validated against the hub's own identifiers.
 
-Off by default. When `HUB_CALL_ACCOUNTING` is on, each call becomes a row in
-`call_log`, so a per-agent tally is a `GROUP BY actor` that survives a hub
-restart; `HUB_CALL_LOG_JSONL` additionally appends the same record to a file.
+Off by default for the standalone app; `robomate up` enables it by default.
+Each call becomes a row in `call_log`, so a per-agent tally is a
+`GROUP BY actor` that survives a hub restart; `HUB_CALL_LOG_JSONL`
+additionally appends the same record to a file.
 Nothing here writes to stdout (#7), and a failure to record is logged to
 stderr rather than breaking the call it describes.
 """
@@ -18,10 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -33,15 +33,10 @@ from .database import database
 logger = logging.getLogger(__name__)
 
 UNKNOWN_ACTOR = "unknown"
-ALICE = "alice"
 
 # Hub identifiers are uuid4 hex; anything else is not one of ours and is
 # dropped rather than copied into the accounting.
 _ID_RE = re.compile(r"^[0-9a-f]{32}$")
-
-# MCP methods other than `tools/call` are recorded under their own name when
-# they are one of these, since `tools/list` is the per-session schema cost.
-MCP_METHODS = frozenset({"initialize", "tools/list", "ping", "resources/list", "prompts/list"})
 
 
 def hub_id(value: Any) -> str | None:
@@ -76,10 +71,11 @@ class CallAccounting:
     enabled: bool = False
     jsonl_path: Path | None = None
 
-    def record(self, record: CallRecord) -> None:
+    def record(self, record: CallRecord) -> bool:
         if not self.enabled:
-            return
+            return False
         fields = asdict(record)
+        persisted = False
         try:
             with database(self.database_path) as connection:
                 # One workflow per database (§3); calls before it exists have none.
@@ -92,17 +88,19 @@ class CallAccounting:
                 connection.execute(
                     f"INSERT INTO call_log ({columns}) VALUES ({placeholders})", fields
                 )
+                persisted = True
         except Exception:
             logger.exception("Could not record %s call %s", record.boundary, record.tool)
             fields.setdefault("workflow_id", None)
         if self.jsonl_path is None:
-            return
+            return persisted
         try:
             self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             with self.jsonl_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(fields, sort_keys=True) + "\n")
         except OSError:
             logger.exception("Could not append call accounting to %s", self.jsonl_path)
+        return persisted
 
 
 # -- A2A boundary -------------------------------------------------------------
@@ -184,117 +182,3 @@ async def counted_stream(
             yield chunk
     finally:
         on_done(sent)
-
-
-# -- MCP boundary -------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class _PendingMcp:
-    tool: str
-    bytes_in: int
-    started: str
-    task_id: str | None
-
-
-@dataclass(slots=True)
-class McpAccounting:
-    """Pair Alice's JSON-RPC requests with the responses the hub writes back.
-
-    Measured on the stdio framing itself, so `bytes_in`/`bytes_out` are exactly
-    what crossed the pipe. `content_bytes` is the text content a harness puts
-    into the model's context, and `repeat_bytes` how much of it repeats the
-    previous result of the same tool, line for line. The previous text is held
-    in memory only for that comparison and never recorded.
-    """
-
-    accounting: CallAccounting
-    tools: frozenset[str]
-    _pending: dict[str | int, _PendingMcp] = field(default_factory=dict)
-    _previous: dict[str, list[str]] = field(default_factory=dict)
-
-    def observe_request(self, payload: Mapping[str, Any], size: int) -> None:
-        request_id = payload.get("id")
-        method = payload.get("method")
-        if not isinstance(request_id, str | int) or not isinstance(method, str):
-            return
-        params = payload.get("params")
-        params = params if isinstance(params, Mapping) else {}
-        task_id = None
-        if method == "tools/call":
-            name = params.get("name")
-            tool = name if isinstance(name, str) and name in self.tools else "unknown"
-            arguments = params.get("arguments")
-            if isinstance(arguments, Mapping):
-                task_id = hub_id(arguments.get("task_id"))
-        else:
-            tool = method if method in MCP_METHODS else "other"
-        self._pending[request_id] = _PendingMcp(tool, size, utcnow_iso(), task_id)
-
-    def observe_response(self, payload: Mapping[str, Any], size: int) -> None:
-        request_id = payload.get("id")
-        if not isinstance(request_id, str | int) or "method" in payload:
-            return
-        pending = self._pending.pop(request_id, None)
-        if pending is None:
-            return
-        result = payload.get("result")
-        outcome = "error"
-        content_bytes = repeat_bytes = None
-        task_id = pending.task_id
-        if isinstance(result, Mapping):
-            structured = result.get("structuredContent")
-            outcome = _mcp_outcome(pending.tool, result, structured)
-            if pending.tool == "assign_task" and isinstance(structured, Mapping):
-                task_id = hub_id(structured.get("id")) or task_id
-            text = _content_text(result)
-            if text is not None:
-                content_bytes = len(text.encode("utf-8"))
-                repeat_bytes = self._repeat(pending.tool, text)
-        self.accounting.record(
-            CallRecord(
-                boundary="mcp",
-                actor=ALICE,
-                tool=pending.tool,
-                outcome=outcome,
-                bytes_in=pending.bytes_in,
-                bytes_out=size,
-                started=pending.started,
-                finished=utcnow_iso(),
-                content_bytes=content_bytes,
-                repeat_bytes=repeat_bytes,
-                task_id=task_id,
-            )
-        )
-
-    def _repeat(self, tool: str, text: str) -> int:
-        lines = text.splitlines(keepends=True)
-        previous = self._previous.get(tool)
-        self._previous[tool] = lines
-        if previous is None:
-            return 0
-        matcher = SequenceMatcher(None, previous, lines, autojunk=False)
-        return sum(
-            len("".join(lines[block.b : block.b + block.size]).encode("utf-8"))
-            for block in matcher.get_matching_blocks()
-        )
-
-
-def _content_text(result: Mapping[str, Any]) -> str | None:
-    content = result.get("content")
-    if not isinstance(content, list):
-        return None
-    texts = [
-        block["text"]
-        for block in content
-        if isinstance(block, Mapping) and isinstance(block.get("text"), str)
-    ]
-    return "".join(texts) if texts else None
-
-
-def _mcp_outcome(tool: str, result: Mapping[str, Any], structured: Any) -> str:
-    if result.get("isError") is True:
-        return "error"
-    if tool == "wait_for_event" and isinstance(structured, Mapping):
-        return "null_event" if structured.get("event") is None else "event"
-    return "ok"

@@ -1,6 +1,6 @@
 # Worker Runtime Configurations
 
-This directory contains template configurations for worker agent runtimes (Claude Code, OpenAI Codex CLI, Gemini CLI) to connect to the agent hub via `worker-mcp`.
+This directory contains template configurations for worker agent runtimes (Claude Code, OpenAI Codex CLI, Gemini CLI) to connect to the HTTP hub via `robomate mcp --role worker`.
 
 ## Template Files
 
@@ -10,14 +10,14 @@ This directory contains template configurations for worker agent runtimes (Claud
 
 ## Platform Setup & Absolute Paths
 
-All templates use `uv run --directory /path/to/agent-hub worker-mcp` so worker runtimes can launch the MCP server from any working directory or sandbox repo.
+All templates use `uv run --project /path/to/robomate robomate mcp --role worker` so worker runtimes can launch the bridge from any working directory or sandbox repo.
 
 Before using a template:
 1. Replace `/path/to/agent-hub` with the absolute path to the `agent-hub` workspace checkout:
    - **Linux / macOS**: `/home/user/path/to/robo-agents`
    - **Windows**: Prefer forward slashes (e.g., `C:/work/robo-agents`). A backslash must be escaped as `\\` in JSON (e.g., `C:\\work\\robo-agents`): a single unescaped `\` either fails to parse (`\w` is an `Invalid \escape`) or silently corrupts the value (`\n` and `\r` become newline/carriage-return control characters).
 2. Replace `http://alice-host:8420` with your hub's public address (e.g., `http://127.0.0.1:8420` for local runs).
-3. Replace `HUB_TOKEN` with the shared bearer token (from `$HUB_STATE_DIR/token` or `.env`).
+3. Set `ROBOMATE_TOKEN_FILE` to the absolute path of the running hub's `<target>/.robomate/token` file. The bridge reads the token at runtime.
 4. Ensure `AGENT_NAME` names the assigned worker.
 5. Fill in the identity profile (spec §3), which Alice's role policy pairs workers on:
 
@@ -36,7 +36,7 @@ Before using a template:
    `AGENT_RUNTIME`, the Step 4 name for `HUB_HARNESS`, is still honoured when `HUB_HARNESS` is unset.
 
 For endurance runs, replace the empty `HUB_TELEMETRY_LOG` in the runtime's MCP
-configuration with an absolute path. `worker-mcp` appends JSON Lines records
+configuration with an absolute path. The worker bridge appends JSON Lines records
 for MCP tool calls and outcomes, errors, HTTP retry attempts, and timer
 heartbeats. Reusing the path across a supervised restart is intentional: each
 process has a distinct `session_id` and `worker_instance_id`.
@@ -45,7 +45,7 @@ supervisor considers only records appended after it launches, so older records
 at the same path cannot satisfy the current run.
 
 Claude Code print mode may end a turn while work is still pending. For an
-endurance run, keep one streaming process and its `worker-mcp` child alive with
+endurance run, keep one streaming process and its `robomate mcp` child alive with
 the policy-free supervisor (Alice still owns every assignment and decision):
 
 ```sh
@@ -61,7 +61,7 @@ the same file.
 
 Before launch, expose the checked-in skills to Claude Code by copying or
 symlinking each required directory into `.claude/skills/` in that runtime's
-workspace (or into `~/.claude/skills/` for a user-wide installation). Step 5C's
+workspace (or into `~/.claude/skills/` for a user-wide installation). The
 launch scripts will automate this. For example, Alice needs
 `skills/alice-orchestrator/` installed as
 `.claude/skills/alice-orchestrator/`, while a Claude worker needs
@@ -104,7 +104,7 @@ manual reconciliation, not automatic identity regeneration.
 
 Replace the Bob and Charlie templates' distinct `HUB_WORKSPACE` placeholders
 with their canonical absolute clone roots. Start the LLM in that clone with
-`cd` (Claude) or `-C` (Codex). `uv --directory` selects the coordination code
+`cd` (Claude) or `-C` (Codex). `uv --project` selects the coordination code
 for the MCP child; it does not set the LLM's shell workspace. Worker settings
 validate clone topology, origin, identity ownership and permissions before
 reporting the persisted ID. Non-repository tests/endurance may omit

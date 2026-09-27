@@ -59,6 +59,86 @@ async def test_rpc_requires_the_bearer_token(app: FastAPI) -> None:
         assert response.json()["result"]["workflow"] is None
 
 
+async def test_bridge_call_rows_are_recorded_as_mcp_for_the_session_actor(
+    app: FastAPI, hub_store: HubStore,
+) -> None:
+    app.state.accounting.enabled = True
+    headers = {"Authorization": f"Bearer {TOKEN}", ACTOR_HEADER: "alice",
+               SESSION_HEADER: SESSION}
+    row = {
+        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
+        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z", "status": None,
+        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+    }
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                          base_url=BASE_URL, headers=headers) as client,
+    ):
+        assert (await call(client, "hub.record_calls", calls=[row]))["result"] == {
+            "recorded": 1, "rejected": 0,
+        }
+        bad = {**row, "actor": "bob"}
+        assert (await call(client, "hub.record_calls", calls=[bad, row]))["result"] == {
+            "recorded": 1, "rejected": 1,
+        }
+        backwards = {**row, "started": "2026-01-01T00:00:02Z"}
+        assert (await call(client, "hub.record_calls", calls=[backwards]))["result"] == {
+            "recorded": 1, "rejected": 0,
+        }
+        assert error_of(await call(client, "hub.record_calls", headers={SESSION_HEADER: ""},
+                                   calls=[row]))[0] == INVALID_REQUEST
+    with database(hub_store.path) as connection:
+        rows = connection.execute(
+            "SELECT boundary, actor, content_bytes FROM call_log"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [("mcp", "alice", 100)] * 3
+
+
+async def test_disabled_hub_identifies_accounting_as_off(
+    client: httpx.AsyncClient,
+) -> None:
+    row = {
+        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
+        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z", "status": None,
+        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+    }
+    result = await call(client, "hub.record_calls", headers={ACTOR_HEADER: "alice",
+                                                      SESSION_HEADER: SESSION}, calls=[row])
+    assert result["result"] == {"recorded": 0, "rejected": 0, "disabled": True}
+
+
+async def test_superseded_bridge_can_flush_accounting_without_reclaiming_session(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore,
+) -> None:
+    app.state.accounting.enabled = True
+    old = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
+    newer_session = "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"
+    new = {ACTOR_HEADER: "alice", SESSION_HEADER: newer_session}
+    assert "result" in await call(client, "get_state", old)
+    assert "result" in await call(client, "get_state", new)
+    row = {
+        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
+        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z", "status": None,
+        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+    }
+    assert (await call(client, "hub.record_calls", old, calls=[row]))["result"] == {
+        "recorded": 1, "rejected": 0,
+    }
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    assert dispatcher.orchestrator is not None
+    assert dispatcher.orchestrator.session == newer_session
+    assert error_of(await call(client, "get_state", old))[0] == CONFLICT
+    with database(hub_store.path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM call_log WHERE boundary = 'mcp'"
+        ).fetchone()
+    assert count is not None and count[0] == 1
+
+
 async def test_unknown_methods_and_malformed_requests_are_refused(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:

@@ -246,6 +246,7 @@ def test_a_seeded_run_produces_known_totals(tmp_path: Path) -> None:
     alice = agents["alice"]
     assert alice["calls"] == {"total": 5, "active": 4, "waiting": 1, "other": 0}
     assert alice["bytes"]["mcp"] == {"sent": 1100, "received": 1960, "context": 1470}
+    assert "call_log is empty" not in REPORT.render_text(report)
     assert alice["time_s"] == {"total": 2010.0, "turn": 1910.0, "waiting": 100.0, "idle": 0.0}
 
     # dave made one failed check-in; erin was expected and never came.

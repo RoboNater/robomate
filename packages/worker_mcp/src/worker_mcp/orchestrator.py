@@ -7,15 +7,19 @@ import json
 import logging
 import uuid
 from contextlib import suppress
+from dataclasses import asdict
 from functools import wraps
 from pathlib import Path
 from types import MethodType
 from typing import Any
 
 import httpx
+from agent_hub.accounting import CallRecord
 from agent_hub.orchestrator import OPERATIONS, OrchestratorOps
 from agent_hub_common.discovery import HubEndpoint, discover
 from mcp.server.fastmcp import FastMCP
+
+from .accounting import McpAccounting
 
 logger = logging.getLogger(__name__)
 RETRYABLE = frozenset({
@@ -37,8 +41,68 @@ class OrchestratorBridge:
         self._endpoint: HubEndpoint | None = None
         self._client: httpx.AsyncClient | None = None
         self._heartbeat: asyncio.Task[None] | None = None
+        self._accounting_task: asyncio.Task[None] | None = None
+        self._calls: asyncio.Queue[CallRecord] = asyncio.Queue(maxsize=256)
+        self._accounting_disabled = False
+        self.dropped_calls = 0
+
+    async def accounting(self, server: FastMCP) -> McpAccounting:
+        tools = frozenset(tool.name for tool in await server.list_tools())
+        return McpAccounting(self.record_call, tools, self.name)
+
+    def record_call(self, record: CallRecord) -> None:
+        if self._accounting_disabled:
+            return
+        try:
+            self._calls.put_nowait(record)
+        except asyncio.QueueFull:
+            self.dropped_calls += 1
+            logger.warning("MCP accounting queue full; dropped %d rows", self.dropped_calls)
+
+    async def flush_accounting(self) -> None:
+        if self._endpoint is None or self._calls.empty():
+            return
+        while not self._calls.empty():
+            batch = [self._calls.get_nowait() for _ in range(min(32, self._calls.qsize()))]
+            try:
+                result = await self.call("hub.record_calls", {"calls": [asdict(r) for r in batch]})
+                if result.get("disabled") is True:
+                    self._accounting_disabled = True
+                    self._calls = asyncio.Queue(maxsize=256)
+                    return
+                recorded = result.get("recorded", 0)
+                if recorded != len(batch):
+                    self.dropped_calls += len(batch) - recorded
+            except asyncio.CancelledError:
+                for record in batch:
+                    try:
+                        self._calls.put_nowait(record)
+                    except asyncio.QueueFull:
+                        self.dropped_calls += 1
+                raise
+            except Exception:
+                self.dropped_calls += len(batch)
+                logger.exception("Could not ship MCP accounting rows; dropped %d", len(batch))
+
+    async def _accounting_loop(self) -> None:
+        while True:
+            await asyncio.sleep(1)
+            await self.flush_accounting()
 
     async def close(self) -> None:
+        if self._accounting_task is not None:
+            self._accounting_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._accounting_task
+            self._accounting_task = None
+        await self.flush_accounting()
+        if not self._calls.empty():
+            self.dropped_calls += self._calls.qsize()
+            self._calls = asyncio.Queue(maxsize=256)
+        if self.dropped_calls:
+            logger.warning(
+                "MCP accounting dropped %d rows in this bridge session", self.dropped_calls
+            )
         if self._heartbeat is not None:
             self._heartbeat.cancel()
             with suppress(asyncio.CancelledError):
@@ -80,8 +144,14 @@ class OrchestratorBridge:
                             raise SupersededSessionError(message)
                         raise RuntimeError(message)
                     result: dict[str, Any] = body["result"]
-                    if self._heartbeat is None and method != "hub.heartbeat":
+                    if self._heartbeat is None and method not in (
+                        "hub.heartbeat", "hub.record_calls"
+                    ):
                         self._heartbeat = asyncio.create_task(self._heartbeat_loop())
+                    if self._accounting_task is None and method not in (
+                        "hub.heartbeat", "hub.record_calls"
+                    ):
+                        self._accounting_task = asyncio.create_task(self._accounting_loop())
                     return result
             except httpx.TransportError:
                 retryable = method in RETRYABLE or (
