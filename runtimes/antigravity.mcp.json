@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "robomate": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/path/to/robomate",
+        "robomate",
+        "mcp",
+        "--role",
+        "worker"
+      ],
+      "env": {
+        "ROBOMATE_HUB_URL": "http://alice-host:8420",
+        "ROBOMATE_TOKEN_FILE": "/path/to/target/.robomate/token",
+        "AGENT_NAME": "bob",
+        "HUB_WORKSPACE": "/absolute/path/to/bob-sandbox",
+        "HUB_HARNESS": "antigravity",
+        "HUB_HARNESS_VERSION": "",
+        "HUB_PROVIDER": "",
+        "HUB_MODEL": "",
+        "HUB_CAPABILITIES": "",
+        "HUB_TELEMETRY_LOG": ""
+      },
+      "enabledTools": [
+        "check_in",
+        "get_role_guide",
+        "await_assignment",
+        "report_progress",
+        "ask_alice",
+        "submit_result"
+      ],
+      "timeoutSeconds": 330
+    }
+  }
+}

@@ -1,11 +1,13 @@
 # Worker Runtime Configurations
 
-This directory contains template configurations for worker agent runtimes (Claude Code, OpenAI Codex CLI, Gemini CLI) to connect to the HTTP hub via `robomate mcp --role worker`.
+This directory contains template configurations for worker agent runtimes (Claude Code, OpenAI Codex CLI, OpenCode, AntiGravity CLI, Gemini CLI) to connect to the HTTP hub via `robomate mcp --role worker`.
 
 ## Template Files
 
 - `claude-code.mcp.json` — For Claude Code (e.g., Bob).
 - `codex.config.toml` — For Codex CLI (e.g., Charlie).
+- `opencode.json` — For OpenCode (`OPENCODE_CONFIG`).
+- `antigravity.mcp.json` — For AntiGravity CLI (`agy`, placed at `<agy-home>/.gemini/config/mcp_config.json`).
 - `gemini.settings.json` — For Gemini CLI.
 
 ## Platform Setup & Absolute Paths
@@ -23,9 +25,9 @@ Before using a template:
 
    | Variable | Meaning | Template value |
    |---|---|---|
-   | `HUB_HARNESS` | Agent harness running the worker | `claude-code` / `codex` / `gemini` |
+   | `HUB_HARNESS` | Agent harness running the worker | `claude-code` / `codex` / `opencode` / `antigravity` / `gemini` |
    | `HUB_HARNESS_VERSION` | Harness version, e.g. from `claude --version` | empty |
-   | `HUB_PROVIDER` | Model provider | `anthropic` / `openai` / `google` |
+   | `HUB_PROVIDER` | Model maker (`anthropic`, `openai`, `google`, etc.) | `anthropic` / `openai` / `google` / empty (multi-vendor) |
    | `HUB_MODEL` | Exact model ID, when the launcher pins one | empty |
    | `HUB_CAPABILITIES` | Comma-separated capabilities matched against `implementer_capabilities` / `reviewer_capabilities` | empty |
 

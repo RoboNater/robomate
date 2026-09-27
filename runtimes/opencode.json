@@ -1,0 +1,35 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "robomate": {
+      "type": "local",
+      "command": [
+        "uv",
+        "run",
+        "--project",
+        "/path/to/robomate",
+        "robomate",
+        "mcp",
+        "--role",
+        "worker"
+      ],
+      "environment": {
+        "ROBOMATE_HUB_URL": "http://alice-host:8420",
+        "ROBOMATE_TOKEN_FILE": "/path/to/target/.robomate/token",
+        "AGENT_NAME": "bob",
+        "HUB_WORKSPACE": "/absolute/path/to/bob-sandbox",
+        "HUB_HARNESS": "opencode",
+        "HUB_HARNESS_VERSION": "",
+        "HUB_PROVIDER": "",
+        "HUB_MODEL": "",
+        "HUB_CAPABILITIES": "",
+        "HUB_TELEMETRY_LOG": ""
+      },
+      "enabled": true,
+      "timeout": 330000
+    }
+  },
+  "permission": {
+    "external_directory": "allow"
+  }
+}
