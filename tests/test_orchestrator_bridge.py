@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -21,7 +22,10 @@ from mcp.client.stdio import stdio_client
 from mcp.server.fastmcp.exceptions import ToolError
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
-from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
+from worker_mcp.orchestrator import (
+    OrchestratorBridge,
+    create_orchestrator_mcp,
+)
 from worker_mcp.tools import create_worker_mcp
 
 
@@ -49,6 +53,62 @@ async def test_discovery_failure_is_a_tool_error(monkeypatch: pytest.MonkeyPatch
     await server.list_tools()
     with pytest.raises(ToolError, match="Registered hubs: repo-a, repo-b"):
         await _call(server, "get_state")
+
+
+@pytest.mark.parametrize(("key", "retries"), [(None, False), ("decision-key", True)])
+async def test_log_decision_retries_only_with_an_idempotency_key(
+    key: str | None, retries: bool
+) -> None:
+    requests = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            raise httpx.ConnectError("connection lost", request=request)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": "x", "result": {"id": 1}})
+
+    bridge = OrchestratorBridge()
+    bridge._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), base_url=BASE_URL
+    )
+    try:
+        if retries:
+            assert await bridge.call(
+                "log_decision", {"summary": "s", "rationale": "r", "key": key}
+            ) == {"id": 1}
+            assert requests == 2
+        else:
+            with pytest.raises(httpx.ConnectError):
+                await bridge.call("log_decision", {"summary": "s", "rationale": "r"})
+            assert requests == 1
+    finally:
+        await bridge.close()
+
+
+async def test_superseded_heartbeat_stops_without_repeating_error_logs(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = OrchestratorBridge()
+    requests = 0
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": "x",
+            "error": {"code": -32002, "message": "superseded by a newer orchestrator session"},
+        })
+
+    bridge._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), base_url=BASE_URL
+    )
+    monkeypatch.setattr("worker_mcp.orchestrator.asyncio.sleep", AsyncMock())
+    try:
+        await bridge._heartbeat_loop()
+        assert requests == 1
+    finally:
+        await bridge.close()
 
 
 async def test_worker_task_survives_orchestrator_session_restart(

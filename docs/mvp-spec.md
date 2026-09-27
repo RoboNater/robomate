@@ -164,6 +164,9 @@ Linux). `robomate down` stops it from another terminal. Background/service mode 
 3. If exactly one hub is registered on the machine, that hub.
 4. Otherwise `join` fails with the list from the registry and asks for `hub=<repo name or path>`.
 
+In M1, before `join` exists, `robomate mcp` resolves the hub on its first tool call. An
+ambiguous discovery returns the registered-hub list as a tool error.
+
 **Identify-the-hub** — `robomate status` (from any directory in the repo or its worktrees) and the
 `whoami` tool both report repo, origin, forge, URL, and the agents joined, so neither the
 operator nor an agent can confuse two hubs.
@@ -185,6 +188,13 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   `implementer` accepts implementer, rebase, and closeout tasks; a `reviewer` accepts reviewer
   tasks; `worker` accepts any. The hub refuses an incompatible `assign_task`.
 - **One orchestrator per hub.** A second orchestrator join is refused unless `takeover`.
+- **M1 before `join`:** `robomate mcp --role orchestrator|worker [--name NAME]` selects the
+  bridge mode and name; a worker may instead use `AGENT_NAME`, and the orchestrator defaults to
+  `alice`. The orchestrator bridge sends a session ID with its `/rpc` calls and a heartbeat
+  every 30 s. The first call from a new session makes it current: calls from older sessions
+  are refused, and outstanding event delivery leases expire for immediate redelivery.
+  Worker tasks, leases, and heartbeats are unaffected. This is the reduced M1 form of
+  orchestrator `takeover`; M2 replaces the flags with `join`.
 - **Names** are unique per hub. Joining a name whose instance is alive returns 409 unless
   `takeover=true`, which supersedes the old instance at once (its heartbeats are ignored).
   A takeover of an agent holding a live task **reattaches** the task to the new instance and
@@ -393,7 +403,8 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same
 route with an operator identity; `robomate abandon` and `robomate report` are operator-only.
-The first operator methods on this route are `hub.info` and `hub.shutdown` (M1 Step 2).
+The first operator methods on this route are `hub.info` and `hub.shutdown` (M1 Step 2),
+followed by `hub.heartbeat` for orchestrator session liveness (M1 Step 4).
 From M1 Step 3 it also serves the orchestrator operations, named after today's tools, with
 the tool arguments as `params` (an object) and the tool's dict as `result`. Errors carry a
 stable `code` and the original message: -32602 invalid params (including argument

@@ -19,8 +19,12 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 RETRYABLE = frozenset({
-    "get_state", "wait_for_event", "check_merge_gate", "assign_task", "reply", "log_decision"
+    "get_state", "wait_for_event", "check_merge_gate", "assign_task", "reply"
 })
+
+
+class SupersededSessionError(RuntimeError):
+    """The hub has accepted a newer orchestrator bridge session."""
 
 
 class OrchestratorBridge:
@@ -71,13 +75,19 @@ class OrchestratorBridge:
                     # Streaming keeps the response-start boundary explicit for retry safety.
                     body = json.loads(await response.aread())
                     if "error" in body:
-                        raise RuntimeError(str(body["error"]["message"]))
+                        message = str(body["error"]["message"])
+                        if message == "superseded by a newer orchestrator session":
+                            raise SupersededSessionError(message)
+                        raise RuntimeError(message)
                     result: dict[str, Any] = body["result"]
                     if self._heartbeat is None and method != "hub.heartbeat":
                         self._heartbeat = asyncio.create_task(self._heartbeat_loop())
                     return result
             except httpx.TransportError:
-                if response_started or method not in RETRYABLE or attempts >= 3:
+                retryable = method in RETRYABLE or (
+                    method == "log_decision" and params.get("key") is not None
+                )
+                if response_started or not retryable or attempts >= 3:
                     raise
                 await asyncio.sleep(0.5 * 2**attempts)
                 attempts += 1
@@ -87,6 +97,9 @@ class OrchestratorBridge:
             await asyncio.sleep(30)
             try:
                 await self.call("hub.heartbeat", {})
+            except SupersededSessionError:
+                logger.info("Orchestrator session superseded; stopping heartbeat")
+                return
             except Exception:
                 logger.exception("Orchestrator heartbeat failed")
 
