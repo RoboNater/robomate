@@ -343,7 +343,9 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 "WHERE boundary = 'mcp' AND actor = 'alice'"
             ).fetchall()
         assert rows
-        assert any(tool == "initialize_workflow" and content_bytes > 0
+        # The first bridge can be superseded before its best-effort queue flushes.
+        # The resumed bridge must still account for a completed tool response.
+        assert any(tool == "reply" and content_bytes > 0
                    for tool, content_bytes in rows)
     finally:
         if hub.poll() is None:
