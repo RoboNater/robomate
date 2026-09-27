@@ -147,6 +147,24 @@ class RpcDispatcher:
         method = payload["method"]
         if method == "hub.info" and self.hub_info is not None:
             return dict(self.hub_info)
+        if method == "hub.status" and self.hub_info is not None:
+            params = payload.get("params", {})
+            if not isinstance(params, dict) or params:
+                raise RpcError(INVALID_PARAMS, "hub.status takes no params")
+            summary = self.ops.store.status_summary()
+            session = self.orchestrator
+            return {
+                "repo_root": self.hub_info["repo_root"],
+                "origin": self.hub_info["origin"],
+                "forge": self.hub_info["forge"],
+                "url": self.hub_info["url"],
+                "default_branch": self.hub_info["default_branch"],
+                "orchestrator": None if session is None else {
+                    "name": session.actor, "session": session.session,
+                    "last_seen": session.last_seen.isoformat(),
+                },
+                **summary,
+            }
         if method == "hub.shutdown" and self.shutdown is not None:
             background.add_task(self.shutdown)
             return {"stopping": True}

@@ -13,7 +13,9 @@ from agent_hub_common.registry import deregister, live_entries, register, regist
 def test_registry_register_prune_and_deregister(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    env = {"XDG_STATE_HOME": str(tmp_path)}
+    # registry_path() uses %LOCALAPPDATA% on Windows; isolate both locations
+    # so live_entries() never reads or prunes the operator's real registry.
+    env = {"XDG_STATE_HOME": str(tmp_path), "LOCALAPPDATA": str(tmp_path / "localappdata")}
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 123)
     monkeypatch.setattr(
         "agent_hub_common.registry.hub_healthy", lambda url, hub_id: hub_id == "live"

@@ -11,6 +11,7 @@ import os
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterator
@@ -28,11 +29,12 @@ from agent_hub_common.discovery import (
     discover,
     ensure_excluded,
     read_hub_json,
+    repo_root,
     resolve_repository,
     state_dir,
     write_hub_json,
 )
-from agent_hub_common.registry import deregister, hub_healthy, process_alive, register
+from agent_hub_common.registry import deregister, hub_healthy, live_entries, process_alive, register
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
@@ -201,6 +203,102 @@ def _down() -> None:
     print(f"Stopping hub at {endpoint.url}")
 
 
+def _status(as_json: bool) -> None:
+    """Show the discovered hub, retaining local metadata for stopped hubs."""
+    try:
+        root, _ = repo_root(Path.cwd())
+    except DiscoveryError:
+        root = None
+    info = read_hub_json(root) if root is not None else None
+    explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
+
+    def stopped(url: str, port: object) -> None:
+        known_root = root if not explicit else None
+        stopped = {"running": False, "repo_root": str(known_root) if known_root else None,
+                   "url": url, "port": port}
+        if as_json:
+            print(json.dumps(stopped))
+        else:
+            print(f"{known_root or 'Hub'}: not running (URL: {url}, port: {port})")
+        raise SystemExit(1)
+
+    if info is not None and not explicit:
+        url = str(info.get("url") or "unknown")
+        port = info.get("port")
+        pid = int(info.get("pid") or 0)
+        if not process_alive(pid) or not hub_healthy(url, str(info.get("hub_id") or "")):
+            stopped(url, port)
+        assert root is not None
+        token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()
+    else:
+        try:
+            endpoint = discover(Path.cwd())
+        except DiscoveryError as exc:
+            if info is None and root is not None and not explicit:
+                raise RuntimeError(f"not running: no hub recorded for {root}") from exc
+            raise
+        url, token = endpoint.url, endpoint.token
+        port = urllib.parse.urlparse(url).port
+    try:
+        status = _rpc(url, token, "hub.status")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"hub at {url} rejected status (HTTP {exc.code})") from exc
+    except (OSError, urllib.error.URLError):
+        stopped(url, port)
+    if as_json:
+        print(json.dumps(status))
+        return
+    print(f"Repository: {status['repo_root']}")
+    print(f"Origin: {status['origin']}")
+    print(f"Forge: {status['forge']}  Default branch: {status['default_branch']}")
+    print(f"Hub: {status['url']}")
+    workflow = status["workflow"]
+    if workflow:
+        print(f"Workflow: {workflow['status']} — {workflow['headline'][:120]}")
+    else:
+        print("Workflow: none")
+    orchestrator = status["orchestrator"]
+    if orchestrator:
+        print(f"Orchestrator: {orchestrator['name']}  session {orchestrator['session']}"
+              f"  last seen {orchestrator['last_seen']}")
+    else:
+        print("Orchestrator: none")
+    print(f"Agents: {len(status['agents'])}")
+    for agent in status["agents"]:
+        life = ("released" if agent["status"] == "released"
+                else "alive" if agent["alive"] else "lost")
+        print(f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
+              f"  task {agent['current_task'] or '-'}")
+    print(f"Open tasks: {len(status['tasks'])}")
+    for task in status["tasks"]:
+        print(f"  {task['id']}: {task['role']}  {task['assignee'] or '-'}  {task['state']}"
+              f"  PR {task['pr_url'] or '-'}  head {task['head_sha'] or '-'}")
+    print(f"Pending questions: {status['pending_questions']}")
+
+
+def _ls(as_json: bool) -> None:
+    hubs = []
+    for entry in live_entries():
+        repo = Path(str(entry["repo_root"]))
+        url = str(entry["url"])
+        try:
+            token = (state_dir(repo) / "token").read_text(encoding="utf-8").strip()
+            status = _rpc(url, token, "hub.status")
+            agent_count = len(status["agents"])
+            phase = status["workflow"]["status"] if status["workflow"] else "none"
+        except (OSError, urllib.error.URLError, RuntimeError, KeyError):
+            agent_count, phase = None, "unknown"
+        hubs.append({"repo_root": str(repo), "url": url,
+                     "agent_count": agent_count, "workflow_status": phase})
+    if as_json:
+        print(json.dumps(hubs))
+    else:
+        for hub in hubs:
+            count = hub["agent_count"] if hub["agent_count"] is not None else "?"
+            print(f"{hub['repo_root']}  {hub['url']}  agents {count}"
+                  f"  workflow {hub['workflow_status']}")
+
+
 async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
     if args.role == "worker":
         await run_worker_bridge(stdout, name=args.name, harness=args.harness)
@@ -222,6 +320,10 @@ def main() -> None:
     up.add_argument("--port", type=int)
     up.add_argument("--no-call-accounting", action="store_true")
     commands.add_parser("down", help="stop the discovered hub")
+    status = commands.add_parser("status", help="show this repository's hub state")
+    status.add_argument("--json", action="store_true")
+    listing = commands.add_parser("ls", help="list live hubs on this machine")
+    listing.add_argument("--json", action="store_true")
     mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
     mcp.add_argument("--role", choices=("orchestrator", "worker"), required=True)
     mcp.add_argument("--name")
@@ -232,6 +334,10 @@ def main() -> None:
             asyncio.run(_up(args))
         elif args.command == "down":
             _down()
+        elif args.command == "status":
+            _status(args.json)
+        elif args.command == "ls":
+            _ls(args.json)
         else:
             logging.basicConfig(level=logging.INFO, stream=sys.stderr)
             with reserve_stdout() as protocol_stdout:
