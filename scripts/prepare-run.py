@@ -556,11 +556,15 @@ def codex_launch(
     Sessions are kept (no ``--ephemeral``) so they can be inspected after the
     run. The ``VAR=value cmd ... < file`` prefix and ``<`` redirection are POSIX
     shell syntax; PowerShell needs ``$env:`` assignments and pipes the prompt
-    through ``Get-Content`` instead.
+    through ``Get-Content`` instead. Without a ``git_dir`` (Alice's runtime is
+    not a clone) ``--skip-git-repo-check`` is passed so ``codex exec -C .``
+    starts outside a Git repo (#45).
     """
     words = ["codex", "exec"] if auto_start else ["codex"]
     words += ["-C", "."]
-    if git_dir is not None:
+    if git_dir is None:
+        words += ["--skip-git-repo-check"]
+    else:
         words += ["--add-dir", shell_word(git_dir, powershell)]
     words += ["--approve-for-me", *flags]
     command = " ".join(words)

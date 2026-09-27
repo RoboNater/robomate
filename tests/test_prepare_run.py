@@ -313,6 +313,7 @@ def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
         expected = f"CODEX_HOME={home} codex {flags}"
     assert lines == [f"cd {run_dir / 'charlie'}", expected]
     assert "--ephemeral" not in expected
+    assert "--skip-git-repo-check" not in expected
 
 
 def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
@@ -322,6 +323,8 @@ def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
         run_dir / "alice.prompt.md", None,
     )
     assert "--add-dir" not in alice[1] and "--model" not in alice[1] and " -c " not in alice[1]
+    # Alice's runtime is not a clone, so Codex must skip its git-repo check (#45).
+    assert "-C . --skip-git-repo-check --approve-for-me" in alice[1]
     claude = PREPARE_RUN.launch_lines(
         "claude-code", run_dir / "alice-runtime", run_dir / "configs" / "alice.mcp.json",
         run_dir / "alice.prompt.md", None,
@@ -1448,7 +1451,8 @@ async def test_codex_alice_gets_a_codex_home_with_every_hub_tool(
     script = (run_dir / "start-alice.sh").read_text(encoding="utf-8")
     assert f"cd {run_dir / 'alice-runtime'}" in script
     assert (
-        f"CODEX_HOME={home} codex exec -C . --approve-for-me --model gpt-6-luna "
+        f"CODEX_HOME={home} codex exec -C . --skip-git-repo-check --approve-for-me "
+        f"--model gpt-6-luna "
         f"-c 'model_reasoning_effort=\"xhigh\"' - < {run_dir / 'alice.prompt.md'}"
     ) in script
     prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
@@ -1478,6 +1482,9 @@ def test_no_auto_start_opens_each_agent_without_its_prompt(
         f"CODEX_HOME={run_dir / 'configs' / 'codex'} codex -C . "
         f"--add-dir {run_dir / 'charlie' / '.git'} --approve-for-me --model gpt-6-sol\n"
     ) in (run_dir / "start-charlie.sh").read_text(encoding="utf-8")
+    alice_script = (run_dir / "start-alice.sh").read_text(encoding="utf-8")
+    assert "codex -C . --skip-git-repo-check --approve-for-me" in alice_script
+    assert "--add-dir" not in alice_script
     assert "Auto-start is off" in capsys.readouterr().out
 
 
