@@ -1570,6 +1570,31 @@ class HubStore:
             ).fetchone()
             return _event(updated_row)
 
+    def expire_event_leases(self, delivery_id: str | None = None) -> int:
+        """Make outstanding event deliveries eligible for immediate redelivery.
+
+        A delivery ID limits cleanup to an in-flight call from a superseded
+        orchestrator. Without one, a new session releases every stale lease.
+        """
+
+        expired_at = to_iso(self._now() - timedelta(microseconds=1))
+        with database(self.path) as connection:
+            if delivery_id is None:
+                cursor = connection.execute(
+                    "UPDATE event SET delivery_expires = ? WHERE state = 'delivered'",
+                    (expired_at,),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE event SET delivery_expires = ?"
+                    " WHERE state = 'delivered' AND delivery_id = ?",
+                    (expired_at, delivery_id),
+                )
+            count = cursor.rowcount
+        if count:
+            self.signals.notify(EVENT_KEY)
+        return count
+
     def next_event(self, lease_s: float | None = None) -> EventRecord | None:
         """Lease the oldest eligible event, if any."""
 

@@ -104,8 +104,8 @@ class RpcDispatcher:
         self.ops = ops
         self.hub_info = hub_info
         self.shutdown = shutdown
-        # Recorded for the newest-session-wins rule (M1 Step 4), not yet enforced.
         self.orchestrator: OrchestratorSession | None = None
+        self._superseded_sessions: set[str] = set()
         self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
             name: validate_call(getattr(ops, name)) for name in OPERATIONS
         }
@@ -147,6 +147,14 @@ class RpcDispatcher:
         if method == "hub.shutdown" and self.shutdown is not None:
             background.add_task(self.shutdown)
             return {"stopping": True}
+        if method == "hub.heartbeat":
+            if caller is None:
+                raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
+            params = payload.get("params", {})
+            if not isinstance(params, dict) or params:
+                raise RpcError(INVALID_PARAMS, "hub.heartbeat takes no params")
+            self._accept_session(*caller)
+            return {"ok": True}
         operation = self._operations.get(method)
         if operation is None:
             raise RpcError(METHOD_NOT_FOUND, "Method not found")
@@ -158,9 +166,27 @@ class RpcDispatcher:
         if unexpected:
             raise RpcError(INVALID_PARAMS, f"unexpected params for {method}: {unexpected}")
         if caller is not None:
-            actor, session = caller
-            self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
-        return await operation(**params)
+            self._accept_session(*caller)
+        result = await operation(**params)
+        if (
+            caller is not None and self.orchestrator is not None
+            and caller[1] != self.orchestrator.session
+        ):
+            if method == "wait_for_event" and isinstance(result, dict):
+                event = result.get("event")
+                if isinstance(event, dict) and isinstance(event.get("delivery_id"), str):
+                    self.ops.store.expire_event_leases(event["delivery_id"])
+            raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
+        return result
+
+    def _accept_session(self, actor: str, session: str) -> None:
+        if session in self._superseded_sessions:
+            raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
+        current = self.orchestrator
+        if current is not None and current.session != session:
+            self._superseded_sessions.add(current.session)
+            self.ops.store.expire_event_leases()
+        self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
 
 
 def _valid_id(request_id: Any) -> bool:

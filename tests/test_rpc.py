@@ -302,6 +302,65 @@ async def test_the_callers_session_is_recorded_for_orchestrator_calls(
     assert dispatcher.orchestrator.session == newer
 
 
+async def test_heartbeat_fences_old_session_and_releases_delivery(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    old = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
+    new = {
+        ACTOR_HEADER: "alice",
+        SESSION_HEADER: "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5",
+    }
+    hub_store.check_in("bob", AgentProfile())
+    first = (await call(client, "wait_for_event", old, timeout_s=0))["result"]["event"]
+    assert first is not None
+    assert (await call(client, "hub.heartbeat", old))["result"] == {"ok": True}
+    assert hub_store.lease_next_event() is None
+
+    assert (await call(client, "hub.heartbeat", new))["result"] == {"ok": True}
+    again = (await call(client, "wait_for_event", new, timeout_s=0))["result"]["event"]
+    assert again["id"] == first["id"] and again["delivery_attempts"] == 2
+    assert error_of(await call(client, "get_state", old)) == (
+        CONFLICT, "superseded by a newer orchestrator session"
+    )
+    assert error_of(await call(client, "hub.heartbeat", old)) == (
+        CONFLICT, "superseded by a newer orchestrator session"
+    )
+    assert error_of(await call(client, "hub.heartbeat"))[0] == INVALID_REQUEST
+    assert error_of(await call(client, "hub.heartbeat", new, unexpected=True)) == (
+        INVALID_PARAMS, "hub.heartbeat takes no params"
+    )
+
+
+async def test_superseded_held_call_releases_event_it_received_after_takeover(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    started = asyncio.Event()
+    resume = asyncio.Event()
+    original = dispatcher._operations["wait_for_event"]
+
+    async def delayed(**params: Any) -> Any:
+        started.set()
+        await resume.wait()
+        return await original(**params)
+
+    dispatcher._operations["wait_for_event"] = delayed
+    old = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
+    new = {
+        ACTOR_HEADER: "alice",
+        SESSION_HEADER: "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5",
+    }
+    held = asyncio.create_task(call(client, "wait_for_event", old, timeout_s=0))
+    await asyncio.wait_for(started.wait(), 1)
+    assert "result" in await call(client, "get_state", new)
+    hub_store.check_in("bob", AgentProfile())
+    resume.set()
+    assert error_of(await held) == (CONFLICT, "superseded by a newer orchestrator session")
+    repeated = (await call(client, "wait_for_event", new, timeout_s=0))["result"]["event"]
+    assert repeated["kind"] == "agent_checked_in"
+    assert repeated["delivery_attempts"] == 2
+
+
 async def test_malformed_caller_headers_are_refused(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from agent_hub_common import AgentProfile, ConfigurationError, profile_from_env
+from agent_hub_common.discovery import HubEndpoint
 from agent_hub_common.workspace import canonical_workspace, read_identity
 
 DEFAULT_WAIT_S = 100.0
@@ -67,6 +68,26 @@ class WorkerSettings:
     backoff_factor_s: float = DEFAULT_BACKOFF_FACTOR_S
     telemetry_log: Path | None = None
     workspace: Path | None = None
+
+    @classmethod
+    def from_discovered(
+        cls,
+        endpoint: HubEndpoint,
+        *,
+        agent_name: str | None = None,
+        harness: str | None = None,
+        environ: Mapping[str, str] | None = None,
+    ) -> WorkerSettings:
+        """Use discovery for connection settings while retaining worker environment options."""
+
+        env = dict(os.environ if environ is None else environ)
+        env["HUB_URL"] = endpoint.url
+        env["HUB_TOKEN"] = endpoint.token
+        if agent_name is not None:
+            env["AGENT_NAME"] = agent_name
+        if harness is not None:
+            env["HUB_HARNESS"] = harness
+        return cls.from_env(env)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> WorkerSettings:

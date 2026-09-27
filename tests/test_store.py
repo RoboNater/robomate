@@ -53,6 +53,26 @@ class FakeClock:
         self.now += timedelta(**kwargs)
 
 
+def test_expire_event_leases_redelivers_without_touching_worker_lease(store: HubStore) -> None:
+    store.check_in("bob", CLAUDE)
+    task = store.assign_task("bob", "implementer", "Fix", "Do it")
+    before = store.get_task(task.id)
+    first = store.lease_next_event()
+    assert first is not None
+
+    assert store.expire_event_leases("not-a-delivery") == 0
+    assert store.lease_next_event() is None
+    assert store.expire_event_leases() == 1
+    redelivered = store.lease_next_event()
+
+    assert redelivered is not None and redelivered.id == first.id
+    assert redelivered.delivery_attempts == 2
+    assert redelivered.delivery_id != first.delivery_id
+    assert store.get_task(task.id) == before
+    assert not store.ack_event(first.delivery_id)
+    assert store.ack_event(redelivered.delivery_id)
+
+
 def assign(store: HubStore, agent: str = "bob", role: str = "implementer") -> str:
     return store.assign_task(agent, role, "Fix #1", "Open a PR", lease_min=30).id
 
