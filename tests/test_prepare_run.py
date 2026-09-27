@@ -147,7 +147,7 @@ def test_existing_hub_workflow_requires_the_same_run_and_goal(
     run_dir = tmp_path / "run1"
     first = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
     goal = first["work"]["goal"]
-    HubStore(database_path).initialize_workflow(goal)
+    HubStore(database_path).initialize_workflow(goal, first["policy"])
     modified = database_path.stat().st_mtime_ns
 
     with pytest.raises(ValueError) as error:
@@ -160,6 +160,9 @@ def test_existing_hub_workflow_requires_the_same_run_and_goal(
 
     with pytest.raises(ValueError, match="original run directory and goal"):
         PREPARE_RUN.prepare(str(source), run_dir, issue=43, hub_repo=target)
+    with pytest.raises(ValueError, match="policy differs.*original preparation options"):
+        PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target,
+                            merge_method="merge")
     resumed = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
     assert resumed["work"]["goal"] == goal
 

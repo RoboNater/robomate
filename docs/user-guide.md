@@ -57,6 +57,12 @@ cd /absolute/path/to/my-run/hub-target
 uv run --project /absolute/path/to/robomate robomate up
 ```
 
+Use a full clone for `hub-target`, not a linked Git worktree: worktrees share
+the owning checkout's `.robomate/` state. If you created a full checkout using
+`git init` and `git remote add origin` instead of `git clone`, run
+`git fetch origin` and `git remote set-head origin --auto` in it before
+`robomate up`.
+
 The command creates `<target>/.robomate/hub.json`, `hub.db`, and an owner-only token file. It prints its URL and bridge environment settings. Keep this terminal open. A second `up` for the same repository reports the running hub; a later `up` reuses the recorded port. `.robomate/` is excluded from git by the repository's local exclude file.
 
 In the robomate checkout, prepare agent configs and start scripts:
@@ -76,7 +82,8 @@ issue, stop the previous hub, clone the target again into the next run directory
 start `robomate up` there, and pass that new clone as `--hub-repo`. Preparation
 refuses a hub that already has a workflow and reports its stored goal and status.
 To resume the existing workflow, use its original run directory, hub clone,
-and goal (the same `--issue` or `--work-file` and roadmap selection).
+goal (the same `--issue` or `--work-file` and roadmap selection), and policy
+options such as merge method, harnesses, capabilities, and CI setting.
 
 The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and ten enabled tools; a Codex worker gets six worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report.
 

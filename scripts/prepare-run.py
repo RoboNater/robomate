@@ -286,14 +286,16 @@ def check_manifest(manifest_path: Path, run_dir: Path, repository: str) -> None:
             )
 
 
-def check_hub_workflow(hub_repo: Path, run_dir: Path, goal: str) -> None:
+def check_hub_workflow(
+    hub_repo: Path, run_dir: Path, goal: str, policy: dict[str, Any] | None = None
+) -> None:
     """Refuse a different run on a hub whose single workflow is initialized."""
     path = hub_repo / ".robomate" / "hub.db"
     if not path.exists():
         return
     try:
         with contextlib.closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
-            row = db.execute("SELECT goal, status FROM workflow LIMIT 1").fetchone()
+            row = db.execute("SELECT goal, status, policy_json FROM workflow LIMIT 1").fetchone()
     except sqlite3.Error as exc:
         raise ValueError(f"cannot read workflow from {path}: {exc}") from exc
     if row is None:
@@ -305,6 +307,13 @@ def check_hub_workflow(hub_repo: Path, run_dir: Path, goal: str) -> None:
                 and previous.get("hub_repo") == str(hub_repo)
                 and previous.get("state_dir") == str(path.parent)
                 and previous.get("work", {}).get("goal") == goal == row[0]):
+            if policy is not None and json.loads(row[2]) != policy:
+                raise ValueError(
+                    f"hub in {hub_repo} already has workflow status={row[1]!r}, "
+                    f"goal={row[0]!r}, but its policy differs; resume with the "
+                    "original preparation options (including merge method, harnesses, "
+                    "capabilities, and CI setting), or use a fresh dedicated target clone"
+                )
             return
     raise ValueError(
         f"hub in {hub_repo} already has workflow status={row[1]!r}, goal={row[0]!r}; "
@@ -975,6 +984,28 @@ def prepare(
         else:
             policy_allow_no_ci = allow_no_ci == "true"
 
+    policy = {
+        "max_review_rounds": 3,
+        "merge_method": merge_method,
+        "allow_no_ci": policy_allow_no_ci,
+        "role_policy": {
+            "reviewer_harness_differs": bob_harness != charlie_harness,
+            # Baseline from prompts/alice.md; Alice still observes any real
+            # provider difference at pairing time via check-in profiles.
+            "reviewer_provider_differs": False,
+            "implementer_capabilities": bob_capabilities.split(",")
+            if bob_capabilities
+            else [],
+            "reviewer_capabilities": charlie_capabilities.split(",")
+            if charlie_capabilities
+            else [],
+        },
+        "pairing_wait_s": 120,
+        "max_wall_minutes": 180,
+        "max_task_lease_min": 120,
+    }
+    check_hub_workflow(hub_repo, run_dir, goal, policy)
+
     run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     manifest_path = run_dir / "run.json"
     check_manifest(manifest_path, run_dir, repository)
@@ -1060,26 +1091,6 @@ def prepare(
             encoding="utf-8",
         )
 
-    policy = {
-        "max_review_rounds": 3,
-        "merge_method": merge_method,
-        "allow_no_ci": policy_allow_no_ci,
-        "role_policy": {
-            "reviewer_harness_differs": bob_harness != charlie_harness,
-            # Baseline from prompts/alice.md; Alice still observes any real
-            # provider difference at pairing time via check-in profiles.
-            "reviewer_provider_differs": False,
-            "implementer_capabilities": capabilities["bob"].split(",")
-            if capabilities["bob"]
-            else [],
-            "reviewer_capabilities": capabilities["charlie"].split(",")
-            if capabilities["charlie"]
-            else [],
-        },
-        "pairing_wait_s": 120,
-        "max_wall_minutes": 180,
-        "max_task_lease_min": 120,
-    }
     (run_dir / "alice.prompt.md").write_text(
         render_alice_prompt(goal, account, policy) + prompt_sections("alice", alice_harness),
         encoding="utf-8",
