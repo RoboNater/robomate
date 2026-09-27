@@ -499,7 +499,9 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   stdio stream, then sends compact rows to `hub.record_calls`. The hub records
   them as `boundary=mcp` with the orchestrator actor. The HTTP hub records its
   own A2A and guide rows; raw `/rpc` bytes are not counted in M1. This uses
-  the existing `call_log` schema and wire version.
+  the existing `call_log` schema and wire version. A superseded bridge may
+  flush measurements of completed calls; this does not reclaim the active
+  orchestrator session.
 - **Token levers (#22):** longer holds where the harness allows; minimal timeout payloads;
   compact `get_state`; guides returned as "unchanged (hash)" when the bridge has already
   delivered them this session (with `force` to re-fetch); smaller tool schemas;

@@ -174,8 +174,9 @@ class RpcDispatcher:
                     if exc.code != INVALID_PARAMS:
                         raise
                     rejected += 1
-            if records:
-                self._accept_session(*caller)
+            # These rows describe completed calls. A bridge superseded during
+            # restart still needs to flush them, but accounting must never
+            # change which orchestrator session owns future operations.
             if self.accounting is None or not self.accounting.enabled:
                 return {"recorded": 0, "rejected": rejected, "disabled": True}
             recorded = sum(self.accounting.record(record) for record in records)

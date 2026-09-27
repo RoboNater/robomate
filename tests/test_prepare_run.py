@@ -45,16 +45,24 @@ def hub_repo(tmp_path: Path, url: str = "http://127.0.0.1:8521") -> Path:
     return repo
 
 
-def prepare(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any
-) -> tuple[Path, dict[str, Any]]:
-    source = origin(tmp_path)
-    target = hub_repo(tmp_path, kwargs.pop("test_hub_url", "http://127.0.0.1:8521"))
+def running_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    url: str = "http://127.0.0.1:8521",
+) -> Path:
+    target = hub_repo(tmp_path, url)
     monkeypatch.setattr(PREPARE_RUN, "probe_versions",
                         lambda _: ({"claude": "2.1", "codex": "0.1"},
                                    {"claude-code": "2.1", "codex": "0.1"}))
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "logged in")
+    return target
+
+
+def prepare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any
+) -> tuple[Path, dict[str, Any]]:
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch, kwargs.pop("test_hub_url", "http://127.0.0.1:8521"))
     run_dir = tmp_path / "run"
     kwargs.setdefault("issue", 42)
     kwargs.setdefault("account", "tester")
@@ -752,3 +760,151 @@ def test_rerun_is_idempotent_and_preserves_clone_token_identity(
     assert second["workspaces"] == first["workspaces"]
     assert (run_dir / "bob/.git/robo-agents-workspace.json").read_text() == identity
     assert (target / ".robomate/token").read_text() == token
+
+
+def test_bootstrap_failure_message_keeps_tail_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "bootstrap-workspace.py", line 1, in <module>\n'
+        "    subprocess.run(...)\n"
+        "Cloning into 'x'...\n"
+        "fatal: could not read Username for 'https://github.com': No such device\n"
+    )
+
+    def runner(*args: Any, **kwargs: Any) -> str:
+        raise subprocess.CalledProcessError(1, list(args), output="", stderr=stderr)
+
+    monkeypatch.setattr(RUN_COMMON, "run", runner)
+    with pytest.raises(ValueError, match="could not read Username") as exc:
+        PREPARE_RUN.bootstrap_clone("bob", tmp_path / "bob", "test-org/test-repo")
+    assert "Traceback" not in str(exc.value)
+    assert "subprocess.py" not in str(exc.value)
+
+
+def test_main_reports_actionable_error_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", [
+        "prepare-run.py", "--repository", "test-org/test-repo",
+        "--run-dir", str((tmp_path / "run").resolve()), "--bob", "nosuch",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        PREPARE_RUN.main()
+    assert "prepare-run: error:" in str(exc.value.code)
+    assert "not yet supported" in str(exc.value.code)
+
+
+def test_fresh_run_produces_every_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, manifest = prepare(tmp_path, monkeypatch, allow_no_ci="auto")
+    assert manifest["workspaces"]["bob"]["workspace_id"] != (
+        manifest["workspaces"]["charlie"]["workspace_id"]
+    )
+    assert manifest["clone_repository"] == str(tmp_path / "origin")
+    assert manifest["policy"]["allow_no_ci"] is True
+    assert manifest["policy"]["merge_method"] == "squash"
+    bob = json.loads((run_dir / "configs/bob.mcp.json").read_text())
+    bob_env = bob["mcpServers"]["robomate"]["env"]
+    assert bob_env["AGENT_NAME"] == "bob"
+    assert bob_env["HUB_HARNESS"] == "claude-code"
+    assert bob_env["HUB_PROVIDER"] == "anthropic"
+    assert bob_env["HUB_WORKSPACE"] == manifest["workspaces"]["bob"]["path"]
+    codex = tomllib.loads((run_dir / "configs/codex/config.toml").read_text())
+    assert set(codex["mcp_servers"]["robomate"]["enabled_tools"]) == {
+        "check_in", "get_role_guide", "await_assignment", "report_progress",
+        "ask_alice", "submit_result",
+    }
+    for name in ("alice", "bob", "charlie"):
+        assert (run_dir / f"{name}.prompt.md").exists()
+        assert (run_dir / f"start-{name}.sh").exists()
+    assert (run_dir / "alice-runtime/.claude/skills/alice-orchestrator").exists()
+    report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
+    assert set(report["configs"]) == {"alice", "bob", "charlie"}
+
+
+def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    monkeypatch.setattr(sys, "argv", [
+        "prepare-run.py", "--repository", str(source), "--run-dir", str(run_dir),
+        "--hub-repo", str(target), "--issue", "42", "--alice-harness", "Claude",
+        "--alice-model", "sonnet", "--alice-effort", "high",
+        "--bob-harness", "CLAUDE", "--bob-model", "claude-opus-5-5",
+        "--bob-effort", "max", "--charlie-harness", "claude",
+        "--charlie-effort", "medium",
+    ])
+    PREPARE_RUN.main()
+    report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
+    manifest = json.loads((run_dir / "run.json").read_text())
+    assert manifest["harnesses"] == {"bob": "claude-code", "charlie": "claude-code"}
+    expected = {"alice": ("sonnet", "high"), "bob": ("claude-opus-5-5", "max"),
+                "charlie": ("", "medium")}
+    for name, (model, effort) in expected.items():
+        script = run_dir / f"start-{name}.sh"
+        assert report["start_scripts"][name] == str(script)
+        assert manifest["launch"]["agents"][name]["model"] == model
+        assert manifest["launch"]["agents"][name]["effort"] == effort
+        assert os.access(script, os.X_OK)
+        command = script.read_text()
+        assert "--permission-mode auto --strict-mcp-config" in command
+        assert f"Read {run_dir / f'{name}.prompt.md'} and follow" in command
+        assert f"`closeout-report-{name}.md`" in (run_dir / f"{name}.prompt.md").read_text()
+    bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())[
+        "mcpServers"]["robomate"]["env"]
+    assert bob_env["HUB_MODEL"] == "claude-opus-5-5"
+
+
+def test_same_harness_pair_renders_both_claude_configs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir, manifest = prepare(tmp_path, monkeypatch, bob_harness="claude-code",
+                                charlie_harness="claude-code", bob_model="claude-sonnet-5",
+                                charlie_model="claude-sonnet-5")
+    assert manifest["policy"]["role_policy"]["reviewer_harness_differs"] is False
+    assert (run_dir / "configs/charlie.mcp.json").exists()
+    charlie = json.loads((run_dir / "configs/charlie.mcp.json").read_text())
+    assert charlie["mcpServers"]["robomate"]["env"]["AGENT_NAME"] == "charlie"
+
+
+def test_bare_slug_expands_via_gh_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = running_hub(tmp_path, monkeypatch)
+    seen: list[tuple[str, str]] = []
+
+    def fake_bootstrap(agent: str, destination: Path, repository: str) -> dict[str, str]:
+        seen.append((agent, repository))
+        return {"path": str(destination), "workspace_id": ("a" if agent == "bob" else "b") * 64}
+
+    monkeypatch.setattr(PREPARE_RUN, "bootstrap_clone", fake_bootstrap)
+    for protocol, expected in (("https", "https://github.com/test-org/test-repo.git"),
+                               ("ssh", "git@github.com:test-org/test-repo.git")):
+        monkeypatch.setattr(RUN_COMMON, "run", lambda *_args, value=protocol: value)
+        manifest = PREPARE_RUN.prepare("test-org/test-repo", tmp_path / f"{protocol}-run",
+                                       hub_repo=target, skip_github_checks=True)
+        assert manifest["clone_repository"] == expected
+    assert seen == [
+        ("bob", "https://github.com/test-org/test-repo.git"),
+        ("charlie", "https://github.com/test-org/test-repo.git"),
+        ("bob", "git@github.com:test-org/test-repo.git"),
+        ("charlie", "git@github.com:test-org/test-repo.git"),
+    ]
+
+
+def test_both_codex_workers_report_each_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_dir, _ = prepare(tmp_path, monkeypatch, bob_harness="codex",
+                         charlie_harness="codex")
+    report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
+    assert set(report["checks"]["codex_auth"]) == {"bob", "charlie"}
+    assert (run_dir / "configs/bob-codex/config.toml").exists()
