@@ -18,8 +18,9 @@ Example:
 ``--work-file PATH`` replaces ``--issue N`` when the job is not exactly one
 issue: the file's text or Markdown statement of work becomes Alice's goal.
 
-Each agent runs under Claude Code or Codex (``--<agent>-harness claude|codex``,
-case-insensitive), with an optional ``--<agent>-model`` and ``--<agent>-effort``
+Each agent runs under Claude Code, Codex, OpenCode, or AntiGravity
+(``--<agent>-harness claude|codex|opencode|antigravity``, case-insensitive),
+with an optional ``--<agent>-model`` and ``--<agent>-effort``
 passed through to its CLI unchecked. Start scripts hand each agent its prompt
 file (auto-start) unless ``--no-auto-start`` is given (#30). Any other harness
 fails up front with an actionable message.
@@ -68,9 +69,10 @@ from agent_hub_common.registry import hub_healthy, process_alive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_common import (  # noqa: E402
-    PROVIDERS,
     ROOT,
     VERSION_COMMANDS,
+    agy_home,
+    agy_mcp_path,
     bootstrap_clone,
     clone_source,
     codex_home,
@@ -79,9 +81,12 @@ from run_common import (  # noqa: E402
     link_or_copy,
     parse_github_slug,
     parse_harness_version,
+    render_antigravity_mcp,
     render_claude_mcp,
     render_codex_config,
+    render_opencode_config,
     render_worker_prompt,
+    resolve_provider,
     run,
     run_output,
     save,
@@ -97,13 +102,18 @@ DEFAULT_HARNESSES = {
     "charlie": DEFAULT_CHARLIE_HARNESS,
 }
 #: Harnesses prepare-run can render configs *and* verified start scripts for,
-#: by the case-insensitive spellings ``--<agent>-harness`` accepts. opencode
-#: needs its serve/attach supervisor loop and gemini CLI flags are unverified,
-#: so those topologies stay on the manual walkthrough in docs/user-guide.md.
-HARNESS_NAMES = {"claude": "claude-code", "claude-code": "claude-code", "codex": "codex"}
+#: by the case-insensitive spellings ``--<agent>-harness`` accepts.
+HARNESS_NAMES = {
+    "claude": "claude-code",
+    "claude-code": "claude-code",
+    "codex": "codex",
+    "opencode": "opencode",
+    "antigravity": "antigravity",
+    "agy": "antigravity",
+}
 WORKERS = ("bob", "charlie")
 AGENTS = ("alice", *WORKERS)
-#: The hub's MCP tools, which a Codex Alice's config enables and approves.
+#: The hub's MCP tools, which a Codex or AntiGravity Alice's config enables and approves.
 ALICE_TOOLS = [
     "get_state",
     "initialize_workflow",
@@ -201,6 +211,16 @@ def codex_login_status(home: Path) -> str:
     preferred = [line for line in candidates if not line.lstrip().startswith("WARNING:")]
     line = (preferred or candidates or [""])[0]
     return line if line else "logged in (empty status)"
+
+
+def agy_login_status(home: Path) -> str:
+    """Credential status for an isolated AntiGravity home."""
+    cli_dir = home / ".gemini" / "antigravity-cli"
+    if (cli_dir / "antigravity-oauth-token").exists():
+        return "logged in (antigravity-oauth-token)"
+    if os.name == "nt" and (cli_dir / "jetski_state.pbtxt").exists():
+        return "logged in (jetski_state.pbtxt)"
+    return "not logged in (missing ~/.gemini/antigravity-cli/antigravity-oauth-token)"
 
 
 def url_host(url: str, flag: str) -> str:
@@ -329,9 +349,9 @@ def harness_name(flag: str, value: str) -> str:
     harness = HARNESS_NAMES.get(value.strip().lower())
     if harness is None:
         raise ValueError(
-            f"{flag} {value!r} is not yet supported by prepare-run; expected claude or "
-            "codex (assemble other topologies via the manual walkthrough in "
-            "docs/user-guide.md)"
+            f"{flag} {value!r} is not yet supported by prepare-run; expected claude, "
+            "codex, opencode, or antigravity (assemble other topologies via the manual "
+            "walkthrough in docs/user-guide.md)"
         )
     return harness
 
@@ -454,8 +474,13 @@ def prompt_sections(name: str, harness: str) -> str:
         )
     elif name == "alice":
         skill = ROOT / "skills/alice-orchestrator/SKILL.md"
+        runtime_label = {
+            "codex": "Codex",
+            "opencode": "OpenCode",
+            "antigravity": "AntiGravity",
+        }.get(harness, harness)
         sections.append(
-            "Codex runtime note: if the alice-orchestrator skill is not already loaded, "
+            f"{runtime_label} runtime note: if the alice-orchestrator skill is not already loaded, "
             f"read {skill} in full and follow it. Hub tools are the MCP server `robomate`."
         )
     if name == "alice":
@@ -484,7 +509,17 @@ def shell_word(value: str, powershell: bool = False) -> str:
     return value if re.fullmatch(r"[\w.-]+", value) else "'" + value.replace("'", "''") + "'"
 
 
-def model_flags(harness: str, model: str, effort: str, powershell: bool = False) -> list[str]:
+def auto_start_instruction(prompt: str, powershell: bool = False) -> str:
+    return shell_word(f"Read {prompt} and follow the instructions in it", powershell)
+
+
+def model_flags(
+    harness: str,
+    model: str,
+    effort: str,
+    powershell: bool = False,
+    auto_start: bool = True,
+) -> list[str]:
     """The CLI flags selecting ``model`` and reasoning ``effort``; empty ones are omitted."""
     flags = ["--model", shell_word(model, powershell)] if model else []
     if effort and harness == "codex":
@@ -492,6 +527,15 @@ def model_flags(harness: str, model: str, effort: str, powershell: bool = False)
         # bare form serves PowerShell, which strips embedded double quotes.
         quoted = effort if powershell else f'"{effort}"'
         flags += ["-c", shell_word(f"model_reasoning_effort={quoted}", powershell)]
+    elif effort and harness == "opencode":
+        # `--variant` is an `opencode run` option; interactive `opencode`
+        # (`--no-auto-start`) rejects it.
+        if not auto_start:
+            raise ValueError(
+                "opencode only accepts --variant (--<agent>-effort) under auto-start "
+                "(opencode run); omit --<agent>-effort with --no-auto-start"
+            )
+        flags += ["--variant", shell_word(effort, powershell)]
     elif effort:
         flags += ["--effort", shell_word(effort, powershell)]
     return flags
@@ -520,8 +564,7 @@ def claude_launch(
         shell_word(prompt_dir, powershell),
     ]
     if auto_start:
-        instruction = f"Read {prompt} and follow the instructions in it"
-        words += ["-p", shell_word(instruction, powershell)]
+        words += ["-p", auto_start_instruction(prompt, powershell)]
     return [" ".join(words)]
 
 
@@ -562,6 +605,83 @@ def codex_launch(
     return [f"{command} - < {prompt_word}" if auto_start else command]
 
 
+def opencode_launch(
+    config: str,
+    prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    powershell: bool = False,
+) -> list[str]:
+    """An ``opencode`` launch; auto-start runs ``opencode run`` on its prompt file.
+
+    Passing a single-line instruction pointing at ``prompt`` (with
+    ``external_directory`` allowed in the rendered config) avoids the Windows
+    npm ``.cmd`` shim mangling multi-line prompts in ``argv``.
+    """
+    words = ["opencode", "run", "--auto", *flags] if auto_start else ["opencode", "--auto", *flags]
+    if auto_start:
+        words.append(auto_start_instruction(prompt, powershell))
+    command = " ".join(words)
+    config_word = shell_word(config, powershell)
+    if powershell:
+        return [f"$env:OPENCODE_CONFIG = {config_word}", command]
+    return [f"OPENCODE_CONFIG={config_word} {command}"]
+
+
+def antigravity_launch(
+    home: str,
+    prompt: str,
+    prompt_dir: str,
+    flags: list[str],
+    auto_start: bool,
+    powershell: bool = False,
+) -> list[str]:
+    """An ``agy`` launch isolated to ``home`` via ``HOME`` and ``USERPROFILE``.
+
+    ``agy`` loads ``~/.gemini/config/mcp_config.json`` via Go's
+    ``os.UserHomeDir()``, which reads ``HOME`` on POSIX and ``USERPROFILE`` on
+    Windows (including when ``agy.exe`` is launched from Git Bash).
+    """
+    words = [
+        "agy",
+        *flags,
+        "--dangerously-skip-permissions",
+        "--add-dir",
+        shell_word(prompt_dir, powershell),
+    ]
+    if auto_start:
+        words += ["-p", auto_start_instruction(prompt, powershell)]
+    command = " ".join(words)
+    home_word = shell_word(home, powershell)
+    if powershell:
+        return [
+            "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE",
+            f"try {{ $env:HOME = {home_word}; $env:USERPROFILE = {home_word}; {command} }} "
+            "finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }",
+        ]
+    return [f"HOME={home_word} USERPROFILE={home_word} {command}"]
+
+
+def harness_launch(
+    harness: str,
+    config: str,
+    git_dir: str | None,
+    prompt: str,
+    prompt_dir: str,
+    flags: list[str],
+    auto_start: bool,
+    powershell: bool = False,
+) -> list[str]:
+    """Dispatch to the harness's launch-line builder."""
+    if harness == "codex":
+        return codex_launch(config, git_dir, prompt, flags, auto_start, powershell)
+    if harness == "opencode":
+        return opencode_launch(config, prompt, flags, auto_start, powershell)
+    if harness == "antigravity":
+        return antigravity_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
+    return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
+
+
 def launch_lines(
     harness: str,
     workdir: Path,
@@ -574,23 +694,21 @@ def launch_lines(
 ) -> list[str]:
     """One local agent's start lines for this platform; paths are shell-quoted.
 
-    ``config`` is the MCP config for Claude Code and ``CODEX_HOME`` for Codex.
+    ``config`` is the MCP config for Claude Code, ``OPENCODE_CONFIG`` for
+    OpenCode, ``CODEX_HOME`` for Codex, and the isolated home for AntiGravity.
     """
     powershell = os.name == "nt"
-    flags = model_flags(harness, model, effort, powershell)
-    if harness == "codex":
-        lines = codex_launch(
-            str(config),
-            None if git_dir is None else str(git_dir),
-            str(prompt),
-            flags,
-            auto_start,
-            powershell,
-        )
-    else:
-        lines = claude_launch(
-            str(config), str(prompt), str(prompt.parent), flags, auto_start, powershell
-        )
+    flags = model_flags(harness, model, effort, powershell, auto_start)
+    lines = harness_launch(
+        harness,
+        str(config),
+        None if git_dir is None else str(git_dir),
+        str(prompt),
+        str(prompt.parent),
+        flags,
+        auto_start,
+        powershell,
+    )
     return [f"cd {shell_word(str(workdir), powershell)}", *lines]
 
 
@@ -616,6 +734,21 @@ def codex_home_name(name: str) -> str:
     return "codex" if name == "charlie" else f"{name}-codex"
 
 
+def agy_home_name(name: str) -> str:
+    return f"{name}-agy"
+
+
+def launch_config_path(harness: str, configs: PurePath, name: str) -> PurePath:
+    """The config or isolated-home path passed to ``launch_lines`` for ``name``."""
+    if harness == "codex":
+        return configs / codex_home_name(name)
+    if harness == "opencode":
+        return configs / f"{name}.opencode.json"
+    if harness == "antigravity":
+        return configs / agy_home_name(name)
+    return configs / f"{name}.mcp.json"
+
+
 def git_bash_path(path: PurePath) -> str:
     """Git Bash spelling of a Windows drive path (``C:/x`` -> ``/c/x``)."""
     drive = path.drive
@@ -637,27 +770,19 @@ def worker_launch(
 
     On a Windows host the lines are for Git Bash: the shell's own ``cd`` and
     ``<`` take Git Bash spellings, while arguments and variables handed to
-    native programs (claude, codex) keep forward-slash Windows paths (#75).
+    native programs (claude, codex, opencode, agy) keep forward-slash Windows paths (#75).
     """
-    configs = run_dir / "configs"
     prompt = run_dir / f"{name}.prompt.md"
-    flags = model_flags(harness, model, effort)
-    if harness == "codex":
-        lines = codex_launch(
-            (configs / codex_home_name(name)).as_posix(),
-            (workspace / ".git").as_posix(),
-            git_bash_path(prompt),
-            flags,
-            auto_start,
-        )
-    else:
-        lines = claude_launch(
-            (configs / f"{name}.mcp.json").as_posix(),
-            prompt.as_posix(),
-            run_dir.as_posix(),
-            flags,
-            auto_start,
-        )
+    flags = model_flags(harness, model, effort, auto_start=auto_start)
+    lines = harness_launch(
+        harness,
+        launch_config_path(harness, run_dir / "configs", name).as_posix(),
+        (workspace / ".git").as_posix(),
+        git_bash_path(prompt) if harness == "codex" else prompt.as_posix(),
+        run_dir.as_posix(),
+        flags,
+        auto_start,
+    )
     return [f"cd {shell_word(git_bash_path(workspace))}", *lines]
 
 
@@ -689,6 +814,46 @@ def write_secret(path: Path, write: Any) -> None:
     probe.unlink()
     write(path)
     require_owner_only(path)
+
+
+def write_worker_config(
+    name: str,
+    harness: str,
+    env: dict[str, str],
+    model: str,
+    root: str,
+    configs: Path,
+    *,
+    secret: bool = False,
+) -> Path:
+    """Write ``name``'s worker MCP config under ``configs`` and return its path."""
+    if harness == "codex":
+        home = codex_home(configs, codex_home_name(name))
+        worker_args = [
+            "run", "--locked", "--project", root, "robomate", "mcp", "--role", "worker"
+        ]
+        text = render_codex_config(env, worker_args)
+        target = home / "config.toml"
+        if secret:
+            write_secret(target, lambda path: write_private_text(path, text))
+        else:
+            write_private_text(target, text)
+        return target
+    if harness == "opencode":
+        mcp = render_opencode_config(env, root, model=model)
+        target = configs / f"{name}.opencode.json"
+    elif harness == "antigravity":
+        home = agy_home(configs, agy_home_name(name))
+        mcp = render_antigravity_mcp(env, root)
+        target = agy_mcp_path(home)
+    else:
+        mcp = render_claude_mcp(env, root)
+        target = configs / f"{name}.mcp.json"
+    if secret:
+        write_secret(target, lambda path: save(path, mcp))
+    else:
+        save(target, mcp)
+    return target
 
 
 def render_worker_bundle(
@@ -728,17 +893,10 @@ def render_worker_bundle(
         (run_dir / f"{name}-telemetry.jsonl").as_posix(),
         hub_url,
     )
-    if harness == "codex":
-        home = codex_home(configs, codex_home_name(name))
-        worker_args = ["run", "--locked", "--project", root.as_posix(),
-                       "robomate", "mcp", "--role", "worker"]
-        text = render_codex_config(env, worker_args)
-        write_secret(home / "config.toml", lambda path: write_private_text(path, text))
-        config = run_dir / "configs" / codex_home_name(name) / "config.toml"
-    else:
-        mcp = render_claude_mcp(env, root.as_posix())
-        write_secret(configs / f"{name}.mcp.json", lambda path: save(path, mcp))
-        config = run_dir / "configs" / f"{name}.mcp.json"
+    written = write_worker_config(
+        name, harness, env, model, root.as_posix(), configs, secret=True
+    )
+    config = run_dir / written.relative_to(out_dir)
     (out_dir / f"{name}.prompt.md").write_text(
         render_worker_prompt(name) + prompt_sections(name, harness), encoding="utf-8"
     )
@@ -870,6 +1028,12 @@ def prepare(
     alice_harness = harness_name("--alice-harness", alice_harness)
     bob_harness = harness_name("--bob-harness", bob_harness)
     charlie_harness = harness_name("--charlie-harness", charlie_harness)
+    for h, m, e in (
+        (alice_harness, alice_model, alice_effort),
+        (bob_harness, bob_model, bob_effort),
+        (charlie_harness, charlie_model, charlie_effort),
+    ):
+        model_flags(h, m, e, auto_start=auto_start)
     if merge_method not in ("squash", "merge", "rebase"):
         raise ValueError("--merge-method must be one of squash, merge, rebase")
     if allow_no_ci not in ("auto", "true", "false"):
@@ -915,8 +1079,8 @@ def prepare(
         )
 
     providers = {
-        "bob": bob_provider or PROVIDERS[bob_harness],
-        "charlie": charlie_provider or PROVIDERS[charlie_harness],
+        "bob": resolve_provider(bob_harness, bob_model, bob_provider),
+        "charlie": resolve_provider(charlie_harness, charlie_model, charlie_provider),
     }
 
     bob_path = bob_dir or (run_dir / "bob")
@@ -1043,15 +1207,9 @@ def prepare(
             telemetry,
             network["hub_url"],
         )
-        if harness == "codex":
-            home = codex_home(configs, codex_home_name(name))
-            worker_args = ["run", "--locked", "--project", str(ROOT),
-                           "robomate", "mcp", "--role", "worker"]
-            write_private_text(home / "config.toml", render_codex_config(env, worker_args))
-            rendered_configs[name] = str(home / "config.toml")
-        else:
-            save(configs / f"{name}.mcp.json", render_claude_mcp(env))
-            rendered_configs[name] = str(configs / f"{name}.mcp.json")
+        rendered_configs[name] = str(
+            write_worker_config(name, harness, env, models[name], str(ROOT), configs)
+        )
 
     hub_env = {"ROBOMATE_HUB_URL": live_url,
                "ROBOMATE_TOKEN_FILE": str(resolved_state / "token"), "PYTHONUTF8": "1"}
@@ -1068,6 +1226,22 @@ def prepare(
             codex_sandbox() + codex_mcp("uv", hub_args, hub_env, ALICE_TOOLS, 330),
         )
         alice_config = alice_home / "config.toml"
+    elif alice_harness == "opencode":
+        alice_config = configs / "alice.opencode.json"
+        save(
+            alice_config,
+            render_opencode_config(hub_env, model=alice_model, role="orchestrator"),
+        )
+    elif alice_harness == "antigravity":
+        alice_home = agy_home(configs, agy_home_name("alice"))
+        skills_dir = alice_home / ".gemini" / "config" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        link_or_copy(ROOT / "skills/alice-orchestrator", skills_dir / "alice-orchestrator")
+        alice_config = agy_mcp_path(alice_home)
+        save(
+            alice_config,
+            render_antigravity_mcp(hub_env, tools=ALICE_TOOLS, role="orchestrator"),
+        )
     else:
         alice_config = configs / "alice.mcp.json"
         save(
@@ -1084,6 +1258,12 @@ def prepare(
         ROOT / "skills/alice-orchestrator",
         alice_runtime / ".claude" / "skills" / "alice-orchestrator",
     )
+    if alice_harness in ("opencode", "antigravity"):
+        (alice_runtime / ".agents" / "skills").mkdir(parents=True, exist_ok=True)
+        link_or_copy(
+            ROOT / "skills/alice-orchestrator",
+            alice_runtime / ".agents" / "skills" / "alice-orchestrator",
+        )
 
     for name in local:
         (run_dir / f"{name}.prompt.md").write_text(
@@ -1137,10 +1317,7 @@ def prepare(
     scripts: dict[str, str] = {}
     for name in ("alice", *local):
         harness, model, effort = launch[name]
-        if harness == "codex":
-            config = configs / codex_home_name(name)
-        else:
-            config = configs / f"{name}.mcp.json"
+        config = Path(launch_config_path(harness, configs, name))
         lines = launch_lines(
             harness,
             workdirs[name],
@@ -1169,12 +1346,26 @@ def prepare(
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
+    agy_auth: dict[str, str] = {}
     for name in ("alice", *local):
         if launch[name][0] == "codex":
             home_name = codex_home_name(name)
             codex_auth[name] = f"{home_name}: {codex_login_status(configs / home_name)}"
+        elif launch[name][0] == "antigravity":
+            home_name = agy_home_name(name)
+            agy_auth[name] = f"{home_name}: {agy_login_status(configs / home_name)}"
     if not codex_auth:
         codex_auth = {"codex": "no codex worker in this topology"}
+
+    checks: dict[str, Any] = {
+        "gh_auth": "ok" if not skip_github_checks else "skipped",
+        "versions": versions,
+        "merge": merge_note,
+        "ci": ci_note,
+        "codex_auth": codex_auth,
+    }
+    if agy_auth:
+        checks["agy_auth"] = agy_auth
 
     report: dict[str, Any] = {
         "run_dir": str(run_dir),
@@ -1187,13 +1378,7 @@ def prepare(
             name: str(run_dir / f"{name}.prompt.md") for name in ("alice", *local)
         },
         "start_scripts": scripts,
-        "checks": {
-            "gh_auth": "ok" if not skip_github_checks else "skipped",
-            "versions": versions,
-            "merge": merge_note,
-            "ci": ci_note,
-            "codex_auth": codex_auth,
-        },
+        "checks": checks,
     }
     if networked:
         report["network"] = manifest["network"]
@@ -1261,6 +1446,7 @@ def prepare_worker(
     if name not in WORKERS:
         raise ValueError(f"--worker-only must be one of {list(WORKERS)}")
     harness = harness_name(f"--{name}-harness", harness)
+    model_flags(harness, model, effort, auto_start=auto_start)
     if not repository:
         raise ValueError("--repository must not be empty")
     if not run_dir.is_absolute() or run_dir != run_dir.resolve():
@@ -1286,7 +1472,7 @@ def prepare_worker(
     manifest_path = run_dir / "run.json"
     check_manifest(manifest_path, run_dir, repository)
     identity = bootstrap_clone(name, worker_path, clone_from)
-    resolved_provider = provider or PROVIDERS[harness]
+    resolved_provider = resolve_provider(harness, model, provider)
     # Keep the drive-letter case bootstrap printed; read_identity compares the string.
     bundle = render_worker_bundle(
         name,
@@ -1336,6 +1522,11 @@ def prepare_worker(
         home_name = codex_home_name(name)
         checks["codex_auth"] = {
             name: f"{home_name}: {codex_login_status(run_dir / 'configs' / home_name)}"
+        }
+    elif harness == "antigravity":
+        home_name = agy_home_name(name)
+        checks["agy_auth"] = {
+            name: f"{home_name}: {agy_login_status(run_dir / 'configs' / home_name)}"
         }
     print(
         json.dumps(
@@ -1394,7 +1585,7 @@ def main() -> None:
             dest=f"{name}_harness",
             metavar="HARNESS",
             default=None,
-            help=f"claude or codex, case-insensitive (default: {default})",
+            help=f"claude, codex, opencode, or antigravity, case-insensitive (default: {default})",
         )
     for name in AGENTS:
         pins = "" if name == "alice" else f"; also pins {name}'s HUB_MODEL"
