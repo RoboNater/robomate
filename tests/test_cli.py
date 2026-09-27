@@ -322,6 +322,25 @@ def test_status_uses_registry_fallback_and_explicit_url(
         stop(root, env, process)
 
 
+def test_status_with_unreachable_explicit_url_does_not_claim_current_repo(
+    repository: tuple[Path, dict[str, str]]
+) -> None:
+    root, env = repository
+    explicit_env = {**env, "ROBOMATE_HUB_URL": "http://127.0.0.1:1",
+                    "ROBOMATE_TOKEN": "test-token"}
+    result = subprocess.run([CLI, "status", "--json"], cwd=root, env=explicit_env,
+                            text=True, capture_output=True, timeout=10)
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {
+        "running": False, "repo_root": None, "url": "http://127.0.0.1:1", "port": 1,
+    }
+    human = subprocess.run([CLI, "status"], cwd=root, env=explicit_env,
+                           text=True, capture_output=True, timeout=10)
+    assert human.returncode == 1
+    assert human.stdout.startswith("Hub: not running")
+    assert str(root) not in human.stdout
+
+
 def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:

@@ -213,12 +213,13 @@ def _status(as_json: bool) -> None:
     explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
 
     def stopped(url: str, port: object) -> None:
-        stopped = {"running": False, "repo_root": str(root) if root else None,
+        known_root = root if not explicit else None
+        stopped = {"running": False, "repo_root": str(known_root) if known_root else None,
                    "url": url, "port": port}
         if as_json:
             print(json.dumps(stopped))
         else:
-            print(f"{root or 'Hub'}: not running (URL: {url}, port: {port})")
+            print(f"{known_root or 'Hub'}: not running (URL: {url}, port: {port})")
         raise SystemExit(1)
 
     if info is not None and not explicit:
