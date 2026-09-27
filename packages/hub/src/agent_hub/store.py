@@ -491,6 +491,71 @@ class HubStore:
             "unacked_delivered": unacked_delivered,
         }
 
+    def status_summary(self) -> dict[str, Any]:
+        """Return the small operator view without instructions or result bodies."""
+        with database(self.path) as connection:
+            connection.execute("BEGIN")
+            workflow = connection.execute(
+                "SELECT id, status, goal FROM workflow ORDER BY created LIMIT 1"
+            ).fetchone()
+            agents = [
+                {
+                    "name": row["name"], "harness": row["harness"],
+                    "model": row["model"], "status": row["status"],
+                    "alive": row["status"] != AgentStatus.LOST.value,
+                    "current_task": row["current_task_id"],
+                }
+                for row in connection.execute(
+                    "SELECT name, harness, model, status, current_task_id"
+                    " FROM agent ORDER BY name"
+                )
+            ]
+            tasks = [
+                {
+                    "id": row["id"], "role": row["role"],
+                    "assignee": row["assignee"], "state": row["state"],
+                    "pr_url": None, "head_sha": row["pr_head_sha"],
+                }
+                for row in connection.execute(
+                    "SELECT id, role, assignee, state, pr_head_sha FROM task"
+                    " WHERE state IN ('submitted', 'working', 'input-required')"
+                    " ORDER BY created"
+                )
+            ]
+            # Bind a review or rebase to the PR whose reported head matches
+            # its assigned head. A workflow may have reported several PRs.
+            if tasks and workflow is not None:
+                results = connection.execute(
+                    "SELECT result_json FROM task WHERE workflow_id = ?"
+                    " AND result_json IS NOT NULL ORDER BY created DESC",
+                    (workflow["id"],),
+                )
+                pr_by_head: dict[str, str] = {}
+                for row in results:
+                    result = _json_object(row["result_json"])
+                    if result and isinstance(result.get("pr_url"), str):
+                        for key in ("head_sha", "reviewed_head_sha"):
+                            head = result.get(key)
+                            if isinstance(head, str):
+                                pr_by_head.setdefault(head.lower(), result["pr_url"])
+                for task in tasks:
+                    if task["role"] in ("reviewer", "rebase") and task["head_sha"]:
+                        task["pr_url"] = pr_by_head.get(task["head_sha"].lower())
+            pending_questions = sum(
+                task["state"] == TaskState.INPUT_REQUIRED.value for task in tasks
+            )
+        return {
+            "workflow": None if workflow is None else {
+                "status": workflow["status"],
+                "headline": next(
+                    (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
+                    "",
+                )[:160],
+            },
+            "agents": agents, "tasks": tasks,
+            "pending_questions": pending_questions,
+        }
+
     def set_workflow_status(self, status: WorkflowStatus, summary: str) -> None:
         """Persist status and its explanation atomically in the audit log."""
         with database(self.path) as connection:
