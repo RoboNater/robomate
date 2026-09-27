@@ -15,6 +15,7 @@ from fastapi import BackgroundTasks
 from pydantic import ValidationError, validate_call
 from pydantic_core import to_jsonable_python
 
+from .accounting import CallAccounting, CallRecord, hub_id
 from .merge_gate import MergeGateError
 from .orchestrator import OPERATIONS, OrchestratorOps
 from .store import ConflictError, InvalidPolicyError, NotFoundError, PayloadTooLargeError
@@ -100,10 +101,12 @@ class RpcDispatcher:
         *,
         hub_info: Mapping[str, Any] | None = None,
         shutdown: Callable[[], None] | None = None,
+        accounting: CallAccounting | None = None,
     ) -> None:
         self.ops = ops
         self.hub_info = hub_info
         self.shutdown = shutdown
+        self.accounting = accounting
         self.orchestrator: OrchestratorSession | None = None
         self._superseded_sessions: set[str] = set()
         self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
@@ -155,6 +158,19 @@ class RpcDispatcher:
                 raise RpcError(INVALID_PARAMS, "hub.heartbeat takes no params")
             self._accept_session(*caller)
             return {"ok": True}
+        if method == "hub.record_calls":
+            if caller is None:
+                raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
+            params = payload.get("params")
+            rows = params.get("calls") if isinstance(params, dict) else None
+            if not isinstance(rows, list) or len(rows) > 32:
+                raise RpcError(INVALID_PARAMS, "calls must be a list of at most 32 rows")
+            records = [self._call_record(row, caller[0]) for row in rows]
+            self._accept_session(*caller)
+            recorded = sum(
+                self.accounting.record(record) for record in records
+            ) if self.accounting is not None else 0
+            return {"recorded": recorded}
         operation = self._operations.get(method)
         if operation is None:
             raise RpcError(METHOD_NOT_FOUND, "Method not found")
@@ -178,6 +194,46 @@ class RpcDispatcher:
                     self.ops.store.expire_event_leases(event["delivery_id"])
             raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
         return result
+
+    @staticmethod
+    def _call_record(row: Any, actor: str) -> CallRecord:
+        if not isinstance(row, dict) or set(row) != {
+            "boundary", "actor", "tool", "outcome", "bytes_in", "bytes_out",
+            "started", "finished", "status", "content_bytes", "repeat_bytes", "task_id",
+        }:
+            raise RpcError(INVALID_PARAMS, "invalid call record")
+        if row["boundary"] != "mcp" or row["actor"] != actor:
+            raise RpcError(INVALID_PARAMS, "call record actor or boundary mismatch")
+        if row["tool"] not in (*OPERATIONS, "initialize", "tools/list", "ping",
+                               "resources/list", "prompts/list", "unknown", "other"):
+            raise RpcError(INVALID_PARAMS, "invalid call tool")
+        if row["outcome"] not in ("ok", "error", "null_event", "event"):
+            raise RpcError(INVALID_PARAMS, "invalid call outcome")
+        for key in ("bytes_in", "bytes_out", "content_bytes", "repeat_bytes"):
+            value = row[key]
+            if (key in ("bytes_in", "bytes_out") and value is None) or (
+                value is not None and (type(value) is not int or value < 0)
+            ):
+                raise RpcError(INVALID_PARAMS, f"invalid {key}")
+        if row["status"] is not None or (
+            row["task_id"] is not None and hub_id(row["task_id"]) is None
+        ):
+            raise RpcError(INVALID_PARAMS, "invalid call status or task_id")
+        for key in ("tool", "outcome", "started", "finished"):
+            if not isinstance(row[key], str) or len(row[key]) > 128:
+                raise RpcError(INVALID_PARAMS, f"invalid {key}")
+        try:
+            started = datetime.fromisoformat(row["started"].replace("Z", "+00:00"))
+            finished = datetime.fromisoformat(row["finished"].replace("Z", "+00:00"))
+        except ValueError:
+            raise RpcError(INVALID_PARAMS, "invalid call timestamps") from None
+        if started.tzinfo is None or finished.tzinfo is None or finished < started:
+            raise RpcError(INVALID_PARAMS, "invalid call timestamps")
+        if row["repeat_bytes"] is not None and (
+            row["content_bytes"] is None or row["repeat_bytes"] > row["content_bytes"]
+        ):
+            raise RpcError(INVALID_PARAMS, "invalid repeat_bytes")
+        return CallRecord(**row)
 
     def _accept_session(self, actor: str, session: str) -> None:
         if session in self._superseded_sessions:

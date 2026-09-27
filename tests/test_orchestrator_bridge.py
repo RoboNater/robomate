@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -281,6 +282,14 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             reply = await pending
             assert reply.structuredContent is not None
             assert reply.structuredContent["reply"] == "This one"
+        with sqlite3.connect(repo / ".robomate/hub.db") as connection:
+            rows = connection.execute(
+                "SELECT tool, content_bytes FROM call_log "
+                "WHERE boundary = 'mcp' AND actor = 'alice'"
+            ).fetchall()
+        assert rows
+        assert any(tool == "initialize_workflow" and content_bytes > 0
+                   for tool, content_bytes in rows)
     finally:
         if hub.poll() is None:
             stopped = subprocess.run(
