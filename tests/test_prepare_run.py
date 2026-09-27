@@ -14,6 +14,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pytest
+from agent_hub.database import initialize_database
+from agent_hub.store import HubStore
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("prepare_run", ROOT / "scripts/prepare-run.py")
@@ -133,6 +135,33 @@ def test_rerun_preserves_clones_and_external_token(
     for name in ("bob", "charlie"):
         assert not (run_dir / name / "configs").exists()
         assert not (run_dir / name / ".mcp.json").exists()
+
+
+def test_existing_hub_workflow_requires_the_same_run_and_goal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    database_path = target / ".robomate/hub.db"
+    initialize_database(database_path)
+    run_dir = tmp_path / "run1"
+    first = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
+    goal = first["work"]["goal"]
+    HubStore(database_path).initialize_workflow(goal)
+    modified = database_path.stat().st_mtime_ns
+
+    with pytest.raises(ValueError) as error:
+        PREPARE_RUN.prepare(str(source), tmp_path / "run2", issue=43, hub_repo=target)
+    message = str(error.value)
+    assert "status='active'" in message and repr(goal) in message
+    assert "fresh dedicated target clone" in message and "robomate down" in message
+    assert not (tmp_path / "run2").exists()
+    assert database_path.stat().st_mtime_ns == modified
+
+    with pytest.raises(ValueError, match="original run directory and goal"):
+        PREPARE_RUN.prepare(str(source), run_dir, issue=43, hub_repo=target)
+    resumed = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
+    assert resumed["work"]["goal"] == goal
 
 
 def test_worker_only_uses_token_file_not_bearer_value(

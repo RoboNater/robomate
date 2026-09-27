@@ -49,12 +49,14 @@ owner-only. The worker host only reads the hub's token file; it never mints one.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import ipaddress
 import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path, PurePath, PureWindowsPath
@@ -282,6 +284,35 @@ def check_manifest(manifest_path: Path, run_dir: Path, repository: str) -> None:
             raise ValueError(
                 "run directory already prepared for another repository; use a fresh one"
             )
+
+
+def check_hub_workflow(hub_repo: Path, run_dir: Path, goal: str) -> None:
+    """Refuse a different run on a hub whose single workflow is initialized."""
+    path = hub_repo / ".robomate" / "hub.db"
+    if not path.exists():
+        return
+    try:
+        with contextlib.closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+            row = db.execute("SELECT goal, status FROM workflow LIMIT 1").fetchone()
+    except sqlite3.Error as exc:
+        raise ValueError(f"cannot read workflow from {path}: {exc}") from exc
+    if row is None:
+        return
+    manifest_path = run_dir / "run.json"
+    if manifest_path.exists():
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if (previous.get("run_dir") == str(run_dir)
+                and previous.get("hub_repo") == str(hub_repo)
+                and previous.get("state_dir") == str(path.parent)
+                and previous.get("work", {}).get("goal") == goal == row[0]):
+            return
+    raise ValueError(
+        f"hub in {hub_repo} already has workflow status={row[1]!r}, goal={row[0]!r}; "
+        "for a new run, stop this hub with `robomate down`, use a fresh dedicated "
+        "target clone as --hub-repo, run `robomate up` there, and retry "
+        "(docs/user-guide.md: Start the hub and prepare a run). To resume this "
+        "workflow, rerun preparation with its original run directory and goal"
+    )
 
 
 def harness_name(flag: str, value: str) -> str:
@@ -889,13 +920,15 @@ def prepare(
     resolved_state = hub_repo / ".robomate"
     if state_dir is not None and state_dir != resolved_state:
         raise ValueError("--state-dir is set by --hub-repo and cannot differ")
+    slug = parse_github_slug(repository)
+    goal = render_goal(slug, repository, issue, work_text, roadmap)
+    check_hub_workflow(hub_repo, run_dir, goal)
 
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
     # Harness versions come from the CLIs themselves, never placeholders; a
     # remote worker's version is probed on its own host by --worker-only.
     versions, parsed_versions = probe_versions({harnesses[name] for name in local})
 
-    slug = parse_github_slug(repository)
     # A bare owner/repo slug passes the gh checks below but is not a valid
     # `git clone` argument; expand it to its https URL for bootstrapping.
     clone_from = clone_source(repository, slug)
@@ -1047,7 +1080,6 @@ def prepare(
         "max_wall_minutes": 180,
         "max_task_lease_min": 120,
     }
-    goal = render_goal(slug, repository, issue, work_text, roadmap)
     (run_dir / "alice.prompt.md").write_text(
         render_alice_prompt(goal, account, policy) + prompt_sections("alice", alice_harness),
         encoding="utf-8",
