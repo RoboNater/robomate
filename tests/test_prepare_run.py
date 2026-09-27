@@ -1483,7 +1483,9 @@ def test_no_auto_start_opens_each_agent_without_its_prompt(
         f"--add-dir {run_dir / 'charlie' / '.git'} --approve-for-me --model gpt-6-sol\n"
     ) in (run_dir / "start-charlie.sh").read_text(encoding="utf-8")
     alice_script = (run_dir / "start-alice.sh").read_text(encoding="utf-8")
-    assert "codex -C . --skip-git-repo-check --approve-for-me" in alice_script
+    # Interactive codex rejects --skip-git-repo-check (a `codex exec` option).
+    assert "codex -C . --approve-for-me" in alice_script
+    assert "--skip-git-repo-check" not in alice_script
     assert "--add-dir" not in alice_script
     assert "Auto-start is off" in capsys.readouterr().out
 
