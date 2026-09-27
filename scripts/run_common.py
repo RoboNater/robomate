@@ -138,8 +138,8 @@ def codex_home(directory: Path, name: str) -> Path:
 def codex_mcp(
     command: str, args: list[str], env: dict[str, str], tools: list[str], timeout: int
 ) -> str:
-    """Render the ``[mcp_servers.hub]`` TOML section for a Codex home."""
-    config = f'[mcp_servers.hub]\ncommand = "{command}"\n'
+    """Render the ``[mcp_servers.robomate]`` TOML section for a Codex home."""
+    config = f'[mcp_servers.robomate]\ncommand = "{command}"\n'
     config += "args = " + json.dumps(args) + "\n"
     config += f"startup_timeout_sec = 120\ntool_timeout_sec = {timeout}\n"
     config += "enabled_tools = " + json.dumps(tools) + "\n"
@@ -149,7 +149,7 @@ def codex_mcp(
         + " }\n"
     )
     for tool in tools:
-        config += f'\n[mcp_servers.hub.tools.{tool}]\napproval_mode = "approve"\n'
+        config += f'\n[mcp_servers.robomate.tools.{tool}]\napproval_mode = "approve"\n'
     return config
 
 
@@ -239,8 +239,9 @@ def render_claude_mcp(env: dict[str, str], root: str | None = None) -> dict[str,
     """
     template = json.loads((ROOT / "runtimes/claude-code.mcp.json").read_text(encoding="utf-8"))
     directory = str(ROOT) if root is None else root
-    template["mcpServers"]["hub"].update(
-        {"args": ["run", "--locked", "--directory", directory, "worker-mcp"], "env": env}
+    template["mcpServers"]["robomate"].update(
+        {"args": ["run", "--locked", "--project", directory, "robomate",
+                  "mcp", "--role", "worker"], "env": env}
     )
     return template
 
@@ -251,7 +252,7 @@ def render_codex_config(env: dict[str, str], worker_args: list[str]) -> str:
 
     reference = tomllib.loads(
         (ROOT / "runtimes/codex.config.toml").read_text(encoding="utf-8")
-    )["mcp_servers"]["hub"]
+    )["mcp_servers"]["robomate"]
     config = codex_sandbox() + codex_mcp("uv", worker_args, env, TOOLS, 330)
     if sorted(reference.get("tools", {})) != sorted(TOOLS):
         raise ValueError("runtimes/codex.config.toml tools drifted from the shared TOOLS list")

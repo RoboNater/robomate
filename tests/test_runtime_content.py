@@ -128,7 +128,7 @@ def test_runtime_docs_explain_how_claude_loads_the_skills() -> None:
         (
             ".claude/skills/alice-orchestrator/",
             ".claude/skills/worker/",
-            "Step 5C's launch scripts will automate this",
+            "launch scripts will automate this",
         ),
     )
 

@@ -2,8 +2,9 @@
 """Measure hub call bytes by replaying a published Step 6 call sequence (#78).
 
 This is a scripted substitute for a Step 6 acceptance run, not one: no LLM
-runs, and nothing touches GitHub. It starts the real hub over stdio MCP with
-`HUB_CALL_ACCOUNTING=1` and two real worker-mcp processes with
+runs, and nothing touches GitHub. It starts a scratch `robomate up` HTTP hub
+with accounting enabled and three `robomate mcp` bridges (one orchestrator,
+two workers), with worker telemetry enabled through
 `HUB_TELEMETRY_LOG`, then plays Alice's, Bob's and Charlie's hub tool calls in
 the order a Step 6 tool-audit recorded them, with the arguments it recorded.
 Only the ids a live hub mints (task ids, event ids, delivery acks) are
@@ -28,9 +29,9 @@ import argparse
 import asyncio
 import json
 import os
-import secrets
 import socket
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.request
@@ -189,62 +190,76 @@ async def worker(
 async def replay(
     run_dir: Path, calls: dict[str, list[dict[str, Any]]], hold_s: float, heartbeat_s: float
 ) -> dict[str, Any]:
-    port, token = free_port(), secrets.token_hex(16)
-    state = run_dir / "state"
+    port = free_port()
+    repo = run_dir / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
+                   cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD",
+                    "refs/remotes/origin/main"], cwd=repo, check=True, capture_output=True)
+    state = repo / ".robomate"
+    command = str(Path(sys.executable).with_name("robomate"))
     base_env = {k: v for k, v in os.environ.items() if not k.startswith("HUB_")}
-    hub_env = base_env | {
-        "HUB_STATE_DIR": str(state),
-        "HUB_HOST": "127.0.0.1",
-        "HUB_PORT": str(port),
-        "HUB_TOKEN": token,
-        "HUB_CALL_ACCOUNTING": "1",
+    hub_env = base_env | {"XDG_STATE_HOME": str(run_dir / "xdg"),
         "HUB_CALL_LOG_JSONL": str(run_dir / "hub-calls.jsonl"),
     }
     skipped: Counter[str] = Counter()
     started = time.monotonic()
-    async with AsyncExitStack() as stack:
-        hub = StdioServerParameters(
-            command=sys.executable, args=["-m", "agent_hub.main"], env=hub_env
-        )
-        read, write = await stack.enter_async_context(stdio_client(hub))
-        alice_session = await stack.enter_async_context(ClientSession(read, write))
-        await alice_session.initialize()
-        await alice_session.list_tools()
+    hub_process = await asyncio.create_subprocess_exec(
+        command, "up", "--port", str(port), cwd=repo, env=hub_env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
         deadline = time.monotonic() + 20
         while True:
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=0.5).close()
                 break
-            except OSError:
-                if time.monotonic() > deadline:
-                    raise
+            except OSError as exc:
+                if time.monotonic() > deadline or hub_process.returncode is not None:
+                    raise RuntimeError("robomate up did not start") from exc
                 await asyncio.sleep(0.1)
-        sessions = {}
-        for name, (harness, provider) in HARNESS.items():
-            env = base_env | {
-                "HUB_URL": f"http://127.0.0.1:{port}",
-                "HUB_TOKEN": token,
+        bridge_env = hub_env | {
+            "ROBOMATE_HUB_URL": f"http://127.0.0.1:{port}",
+            "ROBOMATE_TOKEN_FILE": str(state / "token"),
+        }
+        async with AsyncExitStack() as stack:
+            alice_params = StdioServerParameters(
+                command=command, args=["mcp", "--role", "orchestrator"], env=bridge_env,
+            )
+            read, write = await stack.enter_async_context(stdio_client(alice_params))
+            alice_session = await stack.enter_async_context(ClientSession(read, write))
+            await alice_session.initialize()
+            await alice_session.list_tools()
+            sessions = {}
+            for name, (harness, provider) in HARNESS.items():
+                env = bridge_env | {
                 "AGENT_NAME": name,
                 "HUB_HARNESS": harness,
                 "HUB_PROVIDER": provider,
                 "HUB_TELEMETRY_LOG": str(run_dir / f"{name}-telemetry.jsonl"),
                 "HUB_HEARTBEAT_S": str(heartbeat_s),
-            }
-            params = StdioServerParameters(
-                command=sys.executable, args=["-m", "worker_mcp.main"], env=env
+                }
+                params = StdioServerParameters(
+                    command=command, args=["mcp", "--role", "worker", "--name", name], env=env
+                )
+                wread, wwrite = await stack.enter_async_context(stdio_client(params))
+                session = await stack.enter_async_context(ClientSession(wread, wwrite))
+                await session.initialize()
+                await session.list_tools()
+                sessions[name] = session
+            await asyncio.wait_for(
+                asyncio.gather(
+                    alice(alice_session, calls["alice"], skipped),
+                    *(worker(n, s, calls[n], hold_s) for n, s in sessions.items()),
+                ),
+                timeout=900,
             )
-            wread, wwrite = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(wread, wwrite))
-            await session.initialize()
-            await session.list_tools()
-            sessions[name] = session
-        await asyncio.wait_for(
-            asyncio.gather(
-                alice(alice_session, calls["alice"], skipped),
-                *(worker(n, s, calls[n], hold_s) for n, s in sessions.items()),
-            ),
-            timeout=900,
-        )
+    finally:
+        subprocess.run([command, "down"], cwd=repo, env=hub_env, capture_output=True)
+        await asyncio.wait_for(hub_process.wait(), timeout=10)
     return {
         "database": state / "hub.db",
         "skipped": dict(skipped),
@@ -349,8 +364,8 @@ def markdown(data: dict[str, Any], stem: str) -> str:
         "`scripts/measure-call-bytes.py` from `call_log` and worker telemetry; no number",
         "here was typed by hand.",
         "",
-        "The real hub ran over stdio MCP with `HUB_CALL_ACCOUNTING=1`, and two real",
-        "worker-mcp processes spoke A2A to it with `HUB_TELEMETRY_LOG`. A script played",
+        "A real `robomate up` HTTP hub ran with accounting enabled, and three real",
+        "`robomate mcp` bridges spoke to it with worker `HUB_TELEMETRY_LOG`. A script played",
         "each agent's hub tool calls in the order, and with the arguments, recorded in",
         f"`{data['call_sequence_source']}`. Only ids the live hub mints were substituted.",
         "No LLM ran and nothing touched GitHub.",

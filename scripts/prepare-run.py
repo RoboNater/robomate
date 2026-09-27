@@ -2,14 +2,15 @@
 """Generate a whole user run directory in one command.
 
 Takes a target repository and a run directory and produces the layout the
-user guide describes: bootstrapped bob/charlie clones, a state directory with
-a reused bearer token, rendered MCP configs from the ``runtimes/`` templates,
+user guide describes: bootstrapped bob/charlie clones, a connection to an
+existing ``robomate up`` hub, rendered MCP configs from the ``runtimes/`` templates,
 a run-local Codex home with its auth link, rendered worker prompts, cheap
 prerequisite checks, and one ``start-<agent>.sh`` script per agent plus the
 Alice kickoff prompt.
 
 Example:
     uv run --locked python scripts/prepare-run.py \\
+        --hub-repo /absolute/path/to/target-repository \\
         --repository git@github.com:your-org/your-repo.git \\
         --run-dir /absolute/path/to/my-run \\
         --issue 42 --account your-github-username
@@ -23,19 +24,15 @@ passed through to its CLI unchecked. Start scripts hand each agent its prompt
 file (auto-start) unless ``--no-auto-start`` is given (#30). Any other harness
 fails up front with an actionable message.
 
-Networked runs (#125) separate three addresses: ``--hub-host`` is the hub's
-bind address (``HUB_HOST``), ``--hub-url`` the address every worker dials
-(``HUB_URL``), and ``--public-url`` the address the agent card advertises
-(``HUB_PUBLIC_URL``, defaulting to ``--hub-url``). The hub binds the
-``--hub-url`` port (``HUB_PORT``) unless ``--hub-port`` names another, e.g.
-behind port forwarding (#133). ``--remote-worker NAME``
+For networked runs, start ``robomate up --bind ... --public-url ...`` in the
+target repository first. The existing hub URL is read from ``--hub-repo``;
+``--hub-url`` and ``--public-url`` can only confirm that URL. ``--remote-worker NAME``
 leaves that worker to another host, which renders it with
 ``--worker-only NAME`` from its own robo-agents checkout::
 
     # hub host (e.g. WSL2)
     uv run --locked python scripts/prepare-run.py --repository ... \\
-        --run-dir /abs/run --issue 42 --hub-host 0.0.0.0 \\
-        --hub-url http://172.26.115.68:8420 --remote-worker bob
+        --hub-repo /abs/target --run-dir /abs/run --issue 42 --remote-worker bob
     # worker host (e.g. Windows, Git Bash), as printed by the command above
     uv run --locked python scripts/prepare-run.py --worker-only bob \\
         --repository ... --run-dir C:/runs/my-run \\
@@ -64,7 +61,8 @@ from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from agent_hub_common.config import WILDCARD_HOST_ALIAS
+from agent_hub_common.discovery import read_hub_json
+from agent_hub_common.registry import hub_healthy, process_alive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_common import (  # noqa: E402
@@ -76,7 +74,6 @@ from run_common import (  # noqa: E402
     codex_home,
     codex_mcp,
     codex_sandbox,
-    ensure_token,
     link_or_copy,
     parse_github_slug,
     parse_harness_version,
@@ -130,13 +127,13 @@ def worker_env(
     model: str,
     capabilities: str,
     workspace: str,
-    token: str,
+    token_file: str,
     telemetry: str,
     hub_url: str = DEFAULT_HUB_URL,
 ) -> dict[str, str]:
     return {
-        "HUB_URL": hub_url,
-        "HUB_TOKEN": token,
+        "ROBOMATE_HUB_URL": hub_url,
+        "ROBOMATE_TOKEN_FILE": token_file,
         "AGENT_NAME": name,
         "HUB_WORKSPACE": workspace,
         "HUB_HARNESS": harness,
@@ -241,61 +238,6 @@ def is_loopback(host: str) -> bool:
         return ipaddress.ip_address(literal).is_loopback
     except ValueError:
         return False
-
-
-def is_wildcard(host: str) -> bool:
-    """The unspecified address in any spelling, as ``HubSettings.from_env()`` sees it."""
-    literal = host_literal(host)
-    if literal == WILDCARD_HOST_ALIAS:
-        return True
-    try:
-        return ipaddress.ip_address(literal).is_unspecified
-    except ValueError:
-        return False
-
-
-def network_settings(
-    hub_host: str,
-    hub_url: str,
-    public_url: str | None,
-    remote_worker: str | None,
-    hub_port: int | None = None,
-) -> dict[str, Any]:
-    """Validate the bind address, the URL workers dial, and the advertised URL.
-
-    The bind port defaults to the ``--hub-url`` port. A wildcard bind needs a
-    dialable, non-loopback advertised URL (mirroring ``HubSettings.from_env()``);
-    a hub that binds loopback cannot be dialed at a non-loopback URL; a worker
-    on another host cannot dial loopback.
-    """
-    host = hub_host.strip()
-    if not host:
-        raise ValueError("--hub-host must not be empty")
-    dial = hub_url.strip().rstrip("/")
-    advertised = dial if public_url is None else public_url.strip().rstrip("/")
-    dial_loopback = is_loopback(url_host(dial, "--hub-url"))
-    dial_port = url_port(dial, "--hub-url")
-    port = dial_port if hub_port is None else check_port(hub_port, "--hub-port")
-    advertised_host = url_host(advertised, "--public-url")
-    url_port(advertised, "--public-url")
-    if is_wildcard(host) and (is_loopback(advertised_host) or is_wildcard(advertised_host)):
-        raise ValueError(
-            f"--hub-host {host} binds every interface, so --public-url (default: "
-            f"--hub-url) must be a dialable non-loopback URL, got {advertised!r}; "
-            "workers cannot dial a bind address"
-        )
-    if not dial_loopback and is_loopback(host):
-        raise ValueError(
-            f"--hub-url {dial} is not loopback but --hub-host {host} only binds "
-            "loopback; pass --hub-host 0.0.0.0 or the address in --hub-url"
-        )
-    if remote_worker is not None and dial_loopback:
-        raise ValueError(
-            f"--remote-worker {remote_worker} dials --hub-url from another host, so it "
-            f"cannot be loopback ({dial}); pass the hub host's address, e.g. "
-            f"http://<wsl-eth0>:{dial_port}"
-        )
-    return {"hub_host": host, "hub_port": port, "hub_url": dial, "public_url": advertised}
 
 
 def preflight_lines(
@@ -474,7 +416,7 @@ def prompt_sections(name: str, harness: str) -> str:
         skill = ROOT / "skills/alice-orchestrator/SKILL.md"
         sections.append(
             "Codex runtime note: if the alice-orchestrator skill is not already loaded, "
-            f"read {skill} in full and follow it. Hub tools are the MCP server `hub`."
+            f"read {skill} in full and follow it. Hub tools are the MCP server `robomate`."
         )
     if name == "alice":
         sections.append(
@@ -711,7 +653,7 @@ def render_worker_bundle(
     provider: str,
     model: str,
     capabilities: str,
-    token: str,
+    token_file: str,
     hub_url: str,
     root: PurePath,
     run_dir: PurePath,
@@ -737,13 +679,14 @@ def render_worker_bundle(
         model,
         capabilities,
         workspace.as_posix(),
-        token,
+        token_file,
         (run_dir / f"{name}-telemetry.jsonl").as_posix(),
         hub_url,
     )
     if harness == "codex":
         home = codex_home(configs, codex_home_name(name))
-        worker_args = ["run", "--locked", "--directory", root.as_posix(), "worker-mcp"]
+        worker_args = ["run", "--locked", "--project", root.as_posix(),
+                       "robomate", "mcp", "--role", "worker"]
         text = render_codex_config(env, worker_args)
         write_secret(home / "config.toml", lambda path: write_private_text(path, text))
         config = run_dir / "configs" / codex_home_name(name) / "config.toml"
@@ -852,7 +795,7 @@ def prepare(
     public_url: str | None = None,
     work_file: Path | None = None,
     hub_host: str = DEFAULT_HUB_HOST,
-    hub_url: str = DEFAULT_HUB_URL,
+    hub_url: str | None = None,
     remote_worker: str | None = None,
     hub_port: int | None = None,
     alice_harness: str = DEFAULT_ALICE_HARNESS,
@@ -862,6 +805,7 @@ def prepare(
     charlie_effort: str = "",
     auto_start: bool = True,
     roadmap: str | None = None,
+    hub_repo: Path | None = None,
 ) -> dict[str, Any]:
     if work_file is not None and issue is not None:
         raise ValueError(
@@ -887,9 +831,33 @@ def prepare(
         raise ValueError("--allow-no-ci must be one of auto, true, false")
     if remote_worker is not None and remote_worker not in WORKERS:
         raise ValueError(f"--remote-worker must be one of {list(WORKERS)}")
-    network = network_settings(hub_host, hub_url, public_url, remote_worker, hub_port)
+    if hub_repo is None:
+        raise ValueError("--hub-repo is required; start robomate up in that repository first")
+    if hub_host != DEFAULT_HUB_HOST:
+        raise ValueError("--hub-host belongs to robomate up --bind; start the hub with "
+                         "--bind and --public-url before preparing the run")
+    if not hub_repo.is_absolute() or hub_repo != hub_repo.resolve():
+        raise ValueError("--hub-repo must be absolute and canonical")
+    hub_info = read_hub_json(hub_repo)
+    if hub_info is None or not hub_info.get("pid"):
+        raise ValueError(f"no running robomate hub in {hub_repo}; run robomate up first")
+    live_url = str(hub_info["url"])
+    live_port = int(hub_info["port"])
+    if not process_alive(int(hub_info["pid"])) or not hub_healthy(
+        live_url, str(hub_info["hub_id"])
+    ):
+        raise ValueError(f"hub in {hub_repo} is not responding; run robomate up first")
+    if hub_url is not None and hub_url.rstrip("/") != live_url:
+        raise ValueError("--hub-url differs from the running hub; configure robomate up")
+    if public_url is not None and public_url.rstrip("/") != live_url:
+        raise ValueError("--public-url differs from the running hub; configure robomate up")
+    if hub_port is not None and hub_port != live_port:
+        raise ValueError("--hub-port differs from the running hub; configure robomate up")
+    network = {"hub_port": live_port, "hub_url": live_url, "public_url": live_url}
+    if remote_worker is not None and is_loopback(url_host(live_url, "--hub-repo")):
+        raise ValueError("a remote worker cannot dial a loopback hub; restart robomate up "
+                         "with --bind and --public-url")
     networked = remote_worker is not None or network != {
-        "hub_host": DEFAULT_HUB_HOST,
         "hub_port": DEFAULT_HUB_PORT,
         "hub_url": DEFAULT_HUB_URL,
         "public_url": DEFAULT_HUB_URL,
@@ -913,9 +881,9 @@ def prepare(
             raise ValueError(f"{label} must be absolute and canonical")
     if bob_path == charlie_path:
         raise ValueError("--bob-dir and --charlie-dir must differ")
-    resolved_state = state_dir or (run_dir / "hub-state")
-    if not resolved_state.is_absolute() or resolved_state != resolved_state.resolve():
-        raise ValueError("--state-dir must be absolute and canonical")
+    resolved_state = hub_repo / ".robomate"
+    if state_dir is not None and state_dir != resolved_state:
+        raise ValueError("--state-dir is set by --hub-repo and cannot differ")
 
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
     # Harness versions come from the CLIs themselves, never placeholders; a
@@ -976,7 +944,7 @@ def prepare(
     # Bootstrap before minting the token so a failed clone leaves no state behind.
     paths = {"bob": bob_path, "charlie": charlie_path}
     workspaces = {name: bootstrap_clone(name, paths[name], clone_from) for name in local}
-    token = ensure_token(resolved_state / "token")
+    read_hub_token(resolved_state / "token")
     if len(local) == 2 and (
         workspaces["bob"]["workspace_id"] == workspaces["charlie"]["workspace_id"]
     ):
@@ -1002,31 +970,24 @@ def prepare(
             models[name],
             capabilities[name],
             workspace,
-            token,
+            str(resolved_state / "token"),
             telemetry,
             network["hub_url"],
         )
         if harness == "codex":
             home = codex_home(configs, codex_home_name(name))
-            worker_args = ["run", "--locked", "--directory", str(ROOT), "worker-mcp"]
+            worker_args = ["run", "--locked", "--project", str(ROOT),
+                           "robomate", "mcp", "--role", "worker"]
             write_private_text(home / "config.toml", render_codex_config(env, worker_args))
             rendered_configs[name] = str(home / "config.toml")
         else:
             save(configs / f"{name}.mcp.json", render_claude_mcp(env))
             rendered_configs[name] = str(configs / f"{name}.mcp.json")
 
-    hub_env = {
-        "HUB_STATE_DIR": str(resolved_state),
-        "HUB_TOKEN": token,
-        "HUB_PUBLIC_URL": network["public_url"],
-        "HUB_GUIDES_DIR": str(ROOT / "guides"),
-        "PYTHONUTF8": "1",
-    }
-    if network["hub_host"] != DEFAULT_HUB_HOST:
-        hub_env["HUB_HOST"] = network["hub_host"]
-    if network["hub_port"] != DEFAULT_HUB_PORT:
-        hub_env["HUB_PORT"] = str(network["hub_port"])
-    hub_args = ["run", "--locked", "--directory", str(ROOT), "hub"]
+    hub_env = {"ROBOMATE_HUB_URL": live_url,
+               "ROBOMATE_TOKEN_FILE": str(resolved_state / "token"), "PYTHONUTF8": "1"}
+    hub_args = ["run", "--locked", "--project", str(ROOT),
+                "robomate", "mcp", "--role", "orchestrator"]
     if alice_harness == "codex":
         alice_home = codex_home(configs, codex_home_name("alice"))
         (alice_home / "skills").mkdir(exist_ok=True)
@@ -1042,7 +1003,7 @@ def prepare(
         alice_config = configs / "alice.mcp.json"
         save(
             alice_config,
-            {"mcpServers": {"hub": {"command": "uv", "args": hub_args, "env": hub_env}}},
+            {"mcpServers": {"robomate": {"command": "uv", "args": hub_args, "env": hub_env}}},
         )
 
     # Alice's working directory, kept apart from the worker clones and the
@@ -1101,6 +1062,7 @@ def prepare(
         "slug": slug,
         "run_dir": str(run_dir),
         "state_dir": str(resolved_state),
+        "hub_repo": str(hub_repo),
         "workspaces": workspaces,
         "harnesses": harnesses,
         "providers": providers,
@@ -1267,7 +1229,7 @@ def prepare_worker(
             f"be loopback ({dial}); pass the hub host's address"
         )
     url_port(dial, "--hub-url")
-    token = read_hub_token(token_file)
+    read_hub_token(token_file)
     versions, parsed_versions = probe_versions({harness})
 
     slug = parse_github_slug(repository)
@@ -1285,7 +1247,7 @@ def prepare_worker(
         resolved_provider,
         model,
         capabilities,
-        token,
+        str(token_file),
         dial,
         ROOT,
         run_dir,
@@ -1414,22 +1376,24 @@ def main() -> None:
     parser.add_argument("--bob-dir", type=Path, default=None)
     parser.add_argument("--charlie-dir", type=Path, default=None)
     parser.add_argument("--state-dir", type=Path, default=None)
+    parser.add_argument("--hub-repo", type=Path, default=None,
+                        help="absolute repository path with a running robomate up hub")
     parser.add_argument("--merge-method", default="squash")
     parser.add_argument("--allow-no-ci", default="auto")
     parser.add_argument("--skip-github-checks", action="store_true")
     parser.add_argument(
         "--hub-host",
         default=DEFAULT_HUB_HOST,
-        help="hub bind address (HUB_HOST); 0.0.0.0 needs a non-loopback --public-url",
+        help="legacy flag; set the bind address with robomate up --bind instead",
     )
     parser.add_argument(
-        "--hub-url", default=DEFAULT_HUB_URL, help="the HUB_URL every worker dials"
+        "--hub-url", default=None, help="optional check against the running hub URL"
     )
     parser.add_argument(
         "--hub-port",
         type=int,
         default=None,
-        help="hub bind port (HUB_PORT), 1-65535; defaults to the --hub-url port",
+        help="optional check against the running robomate up port",
     )
     parser.add_argument(
         "--public-url",
@@ -1467,6 +1431,7 @@ def main() -> None:
             "--account": args.account is not None,
             "--roadmap": args.roadmap is not None,
             "--state-dir": args.state_dir is not None,
+            "--hub-repo": args.hub_repo is not None,
             "--remote-worker": args.remote_worker is not None,
             "--hub-host": args.hub_host != DEFAULT_HUB_HOST,
             "--hub-port": args.hub_port is not None,
@@ -1479,6 +1444,8 @@ def main() -> None:
             parser.error(f"hub-host flags do not apply to --worker-only: {', '.join(given)}")
         if args.token_file is None:
             parser.error("--worker-only needs --token-file, the hub's token file")
+        if args.hub_url is None:
+            parser.error("--worker-only needs --hub-url, the address this host dials")
         name = args.worker_only
         try:
             prepare_worker(
@@ -1533,6 +1500,7 @@ def main() -> None:
             charlie_effort=args.charlie_effort,
             auto_start=args.auto_start,
             roadmap=args.roadmap,
+            hub_repo=args.hub_repo,
         )
     except ValueError as exc:
         sys.exit(f"prepare-run: error: {exc}")

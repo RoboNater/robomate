@@ -2,7 +2,7 @@
 """Mock Alice orchestrator driving one task through a worker (spec §4.3, §7 Step 4).
 
 Usage:
-    # 1. Stdio MCP mode: launches hub and runs Alice MCP over stdio (in-process events):
+    # 1. MCP mode: connects through the orchestrator bridge to robomate up:
     python scripts/mock-alice.py --mcp --agent bob --harness claude-code
     python scripts/mock-alice.py --mcp --agent charlie --harness codex
 
@@ -949,8 +949,8 @@ def main() -> None:
         "--db",
         default=default_db,
         help=(
-            "Path to SQLite database file (applies to direct DB mode; "
-            "--mcp manages state via HUB_STATE_DIR in the environment)"
+            "Path to SQLite database file (direct DB mode only; --mcp connects "
+            "to an existing robomate up hub)"
         ),
     )
     parser.add_argument("--agent", default="bob", help="Expected worker agent name")
@@ -972,12 +972,12 @@ def main() -> None:
     parser.add_argument(
         "--mcp",
         action="store_true",
-        help="Drive Alice over MCP stdio by launching the hub server process",
+        help="Drive Alice through robomate mcp against an existing robomate up hub",
     )
     parser.add_argument(
-        "--hub-cmd",
-        default=f'"{sys.executable}" -m agent_hub.main',
-        help="Command to launch hub when running with --mcp (parsed quote-aware)",
+        "--bridge-cmd", "--hub-cmd",
+        default=f'"{Path(sys.executable).with_name("robomate")}" mcp --role orchestrator',
+        help="Orchestrator bridge command for --mcp (parsed quote-aware)",
     )
     parser.add_argument(
         "--endurance",
@@ -1069,7 +1069,7 @@ def main() -> None:
             )
             result["telemetry"] = telemetry
         elif args.mcp:
-            cmd_parts = _parse_cmd(args.hub_cmd)
+            cmd_parts = _parse_cmd(args.bridge_cmd)
             params = StdioServerParameters(
                 command=cmd_parts[0],
                 args=cmd_parts[1:],

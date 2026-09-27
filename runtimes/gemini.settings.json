@@ -1,16 +1,16 @@
 {
   "mcpServers": {
-    "hub": {
+    "robomate": {
       "command": "uv",
       "args": [
         "run",
-        "--directory",
-        "/path/to/agent-hub",
-        "worker-mcp"
+        "--project",
+        "/path/to/robomate",
+        "robomate", "mcp", "--role", "worker"
       ],
       "env": {
-        "HUB_URL": "http://alice-host:8420",
-        "HUB_TOKEN": "...",
+        "ROBOMATE_HUB_URL": "http://alice-host:8420",
+        "ROBOMATE_TOKEN_FILE": "/path/to/target/.robomate/token",
         "AGENT_NAME": "charlie",
         "HUB_HARNESS": "gemini",
         "HUB_HARNESS_VERSION": "",

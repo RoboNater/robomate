@@ -495,6 +495,11 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   ([`docs/poc-lessons.md`](poc-lessons.md)).
 - **Accounting on by default** (#7); `call_log` retention bounded (#23), since hubs now live
   for days.
+- Alice's bridge measures MCP request, response, content, and repeat bytes on its
+  stdio stream, then sends compact rows to `hub.record_calls`. The hub records
+  them as `boundary=mcp` with the orchestrator actor. The HTTP hub records its
+  own A2A and guide rows; raw `/rpc` bytes are not counted in M1. This uses
+  the existing `call_log` schema and wire version.
 - **Token levers (#22):** longer holds where the harness allows; minimal timeout payloads;
   compact `get_state`; guides returned as "unchanged (hash)" when the bridge has already
   delivered them this session (with `force` to re-fetch); smaller tool schemas;

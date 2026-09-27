@@ -163,7 +163,7 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
     codex = tomllib.loads(
         (ROOT / "runtimes" / "codex.config.toml").read_text(encoding="utf-8")
     )
-    hub = codex["mcp_servers"]["hub"]
+    hub = codex["mcp_servers"]["robomate"]
     expected_tools = {
         "check_in",
         "get_role_guide",
@@ -179,4 +179,4 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
     claude = json.loads(
         (ROOT / "runtimes" / "claude-code.mcp.json").read_text(encoding="utf-8")
     )
-    assert "HUB_TELEMETRY_LOG" in claude["mcpServers"]["hub"]["env"]
+    assert "HUB_TELEMETRY_LOG" in claude["mcpServers"]["robomate"]["env"]

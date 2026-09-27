@@ -60,7 +60,8 @@
   "run_dir": "$RUN_DIR",
   "schema_version": 1,
   "slug": null,
-  "state_dir": "$RUN_DIR/hub-state",
+  "hub_repo": "$HUB_REPO",
+  "state_dir": "$HUB_REPO/.robomate",
   "versions": {
     "claude": "2.1.277 (Claude Code)",
     "codex": "codex-cli 0.154.0"
