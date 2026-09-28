@@ -49,6 +49,8 @@ PROVIDERS = {
 MAKER_ALIASES = {
     "alibaba": "alibaba",
     "anthropic": "anthropic",
+    "bytedance": "bytedance",
+    "bytedance-seed": "bytedance",
     "cohere": "cohere",
     "deepseek": "deepseek",
     "google": "google",
@@ -66,6 +68,9 @@ MAKER_ALIASES = {
     "z-ai": "zhipu",
     "zhipu": "zhipu",
 }
+
+#: OpenRouter namespace segments that name a routing gateway or undisclosed author, not a maker.
+NON_MAKERS = {"openrouter", "stealth"}
 
 #: Model family prefix -> model maker for bare model names and gateway routes (opencode/, agy).
 MODEL_FAMILIES = (
@@ -97,14 +102,15 @@ def resolve_provider(harness: str, model: str = "", provider: str | None = None)
 
     Explicit ``--<agent>-provider`` always wins. Otherwise the model ID is
     inspected first — taking ``<maker>`` from ``openrouter/<maker>/...`` (mapped
-    through :data:`MAKER_ALIASES`), then matching known model families on the
-    model slug, then falling back to ``<maker>/<model>`` in :data:`MAKER_ALIASES`
-    — so a non-default model on any harness (e.g. Claude Code routed to
-    ``glm-5.3``, or ``alibaba/kimi-k2.5`` on OpenCode) records the model's maker
-    rather than the harness vendor or hosting route. Single-vendor harnesses
-    (``claude-code``, ``codex``, ``gemini``) then fall back to :data:`PROVIDERS`,
-    and multi-vendor harnesses (``opencode``, ``antigravity``) fall back to
-    ``unknown`` rather than guessing.
+    through :data:`MAKER_ALIASES`, or ``unknown`` for :data:`NON_MAKERS`), then
+    matching known model families on the model slug, then falling back to
+    ``<maker>/<model>`` in :data:`MAKER_ALIASES` — so a non-default model on any
+    harness (e.g. Claude Code routed to ``glm-5.3``, or ``alibaba/kimi-k2.5`` on
+    OpenCode) records the model's maker rather than the harness vendor or
+    hosting route. Single-vendor harnesses (``claude-code``, ``codex``,
+    ``gemini``) then fall back to :data:`PROVIDERS`, and multi-vendor harnesses
+    (``opencode``, ``antigravity``) fall back to ``unknown`` rather than
+    guessing.
     """
     if provider:
         return provider
@@ -112,6 +118,8 @@ def resolve_provider(harness: str, model: str = "", provider: str | None = None)
     if text:
         parts = [part.lstrip("~") for part in text.split("/") if part]
         if len(parts) >= 3 and parts[0] == "openrouter":
+            if parts[1] in NON_MAKERS:
+                return "unknown"
             return MAKER_ALIASES.get(parts[1], parts[1])
         slug = parts[-1]
         for prefix, maker in MODEL_FAMILIES:
