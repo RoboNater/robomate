@@ -71,9 +71,9 @@ MAKER_ALIASES = {
 MODEL_FAMILIES = (
     ("claude", "anthropic"),
     ("gpt", "openai"),
-    ("o1-", "openai"),
-    ("o3-", "openai"),
-    ("o4-", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
     ("codex", "openai"),
     ("gemini", "google"),
     ("gemma", "google"),
@@ -95,29 +95,31 @@ MODEL_FAMILIES = (
 def resolve_provider(harness: str, model: str = "", provider: str | None = None) -> str:
     """The organization that made ``model``, or ``unknown`` when not determinable.
 
-    Explicit ``--<agent>-provider`` always wins. Single-vendor harnesses
-    (``claude-code``, ``codex``, ``gemini``) default to :data:`PROVIDERS`.
-    Multi-vendor harnesses (``opencode``, ``antigravity``) inspect the model ID,
-    stripping access-route prefixes like ``opencode/`` or taking the ``<maker>``
-    segment from ``openrouter/<maker>/...``, and fall back to ``unknown`` rather
-    than guessing.
+    Explicit ``--<agent>-provider`` always wins. Otherwise the model ID is
+    inspected first — matching known model families on the model slug before
+    falling back to the ``<maker>`` segment of ``openrouter/<maker>/...`` or
+    ``<maker>/<model>`` — so a non-default model on any harness (e.g. Claude
+    Code routed to ``glm-5.3``, or ``alibaba/kimi-k2.5`` on OpenCode) records
+    the model's maker rather than the harness vendor or hosting route.
+    Single-vendor harnesses (``claude-code``, ``codex``, ``gemini``) then fall
+    back to :data:`PROVIDERS`, and multi-vendor harnesses (``opencode``,
+    ``antigravity``) fall back to ``unknown`` rather than guessing.
     """
     if provider:
         return provider
+    text = model.strip().lower()
+    if text:
+        parts = [part.lstrip("~") for part in text.split("/") if part]
+        slug = parts[-1]
+        for prefix, maker in MODEL_FAMILIES:
+            if slug == prefix or slug.startswith(prefix):
+                return maker
+        if len(parts) >= 3 and parts[0] == "openrouter" and parts[1] in MAKER_ALIASES:
+            return MAKER_ALIASES[parts[1]]
+        if len(parts) >= 2 and parts[0] in MAKER_ALIASES:
+            return MAKER_ALIASES[parts[0]]
     if harness in PROVIDERS:
         return PROVIDERS[harness]
-    text = model.strip().lower()
-    if not text:
-        return "unknown"
-    parts = [part.lstrip("~") for part in text.split("/") if part]
-    if len(parts) >= 3 and parts[0] == "openrouter" and parts[1] in MAKER_ALIASES:
-        return MAKER_ALIASES[parts[1]]
-    if len(parts) >= 2 and parts[0] in MAKER_ALIASES:
-        return MAKER_ALIASES[parts[0]]
-    slug = parts[-1]
-    for prefix, maker in MODEL_FAMILIES:
-        if slug == prefix or slug.startswith(prefix):
-            return maker
     return "unknown"
 
 
@@ -208,19 +210,6 @@ def link_credential(source: Path, target: Path, env_hint: str) -> None:
             ) from exc
 
 
-def link_home_dir(source: Path, destination: Path) -> None:
-    """Link an operator home directory (e.g. ``.ssh``, ``.config``) without copying."""
-    if not source.is_dir() or destination.exists() or destination.is_symlink():
-        return
-    try:
-        destination.symlink_to(source, target_is_directory=True)
-    except OSError:
-        if os.name == "nt":
-            __import__("_winapi").CreateJunction(str(source), str(destination))
-        else:
-            raise
-
-
 def codex_home(directory: Path, name: str) -> Path:
     """Run-local CODEX_HOME that reuses login without copying it into a second file."""
     home = directory / name
@@ -236,13 +225,13 @@ def agy_mcp_path[P: PurePath](home: P) -> P:
 
 
 def agy_home(directory: Path, name: str) -> Path:
-    """Run-local HOME/USERPROFILE for AntiGravity CLI (agy) that reuses login and dotfiles.
+    """Run-local HOME/USERPROFILE for AntiGravity CLI (agy) that reuses login without copying.
 
     Links ``antigravity-oauth-token`` (Linux), ``jetski_state.pbtxt``, and
-    ``settings.json`` into ``.gemini/antigravity-cli``, plus the operator's
-    ``.gitconfig``, ``.git-credentials``, ``.ssh``, ``.config``, ``.cache``,
-    and ``.local`` so ``git``, ``gh``, ``ssh``, and ``uv`` work inside the
-    isolated home.
+    ``settings.json`` into ``.gemini/antigravity-cli``. Operator dotfiles and
+    XDG directories stay in the real home (referenced via environment variables
+    in :func:`antigravity_launch`) so archiving the run directory never sweeps
+    up SSH keys or ``gh`` tokens.
     """
     home = directory / name
     cli_dir = home / ".gemini" / "antigravity-cli"
@@ -253,10 +242,6 @@ def agy_home(directory: Path, name: str) -> Path:
     source_cli = source_home / ".gemini" / "antigravity-cli"
     for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
         link_credential(source_cli / filename, cli_dir / filename, "AGY_HOME")
-    for filename in (".gitconfig", ".git-credentials"):
-        link_credential(source_home / filename, home / filename, "AGY_HOME")
-    for dirname in (".ssh", ".config", ".cache", ".local"):
-        link_home_dir(source_home / dirname, home / dirname)
     return home
 
 

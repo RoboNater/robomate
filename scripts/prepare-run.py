@@ -640,7 +640,11 @@ def antigravity_launch(
 
     ``agy`` loads ``~/.gemini/config/mcp_config.json`` via Go's
     ``os.UserHomeDir()``, which reads ``HOME`` on POSIX and ``USERPROFILE`` on
-    Windows (including when ``agy.exe`` is launched from Git Bash).
+    Windows (including when ``agy.exe`` is launched from Git Bash). Before
+    overriding ``HOME``/``USERPROFILE``, ``GIT_CONFIG_GLOBAL`` and the XDG base
+    directories are pinned to the operator's real home so ``git``, ``gh``, and
+    ``uv`` keep their config and caches without linking ``.ssh`` or ``.config``
+    into the run directory.
     """
     words = [
         "agy",
@@ -655,11 +659,24 @@ def antigravity_launch(
     home_word = shell_word(home, powershell)
     if powershell:
         return [
-            "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE",
-            f"try {{ $env:HOME = {home_word}; $env:USERPROFILE = {home_word}; {command} }} "
-            "finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }",
+            "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE; "
+            "$oldGitConfig = $env:GIT_CONFIG_GLOBAL",
+            "try { "
+            "if (-not $env:GIT_CONFIG_GLOBAL) "
+            '{ $env:GIT_CONFIG_GLOBAL = "$env:USERPROFILE\\.gitconfig" }; '
+            f"$env:HOME = {home_word}; $env:USERPROFILE = {home_word}; {command} "
+            "} finally { "
+            "$env:HOME = $oldHome; $env:USERPROFILE = $oldProfile; "
+            "$env:GIT_CONFIG_GLOBAL = $oldGitConfig }",
         ]
-    return [f"HOME={home_word} USERPROFILE={home_word} {command}"]
+    env_prefix = (
+        'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
+        'XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" '
+        'XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" '
+        'XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}" '
+        f"HOME={home_word} USERPROFILE={home_word}"
+    )
+    return [f"{env_prefix} {command}"]
 
 
 def harness_launch(
@@ -1366,6 +1383,13 @@ def prepare(
     }
     if agy_auth:
         checks["agy_auth"] = agy_auth
+    unknown_providers = {
+        name: f"unknown: pass --{name}-model or --{name}-provider to record the model maker"
+        for name in local
+        if providers[name] == "unknown"
+    }
+    if unknown_providers:
+        checks["provider"] = unknown_providers
 
     report: dict[str, Any] = {
         "run_dir": str(run_dir),
@@ -1527,6 +1551,10 @@ def prepare_worker(
         home_name = agy_home_name(name)
         checks["agy_auth"] = {
             name: f"{home_name}: {agy_login_status(run_dir / 'configs' / home_name)}"
+        }
+    if resolved_provider == "unknown":
+        checks["provider"] = {
+            name: f"unknown: pass --{name}-model or --{name}-provider to record the model maker"
         }
     print(
         json.dumps(

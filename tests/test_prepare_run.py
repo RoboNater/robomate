@@ -308,8 +308,15 @@ def test_antigravity_launch_lines_isolate_home_and_carry_model_effort(
         "high",
         auto_start,
     )
+    env_prefix = (
+        'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
+        'XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" '
+        'XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" '
+        'XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}" '
+        f"HOME={home} USERPROFILE={home}"
+    )
     base = (
-        f"HOME={home} USERPROFILE={home} agy --model gemini-3.1-pro-high --effort high "
+        f"{env_prefix} agy --model gemini-3.1-pro-high --effort high "
         f"--dangerously-skip-permissions --add-dir {run_dir}"
     )
     expected = (
@@ -378,13 +385,20 @@ def test_launch_lines_windows_powershell(
         "gemini-3.1-pro-high",
         "high",
     )
-    assert agy_lines[1] == "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE"
+    assert agy_lines[1] == (
+        "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE; "
+        "$oldGitConfig = $env:GIT_CONFIG_GLOBAL"
+    )
     assert agy_lines[2].startswith(
-        f"try {{ $env:HOME = '{agy_home}'; $env:USERPROFILE = '{agy_home}'; "
+        "try { "
+        "if (-not $env:GIT_CONFIG_GLOBAL) "
+        '{ $env:GIT_CONFIG_GLOBAL = "$env:USERPROFILE\\.gitconfig" }; '
+        f"$env:HOME = '{agy_home}'; $env:USERPROFILE = '{agy_home}'; "
         "agy --model gemini-3.1-pro-high --effort high --dangerously-skip-permissions"
     )
     assert agy_lines[2].endswith(
-        "finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }"
+        "finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile; "
+        "$env:GIT_CONFIG_GLOBAL = $oldGitConfig }"
     )
 
 
@@ -422,8 +436,14 @@ def test_start_scripts_take_metacharacter_paths_literally(
         if auto_start:
             assert words[-1] == f"Read {prompt} and follow the instructions in it"
     elif harness == "antigravity":
-        assert words[0] == f"HOME={config}"
-        assert words[1] == f"USERPROFILE={config}"
+        assert words[:6] == [
+            "GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}",
+            "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}",
+            "XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}",
+            "XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}",
+            f"HOME={config}",
+            f"USERPROFILE={config}",
+        ]
         assert words[words.index("--add-dir") + 1] == str(run_dir)
         if auto_start:
             assert words[-1] == f"Read {prompt} and follow the instructions in it"
@@ -1102,16 +1122,20 @@ def test_both_codex_workers_report_each_login(
     "harness,model,provider,expected",
     [
         ("claude-code", "", None, "anthropic"),
+        ("claude-code", "sonnet", None, "anthropic"),
+        ("claude-code", "glm-5.3", None, "zhipu"),
         ("codex", "", None, "openai"),
         ("gemini", "", None, "google"),
         ("opencode", "opencode/claude-sonnet-4-6", None, "anthropic"),
         ("opencode", "openrouter/~anthropic/claude-sonnet-4-6", None, "anthropic"),
         ("opencode", "openrouter/qwen/qwen3-coder", None, "alibaba"),
+        ("opencode", "alibaba/kimi-k2.5", None, "moonshot"),
         ("opencode", "opencode/glm-5.1", None, "zhipu"),
         ("opencode", "opencode/kimi-k2.5", None, "moonshot"),
         ("opencode", "opencode/minimax-m2.5", None, "minimax"),
         ("opencode", "opencode/gemini-3.1-pro", None, "google"),
         ("opencode", "opencode/gpt-5.4", None, "openai"),
+        ("opencode", "opencode/o3", None, "openai"),
         ("opencode", "openrouter/deepseek/deepseek-r1", None, "deepseek"),
         ("opencode", "openrouter/x-ai/grok-4", None, "xai"),
         ("opencode", "openrouter/meta-llama/llama-4-maverick", None, "meta"),
@@ -1132,7 +1156,7 @@ def test_resolve_provider_records_model_maker_lineage(
     assert RUN_COMMON.resolve_provider(harness, model, provider) == expected
 
 
-def test_agy_home_links_linux_token_windows_state_and_operator_dotfiles(
+def test_agy_home_links_cli_auth_without_operator_dotdirs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_user_home = tmp_path / "user-home"
@@ -1155,10 +1179,9 @@ def test_agy_home_links_linux_token_windows_state_and_operator_dotfiles(
     isolated_cli = isolated / ".gemini" / "antigravity-cli"
     for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
         assert (isolated_cli / filename).read_text() == (cli_dir / filename).read_text()
-    assert (isolated / ".gitconfig").read_text() == "[user]\n\tname = Tester\n"
-    assert (isolated / ".git-credentials").read_text() == "https://user:pass@github.com\n"
-    for dirname in (".ssh", ".config", ".cache", ".local"):
-        assert (isolated / dirname / "marker.txt").read_text() == dirname
+    for untouched in (".gitconfig", ".git-credentials", ".ssh", ".config", ".cache", ".local"):
+        assert not (isolated / untouched).exists()
+        assert not (isolated / untouched).is_symlink()
     assert PREPARE_RUN.agy_login_status(isolated) == "logged in (antigravity-oauth-token)"
 
     empty_home = tmp_path / "empty-home"
@@ -1194,8 +1217,7 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     cli_dir = fake_agy_home / ".gemini" / "antigravity-cli"
     cli_dir.mkdir(parents=True)
     (cli_dir / "antigravity-oauth-token").write_text("{\"access_token\":\"fake\"}\n")
-    (fake_agy_home / ".gitconfig").write_text("[user]\n\tname = Tester\n")
-    (fake_agy_home / ".config" / "gh").mkdir(parents=True)
+    (fake_agy_home / ".ssh").mkdir()
     monkeypatch.setenv("AGY_HOME", str(fake_agy_home))
 
     run_dir, manifest = prepare(
@@ -1215,11 +1237,10 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     assert manifest["providers"] == {"bob": "anthropic", "charlie": "google"}
     assert manifest["policy"]["role_policy"]["reviewer_harness_differs"] is True
 
-    # AntiGravity Alice has an isolated home with linked auth, dotfiles, skill, and all 10 tools.
+    # AntiGravity Alice has an isolated home with linked CLI auth, skill, and all 10 tools.
     alice_home = run_dir / "configs" / "alice-agy"
     assert (alice_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
-    assert (alice_home / ".gitconfig").exists()
-    assert (alice_home / ".config" / "gh").is_dir()
+    assert not (alice_home / ".ssh").exists()
     alice_skill = Path("skills") / "alice-orchestrator" / "SKILL.md"
     assert (alice_home / ".gemini" / "config" / alice_skill).exists()
     assert (run_dir / "alice-runtime" / ".agents" / alice_skill).exists()
@@ -1269,6 +1290,39 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     assert report["checks"]["agy_auth"] == {
         "alice": "alice-agy: logged in (antigravity-oauth-token)",
         "charlie": "charlie-agy: logged in (antigravity-oauth-token)",
+    }
+    assert "provider" not in report["checks"]
+
+
+def test_unknown_worker_provider_surfaces_in_preflight_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("AGY_HOME", str(tmp_path / "no-agy-login"))
+    _, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        bob_harness="opencode",
+        bob_model="opencode/big-pickle",
+        charlie_harness="antigravity",
+    )
+    assert manifest["providers"] == {"bob": "unknown", "charlie": "unknown"}
+    report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
+    assert report["checks"]["provider"] == {
+        "bob": "unknown: pass --bob-model or --bob-provider to record the model maker",
+        "charlie": "unknown: pass --charlie-model or --charlie-provider to record the model maker",
+    }
+
+    source = tmp_path / "origin"
+    token = tmp_path / "token"
+    token.write_text("secret\n")
+    token.chmod(0o600)
+    worker_run = (tmp_path / "worker-run").resolve()
+    PREPARE_RUN.prepare_worker(
+        "bob", str(source), worker_run, "http://192.0.2.10:8420", token, "opencode"
+    )
+    worker_report = json.loads(capsys.readouterr().out.split("\n\n")[0])
+    assert worker_report["checks"]["provider"] == {
+        "bob": "unknown: pass --bob-model or --bob-provider to record the model maker"
     }
 
 
