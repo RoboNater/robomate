@@ -52,9 +52,19 @@ def running_hub(
     url: str = "http://127.0.0.1:8521",
 ) -> Path:
     target = hub_repo(tmp_path, url)
-    monkeypatch.setattr(PREPARE_RUN, "probe_versions",
-                        lambda _: ({"claude": "2.1", "codex": "0.1"},
-                                   {"claude-code": "2.1", "codex": "0.1"}))
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: (
+            {"claude": "2.1", "codex": "0.1", "opencode": "1.18.32", "agy": "1.2.7"},
+            {
+                "claude-code": "2.1",
+                "codex": "0.1",
+                "opencode": "1.18.32",
+                "antigravity": "1.2.7",
+            },
+        ),
+    )
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "logged in")
     return target
@@ -241,6 +251,82 @@ def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
     assert "--skip-git-repo-check" not in expected
 
 
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_opencode_launch_lines_carry_model_variant_and_prompt(
+    tmp_path: Path, auto_start: bool
+) -> None:
+    run_dir = (tmp_path / "run").resolve()
+    config = run_dir / "configs" / "charlie.opencode.json"
+    prompt = run_dir / "charlie.prompt.md"
+    if not auto_start:
+        with pytest.raises(ValueError, match="opencode only accepts --variant"):
+            PREPARE_RUN.launch_lines(
+                "opencode",
+                run_dir / "charlie",
+                config,
+                prompt,
+                run_dir / "charlie" / ".git",
+                "opencode/gemini-3.8-flash",
+                "high",
+                auto_start,
+            )
+    lines = PREPARE_RUN.launch_lines(
+        "opencode",
+        run_dir / "charlie",
+        config,
+        prompt,
+        run_dir / "charlie" / ".git",
+        "opencode/gemini-3.8-flash",
+        "high" if auto_start else "",
+        auto_start,
+    )
+    if auto_start:
+        expected = (
+            f"OPENCODE_CONFIG={config} opencode run --auto "
+            "--model opencode/gemini-3.8-flash --variant high "
+            f"'Read {prompt} and follow the instructions in it'"
+        )
+    else:
+        expected = f"OPENCODE_CONFIG={config} opencode --auto --model opencode/gemini-3.8-flash"
+    assert lines == [f"cd {run_dir / 'charlie'}", expected]
+
+
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_antigravity_launch_lines_isolate_home_and_carry_model_effort(
+    tmp_path: Path, auto_start: bool
+) -> None:
+    run_dir = (tmp_path / "run").resolve()
+    home = run_dir / "configs" / "charlie-agy"
+    prompt = run_dir / "charlie.prompt.md"
+    lines = PREPARE_RUN.launch_lines(
+        "antigravity",
+        run_dir / "charlie",
+        home,
+        prompt,
+        run_dir / "charlie" / ".git",
+        "gemini-3.1-pro-high",
+        "high",
+        auto_start,
+    )
+    env_prefix = (
+        'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
+        'XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" '
+        'XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" '
+        'XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}" '
+        f"HOME={home} USERPROFILE={home}"
+    )
+    base = (
+        f"{env_prefix} agy --model gemini-3.1-pro-high --effort high "
+        f"--dangerously-skip-permissions --add-dir {run_dir}"
+    )
+    expected = (
+        f"{base} -p 'Read {prompt} and follow the instructions in it'"
+        if auto_start
+        else base
+    )
+    assert lines == [f"cd {run_dir / 'charlie'}", expected]
+
+
 def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
     run_dir = (tmp_path / "run").resolve()
     alice = PREPARE_RUN.launch_lines(
@@ -278,10 +364,47 @@ def test_launch_lines_windows_powershell(
     assert PREPARE_RUN.model_flags("claude-code", "opus[1m]", "max", powershell=True) == [
         "--model", "'opus[1m]'", "--effort", "max",
     ]
+    oc_lines = PREPARE_RUN.launch_lines(
+        "opencode",
+        run_dir / "charlie",
+        run_dir / "configs" / "charlie.opencode.json",
+        prompt,
+        run_dir / "charlie" / ".git",
+        "opencode/gemini-3.8-flash",
+        "high",
+    )
+    assert "$env:OPENCODE_CONFIG =" in oc_lines[1]
+    assert "opencode run --auto --model 'opencode/gemini-3.8-flash' --variant high" in oc_lines[2]
+    agy_home = run_dir / "configs" / "charlie-agy"
+    agy_lines = PREPARE_RUN.launch_lines(
+        "antigravity",
+        run_dir / "charlie",
+        agy_home,
+        prompt,
+        run_dir / "charlie" / ".git",
+        "gemini-3.1-pro-high",
+        "high",
+    )
+    assert agy_lines[1] == (
+        "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE; "
+        "$oldGitConfig = $env:GIT_CONFIG_GLOBAL"
+    )
+    assert agy_lines[2].startswith(
+        "try { "
+        "if (-not $env:GIT_CONFIG_GLOBAL) { $env:GIT_CONFIG_GLOBAL = "
+        'if ($oldHome) { "$oldHome\\.gitconfig" } '
+        'else { "$env:USERPROFILE\\.gitconfig" } }; '
+        f"$env:HOME = '{agy_home}'; $env:USERPROFILE = '{agy_home}'; "
+        "agy --model gemini-3.1-pro-high --effort high --dangerously-skip-permissions"
+    )
+    assert agy_lines[2].endswith(
+        "finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile; "
+        "$env:GIT_CONFIG_GLOBAL = $oldGitConfig }"
+    )
 
 
 @pytest.mark.parametrize("auto_start", [True, False])
-@pytest.mark.parametrize("harness", ["claude-code", "codex"])
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
 def test_start_scripts_take_metacharacter_paths_literally(
     tmp_path: Path, harness: str, auto_start: bool
 ) -> None:
@@ -289,11 +412,18 @@ def test_start_scripts_take_metacharacter_paths_literally(
     run_dir = (tmp_path / "my run $HOME `x` \"q\" 'a'").resolve()
     workdir = run_dir / "bob"
     workdir.mkdir(parents=True)
-    config = run_dir / "configs" / ("bob.mcp.json" if harness == "claude-code" else "bob-codex")
+    config_names = {
+        "claude-code": "bob.mcp.json",
+        "codex": "bob-codex",
+        "opencode": "bob.opencode.json",
+        "antigravity": "bob-agy",
+    }
+    config = run_dir / "configs" / config_names[harness]
     prompt = run_dir / "bob.prompt.md"
     prompt.write_text("prompt\n", encoding="utf-8")
+    effort = "" if (harness == "opencode" and not auto_start) else "high"
     lines = PREPARE_RUN.launch_lines(
-        harness, workdir, config, prompt, workdir / ".git", "opus[1m]", "high", auto_start
+        harness, workdir, config, prompt, workdir / ".git", "opus[1m]", effort, auto_start
     )
     assert lines[0] == f"cd {shlex.quote(str(workdir))}"
     words = shlex.split(lines[1])
@@ -302,6 +432,22 @@ def test_start_scripts_take_metacharacter_paths_literally(
         assert words[words.index("--add-dir") + 1] == str(workdir / ".git")
         if auto_start:
             assert words[-3:] == ["-", "<", str(prompt)]
+    elif harness == "opencode":
+        assert words[0] == f"OPENCODE_CONFIG={config}"
+        if auto_start:
+            assert words[-1] == f"Read {prompt} and follow the instructions in it"
+    elif harness == "antigravity":
+        assert words[:6] == [
+            "GIT_CONFIG_GLOBAL=${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}",
+            "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}",
+            "XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}",
+            "XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}",
+            f"HOME={config}",
+            f"USERPROFILE={config}",
+        ]
+        assert words[words.index("--add-dir") + 1] == str(run_dir)
+        if auto_start:
+            assert words[-1] == f"Read {prompt} and follow the instructions in it"
     else:
         assert words[words.index("--mcp-config") + 1] == str(config)
         assert words[words.index("--add-dir") + 1] == str(run_dir)
@@ -309,7 +455,7 @@ def test_start_scripts_take_metacharacter_paths_literally(
             assert words[-1] == f"Read {prompt} and follow the instructions in it"
     # Run the script with the agent CLI stubbed: it must reach the real
     # directory, and Codex's stdin redirect the real prompt file.
-    stub = "claude() { pwd; }; codex() { pwd; }"
+    stub = "claude() { pwd; }; codex() { pwd; }; opencode() { pwd; }; agy() { pwd; }"
     script = PREPARE_RUN.start_script([stub, *lines])
     result = subprocess.run(
         ["bash"], input=script, text=True, capture_output=True, cwd=tmp_path
@@ -649,14 +795,15 @@ def test_unsupported_harness_names_fail_before_any_artifact(
     monkeypatch.setattr(sys, "argv", ["prepare-run.py", "--repository", "test-org/test-repo",
                                   "--run-dir", str(tmp_path / "run"),
                                   "--alice-harness", value])
-    with pytest.raises(SystemExit, match="expected claude or codex"):
+    with pytest.raises(SystemExit, match="expected claude, codex, opencode, or antigravity"):
         PREPARE_RUN.main()
     assert not (tmp_path / "run").exists()
 
 
 def test_remote_worker_config_carries_windows_paths_and_a_private_token(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("AGY_HOME", str(tmp_path / "no-agy-login"))
     root = PureWindowsPath("C:/work/robomate")
     run = PureWindowsPath("C:/Users/Bob/runs/step7")
     out_dir = tmp_path / "bundle"
@@ -674,6 +821,43 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert bridge["env"]["HUB_WORKSPACE"] == "C:/Users/Bob/runs/step7/bob"
     assert "HUB_TOKEN" not in bridge["env"]
     assert written.stat().st_mode & 0o077 == 0
+
+    oc_out = tmp_path / "oc-bundle"
+    oc_bundle = PREPARE_RUN.render_worker_bundle(
+        "bob", "opencode", "1.18.32", "anthropic", "opencode/claude-sonnet-4-6", "",
+        "C:/private/token", "http://172.26.115.68:8420", root, run,
+        run / "bob", oc_out,
+    )
+    assert oc_bundle["config"] == "C:/Users/Bob/runs/step7/configs/bob.opencode.json"
+    oc_written = oc_out / "configs/bob.opencode.json"
+    oc_mcp = json.loads(oc_written.read_text())["mcp"]["robomate"]
+    assert oc_mcp["command"][-3:] == ["mcp", "--role", "worker"]
+    assert oc_mcp["environment"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
+    assert oc_mcp["environment"]["HUB_PROVIDER"] == "anthropic"
+    assert oc_written.stat().st_mode & 0o077 == 0
+
+    agy_out = tmp_path / "agy-bundle"
+    agy_bundle = PREPARE_RUN.render_worker_bundle(
+        "bob", "antigravity", "1.2.7", "google", "gemini-3.1-pro-high", "",
+        "C:/private/token", "http://172.26.115.68:8420", root, run,
+        run / "bob", agy_out,
+    )
+    assert agy_bundle["config"] == (
+        "C:/Users/Bob/runs/step7/configs/bob-agy/.gemini/config/mcp_config.json"
+    )
+    agy_written = agy_out / "configs/bob-agy/.gemini/config/mcp_config.json"
+    agy_mcp = json.loads(agy_written.read_text())["mcpServers"]["robomate"]
+    assert agy_mcp["args"][-3:] == ["mcp", "--role", "worker"]
+    assert agy_mcp["env"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
+    assert agy_mcp["env"]["HUB_PROVIDER"] == "google"
+    assert agy_written.stat().st_mode & 0o077 == 0
+    agy_script = (agy_out / "start-bob.sh").read_text(encoding="utf-8")
+    assert (
+        'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
+        "HOME=C:/Users/Bob/runs/step7/configs/bob-agy "
+        "USERPROFILE=C:/Users/Bob/runs/step7/configs/bob-agy agy"
+    ) in agy_script
+    assert "XDG_CONFIG_HOME" not in agy_script
 
 
 def test_worker_only_rejects_loose_missing_token_or_loopback_url(
@@ -940,3 +1124,248 @@ def test_both_codex_workers_report_each_login(
     report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
     assert set(report["checks"]["codex_auth"]) == {"bob", "charlie"}
     assert (run_dir / "configs/bob-codex/config.toml").exists()
+
+
+@pytest.mark.parametrize(
+    "harness,model,provider,expected",
+    [
+        ("claude-code", "", None, "anthropic"),
+        ("claude-code", "sonnet", None, "anthropic"),
+        ("claude-code", "glm-5.3", None, "zhipu"),
+        ("codex", "", None, "openai"),
+        ("gemini", "", None, "google"),
+        ("opencode", "opencode/claude-sonnet-4-6", None, "anthropic"),
+        ("opencode", "openrouter/~anthropic/claude-sonnet-4-6", None, "anthropic"),
+        ("opencode", "openrouter/qwen/qwen3-coder", None, "alibaba"),
+        ("opencode", "alibaba/kimi-k2.5", None, "moonshot"),
+        ("opencode", "opencode/glm-5.1", None, "zhipu"),
+        ("opencode", "opencode/kimi-k2.5", None, "moonshot"),
+        ("opencode", "opencode/minimax-m2.5", None, "minimax"),
+        ("opencode", "opencode/gemini-3.1-pro", None, "google"),
+        ("opencode", "opencode/gpt-5.4", None, "openai"),
+        ("opencode", "opencode/o3", None, "openai"),
+        ("opencode", "openrouter/deepseek/deepseek-r1", None, "deepseek"),
+        ("opencode", "openrouter/x-ai/grok-4", None, "xai"),
+        ("opencode", "openrouter/meta-llama/llama-4-maverick", None, "meta"),
+        ("opencode", "openrouter/mistralai/codestral", None, "mistral"),
+        ("opencode", "openrouter/eleutherai/gpt-neox-20b", None, "eleutherai"),
+        ("opencode", "openrouter/allenai/olmo-2-32b", None, "allenai"),
+        ("opencode", "openrouter/bytedance-seed/seed-coder", None, "bytedance"),
+        ("opencode", "openrouter/openrouter/auto", None, "unknown"),
+        ("opencode", "openrouter/stealth/space-bunny-alpha", None, "unknown"),
+        ("opencode", "opencode/big-pickle", None, "unknown"),
+        ("opencode", "", None, "unknown"),
+        ("antigravity", "gemini-3.1-pro-high", None, "google"),
+        ("antigravity", "claude-sonnet-4-6", None, "anthropic"),
+        ("antigravity", "gpt-oss-120b-medium", None, "openai"),
+        ("antigravity", "", None, "unknown"),
+        ("opencode", "opencode/big-pickle", "stealth-lab", "stealth-lab"),
+        ("antigravity", "claude-sonnet-4-6", "custom-vendor", "custom-vendor"),
+    ],
+)
+def test_resolve_provider_records_model_maker_lineage(
+    harness: str, model: str, provider: str | None, expected: str,
+) -> None:
+    assert RUN_COMMON.resolve_provider(harness, model, provider) == expected
+
+
+def test_agy_home_links_cli_auth_without_operator_dotdirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_user_home = tmp_path / "user-home"
+    cli_dir = fake_user_home / ".gemini" / "antigravity-cli"
+    cli_dir.mkdir(parents=True)
+    (cli_dir / "antigravity-oauth-token").write_text("{\"access_token\":\"linux\"}\n")
+    (cli_dir / "jetski_state.pbtxt").write_text("oauth_token: 'win'\n")
+    (cli_dir / "settings.json").write_text("{\"theme\":\"dark\"}\n")
+    (fake_user_home / ".gitconfig").write_text("[user]\n\tname = Tester\n")
+    (fake_user_home / ".git-credentials").write_text("https://user:pass@github.com\n")
+    for dirname in (".ssh", ".config", ".cache", ".local"):
+        d = fake_user_home / dirname
+        d.mkdir()
+        (d / "marker.txt").write_text(dirname)
+    monkeypatch.setenv("AGY_HOME", str(fake_user_home))
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    isolated = RUN_COMMON.agy_home(configs, "bob-agy")
+    isolated_cli = isolated / ".gemini" / "antigravity-cli"
+    for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
+        assert (isolated_cli / filename).read_text() == (cli_dir / filename).read_text()
+    assert (isolated / ".git-credentials").read_text() == "https://user:pass@github.com\n"
+    for untouched in (".gitconfig", ".ssh", ".config", ".cache", ".local"):
+        assert not (isolated / untouched).exists()
+        assert not (isolated / untouched).is_symlink()
+    assert PREPARE_RUN.agy_login_status(isolated) == "logged in (antigravity-oauth-token)"
+
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("AGY_HOME", str(empty_home))
+    unauthed = RUN_COMMON.agy_home(configs, "charlie-agy")
+    assert PREPARE_RUN.agy_login_status(unauthed).startswith("not logged in")
+
+
+def test_link_credential_reports_cross_volume_failure_actionably(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source-token"
+    source.write_text("secret\n")
+    target = tmp_path / "dest" / "token"
+    target.parent.mkdir()
+
+    def fail_link(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(Path, "symlink_to", fail_link)
+    monkeypatch.setattr(os, "link", fail_link)
+    with pytest.raises(ValueError, match="place RUN_DIR on the drive holding AGY_HOME"):
+        RUN_COMMON.link_credential(source, target, "AGY_HOME")
+
+
+async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scripts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from agent_hub.mcp import create_mcp
+
+    fake_agy_home = tmp_path / "user-home"
+    cli_dir = fake_agy_home / ".gemini" / "antigravity-cli"
+    cli_dir.mkdir(parents=True)
+    (cli_dir / "antigravity-oauth-token").write_text("{\"access_token\":\"fake\"}\n")
+    (fake_agy_home / ".ssh").mkdir()
+    monkeypatch.setenv("AGY_HOME", str(fake_agy_home))
+
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness="AGY",
+        alice_model="gemini-3.1-pro-high",
+        alice_effort="high",
+        bob_harness="OpenCode",
+        bob_model="opencode/claude-sonnet-4-6",
+        bob_effort="high",
+        charlie_harness="antigravity",
+        charlie_model="gemini-3.1-pro-high",
+        charlie_effort="medium",
+    )
+    assert manifest["harnesses"] == {"bob": "opencode", "charlie": "antigravity"}
+    assert manifest["providers"] == {"bob": "anthropic", "charlie": "google"}
+    assert manifest["policy"]["role_policy"]["reviewer_harness_differs"] is True
+
+    # AntiGravity Alice has an isolated home with linked CLI auth, skill, and all 10 tools.
+    alice_home = run_dir / "configs" / "alice-agy"
+    assert (alice_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
+    assert not (alice_home / ".ssh").exists()
+    alice_skill = Path("skills") / "alice-orchestrator" / "SKILL.md"
+    assert (alice_home / ".gemini" / "config" / alice_skill).exists()
+    assert (run_dir / "alice-runtime" / ".agents" / alice_skill).exists()
+    alice_mcp = json.loads(
+        RUN_COMMON.agy_mcp_path(alice_home).read_text(encoding="utf-8")
+    )["mcpServers"]["robomate"]
+    assert alice_mcp["args"][-3:] == ["mcp", "--role", "orchestrator"]
+    assert alice_mcp["env"]["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8521"
+    assert alice_mcp["env"]["ROBOMATE_TOKEN_FILE"] == str(tmp_path / "target/.robomate/token")
+    initialize_database(tmp_path / "hub.db")
+    served = {tool.name for tool in await create_mcp(HubStore(tmp_path / "hub.db")).list_tools()}
+    assert set(alice_mcp["enabledTools"]) == served
+    assert alice_mcp["timeoutSeconds"] == 330
+
+    # OpenCode Bob uses the robomate worker bridge with a 330000ms timeout and external_directory.
+    bob_oc = json.loads((run_dir / "configs" / "bob.opencode.json").read_text(encoding="utf-8"))
+    assert bob_oc["model"] == "opencode/claude-sonnet-4-6"
+    bob_mcp = bob_oc["mcp"]["robomate"]
+    assert bob_mcp["command"][-3:] == ["mcp", "--role", "worker"]
+    assert bob_mcp["timeout"] == 330000
+    assert bob_mcp["environment"]["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8521"
+    assert bob_mcp["environment"]["ROBOMATE_TOKEN_FILE"] == str(
+        tmp_path / "target/.robomate/token"
+    )
+    assert bob_mcp["environment"]["HUB_HARNESS"] == "opencode"
+    assert bob_mcp["environment"]["HUB_HARNESS_VERSION"] == "1.18.32"
+    assert bob_mcp["environment"]["HUB_PROVIDER"] == "anthropic"
+    assert bob_oc["permission"]["external_directory"] == "allow"
+
+    # AntiGravity Charlie has an isolated home and all 6 worker tools enabled on robomate.
+    charlie_home = run_dir / "configs" / "charlie-agy"
+    assert (charlie_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
+    charlie_mcp = json.loads(
+        RUN_COMMON.agy_mcp_path(charlie_home).read_text(encoding="utf-8")
+    )["mcpServers"]["robomate"]
+    assert charlie_mcp["args"][-3:] == ["mcp", "--role", "worker"]
+    assert set(charlie_mcp["enabledTools"]) == set(RUN_COMMON.TOOLS)
+    assert charlie_mcp["env"]["HUB_HARNESS"] == "antigravity"
+    assert charlie_mcp["env"]["HUB_HARNESS_VERSION"] == "1.2.7"
+    assert charlie_mcp["env"]["HUB_PROVIDER"] == "google"
+
+    alice_prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
+    assert "AntiGravity runtime note" in alice_prompt
+    assert "Hub tools are the MCP server `robomate`." in alice_prompt
+    report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
+    assert report["checks"]["codex_auth"] == {"codex": "no codex worker in this topology"}
+    assert report["checks"]["agy_auth"] == {
+        "alice": "alice-agy: logged in (antigravity-oauth-token)",
+        "charlie": "charlie-agy: logged in (antigravity-oauth-token)",
+    }
+    assert "provider" not in report["checks"]
+
+
+def test_unknown_worker_provider_surfaces_in_preflight_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("AGY_HOME", str(tmp_path / "no-agy-login"))
+    _, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        bob_harness="opencode",
+        bob_model="opencode/big-pickle",
+        charlie_harness="antigravity",
+    )
+    assert manifest["providers"] == {"bob": "unknown", "charlie": "unknown"}
+    report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
+    assert report["checks"]["provider"] == {
+        "bob": "unknown: pass --bob-model or --bob-provider to record the model maker",
+        "charlie": "unknown: pass --charlie-model or --charlie-provider to record the model maker",
+    }
+
+    source = tmp_path / "origin"
+    token = tmp_path / "token"
+    token.write_text("secret\n")
+    token.chmod(0o600)
+    worker_run = (tmp_path / "worker-run").resolve()
+    PREPARE_RUN.prepare_worker(
+        "bob", str(source), worker_run, "http://192.0.2.10:8420", token, "opencode"
+    )
+    worker_report = json.loads(capsys.readouterr().out.split("\n\n")[0])
+    assert worker_report["checks"]["provider"] == {
+        "bob": "unknown: pass --bob-model or --bob-provider to record the model maker"
+    }
+
+
+def test_opencode_effort_with_no_auto_start_is_rejected_before_run_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="opencode only accepts --variant"):
+        prepare(
+            tmp_path,
+            monkeypatch,
+            bob_harness="opencode",
+            bob_effort="high",
+            auto_start=False,
+        )
+    assert not (tmp_path / "run").exists()
+    token = tmp_path / "token"
+    token.write_text("secret\n")
+    token.chmod(0o600)
+    worker_run = tmp_path / "worker-run"
+    with pytest.raises(ValueError, match="opencode only accepts --variant"):
+        PREPARE_RUN.prepare_worker(
+            "bob",
+            "o/r",
+            worker_run,
+            "http://192.0.2.10:8420",
+            token,
+            "opencode",
+            effort="high",
+            auto_start=False,
+        )
+    assert not worker_run.exists()
+

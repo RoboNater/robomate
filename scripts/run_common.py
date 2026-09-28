@@ -14,7 +14,7 @@ import os
 import secrets
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,15 +34,102 @@ VERSION_COMMANDS = {
     "claude-code": "claude",
     "codex": "codex",
     "opencode": "opencode",
+    "antigravity": "agy",
     "gemini": "gemini",
 }
 
-#: Default model provider per harness. An empty value means the caller must supply one.
+#: Default model provider per harness where the harness implies the model maker.
 PROVIDERS = {
     "claude-code": "anthropic",
     "codex": "openai",
     "gemini": "google",
 }
+
+#: Model-maker aliases in multi-vendor model IDs (e.g. OpenRouter or vendor prefixes).
+MAKER_ALIASES = {
+    "alibaba": "alibaba",
+    "anthropic": "anthropic",
+    "bytedance": "bytedance",
+    "bytedance-seed": "bytedance",
+    "cohere": "cohere",
+    "deepseek": "deepseek",
+    "google": "google",
+    "meta": "meta",
+    "meta-llama": "meta",
+    "minimax": "minimax",
+    "mistral": "mistral",
+    "mistralai": "mistral",
+    "moonshot": "moonshot",
+    "moonshotai": "moonshot",
+    "openai": "openai",
+    "qwen": "alibaba",
+    "x-ai": "xai",
+    "xai": "xai",
+    "z-ai": "zhipu",
+    "zhipu": "zhipu",
+}
+
+#: OpenRouter namespace segments that name a routing gateway or undisclosed author, not a maker.
+NON_MAKERS = {"openrouter", "stealth"}
+
+#: Model family prefix -> model maker for bare model names and gateway routes (opencode/, agy).
+MODEL_FAMILIES = (
+    ("claude", "anthropic"),
+    ("gpt", "openai"),
+    ("o1", "openai"),
+    ("o3", "openai"),
+    ("o4", "openai"),
+    ("codex", "openai"),
+    ("gemini", "google"),
+    ("gemma", "google"),
+    ("grok", "xai"),
+    ("deepseek", "deepseek"),
+    ("glm", "zhipu"),
+    ("kimi", "moonshot"),
+    ("minimax", "minimax"),
+    ("qwen", "alibaba"),
+    ("mistral", "mistral"),
+    ("codestral", "mistral"),
+    ("devstral", "mistral"),
+    ("ministral", "mistral"),
+    ("pixtral", "mistral"),
+    ("llama", "meta"),
+)
+
+
+def resolve_provider(harness: str, model: str = "", provider: str | None = None) -> str:
+    """The organization that made ``model``, or ``unknown`` when not determinable.
+
+    Explicit ``--<agent>-provider`` always wins. Otherwise the model ID is
+    inspected first — taking ``<maker>`` from ``openrouter/<maker>/...`` (mapped
+    through :data:`MAKER_ALIASES`, or ``unknown`` for :data:`NON_MAKERS`), then
+    matching known model families on the model slug, then falling back to
+    ``<maker>/<model>`` in :data:`MAKER_ALIASES` — so a non-default model on any
+    harness (e.g. Claude Code routed to ``glm-5.3``, or ``alibaba/kimi-k2.5`` on
+    OpenCode) records the model's maker rather than the harness vendor or
+    hosting route. Single-vendor harnesses (``claude-code``, ``codex``,
+    ``gemini``) then fall back to :data:`PROVIDERS`, and multi-vendor harnesses
+    (``opencode``, ``antigravity``) fall back to ``unknown`` rather than
+    guessing.
+    """
+    if provider:
+        return provider
+    text = model.strip().lower()
+    if text:
+        parts = [part.lstrip("~") for part in text.split("/") if part]
+        if len(parts) >= 3 and parts[0] == "openrouter":
+            if parts[1] in NON_MAKERS:
+                return "unknown"
+            return MAKER_ALIASES.get(parts[1], parts[1])
+        slug = parts[-1]
+        for prefix, maker in MODEL_FAMILIES:
+            if slug == prefix or slug.startswith(prefix):
+                return maker
+        if len(parts) >= 2 and parts[0] in MAKER_ALIASES:
+            return MAKER_ALIASES[parts[0]]
+    if harness in PROVIDERS:
+        return PROVIDERS[harness]
+    return "unknown"
 
 
 def executable(name: str) -> str:
@@ -115,23 +202,57 @@ def link_or_copy(source: Path, destination: Path) -> None:
         shutil.copytree(source, destination)
 
 
+def link_credential(source: Path, target: Path, env_hint: str) -> None:
+    """Link ``source`` to ``target`` without copying it (symlink, then hard-link fallback)."""
+    if not source.exists() or target.exists():
+        return
+    try:
+        target.symlink_to(source)
+    except OSError:
+        # Hard link: no extra copy of the credential and no symlink privilege.
+        try:
+            os.link(source, target)
+        except OSError as exc:
+            raise ValueError(
+                f"cannot link {source} into {target.parent}; hard links need the same volume, "
+                f"so place RUN_DIR on the drive holding {env_hint}"
+            ) from exc
+
+
 def codex_home(directory: Path, name: str) -> Path:
     """Run-local CODEX_HOME that reuses login without copying it into a second file."""
     home = directory / name
     home.mkdir(exist_ok=True, mode=0o700)
     auth = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
-    if auth.exists() and not (home / "auth.json").exists():
-        try:
-            (home / "auth.json").symlink_to(auth)
-        except OSError:
-            # Hard link: no extra copy of the credential and no symlink privilege.
-            try:
-                os.link(auth, home / "auth.json")
-            except OSError as exc:
-                raise ValueError(
-                    f"cannot link {auth} into {home}; hard links need the same volume, "
-                    "so place RUN_DIR on the drive holding CODEX_HOME"
-                ) from exc
+    link_credential(auth, home / "auth.json", "CODEX_HOME")
+    return home
+
+
+def agy_mcp_path[P: PurePath](home: P) -> P:
+    """The ``mcp_config.json`` path inside an isolated AntiGravity home."""
+    return home / ".gemini" / "config" / "mcp_config.json"
+
+
+def agy_home(directory: Path, name: str) -> Path:
+    """Run-local HOME/USERPROFILE for AntiGravity CLI (agy) that reuses login without copying.
+
+    Links ``antigravity-oauth-token`` (Linux), ``jetski_state.pbtxt``, and
+    ``settings.json`` into ``.gemini/antigravity-cli``, plus ``.git-credentials``
+    for HTTPS ``credential.helper store`` users. Operator dot-directories and
+    ``.gitconfig`` stay in the real home (referenced via environment variables
+    in :func:`antigravity_launch`) so archiving the run directory never sweeps
+    up SSH keys or ``gh`` tokens.
+    """
+    home = directory / name
+    cli_dir = home / ".gemini" / "antigravity-cli"
+    config_dir = agy_mcp_path(home).parent
+    cli_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    source_home = Path(os.environ.get("AGY_HOME", str(Path.home())))
+    source_cli = source_home / ".gemini" / "antigravity-cli"
+    for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
+        link_credential(source_cli / filename, cli_dir / filename, "AGY_HOME")
+    link_credential(source_home / ".git-credentials", home / ".git-credentials", "AGY_HOME")
     return home
 
 
@@ -257,6 +378,60 @@ def render_codex_config(env: dict[str, str], worker_args: list[str]) -> str:
     if sorted(reference.get("tools", {})) != sorted(TOOLS):
         raise ValueError("runtimes/codex.config.toml tools drifted from the shared TOOLS list")
     return config
+
+
+def render_opencode_config(
+    env: dict[str, str],
+    root: str | None = None,
+    model: str = "",
+    role: str = "worker",
+) -> dict[str, Any]:
+    """Render an OpenCode ``*.opencode.json`` from the checked-in template."""
+    template: dict[str, Any] = json.loads(
+        (ROOT / "runtimes/opencode.json").read_text(encoding="utf-8")
+    )
+    directory = str(ROOT) if root is None else root
+    template["mcp"]["robomate"]["command"] = [
+        "uv",
+        "run",
+        "--locked",
+        "--project",
+        directory,
+        "robomate",
+        "mcp",
+        "--role",
+        role,
+    ]
+    template["mcp"]["robomate"]["environment"] = env
+    if model:
+        template["model"] = model
+    return template
+
+
+def render_antigravity_mcp(
+    env: dict[str, str],
+    root: str | None = None,
+    tools: list[str] | None = None,
+    role: str = "worker",
+) -> dict[str, Any]:
+    """Render an AntiGravity ``mcp_config.json`` from the checked-in template."""
+    template: dict[str, Any] = json.loads(
+        (ROOT / "runtimes/antigravity.mcp.json").read_text(encoding="utf-8")
+    )
+    bridge = template["mcpServers"]["robomate"]
+    if sorted(bridge.get("enabledTools", [])) != sorted(TOOLS):
+        raise ValueError(
+            "runtimes/antigravity.mcp.json enabledTools drifted from the shared TOOLS list"
+        )
+    directory = str(ROOT) if root is None else root
+    bridge.update(
+        {
+            "args": ["run", "--locked", "--project", directory, "robomate", "mcp", "--role", role],
+            "enabledTools": list(TOOLS if tools is None else tools),
+            "env": env,
+        }
+    )
+    return template
 
 
 def render_worker_prompt(agent: str) -> str:
