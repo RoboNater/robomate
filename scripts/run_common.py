@@ -96,26 +96,27 @@ def resolve_provider(harness: str, model: str = "", provider: str | None = None)
     """The organization that made ``model``, or ``unknown`` when not determinable.
 
     Explicit ``--<agent>-provider`` always wins. Otherwise the model ID is
-    inspected first — matching known model families on the model slug before
-    falling back to the ``<maker>`` segment of ``openrouter/<maker>/...`` or
-    ``<maker>/<model>`` — so a non-default model on any harness (e.g. Claude
-    Code routed to ``glm-5.3``, or ``alibaba/kimi-k2.5`` on OpenCode) records
-    the model's maker rather than the harness vendor or hosting route.
-    Single-vendor harnesses (``claude-code``, ``codex``, ``gemini``) then fall
-    back to :data:`PROVIDERS`, and multi-vendor harnesses (``opencode``,
-    ``antigravity``) fall back to ``unknown`` rather than guessing.
+    inspected first — taking ``<maker>`` from ``openrouter/<maker>/...`` (mapped
+    through :data:`MAKER_ALIASES`), then matching known model families on the
+    model slug, then falling back to ``<maker>/<model>`` in :data:`MAKER_ALIASES`
+    — so a non-default model on any harness (e.g. Claude Code routed to
+    ``glm-5.3``, or ``alibaba/kimi-k2.5`` on OpenCode) records the model's maker
+    rather than the harness vendor or hosting route. Single-vendor harnesses
+    (``claude-code``, ``codex``, ``gemini``) then fall back to :data:`PROVIDERS`,
+    and multi-vendor harnesses (``opencode``, ``antigravity``) fall back to
+    ``unknown`` rather than guessing.
     """
     if provider:
         return provider
     text = model.strip().lower()
     if text:
         parts = [part.lstrip("~") for part in text.split("/") if part]
+        if len(parts) >= 3 and parts[0] == "openrouter":
+            return MAKER_ALIASES.get(parts[1], parts[1])
         slug = parts[-1]
         for prefix, maker in MODEL_FAMILIES:
             if slug == prefix or slug.startswith(prefix):
                 return maker
-        if len(parts) >= 3 and parts[0] == "openrouter" and parts[1] in MAKER_ALIASES:
-            return MAKER_ALIASES[parts[1]]
         if len(parts) >= 2 and parts[0] in MAKER_ALIASES:
             return MAKER_ALIASES[parts[0]]
     if harness in PROVIDERS:
@@ -228,8 +229,9 @@ def agy_home(directory: Path, name: str) -> Path:
     """Run-local HOME/USERPROFILE for AntiGravity CLI (agy) that reuses login without copying.
 
     Links ``antigravity-oauth-token`` (Linux), ``jetski_state.pbtxt``, and
-    ``settings.json`` into ``.gemini/antigravity-cli``. Operator dotfiles and
-    XDG directories stay in the real home (referenced via environment variables
+    ``settings.json`` into ``.gemini/antigravity-cli``, plus ``.git-credentials``
+    for HTTPS ``credential.helper store`` users. Operator dot-directories and
+    ``.gitconfig`` stay in the real home (referenced via environment variables
     in :func:`antigravity_launch`) so archiving the run directory never sweeps
     up SSH keys or ``gh`` tokens.
     """
@@ -242,6 +244,7 @@ def agy_home(directory: Path, name: str) -> Path:
     source_cli = source_home / ".gemini" / "antigravity-cli"
     for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
         link_credential(source_cli / filename, cli_dir / filename, "AGY_HOME")
+    link_credential(source_home / ".git-credentials", home / ".git-credentials", "AGY_HOME")
     return home
 
 

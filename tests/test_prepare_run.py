@@ -391,8 +391,9 @@ def test_launch_lines_windows_powershell(
     )
     assert agy_lines[2].startswith(
         "try { "
-        "if (-not $env:GIT_CONFIG_GLOBAL) "
-        '{ $env:GIT_CONFIG_GLOBAL = "$env:USERPROFILE\\.gitconfig" }; '
+        "if (-not $env:GIT_CONFIG_GLOBAL) { $env:GIT_CONFIG_GLOBAL = "
+        'if ($oldHome) { "$oldHome\\.gitconfig" } '
+        'else { "$env:USERPROFILE\\.gitconfig" } }; '
         f"$env:HOME = '{agy_home}'; $env:USERPROFILE = '{agy_home}'; "
         "agy --model gemini-3.1-pro-high --effort high --dangerously-skip-permissions"
     )
@@ -850,6 +851,13 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert agy_mcp["env"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
     assert agy_mcp["env"]["HUB_PROVIDER"] == "google"
     assert agy_written.stat().st_mode & 0o077 == 0
+    agy_script = (agy_out / "start-bob.sh").read_text(encoding="utf-8")
+    assert (
+        'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
+        "HOME=C:/Users/Bob/runs/step7/configs/bob-agy "
+        "USERPROFILE=C:/Users/Bob/runs/step7/configs/bob-agy agy"
+    ) in agy_script
+    assert "XDG_CONFIG_HOME" not in agy_script
 
 
 def test_worker_only_rejects_loose_missing_token_or_loopback_url(
@@ -1140,6 +1148,8 @@ def test_both_codex_workers_report_each_login(
         ("opencode", "openrouter/x-ai/grok-4", None, "xai"),
         ("opencode", "openrouter/meta-llama/llama-4-maverick", None, "meta"),
         ("opencode", "openrouter/mistralai/codestral", None, "mistral"),
+        ("opencode", "openrouter/eleutherai/gpt-neox-20b", None, "eleutherai"),
+        ("opencode", "openrouter/allenai/olmo-2-32b", None, "allenai"),
         ("opencode", "opencode/big-pickle", None, "unknown"),
         ("opencode", "", None, "unknown"),
         ("antigravity", "gemini-3.1-pro-high", None, "google"),
@@ -1179,7 +1189,8 @@ def test_agy_home_links_cli_auth_without_operator_dotdirs(
     isolated_cli = isolated / ".gemini" / "antigravity-cli"
     for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
         assert (isolated_cli / filename).read_text() == (cli_dir / filename).read_text()
-    for untouched in (".gitconfig", ".git-credentials", ".ssh", ".config", ".cache", ".local"):
+    assert (isolated / ".git-credentials").read_text() == "https://user:pass@github.com\n"
+    for untouched in (".gitconfig", ".ssh", ".config", ".cache", ".local"):
         assert not (isolated / untouched).exists()
         assert not (isolated / untouched).is_symlink()
     assert PREPARE_RUN.agy_login_status(isolated) == "logged in (antigravity-oauth-token)"
