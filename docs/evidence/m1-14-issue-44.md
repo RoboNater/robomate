@@ -9,7 +9,8 @@ confirmed from the run's manifest and hub state before this record is final.
 
 | Attempt | Source | Result |
 | --- | --- | --- |
-| 1 | `2c3daed8ad47b6b5f61583253e9c367755356649` on 2026-09-28 | In progress. Bob checked in, received IMPLEMENT task `41e63b24a9154880b31365eeac93b2d9`, and held it while Alice sought an operator-controlled harness restart. |
+| 1 | `2c3daed8ad47b6b5f61583253e9c367755356649` on 2026-09-28 | Incomplete. Bob checked in, received IMPLEMENT task `41e63b24a9154880b31365eeac93b2d9`, and held it while Alice sought an operator-controlled harness restart. No restart evidence arrived, so Bob submitted a blocked result after pushing the preparation record; no PR was opened. |
+| 2 | `c1f5d08b15170ae5ea0393e785a9ac4cae8b6148` on 2026-09-28 | In progress. Alice assigned RETRY task `1a4b27d6d8c443ba8d21bd525239c10e`. Bob verified the pushed branch and its evidence draft, and is holding this task while Alice obtains an operator restart decision. |
 
 No restart, event redelivery, review, or merge is asserted here until the
 corresponding live evidence is available. An operator must supply the actual
