@@ -212,12 +212,16 @@ def _status(as_json: bool) -> None:
     info = read_hub_json(root) if root is not None else None
     explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
 
-    def stopped(url: str, port: object) -> None:
+    def stopped(url: str, port: object, reason: str | None = None) -> None:
         known_root = root if not explicit else None
         stopped = {"running": False, "repo_root": str(known_root) if known_root else None,
                    "url": url, "port": port}
+        if reason is not None:
+            stopped["reason"] = reason
         if as_json:
             print(json.dumps(stopped))
+        elif reason is not None:
+            print(f"{known_root or 'Hub'}: {reason} (URL: {url}, port: {port})")
         else:
             print(f"{known_root or 'Hub'}: not running (URL: {url}, port: {port})")
         raise SystemExit(1)
@@ -226,7 +230,11 @@ def _status(as_json: bool) -> None:
         url = str(info.get("url") or "unknown")
         port = info.get("port")
         pid = int(info.get("pid") or 0)
-        if not process_alive(pid) or not hub_healthy(url, str(info.get("hub_id") or "")):
+        # A worker in another PID namespace cannot see the hub process. The
+        # matching HTTP hub ID is the authoritative live check in that case.
+        if not hub_healthy(url, str(info.get("hub_id") or "")):
+            if process_alive(pid):
+                stopped(url, port, f"unreachable; recorded pid {pid} is visible")
             stopped(url, port)
         assert root is not None
         token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()

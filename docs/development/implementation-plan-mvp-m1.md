@@ -518,6 +518,8 @@ uv run --project <robomate checkout> robomate ls
 
 ### Step 7 — M1 acceptance run
 
+Operator procedure and recovery decisions: [M1 restart and recovery guide](m1-restart-recovery.md).
+
 **Scope.** Meet the §13 done-when on robomate itself (from M1 on, robomate is built with
 itself).
 
@@ -531,7 +533,8 @@ itself).
   - No worker task changed state or owner because of the restart.
   - Worker telemetry shows no failed calls during the restart window.
   - The in-flight event was re-delivered (`delivery_attempts`).
-  - The merged SHA equals the approved head.
+  - The approved head equals the PR head accepted at merge; record the distinct
+    squash merge commit SHA separately.
   - `hub-report` shows Alice's MCP bytes and the worker wire bytes (#7).
   - `robomate status` output before and after the restart.
 - Record every attempt, including failed ones (poc-lessons).
