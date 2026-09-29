@@ -7,9 +7,15 @@ This document records the deliberate orchestrator restart in the live
 operator kept the hub and both worker bridges running while Alice's old
 harness stopped and a new RPC session connected. The observations below come
 from two `robomate status --json` captures, consistent SQLite backups, and
-copies of worker telemetry
-taken outside the checkout. The raw captures, harness transcripts, configs,
-tokens, and telemetry are private and are not included in this PR.
+copies of worker telemetry taken outside the checkout. The raw captures,
+harness transcripts, configs, tokens, and telemetry are private and are not
+included in this PR.
+
+The operator started the target HTTP hub with `robomate up` in a robomate
+checkout. The captured status identifies Bob as `codex` / `gpt-6-sol` and
+Charlie as `claude-code` / `opus` during the checkpoint. The captures do not
+establish the hub's exact source revision at startup or Alice's harness/model
+profile; they do establish her old and new RPC session IDs below.
 
 The bounded restart window used here begins with the before capture at
 **2026-09-29 18:01:14.146 UTC** and ends with the after capture at
@@ -33,6 +39,8 @@ are omitted from the published extract.
 The task row in both database backups also has the same `updated` timestamp
 (`2026-09-29T17:59:42.083Z`) and lease expiry
 (`2026-09-29T19:57:05.846Z`). The workflow stayed active. The operator's
+explicit task-hold deadline was **2026-09-29 18:09:00 UTC**, as recorded in
+Bob's held progress event. Bob did not submit a terminal result during it. The
 stop record verifies that the old Alice processes were absent at
 **18:01:49.570886 UTC**. It does not independently record the exact signal,
 exit time, or exit status, so this document does not assert them. The captures
@@ -50,11 +58,13 @@ ID `eec7472d2f8640af8023e9666a812665`, delivered at
 The after backup records the **same event ID** at attempt **2**, with new
 delivery ID `02c98b4854f64f8faff6d77262ab5bb7`, delivered at
 `18:02:39.636Z` and still unacknowledged. The new delivery occurred
-**7 minutes 6.383 seconds before** the old delivery's expiry. Alice's new
-session made an MCP `get_state` call at `18:02:31.315Z` and received the
-`wait_for_event` result at `18:02:39.659Z`. These timestamps establish
-redelivery after session replacement, within the old lease rather than after
-normal expiry.
+**173.617 seconds** after the old delivery, exceeding the recovery guide's
+120-second target, but **7 minutes 6.383 seconds before** the old delivery's
+expiry. It therefore met the guide's hard deadline and 60-second margin.
+Alice's new session made an MCP `get_state` call at `18:02:31.315Z` and
+received the `wait_for_event` result at `18:02:39.659Z`. These timestamps
+establish redelivery after session replacement, within the old lease rather
+than after normal expiry.
 
 ## Worker continuity in the bounded window
 
