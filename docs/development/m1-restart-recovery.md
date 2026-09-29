@@ -97,11 +97,11 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    task-hold deadline if it comes first. If a configured lease is too short to
    leave that margin, abort and configure a longer lease for a fresh run. A
    noninteractive `codex exec` final answer ends its process; that is a failed
-   readiness attempt, not the required operator kill. If the harness cannot stay running in this mode, resume its
-   saved Codex conversation interactively with `codex resume
-   --include-non-interactive` and the same `CODEX_HOME`/model/effort settings
-   before establishing the checkpoint. Keep that foreground session open
-   until the operator kills it.
+   readiness attempt, not the required operator kill. If that happens, use
+   the explicit conversation UUID and `codex resume --approve-for-me` form in
+   Step 5, with the same `CODEX_HOME`, model, and effort. Tell Alice to
+   establish a new checkpoint, then keep that interactive foreground session
+   open until the operator kills it.
 3. The operator saves `robomate status --json` and a consistent SQLite backup
    before stopping Alice. The backup must show the event `state=delivered`,
    `delivery_attempts=1`, non-null `delivery_id` and `delivery_expires`, and
