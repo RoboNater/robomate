@@ -8,14 +8,23 @@ as proof of redelivery. The hub stays up when Alice's harness is interrupted.
 
 ## Identify this run before acting
 
-Use the absolute paths printed by `scripts/prepare-run.py`. In the examples,
-replace the two paths and the issue number with this run's values:
+Use the absolute paths printed by `scripts/prepare-run.py`. Replace the paths,
+issue number, model, and effort with this run's values. In terminal A, start
+the hub and leave that foreground command running:
 
 ```sh
-HUB_REPO=/absolute/path/to/the/dedicated/target-clone
-RUN_DIR=/absolute/path/to/the/run-directory
+export HUB_REPO=/absolute/path/to/the/dedicated/target-clone
 cd "$HUB_REPO"
-uv run --locked robomate up                 # leave this terminal open
+uv run --locked robomate up
+```
+
+In terminal B, set the paths again and prepare the run while terminal A stays
+open:
+
+```sh
+export HUB_REPO=/absolute/path/to/the/dedicated/target-clone
+export RUN_DIR=/absolute/path/to/the/run-directory
+cd "$HUB_REPO"
 uv run --locked python scripts/prepare-run.py --hub-repo "$HUB_REPO" \
   --repository git@github.com:RoboNater/robomate.git \
   --run-dir "$RUN_DIR" --issue 44 --account YOUR_GITHUB_ACCOUNT \
@@ -28,12 +37,12 @@ rerun `prepare-run.py` to resume a run: preserve its manifest, configuration,
 workspaces, and prompt. Keep the hub's `.robomate/` directory, especially
 `hub.db`, `hub.json`, and `token`. `HUB_STATE_DIR` is anchored by the hub setup;
 the generated run manifest names the actual state directory. The run directory
-contains `manifest.json`, generated start scripts, prompts, isolated Codex
+contains `run.json`, generated start scripts, prompts, isolated Codex
 config, and worker telemetry. The worker clone paths are in
-`manifest.json.workspaces`; do not assume they are adjacent to the hub clone:
+`run.json.workspaces`; do not assume they are adjacent to the hub clone:
 
 ```sh
-python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print("state:",m["state_dir"]); print("workspaces:",m["workspaces"]); print("launch:",m["launch"])' "$RUN_DIR/manifest.json"
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print("state:",m["state_dir"]); print("workspaces:",m["workspaces"]); print("launch:",m["launch"])' "$RUN_DIR/run.json"
 ```
 
 Keep raw database backups, token bearing configs, telemetry, harness transcripts,
@@ -44,8 +53,9 @@ lock differs from the hub host, set `ROBOMATE_HUB_URL` and
 `ROBOMATE_TOKEN_FILE` to its configured values before `robomate status --json`;
 the explicit URL path bypasses local registry discovery. A matching `/healthz`
 hub ID plus authenticated `hub.status` proves that hub is reachable even when
-its PID is invisible. A failed HTTP probe with a visible live PID means
-*unreachable*; a stopped report after both probes cannot distinguish a dead
+its PID is invisible. A failed HTTP probe with a visible recorded PID is
+reported as *unreachable*; that PID may belong to an unrelated process after
+reuse. A stopped report after both probes cannot distinguish a dead
 hub from network loss or PID namespace isolation without a hub-host check.
 
 The Codex conversation ID (from its saved session or CLI output), the hub ID
@@ -57,7 +67,8 @@ harness event; it does **not** complete the hub workflow.
 ## Deliberate Step 7 checkpoint
 
 Alice and the operator coordinate one short window. The operator declares a
-10-minute task hold, with a UTC deadline, to Bob and Charlie. Bob confirms his
+10-minute **task** hold, with a UTC deadline, to Bob and Charlie. The shorter
+event lease window below governs the actual interruption. Bob confirms his
 assigned task ID and owner, continues heartbeats, and does not voluntarily
 submit a blocked/completed result during the hold. If he needs `ask_alice`,
 he uses `timeout_s=100` and retries the same question on normal timeouts; a
@@ -72,23 +83,30 @@ for the restart proof; Alice must reassign a new task for a new attempt.
 1. Alice calls `get_state` and confirms an active Bob task, its ID, owner, and
    state. She arranges one worker-generated event (for example a progress note
    or question), calls `wait_for_event`, and records its **event ID, delivery
-   ID, `delivery_attempts=1`, kind, and Alice RPC session**. She must leave
-   this delivery unacknowledged: no `ack` argument carrying its delivery ID,
-   including on a later wait. `queued_events` is not sufficient.
+   ID, `delivery_attempts=1`, `delivered_at`, `delivery_expires`, kind, and
+   Alice RPC session**. She must leave this delivery unacknowledged and make
+   **no further `wait_for_event` call in the old session**. A later wait can
+   re-lease the event after expiry even without `ack`, producing attempt 2 in
+   the wrong session. `queued_events` is not sufficient.
 2. Alice explicitly says **READY TO INTERRUPT**, the event/task identifiers,
    and the hold deadline. She remains alive in the harness while the operator
-   captures the before snapshot. A noninteractive `codex exec` final answer
-   ends its process; that is a failed readiness attempt, not the required
-   operator kill. If the harness cannot stay running in this mode, resume its
+   captures the before snapshot. `HUB_EVENT_LEASE_S` defaults to 600 seconds.
+   From `delivered_at`, target the kill and new session's first delivery within
+   120 seconds; the hard deadline is **before the captured old
+   `delivery_expires`**, with at least 60 seconds of margin. Use the earlier
+   task-hold deadline if it comes first. If a configured lease is too short to
+   leave that margin, abort and configure a longer lease for a fresh run. A
+   noninteractive `codex exec` final answer ends its process; that is a failed
+   readiness attempt, not the required operator kill. If the harness cannot stay running in this mode, resume its
    saved Codex conversation interactively with `codex resume
    --include-non-interactive` and the same `CODEX_HOME`/model/effort settings
    before establishing the checkpoint. Keep that foreground session open
    until the operator kills it.
 3. The operator saves `robomate status --json` and a consistent SQLite backup
    before stopping Alice. The backup must show the event `state=delivered`,
-   `delivery_attempts=1`, non-null `delivery_id`, and no `acked_at`. Capture
-   UTC time, Alice process ID, worker telemetry offsets, and Bob/Charlie
-   status. These files are private. One possible hub-host capture is:
+   `delivery_attempts=1`, non-null `delivery_id` and `delivery_expires`, and
+   no `acked_at`. Capture UTC time, Alice process ID, worker telemetry offsets,
+   and Bob/Charlie status. These files are private. One possible hub-host capture is:
 
    ```sh
    CAPTURE=/private/path/outside/git/m1-attempt-1
@@ -96,7 +114,7 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    cd "$HUB_REPO"
    uv run --locked robomate status --json > "$CAPTURE/before-status.json"
    python3 -c 'import sqlite3,sys; src=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); dst=sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()' "$HUB_REPO/.robomate/hub.db" "$CAPTURE/before.db"
-   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print("workflow",c.execute("select id,status from workflow").fetchall()); print("tasks",c.execute("select id,assignee,state from task").fetchall()); print("events",c.execute("select id,kind,state,delivery_id,delivery_attempts,acked_at from event order by id").fetchall())' "$CAPTURE/before.db" > "$CAPTURE/before-rows.txt"
+   python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print("workflow",c.execute("select id,status from workflow").fetchall()); print("tasks",c.execute("select id,assignee,state from task").fetchall()); print("events",c.execute("select id,kind,state,delivery_id,delivery_attempts,delivered_at,delivery_expires,acked_at from event order by id").fetchall())' "$CAPTURE/before.db" > "$CAPTURE/before-rows.txt"
    ```
 
 4. Stop **only Alice's foreground harness**, with Ctrl-C or a targeted TERM
@@ -104,6 +122,9 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    confirm the old process is gone before relaunch. Leave hub and workers
    running. Do not send `robomate down` for this test. If the old Alice has
    already ended voluntarily, record a failed attempt and reset the checkpoint.
+   If the old delivery expires before relaunch, the attempt is invalid even
+   if a later wait returns attempt 2; recover normally and arrange a new
+   active task/event checkpoint.
 5. Resume the **same saved Alice Codex conversation** using the same
    `CODEX_HOME`, working directory, model, effort, and approval/sandbox setup
    as `start-alice.sh`, but supply a new follow-up prompt. Use its recorded
@@ -122,16 +143,19 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    `--model` and effort flags and copy their **actual values** into this
    command. Do not substitute the example config path if it differs. For an
    interactive Codex launch, use the same `CODEX_HOME` and directory with
-   `codex resume --include-non-interactive --approve-for-me -m MODEL -c
+   `codex resume --approve-for-me -m MODEL -c
    'model_reasoning_effort="EFFORT"' CODEX_CONVERSATION_ID`, then submit the
-   same prompt text. Omit `--include-non-interactive` if the saved session was
-   already interactive. The `codex exec resume` and `codex resume` forms are
+   same prompt text. `--include-non-interactive` is needed only for a picker
+   or `--last`; an explicit UUID is required here. The `codex exec resume` and
+   `codex resume` forms are
    supported by [OpenAI's noninteractive guide](https://learn.chatgpt.com/docs/non-interactive-mode)
    and [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
    If this CLI/configuration cannot resume its exact conversation, stop the
    attempt and record that limitation; a fresh conversation needs an explicit
    reconciliation decision. Never use `--last` when several conversations
-   could match.
+   could match. Only CLI syntax/help was checked for these forms; the live
+   #44 attempt must confirm the exact command, approval behavior, and saved
+   conversation actually used.
 
    Write `resume-alice.prompt.md` privately under `RUN_DIR`, for example:
 
@@ -140,22 +164,27 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    > 1, Alice RPC session S; Bob task T was active under Bob. I stopped the old
    > Alice process at UTC TIME and verified it exited. Read `get_state` and
    > `wait_for_event` without acknowledging D. Verify the same hub, workflow,
-   > and task; verify event N has attempt 2 and a new delivery ID. Only then
-   > acknowledge it and continue. If any invariant differs, report the failed
-   > attempt and ask for a new checkpoint. This prompt is the operator's
+   > and task; verify event N has attempt 2 and a new delivery ID before the
+   > old delivery_expires. Only then acknowledge it and continue. If any
+   > invariant differs, report the failed attempt and ask for a new checkpoint.
+   > This prompt is the operator's
    > answer to the pending restart escalation; log that decision and restore
    > workflow active before continuing.
 
 6. New Alice first reads durable state, then `wait_for_event` **without** an
    `ack` argument. Record the new Alice RPC session and the returned event.
    Success requires the same hub ID, workflow ID, Bob task ID and owner, and
-   **same event ID at attempt 2 with a different delivery ID**, before any
-   acknowledgement. A queued event changing from attempt 0 to 1 is first
-   delivery, so it fails this check. After Alice says **REDELIVERED AND HELD**,
-   capture after status/backup with the same commands (using `after` names),
-   then let Alice acknowledge the new delivery
-   and continue. Check worker telemetry and event table only for the bounded
-   restart window: no failed worker calls, `agent_lost`, or `lease_expired`.
+   **same event ID at attempt 2 with a different delivery ID**, with its new
+   `delivered_at` strictly before the old captured `delivery_expires`, before
+   any acknowledgement. This timing distinguishes new-session supersession
+   from ordinary lease expiry. If the deadline is missed, mark the checkpoint
+   failed and recover normally; do not claim redelivery proof. A queued event
+   changing from attempt 0 to 1 is first delivery, so it fails this check.
+   After Alice says **REDELIVERED AND HELD**, capture after status/backup with
+   the same commands (using `after` names),
+   then let Alice acknowledge the new delivery and continue. Check worker
+   telemetry and event table only for the bounded restart window: no failed
+   worker calls, `agent_lost`, or `lease_expired`.
    Normal long-poll timeouts do not count as failed calls. Report any later
    loss separately in the whole-run evidence.
 

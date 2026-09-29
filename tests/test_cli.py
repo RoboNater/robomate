@@ -384,6 +384,26 @@ def test_status_uses_matching_hub_health_when_pid_is_not_visible(
     assert json.loads(capsys.readouterr().out) == {"running": True, "hub_id": "same-hub"}
 
 
+def test_status_reports_unreachable_with_visible_recorded_pid(
+    repository: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, _ = repository
+    state = root / ".robomate"
+    state.mkdir()
+    write_hub_json(root, {"url": "http://127.0.0.1:8420", "port": 8420,
+                          "pid": 1234, "hub_id": "same-hub"})
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(cli, "process_alive", lambda _pid: True)
+    monkeypatch.setattr(cli, "hub_healthy", lambda _url, _hub_id: False)
+    with pytest.raises(SystemExit, match="1"):
+        cli._status(True)
+    assert json.loads(capsys.readouterr().out) == {
+        "running": False, "repo_root": str(root), "url": "http://127.0.0.1:8420",
+        "port": 8420, "reason": "unreachable; recorded pid 1234 is visible",
+    }
+
+
 def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:

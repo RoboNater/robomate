@@ -3,7 +3,7 @@
 Use this guide after an ordinary harness or hub interruption. The deliberate
 M1 Step 7 kill and evidence protocol is in [M1 restart and recovery](m1-restart-recovery.md).
 Before acting, read `robomate status --json`, Alice's durable `get_state`,
-`RUN_DIR/manifest.json`, and the affected worker's `git status --short --branch`.
+`RUN_DIR/run.json`, and the affected worker's `git status --short --branch`.
 The manifest names the state directory, generated config, scripts, and exact
 worker workspaces. Verify the old harness process is gone using its recorded
 PID and terminal exit before relaunch; two live Alice sessions race, and only
