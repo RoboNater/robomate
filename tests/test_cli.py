@@ -9,8 +9,10 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 import pytest
+import robomate.cli as cli
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile
@@ -357,6 +359,29 @@ def test_status_with_unreachable_explicit_url_does_not_claim_current_repo(
     assert human.returncode == 1
     assert human.stdout.startswith("Hub: not running")
     assert str(root) not in human.stdout
+
+
+def test_status_uses_matching_hub_health_when_pid_is_not_visible(
+    repository: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, _ = repository
+    state = root / ".robomate"
+    state.mkdir()
+    (state / "token").write_text("test-token")
+    write_hub_json(root, {"url": "http://127.0.0.1:8420", "port": 8420,
+                          "pid": 1234, "hub_id": "same-hub"})
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(cli, "process_alive", lambda _pid: False)
+    monkeypatch.setattr(cli, "hub_healthy", lambda _url, hub_id: hub_id == "same-hub")
+
+    def status(_url: str, _token: str, method: str) -> dict[str, Any]:
+        assert method == "hub.status"
+        return {"running": True, "hub_id": "same-hub"}
+
+    monkeypatch.setattr(cli, "_rpc", status)
+    cli._status(True)
+    assert json.loads(capsys.readouterr().out) == {"running": True, "hub_id": "same-hub"}
 
 
 def test_ls_lists_two_live_hubs_and_prunes_stale_entry(

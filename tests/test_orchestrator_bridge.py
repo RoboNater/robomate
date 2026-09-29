@@ -207,7 +207,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
                 assert await worker_client.heartbeat()
                 pending = asyncio.create_task(
                     _call(worker, "ask_alice", task_id=task["id"], question="Which?",
-                          timeout_s=5)
+                          timeout_s=0.05)
                 )
                 question = (await _call(
                     old, "wait_for_event", timeout_s=2,
@@ -229,6 +229,13 @@ async def test_worker_task_survives_orchestrator_session_restart(
                     assert after is not None and after.state == before.state
                     assert after.lease_expires == before.lease_expires
                     assert await worker_client.heartbeat()
+                    # The first hold can expire while Alice is being restarted.
+                    # Retrying the same question keeps its original message ID.
+                    assert (await pending) == {"timeout": True}
+                    pending = asyncio.create_task(
+                        _call(worker, "ask_alice", task_id=task["id"],
+                              question="Which?", timeout_s=5)
+                    )
                     await _call(
                         new, "reply", task_id=task["id"], text="This one",
                         message_id=question["payload"]["message_id"],
