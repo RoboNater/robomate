@@ -630,3 +630,26 @@ async def test_has_ci_config_fails_closed_on_500() -> None:
 
     with pytest.raises(GitLabGateError, match="HTTP 500"):
         await gate.check(MR_URL, HEAD_SHA)
+
+
+@pytest.mark.asyncio
+async def test_paginate_rejects_non_list_element() -> None:
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, load_fixture("mr_clean.json"), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "pipelines/10/jobs": GlabResult(
+                0, '[{"id": 1, "name": "job1"}]{"message": "error"}', ""
+            ),
+            "statuses": GlabResult(0, "[]", ""),
+        }
+    )
+    gate, _ = make_gate(runner)
+
+    with pytest.raises(GitLabGateError, match="printed invalid JSON"):
+        await gate.check(MR_URL, HEAD_SHA)
+

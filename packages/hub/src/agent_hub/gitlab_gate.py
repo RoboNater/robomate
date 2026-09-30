@@ -418,7 +418,7 @@ class GitLabGate:
             raise _failure(args, result)
         try:
             return _decode_json_arrays(text)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, ValueError) as exc:
             raise GitLabGateError(f"{_describe(args)} printed invalid JSON") from exc
 
 
@@ -434,10 +434,9 @@ def _decode_json_arrays(text: str) -> list[Any]:
         if pos >= length:
             break
         val, end = decoder.raw_decode(text, idx=pos)
-        if isinstance(val, list):
-            items.extend(val)
-        else:
-            items.append(val)
+        if not isinstance(val, list):
+            raise ValueError(f"Expected JSON array, got {type(val).__name__}")
+        items.extend(val)
         pos = end
     return items
 

@@ -127,7 +127,7 @@ GitLab computes mergeability asynchronously and exposes 24 discrete statuses via
   - External and pipeline statuses are queried via `glab api projects/<group%2Fproject>/repository/commits/<sha>/statuses` with `--paginate --hostname <host>`.
   - Empirically verified on `gitlab-box.local`: `repository/commits/:sha/statuses` returns pipeline jobs as well as external status checks. The adapter deduplicates checks by `(name, pipeline_id)` to avoid double-counting while preserving external checks with the same name.
 - **Empirical Sandbox Pipeline Observations & Modeling**:
-  - Live observation on `gitlab-box.local`: the sandbox repository has a single pipeline (id 1, ref `test-ci`, sha `510a21af659728cf288924b13a7c645ec9cb68d1`), in `pending` status, and MR !1 reports `head_pipeline: null`. It was confirmed live that `commits/<sha>/statuses` returns pipeline jobs (`test_job`, `pending`).
+  - Live observation on `gitlab-box.local`: the sandbox repository has a single pipeline (id 1, ref `test-ci`, sha `510a21af65f61d5d4c6b3d0148c526bc8e8e88ac`), in `pending` status, and MR !1 reports `head_pipeline: null`. It was confirmed live that `commits/<sha>/statuses` returns pipeline jobs (`test_job`, `pending`).
   - Because no GitLab runner was active in the sandbox environment, terminal states (`success`, `failed`, `canceled`, `manual`, and multi-job pipelines) are modeled based on GitLab REST API specifications and trimmed recordings rather than observed live in completed states.
 - **Distinguishing `NO_CHECKS` vs `NO_WORKFLOWS`**:
   - If no pipeline or checks have reported, the gate queries:
@@ -220,7 +220,7 @@ guides/
 
 tests/
 ├── fixtures/gitlab/      — Modelled on and trimmed from live GitLab API recordings
-├── test_gitlab_gate.py   — Comprehensive test suite for GitLabGate (20 unit tests)
+├── test_gitlab_gate.py   — Comprehensive test suite for GitLabGate (21 unit tests)
 ├── test_forge_detection.py — Hermetic test suite for multi-source forge detection (11 unit tests)
 └── test_guides.py        — Verification of forge appendix composition
 ```
@@ -237,4 +237,4 @@ uv run --locked ruff check .
 uv run --locked mypy
 uv run --locked pytest
 ```
-785 tests pass (with 2 upstream Starlette/FastAPI testclient deprecation warnings, zero test errors or failures).
+786 tests pass (with 2 upstream Starlette/FastAPI testclient deprecation warnings, zero test errors or failures).
