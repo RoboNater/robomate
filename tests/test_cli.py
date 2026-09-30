@@ -462,10 +462,12 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
     subprocess.run(["git", "init", "-b", "main"], cwd=workspace, check=True,
                    capture_output=True)
     subprocess.run(["git", "remote", "add", "origin", origin], cwd=workspace, check=True)
-    (workspace / ".git" / "robo-agents-workspace.json").write_text(json.dumps({
+    identity = workspace / ".git" / "robo-agents-workspace.json"
+    identity.write_text(json.dumps({
         "agent": "charlie", "path": str(workspace), "repository": origin,
         "workspace_id": "c" * 64,
     }))
+    identity.chmod(0o600)
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))
         port = available.getsockname()[1]
