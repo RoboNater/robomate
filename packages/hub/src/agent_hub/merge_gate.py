@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from time import monotonic
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 
 from agent_hub_common import SHA_HEX_40_RE
@@ -226,6 +226,14 @@ def _settled(report: GateReport) -> bool:
     return report.ci not in _POLLED_CI and report.mergeable is not Mergeable.UNKNOWN
 
 
+class ForgeGate(Protocol):
+    """Protocol for forge-specific merge gate evaluations (spec §10)."""
+
+    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+        """Report head, CI, base freshness and mergeability for a change request."""
+        ...
+
+
 @dataclass(slots=True)
 class MergeGate:
     """Evaluate `check_merge_gate` (§4.2) through an injectable `gh` runner."""
@@ -379,3 +387,30 @@ def _describe(args: Sequence[str]) -> str:
 def _failure(args: Sequence[str], result: GhResult) -> MergeGateError:
     detail = result.stderr.strip()[:_STDERR_LIMIT] or f"exit {result.returncode}"
     return MergeGateError(f"{_describe(args)} failed: {detail}")
+
+
+GitHubGate = MergeGate
+
+# Re-export GitLabGate and GitLabGateError for modular forge gate access (spec §10).
+from .gitlab_gate import GitLabGate, GitLabGateError  # noqa: E402
+
+__all__ = [
+    "Check",
+    "CiStatus",
+    "ForgeGate",
+    "GateReport",
+    "GhResult",
+    "GhRunner",
+    "GitHubGate",
+    "GitLabGate",
+    "GitLabGateError",
+    "MergeGate",
+    "MergeGateError",
+    "Mergeable",
+    "POLL_INTERVAL_S",
+    "POLL_TIMEOUT_S",
+    "PrState",
+    "PullRequestRef",
+    "classify_checks",
+    "run_gh",
+]
