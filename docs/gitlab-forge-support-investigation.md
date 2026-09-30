@@ -7,21 +7,27 @@ This report documents the empirical investigation, API analysis, safety rail ver
 ### Key Findings
 1. **Forge Detection & Multi-Host Discovery**:
    - Detection seamlessly classifies origins into `github`, `gitlab`, or `unknown`.
-   - Supports well-known SaaS hosts (`github.com`, `gitlab.com`), explicit repository configuration in `.robomate/config.toml` (`[forge] gitlab_hosts`), local CLI host configurations (`~/.config/glab-cli/config.yml`), and dynamic host auth status probes (`glab auth status --hostname <host>`).
+   - Supports well-known SaaS hosts (`github.com`, `gitlab.com`), explicit repository configuration in `.robomate/config.toml` (`[forge] gitlab_hosts`), local CLI host configurations (`~/.config/glab-cli/config.yml`), and dynamic host auth status probes (`glab auth status --hostname <host>`). CLI probes only execute during `robomate up` (`probe_cli=True`) to avoid slow subprocess probes on shutdown or discovery fallbacks.
+   - Host key matching uses exact whole-key regexes under YAML sections to eliminate false-positive substring matches (e.g. `gitlab.example.com` matching `example.com`).
+   - Malformed `.robomate/config.toml` files raise a descriptive `DiscoveryError` to notify the operator rather than silently failing open.
 2. **Read-Only Gate Facts via `glab api`**:
    - `GitLabGate` reads required gate facts through standard `glab api` endpoints without requiring a dedicated hub forge token.
-   - Authoritative head SHA, `diff_refs` (`base_sha`, `head_sha`, `start_sha`), `diverged_commits_count`, and `detailed_merge_status` are acquired through `GET /projects/:id/merge_requests/:iid?include_diverged_commits_count=true`.
-   - CI pipeline and job facts are acquired through `GET /projects/:id/pipelines/:id/jobs` and `GET /projects/:id/repository/commits/:sha/statuses`.
+   - Authoritative head SHA, `diff_refs` (`base_sha`, `head_sha`, `start_sha`), `diverged_commits_count`, and `detailed_merge_status` are acquired through `GET projects/<group%2Fproject>/merge_requests/<iid>?include_diverged_commits_count=true`.
+   - CI pipeline and job facts are acquired through `GET projects/<group%2Fproject>/pipelines/<id>/jobs?paginate=true` and `GET projects/<group%2Fproject>/repository/commits/<sha>/statuses?paginate=true`.
+   - Pipeline jobs and commit status entries are deduplicated by name, preventing double-counting since GitLab returns pipeline jobs under the commit statuses endpoint as well.
+   - Stale pipeline detection compares `head_pipeline.sha` to the MR head SHA; if stale, the gate treats CI as `NO_CHECKS` and continues polling for the new pipeline run.
    - `NO_CHECKS` (transient pending state) versus `NO_WORKFLOWS` (misconfiguration) is determined affirmatively by inspecting `.gitlab-ci.yml` file presence at the head commit, `ci_config_path`, and `auto_devops_enabled`.
-3. **Subprocess & Exit Code Semantics**:
-   - Unlike `gh api` (which exits non-zero on HTTP 4xx/5xx), `glab api` exits `0` on HTTP 4xx errors (e.g. 404 Not Found, 409 Conflict), printing error details to stdout and reporting status codes in stderr as `(HTTP <status>)`. The adapter safely parses both exit codes and stderr HTTP indicators.
+3. **Subprocess & Fail-Closed Error Semantics**:
+   - Unlike `gh api` (which exits non-zero on HTTP 4xx/5xx), `glab api` exits `0` on HTTP 4xx errors (e.g. 404 Not Found, 403 Forbidden), printing error details to stdout and reporting status codes in stderr as `(HTTP <status>)`.
+   - Both `_json` and `_json_list` enforce fail-closed behavior via `_check_result`: non-zero return codes and stderr `(HTTP [45]\d\d)` raise `GitLabGateError`. In `_json_list`, non-list responses (such as error dicts) raise `GitLabGateError`.
+   - `_has_ci_config` fails closed on any HTTP or command failure, treating only an affirmative 404 on `.gitlab-ci.yml` as file absence.
 4. **Safety Rails & Preflight Enforcement**:
-   - Server-side automatic rebase (`automatic_rebase_enabled`) and merge trains (`merge_trains_enabled`) violate the SHA-bound merge invariant (§5 rails). Preflight checks inspect project settings and refuse execution if either setting is active.
-   - Merges strictly bind to the approved commit SHA using `glab mr merge <iid> -R <project_repo> --sha <approved_head_sha> --auto-merge=false [--squash] --remove-source-branch --yes`.
+   - Server-side automatic rebase (`automatic_rebase_enabled`) and merge trains (`merge_trains_enabled`) violate the SHA-bound merge invariant (§5 rails). Preflight inspection helper `check_unsupported_project_settings` queries project settings to verify these rails ahead of M5 integration.
+   - Merges strictly bind to the approved commit SHA using `glab mr merge <iid> -R <project_repo> --sha <approved_head_sha> --auto-merge=false [--squash] --remove-source-branch --yes` (empirically verified on sandbox).
    - Review comments posted with `glab mr note` create top-level notes that are `resolvable: false`, preventing unresolved discussion blockers.
 5. **Modular Architecture & Zero M1 Disruption**:
-   - `ForgeGate` protocol abstracts merge gate evaluation. `GitHubGate` (`MergeGate`) and `GitLabGate` both satisfy this contract and produce standard `GateReport` structures.
-   - Role guides compose with forge-specific appendices (`guides/forge/github.md`, `guides/forge/gitlab.md`) at serve time.
+   - `ForgeGate` protocol in `merge_gate.py` abstracts merge gate evaluation. `GitHubGate` (`MergeGate`) and `GitLabGate` (in `gitlab_gate.py`, with no circular imports) satisfy this protocol and produce standard `GateReport` structures.
+   - Role guides compose with forge-specific appendices (`guides/forge/github.md`, `guides/forge/gitlab.md`) at serve time without per-request database state scans.
    - All M1 contracts, databases (schema v12), wire protocols (`hub.schema_version 1`), and tests remain completely undisturbed.
 
 ---
@@ -48,19 +54,19 @@ The parser extracts the host by combining standard `urllib.parse.urlparse` (for 
 ### 3.2 Detection Precedence
 To support self-hosted instances without hardcoded domain lists, forge detection follows a strict precedence:
 1. **SaaS Well-Known Hosts**: `github.com` maps to `"github"`; `gitlab.com` maps to `"gitlab"`.
-2. **Repository Configuration (`config.toml`)**:
-   Operators can define known forge hosts in `.robomate/config.toml` (or repository root `config.toml`):
+2. **Repository Configuration (`.robomate/config.toml` only)**:
+   Operators can define known forge hosts in `.robomate/config.toml` (spec §7):
    ```toml
    [forge]
    gitlab_hosts = ["gitlab-box.local", "gitlab.corp.internal"]
    github_hosts = ["github.corp.internal"]
    ```
-   If the extracted host matches an entry, the corresponding forge is returned.
+   If the extracted host matches an entry, the corresponding forge is returned. A malformed TOML file raises `DiscoveryError` to alert the operator.
 3. **Local CLI Configuration**:
-   The resolver checks `$XDG_CONFIG_HOME/glab-cli/config.yml` (and `~/.config/glab-cli/config.yml`) for `hosts: <host>:`. If present, it resolves to `"gitlab"`. Similarly, `$XDG_CONFIG_HOME/gh/hosts.yml` is checked for `"github"`.
-4. **CLI Auth Probe**:
-   If `glab` is installed on PATH, the resolver runs `glab auth status --hostname <host>`. If the host is authenticated, it resolves to `"gitlab"`. A corresponding probe with `gh auth status --hostname <host>` checks GitHub Enterprise hosts.
-5. **Fallback**: Returns `"unknown"`, allowing an explicit `--forge` CLI flag to configure the workflow.
+   The resolver checks `$XDG_CONFIG_HOME/glab-cli/config.yml` (and `~/.config/glab-cli/config.yml`) for `<host>:` under `hosts:`. If present, it resolves to `"gitlab"`. Similarly, `$XDG_CONFIG_HOME/gh/hosts.yml` is checked for `<host>:`. Whole-key line matching (`^[ \t]*<re.escape(host)>:[ \t]*(?:#.*)?$`) prevents false-positive substring matches.
+4. **CLI Auth Probe (only when `probe_cli=True`)**:
+   At `robomate up` (`probe_cli=True`), if `glab` is installed on PATH, the resolver runs `glab auth status --hostname <host>`. If the host is authenticated, it resolves to `"gitlab"`. A corresponding probe with `gh auth status --hostname <host>` checks GitHub Enterprise hosts. On shutdown (`down`) or general discovery, `probe_cli=False` prevents spawning CLI subprocesses.
+5. **Fallback**: Returns `"unknown"`.
 
 ---
 
@@ -70,18 +76,18 @@ The table below contrasts GitHub's `gh` invocations with GitLab's `glab api` que
 
 | Fact / Check | GitHub (`gh`) | GitLab (`glab api`) | Notes |
 |---|---|---|---|
-| **MR / PR Details** | `gh pr view <url> --json state,headRefOid,baseRefName,mergeable,mergeStateStatus` | `GET /projects/:id/merge_requests/:iid?include_diverged_commits_count=true` | GitLab returns `state`, `sha`, `target_branch`, `diff_refs`, `has_conflicts`, `detailed_merge_status`, and `diverged_commits_count`. |
-| **Authoritative Target Tip** | Parsed from `gh api compare/...` (`.base_commit.sha`) | `GET /projects/:id/repository/branches/:target_branch` (`.commit.id`) | Direct tip query provides authoritative `main_sha`. |
+| **MR / PR Details** | `gh pr view <url> --json state,headRefOid,baseRefName,mergeable,mergeStateStatus` | `GET projects/<group%2Fproject>/merge_requests/<iid>?include_diverged_commits_count=true` | GitLab returns `state`, `sha`, `target_branch`, `diff_refs`, `has_conflicts`, `detailed_merge_status`, and `diverged_commits_count`. |
+| **Authoritative Target Tip** | Parsed from `gh api compare/...` (`.base_commit.sha`) | `GET projects/<group%2Fproject>/repository/branches/<target_branch>` (`.commit.id`) | Direct tip query provides authoritative `main_sha`. |
 | **Stale Base Detection** | `gh api compare/...` (`.behind_by > 0`) | `diverged_commits_count > 0` | Crucial: requires `?include_diverged_commits_count=true` query parameter. |
-| **CI / Checks** | `gh pr checks <url> --json name,bucket,link` | `GET /projects/:id/pipelines/:pipeline_id/jobs` and `GET /projects/:id/repository/commits/:sha/statuses` | Reads jobs from `head_pipeline` and external commit status checks. |
-| **Absence of CI** | `gh api repos/.../actions/workflows` (`.total_count == 0`) | `GET /projects/:id/repository/files/.gitlab-ci.yml?ref=:head` | Affirmative query checks `.gitlab-ci.yml` at head, project `ci_config_path`, and `auto_devops_enabled`. |
-| **Approvals** | (N/A in PoC - review comment) | `GET /projects/:id/merge_requests/:iid/approvals` | Inspects `approved` boolean and `approved_by` list. |
-| **Discussions / Notes** | `gh pr view ... --json comments` | `GET /projects/:id/merge_requests/:iid/notes` | Verifies notes and `resolvable` status. |
+| **CI / Checks** | `gh pr checks <url> --json name,bucket,link` | `GET projects/<group%2Fproject>/pipelines/<id>/jobs?paginate=true` and `GET projects/<group%2Fproject>/repository/commits/<sha>/statuses?paginate=true` | Queries jobs with `--paginate`. Deduplicates jobs and commit statuses by name. |
+| **Absence of CI** | `gh api repos/.../actions/workflows` (`.total_count == 0`) | `GET projects/<group%2Fproject>/repository/files/.gitlab-ci.yml?ref=<sha>` | Affirmative query checks `.gitlab-ci.yml` at head, project `ci_config_path`, and `auto_devops_enabled`. Fails closed on HTTP errors. |
+| **Approvals** | (N/A in PoC - review comment) | `GET projects/<group%2Fproject>/merge_requests/<iid>/approvals` | Inspects `approved` boolean and `approved_by` list. |
+| **Discussions / Notes** | `gh pr view ... --json comments` | `GET projects/<group%2Fproject>/merge_requests/<iid>/notes` | Verifies notes and `resolvable` status. |
 
 ### 4.1 Detailed Analysis of Queries & Empirical Behavior
 
 #### 1. Merge Request Details & Stale Base Detection
-- **Endpoint**: `glab api /projects/{quote(project, safe='')}/merge_requests/{iid}?include_diverged_commits_count=true --hostname {host}`
+- **Endpoint**: `glab api projects/<group%2Fproject>/merge_requests/<iid>?include_diverged_commits_count=true --hostname <host>`
 - **Findings**:
   - `sha`: Top-level string contains the current source branch HEAD commit SHA.
   - `diff_refs`: Provides `base_sha` (the common merge base), `head_sha` (MR head), and `start_sha` (target branch tip when diff was computed).
@@ -89,42 +95,49 @@ The table below contrasts GitHub's `gh` invocations with GitLab's `glab api` que
   - **Caution**: Omitting `?include_diverged_commits_count=true` results in `diverged_commits_count` being absent/null. The query parameter is mandatory.
 
 #### 2. Authoritative Target Branch Tip
-- **Endpoint**: `glab api /projects/{quote(project, safe='')}/repository/branches/{target_branch} --hostname {host}`
+- **Endpoint**: `glab api projects/<group%2Fproject>/repository/branches/<target_branch> --hostname <host>`
 - **Findings**:
   - Returns `commit.id`, giving the exact, current `main_sha`.
   - Comparing `diff_refs.base_sha` to `commit.id` provides a reliable secondary check for stale bases even if `diverged_commits_count` is absent.
 
 #### 3. Mergeability & 24 `detailed_merge_status` States
-GitLab computes mergeability asynchronously and exposes 24 discrete statuses via `detailed_merge_status`:
-- `mergeable`: Maps to `Mergeable.CLEAN`.
-- `conflict`, `need_rebase`: Maps to `Mergeable.CONFLICTING`. Textual conflicts or rebase required; halts gate polling immediately and routes to `rebase` task.
-- `preparing`, `checking`, `approvals_syncing`, `ci_still_running`, `ci_must_pass`, `status_checks_must_pass`: Maps to `Mergeable.UNKNOWN`. Transient computation states; gate continues polling boundedly.
-- `discussions_not_resolved`: Maps to `Mergeable.CONFLICTING`. Unresolved discussion threads present.
+GitLab computes mergeability asynchronously and exposes 24 discrete statuses via `detailed_merge_status`.
+`Mergeable` strictly represents git textual conflict status:
+- `conflict`, `need_rebase`, or `has_conflicts=true`: Maps to `Mergeable.CONFLICTING`. Textual conflicts or rebase required; halts gate polling immediately and routes to `rebase` task.
+- `checking`, `unchecked`, `approvals_syncing`, `preparing`: Maps to `Mergeable.UNKNOWN`. Transient computation states; gate continues polling boundedly.
+- `mergeable`, `discussions_not_resolved`, `not_approved`, `requested_changes`, `draft_status`, `blocked_status`, `commits_status`, `ci_still_running`, `ci_must_pass`, `status_checks_must_pass`, `jira_association_missing`: Textually clean (`Mergeable.CLEAN`). The exact blocking reason is stored in `merge_state_status`. This prevents `discussions_not_resolved` from being misidentified as a git conflict requiring a rebase, and prevents blocking states from stalling until the full poll timeout.
 - `not_open`: Returned when MR is merged or closed; maps to `Mergeable.UNKNOWN` with `PrState.MERGED` / `CLOSED`.
 
 #### 4. CI Pipelines, Status Checks & `NO_CHECKS` vs `NO_WORKFLOWS`
 - **Pipeline & Job Inspection**:
   - `mr.head_pipeline` contains the pipeline running on the MR head.
-  - Jobs are fetched via `glab api /projects/:id/pipelines/:id/jobs --hostname :host`.
+  - If `head_pipeline.sha != head`: the pipeline is stale (belonging to an older commit). The gate ignores stale pipeline jobs and reports `CiStatus.NO_CHECKS` to poll for the new pipeline run.
+  - Jobs are fetched via `glab api projects/<group%2Fproject>/pipelines/<id>/jobs --paginate --hostname <host>`.
   - Statuses map to standard `Check` buckets:
     - `success`, `passed` → `pass`
-    - `failed` → `fail`
+    - `allow_failure=True` → `skipping` (honours allowed-to-fail jobs)
+    - `failed` (with `allow_failure=False`) → `fail`
     - `canceled`, `canceling`, `cancelled` → `cancel`
     - `skipped` → `skipping`
+    - `manual` with `allow_failure=True` → `skipping` (optional manual deploy/cleanup steps do not block the gate)
+    - `manual` with `allow_failure=False` → `fail` (required manual gate blocks automated merge)
     - `running`, `pending`, `preparing`, `created`, `scheduled` → `pending`
-    - `manual` → `fail` (manual action requires human intervention and will not resolve by waiting; fails closed to prevent hanging).
+- **Commit Statuses & Deduplication**:
+  - External and pipeline statuses are queried via `glab api projects/<group%2Fproject>/repository/commits/<sha>/statuses --paginate --hostname <host>`.
+  - Empirically verified on `gitlab-box.local`: `repository/commits/:sha/statuses` returns pipeline jobs as well as external status checks. The adapter deduplicates checks by `name` to avoid double-counting.
 - **Distinguishing `NO_CHECKS` vs `NO_WORKFLOWS`**:
-  - If no pipeline has reported yet, the gate queries:
-    `glab api /projects/:id/repository/files/.gitlab-ci.yml?ref=:head --hostname :host`
+  - If no pipeline or checks have reported, the gate queries:
+    `glab api projects/<group%2Fproject>/repository/files/.gitlab-ci.yml?ref=<sha> --hostname <host>`
   - If `.gitlab-ci.yml` is present: maps to `CiStatus.NO_CHECKS` (pipeline not yet scheduled; continues polling).
-  - If `.gitlab-ci.yml` returns 404, and project settings show `ci_config_path == null` and `auto_devops_enabled == false`: affirmative proof that no CI exists; maps to `CiStatus.NO_WORKFLOWS`.
+  - If `.gitlab-ci.yml` affirmatively returns 404, and project settings show `ci_config_path == null` and `auto_devops_enabled == false`: affirmative proof that no CI exists; maps to `CiStatus.NO_WORKFLOWS`.
+  - Any 401, 403, 500, or command failure raises `GitLabGateError` (fails closed).
 
 #### 5. `glab api` Error Output & Framing Nuances
 - **Empirical Observation**: When requesting a non-existent file or resource (e.g. 404 Not Found), `glab api` prints:
   - stdout: `{"message": "404 File Not Found"}`
   - stderr: `glab: 404 File Not Found (HTTP 404)`
   - exit code: `0` (success).
-- **Design Impact**: The adapter inspects stderr for `(HTTP \d{3})` patterns and stdout for error messages to identify HTTP 4xx/5xx responses rather than relying solely on the process return code.
+- **Design Impact**: The adapter inspects stderr for `(HTTP [45]\d\d)` patterns and stdout for error objects. `_check_result` raises `GitLabGateError` whenever an HTTP 4xx/5xx code or non-zero return code occurs. In `_json_list`, receiving an error dict instead of a JSON list also raises `GitLabGateError`.
 
 ---
 
@@ -135,16 +148,16 @@ GitLab provides several merge and pipeline settings that conflict with the clien
 1. **Automatic Server-Side Rebase (`automatic_rebase_enabled`)**:
    - *Behavior*: GitLab automatically rebases MR commits on top of the target branch on the server immediately before merging.
    - *Safety Hazard*: Creates a new commit with a new commit SHA on the server. The merged commit is never reviewed by human/worker reviewers, nor tested by CI on that rewritten SHA.
-   - *Preflight Enforcement*: Preflight queries `GET /projects/:id` and refuses the run if `automatic_rebase_enabled == true`.
+   - *Preflight Enforcement*: Helper `check_unsupported_project_settings(project_data)` queries `GET projects/<group%2Fproject>` and flags `automatic_rebase_enabled == true`. In M5, this will be wired into orchestrator startup to refuse runs on misconfigured projects.
 
 2. **Merge Trains (`merge_trains_enabled` / `merge_train_enforcement`)**:
    - *Behavior*: Queues MRs into a merge train to be merged asynchronously after speculative merge-pipeline runs. Direct REST API merge invocations are rejected by GitLab.
    - *Safety Hazard*: Asynchronous queuing breaks immediate deterministic verification of the merged head.
-   - *Preflight Enforcement*: Refuses the run if merge trains are active.
+   - *Preflight Enforcement*: `check_unsupported_project_settings` flags active merge trains.
 
 3. **Auto-Merge (`glab mr merge` default)**:
    - *Behavior*: If a pipeline is running, `glab mr merge` defaults auto-merge to `true` unless explicitly overridden.
-   - *Preflight Enforcement*: All automated merge invocations MUST explicitly pass `--auto-merge=false`.
+   - *Rail Enforcement*: All automated merge invocations MUST explicitly pass `--auto-merge=false`.
 
 ---
 
@@ -189,25 +202,28 @@ The prototype delivers a clean, modular foundation ready for M5 without disrupti
 
 ```
 packages/hub/src/agent_hub/
-├── merge_gate.py         — Exports ForgeGate protocol, GitHubGate, MergeGate (backward compatible)
-└── gitlab_gate.py        — GitLabGate adapter with glab api queries and preflight checks
+├── merge_gate.py         — Exports ForgeGate protocol, GitHubGate, MergeGate (without circular imports)
+└── gitlab_gate.py        — GitLabGate adapter with glab api queries, pagination, and error checking
 
 packages/common/src/agent_hub_common/
-├── discovery.py          — detect_forge() supporting config.toml, glab config, auth status
-└── models.py             — WorkflowPolicy with forge: Literal["github", "gitlab"]
+└── discovery.py          — detect_forge() supporting config.toml, glab/gh config, and optional up probes
 
 guides/
 ├── forge/
 │   ├── github.md         — GitHub appendix (invariant-critical commands)
 │   └── gitlab.md         — GitLab appendix (invariant-critical commands)
-└── README.md
+└── README.md             — Explains role guides and forge appendices composition
 
 tests/
-├── fixtures/gitlab/      — Recorded real GitLab API JSON fixtures
-├── test_gitlab_gate.py   — Comprehensive test suite for GitLabGate
-├── test_forge_detection.py — Test suite for multi-source forge detection
+├── fixtures/gitlab/      — Modelled on and trimmed from live GitLab API recordings
+├── test_gitlab_gate.py   — Comprehensive test suite for GitLabGate (19 unit tests)
+├── test_forge_detection.py — Hermetic test suite for multi-source forge detection (11 unit tests)
 └── test_guides.py        — Verification of forge appendix composition
 ```
+
+### Design Decisions:
+- **`WorkflowPolicy.forge` deferred to M5**: `WorkflowPolicy` enforces strict validation (`extra="forbid"`). Adding `forge` ahead of M5 breaks checked-in default policy prompts and skill dumps. Forge configuration for M1 is handled cleanly via discovery and `hub_info["forge"]`.
+- **Fixtures modeled on live recordings**: Fixtures in `tests/fixtures/gitlab/` are trimmed from live responses on `gitlab-box.local` to isolate tested fields (`sha`, `diff_refs.base_sha`, `diverged_commits_count`, `commit.id`, `allow_failure`, `detailed_merge_status`).
 
 ### Validation
 All validation checks pass cleanly:
@@ -217,4 +233,4 @@ uv run --locked ruff check .
 uv run --locked mypy
 uv run --locked pytest
 ```
-751 existing tests + new unit tests for GitLabGate, forge detection, and guides pass with zero warnings or regressions.
+783 tests pass (with 2 upstream Starlette/FastAPI testclient deprecation warnings, zero test errors or failures).

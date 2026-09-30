@@ -391,9 +391,6 @@ def _failure(args: Sequence[str], result: GhResult) -> MergeGateError:
 
 GitHubGate = MergeGate
 
-# Re-export GitLabGate and GitLabGateError for modular forge gate access (spec §10).
-from .gitlab_gate import GitLabGate, GitLabGateError  # noqa: E402
-
 __all__ = [
     "Check",
     "CiStatus",
@@ -402,8 +399,6 @@ __all__ = [
     "GhResult",
     "GhRunner",
     "GitHubGate",
-    "GitLabGate",
-    "GitLabGateError",
     "MergeGate",
     "MergeGateError",
     "Mergeable",

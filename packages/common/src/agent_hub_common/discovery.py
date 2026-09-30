@@ -56,7 +56,7 @@ def repo_root(cwd: Path) -> tuple[Path, Path]:
     return common.parent, common
 
 
-def resolve_repository(cwd: Path) -> Repository:
+def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     root, common = repo_root(cwd)
     origin = _git(root, "remote", "get-url", "origin")
     if not origin:
@@ -69,7 +69,7 @@ def resolve_repository(cwd: Path) -> Repository:
         ) from exc
     if not head.startswith("origin/"):
         raise DiscoveryError(f"unexpected origin/HEAD: {head}")
-    forge = detect_forge(origin, root)
+    forge = detect_forge(origin, root, probe_cli=probe_cli)
     return Repository(root, common, origin, head.removeprefix("origin/"), forge)
 
 
@@ -88,7 +88,19 @@ def extract_origin_host(origin: str) -> str | None:
     return None
 
 
-def detect_forge(origin: str, root: Path | None = None) -> str:
+def _match_yaml_host(content: str, host: str, *, under_hosts: bool = False) -> bool:
+    """Check if host is configured as a key in YAML content."""
+    search_text = content
+    if under_hosts:
+        hosts_match = re.search(r"^[ \t]*hosts:[ \t]*(?:#.*)?$", content, re.MULTILINE)
+        if not hosts_match:
+            return False
+        search_text = content[hosts_match.end():]
+    pattern = re.compile(rf"^[ \t]*{re.escape(host)}:[ \t]*(?:#.*)?$", re.MULTILINE)
+    return bool(pattern.search(search_text))
+
+
+def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = False) -> str:
     """Detect forge ('github', 'gitlab', or 'unknown') (spec §10)."""
     host = extract_origin_host(origin)
     if not host:
@@ -98,22 +110,22 @@ def detect_forge(origin: str, root: Path | None = None) -> str:
     if host == "gitlab.com":
         return "gitlab"
 
-    # 1. Check repository or hub config.toml if root is provided
+    # 1. Check repository config.toml (.robomate/config.toml only) if root is provided
     if root is not None:
-        candidates = [state_dir(root) / "config.toml", root / "config.toml"]
-        for config_path in candidates:
-            if config_path.is_file():
-                try:
-                    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-                    forge_cfg = data.get("forge", {})
-                    gitlab_hosts = forge_cfg.get("gitlab_hosts", [])
-                    if host in gitlab_hosts:
-                        return "gitlab"
-                    github_hosts = forge_cfg.get("github_hosts", [])
-                    if host in github_hosts:
-                        return "github"
-                except Exception:
-                    pass
+        config_path = state_dir(root) / "config.toml"
+        if config_path.is_file():
+            try:
+                data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise DiscoveryError(f"invalid configuration in {config_path}: {exc}") from exc
+            forge_cfg = data.get("forge")
+            if isinstance(forge_cfg, dict):
+                gitlab_hosts = forge_cfg.get("gitlab_hosts", [])
+                if isinstance(gitlab_hosts, list) and host in gitlab_hosts:
+                    return "gitlab"
+                github_hosts = forge_cfg.get("github_hosts", [])
+                if isinstance(github_hosts, list) and host in github_hosts:
+                    return "github"
 
     # 2. Check glab CLI configuration file
     config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
@@ -121,7 +133,7 @@ def detect_forge(origin: str, root: Path | None = None) -> str:
     if glab_config.is_file():
         try:
             content = glab_config.read_text(encoding="utf-8")
-            if f"{host}:" in content:
+            if _match_yaml_host(content, host, under_hosts=True):
                 return "gitlab"
         except Exception:
             pass
@@ -131,13 +143,13 @@ def detect_forge(origin: str, root: Path | None = None) -> str:
     if gh_hosts.is_file():
         try:
             content = gh_hosts.read_text(encoding="utf-8")
-            if f"{host}:" in content:
+            if _match_yaml_host(content, host, under_hosts=False):
                 return "github"
         except Exception:
             pass
 
-    # 4. Probe glab auth status for the host
-    if shutil.which("glab"):
+    # 4. Probe glab auth status for the host (only when probe_cli is True, e.g. at `up`)
+    if probe_cli and shutil.which("glab"):
         try:
             proc = subprocess.run(
                 ["glab", "auth", "status", f"--hostname={host}"],
@@ -153,8 +165,8 @@ def detect_forge(origin: str, root: Path | None = None) -> str:
         except Exception:
             pass
 
-    # 5. Probe gh auth status for the host
-    if shutil.which("gh"):
+    # 5. Probe gh auth status for the host (only when probe_cli is True, e.g. at `up`)
+    if probe_cli and shutil.which("gh"):
         try:
             proc = subprocess.run(
                 ["gh", "auth", "status", f"--hostname={host}"],

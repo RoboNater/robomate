@@ -37,6 +37,7 @@ from .merge_gate import (
 
 GLAB_TIMEOUT_S = 30.0
 _STDERR_LIMIT = 500
+HTTP_ERROR_RE = re.compile(r"\(HTTP\s+([45]\d\d)\)")
 
 MR_URL_RE = re.compile(
     r"https?://(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?)"
@@ -115,22 +116,27 @@ class MergeRequestRef:
             iid=int(match["iid"]),
         )
 
-    def api(self, path: str) -> list[str]:
+    def api(self, path: str, *, paginate: bool = False) -> list[str]:
         encoded_project = quote(self.project, safe="")
         endpoint = (
             f"projects/{encoded_project}/{path.lstrip('/')}"
             if path
             else f"projects/{encoded_project}"
         )
-        return ["api", endpoint, f"--hostname={self.hostname}"]
+        args = ["api", endpoint, f"--hostname={self.hostname}"]
+        if paginate:
+            args.append("--paginate")
+        return args
 
 
-def classify_gitlab_status(status: str) -> str:
+def classify_gitlab_status(status: str, *, allow_failure: bool = False) -> str:
     """Map GitLab pipeline/job statuses to Check buckets."""
 
     s = status.lower().strip()
     if s in ("success", "passed"):
         return "pass"
+    if allow_failure:
+        return "skipping"
     if s in ("failed",):
         return "fail"
     if s in ("canceled", "canceling", "cancelled"):
@@ -138,7 +144,7 @@ def classify_gitlab_status(status: str) -> str:
     if s in ("skipped",):
         return "skipping"
     if s in ("manual",):
-        # Manual actions block merge without human/operator intervention
+        # Required manual actions (allow_failure=False) block merge without intervention
         return "fail"
     return "pending"
 
@@ -147,8 +153,6 @@ def map_detailed_merge_status(status: str, has_conflicts: bool) -> tuple[Mergeab
     """Map GitLab's 24 detailed_merge_status states to Mergeable enum and status string."""
 
     s = status.lower().strip()
-    if s == "mergeable":
-        return Mergeable.CLEAN, "mergeable"
     if s in ("conflict", "need_rebase") or has_conflicts:
         return Mergeable.CONFLICTING, s or "conflict"
     if s in (
@@ -156,13 +160,22 @@ def map_detailed_merge_status(status: str, has_conflicts: bool) -> tuple[Mergeab
         "unchecked",
         "approvals_syncing",
         "preparing",
+    ):
+        return Mergeable.UNKNOWN, s
+    if s in (
+        "mergeable",
+        "discussions_not_resolved",
+        "not_approved",
+        "requested_changes",
+        "draft_status",
+        "blocked_status",
+        "commits_status",
         "ci_still_running",
         "ci_must_pass",
         "status_checks_must_pass",
+        "jira_association_missing",
     ):
-        return Mergeable.UNKNOWN, s
-    if s == "discussions_not_resolved":
-        return Mergeable.CONFLICTING, "discussions_not_resolved"
+        return Mergeable.CLEAN, s
     if s == "not_open":
         return Mergeable.UNKNOWN, "not_open"
     if has_conflicts:
@@ -265,46 +278,81 @@ class GitLabGate:
             base_behind_main = base_sha != main_sha
 
         checks: list[Check] = []
+        seen_names: set[str] = set()
+        stale_pipeline = False
         head_pipeline = mr_data.get("head_pipeline")
         if isinstance(head_pipeline, dict) and "id" in head_pipeline:
-            pipeline_id = head_pipeline["id"]
-            pipeline_status = str(head_pipeline.get("status", ""))
-            pipeline_url = str(head_pipeline.get("web_url", ""))
-            jobs_data = await self._json_list(ref.api(f"pipelines/{pipeline_id}/jobs"))
-            if jobs_data:
-                for job in jobs_data:
-                    if isinstance(job, dict):
-                        checks.append(
-                            Check(
-                                name=str(job.get("name", "")),
-                                bucket=classify_gitlab_status(str(job.get("status", ""))),
-                                link=str(job.get("web_url", "")),
-                            )
-                        )
+            pipeline_sha = str(head_pipeline.get("sha") or "").lower()
+            if pipeline_sha and pipeline_sha != head:
+                # The MR head has moved beyond this pipeline; don't read stale jobs.
+                stale_pipeline = True
             else:
-                checks.append(
-                    Check(
-                        name=f"pipeline:{pipeline_id}",
-                        bucket=classify_gitlab_status(pipeline_status),
-                        link=pipeline_url,
-                    )
+                pipeline_id = head_pipeline["id"]
+                pipeline_status = str(head_pipeline.get("status", ""))
+                pipeline_url = str(head_pipeline.get("web_url", ""))
+                jobs_data = await self._json_list(
+                    ref.api(f"pipelines/{pipeline_id}/jobs", paginate=True)
                 )
+                if jobs_data:
+                    for job in jobs_data:
+                        if isinstance(job, dict):
+                            name = str(job.get("name", ""))
+                            allow_failure = bool(job.get("allow_failure", False))
+                            checks.append(
+                                Check(
+                                    name=name,
+                                    bucket=classify_gitlab_status(
+                                        str(job.get("status", "")),
+                                        allow_failure=allow_failure,
+                                    ),
+                                    link=str(job.get("web_url", "")),
+                                )
+                            )
+                            if name:
+                                seen_names.add(name)
+                else:
+                    checks.append(
+                        Check(
+                            name=f"pipeline:{pipeline_id}",
+                            bucket=classify_gitlab_status(pipeline_status),
+                            link=pipeline_url,
+                        )
+                    )
 
-        statuses = await self._json_list(ref.api(f"repository/commits/{head}/statuses"))
+        statuses = await self._json_list(
+            ref.api(f"repository/commits/{head}/statuses", paginate=True)
+        )
         for st in statuses:
             if isinstance(st, dict):
+                name = str(st.get("name", ""))
+                if name and name in seen_names:
+                    # Avoid double-counting pipeline jobs returned by commits/:sha/statuses
+                    continue
+                allow_failure = bool(st.get("allow_failure", False))
                 checks.append(
                     Check(
-                        name=str(st.get("name", "")),
-                        bucket=classify_gitlab_status(str(st.get("status", ""))),
+                        name=name,
+                        bucket=classify_gitlab_status(
+                            str(st.get("status", "")),
+                            allow_failure=allow_failure,
+                        ),
                         link=str(st.get("target_url", "") or st.get("web_url", "")),
                     )
                 )
+                if name:
+                    seen_names.add(name)
 
-        ci = classify_checks(checks)
-        if ci is None:
-            has_ci = await self._has_ci_config(ref, head)
-            ci = CiStatus.NO_CHECKS if has_ci else CiStatus.NO_WORKFLOWS
+        if stale_pipeline and not checks:
+            ci = CiStatus.NO_CHECKS
+        else:
+            classified = classify_checks(checks)
+            if classified is not None:
+                ci = classified
+            elif stale_pipeline:
+                ci = CiStatus.NO_CHECKS
+            else:
+                has_ci = await self._has_ci_config(ref, head)
+                ci = CiStatus.NO_CHECKS if has_ci else CiStatus.NO_WORKFLOWS
 
         return GateReport(
             pr_url=ref.url,
@@ -327,26 +375,28 @@ class GitLabGate:
 
         file_args = ref.api(f"repository/files/.gitlab-ci.yml?ref={quote(head, safe='')}")
         result = await self.runner(file_args)
-        if result.returncode == 0 and "404 File Not Found" not in result.stdout:
+        if (
+            result.returncode == 0
+            and not HTTP_ERROR_RE.search(result.stderr)
+            and "404 File Not Found" not in result.stdout
+        ):
             return True
 
-        proj_args = ref.api("")
-        try:
-            proj_data = await self._json(proj_args)
-            if (
-                proj_data.get("ci_config_path")
-                or proj_data.get("auto_devops_enabled") is True
-            ):
-                return True
-        except Exception:
-            pass
+        # Affirmative 404 (file absent)
+        is_404 = "(HTTP 404)" in result.stderr or "404 File Not Found" in result.stdout
+        if not is_404:
+            raise _failure(file_args, result)
 
-        return False
+        proj_args = ref.api("")
+        proj_data = await self._json(proj_args)
+        return bool(
+            proj_data.get("ci_config_path")
+            or proj_data.get("auto_devops_enabled") is True
+        )
 
     async def _json(self, args: Sequence[str]) -> dict[str, Any]:
         result = await self.runner(args)
-        if result.returncode != 0:
-            raise _failure(args, result)
+        _check_result(args, result)
         text = result.stdout.strip()
         try:
             data: Any = json.loads(text)
@@ -358,22 +408,28 @@ class GitLabGate:
             err in str(data["message"]) for err in ("404", "401", "403")
         ):
             raise _failure(args, result)
+        if "error" in data:
+            raise _failure(args, result)
         return data
 
     async def _json_list(self, args: Sequence[str]) -> list[Any]:
         result = await self.runner(args)
-        if result.returncode != 0:
-            return []
+        _check_result(args, result)
         text = result.stdout.strip()
         if not text:
             return []
         try:
             data: Any = json.loads(text)
-        except json.JSONDecodeError:
-            return []
-        if isinstance(data, list):
-            return data
-        return []
+        except json.JSONDecodeError as exc:
+            raise GitLabGateError(f"{_describe(args)} printed invalid JSON") from exc
+        if not isinstance(data, list):
+            raise _failure(args, result)
+        return data
+
+
+def _check_result(args: Sequence[str], result: GlabResult) -> None:
+    if result.returncode != 0 or HTTP_ERROR_RE.search(result.stderr):
+        raise _failure(args, result)
 
 
 def _describe(args: Sequence[str]) -> str:

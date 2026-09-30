@@ -114,9 +114,11 @@ def test_invalid_mr_url_raises_value_error() -> None:
 def test_classify_gitlab_status() -> None:
     assert classify_gitlab_status("success") == "pass"
     assert classify_gitlab_status("failed") == "fail"
+    assert classify_gitlab_status("failed", allow_failure=True) == "skipping"
     assert classify_gitlab_status("canceled") == "cancel"
     assert classify_gitlab_status("skipped") == "skipping"
     assert classify_gitlab_status("manual") == "fail"
+    assert classify_gitlab_status("manual", allow_failure=True) == "skipping"
     assert classify_gitlab_status("running") == "pending"
     assert classify_gitlab_status("pending") == "pending"
 
@@ -127,8 +129,20 @@ def test_map_detailed_merge_status() -> None:
     assert map_detailed_merge_status("need_rebase", False) == (Mergeable.CONFLICTING, "need_rebase")
     assert map_detailed_merge_status("preparing", False) == (Mergeable.UNKNOWN, "preparing")
     assert map_detailed_merge_status("discussions_not_resolved", False) == (
-        Mergeable.CONFLICTING,
+        Mergeable.CLEAN,
         "discussions_not_resolved",
+    )
+    assert map_detailed_merge_status("not_approved", False) == (
+        Mergeable.CLEAN,
+        "not_approved",
+    )
+    assert map_detailed_merge_status("draft_status", False) == (
+        Mergeable.CLEAN,
+        "draft_status",
+    )
+    assert map_detailed_merge_status("blocked_status", False) == (
+        Mergeable.CLEAN,
+        "blocked_status",
     )
 
 
@@ -175,6 +189,13 @@ async def test_clean_green_mr_passes() -> None:
     assert report.merge_state_status == "mergeable"
     assert report.elapsed_s == 0.0
     assert clock.now == 0.0
+
+    jobs_calls = [c for c in runner.calls if "pipelines/10/jobs" in " ".join(c)]
+    assert len(jobs_calls) == 1
+    assert "--paginate" in jobs_calls[0]
+    status_calls = [c for c in runner.calls if "statuses" in " ".join(c)]
+    assert len(status_calls) == 1
+    assert "--paginate" in status_calls[0]
 
 
 @pytest.mark.asyncio
@@ -380,4 +401,187 @@ async def test_error_handling_invalid_sha_reported() -> None:
     gate, clock = make_gate(runner)
 
     with pytest.raises(GitLabGateError, match="not a commit SHA"):
+        await gate.check(MR_URL, HEAD_SHA)
+
+
+@pytest.mark.asyncio
+async def test_jobs_with_allow_failure_and_manual_pass() -> None:
+    jobs = [
+        {
+            "id": 1,
+            "name": "lint",
+            "status": "success",
+            "allow_failure": False,
+            "web_url": "https://gitlab-box.local/jobs/1",
+        },
+        {
+            "id": 2,
+            "name": "flaky_test",
+            "status": "failed",
+            "allow_failure": True,
+            "web_url": "https://gitlab-box.local/jobs/2",
+        },
+        {
+            "id": 3,
+            "name": "deploy_staging",
+            "status": "manual",
+            "allow_failure": True,
+            "web_url": "https://gitlab-box.local/jobs/3",
+        },
+    ]
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, load_fixture("mr_clean.json"), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "pipelines/10/jobs": GlabResult(0, json.dumps(jobs), ""),
+            "statuses": GlabResult(0, "[]", ""),
+        }
+    )
+    gate, _ = make_gate(runner)
+
+    report = await gate.check(MR_URL, HEAD_SHA)
+
+    assert report.ci == CiStatus.PASS
+    assert len(report.checks) == 3
+    buckets = {c.name: c.bucket for c in report.checks}
+    assert buckets["lint"] == "pass"
+    assert buckets["flaky_test"] == "skipping"
+    assert buckets["deploy_staging"] == "skipping"
+
+
+@pytest.mark.asyncio
+async def test_deduplicate_pipeline_jobs_and_commit_statuses() -> None:
+    jobs = [
+        {
+            "id": 1,
+            "name": "test_job",
+            "status": "success",
+            "allow_failure": False,
+            "web_url": "https://gitlab-box.local/jobs/1",
+        },
+    ]
+    # Commit statuses returns the pipeline job again plus an external check
+    statuses = [
+        {
+            "id": 1,
+            "name": "test_job",
+            "status": "success",
+            "allow_failure": False,
+            "target_url": "https://gitlab-box.local/jobs/1",
+        },
+        {
+            "id": 2,
+            "name": "external_ci",
+            "status": "success",
+            "allow_failure": False,
+            "target_url": "https://ci.external.com/build/2",
+        },
+    ]
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, load_fixture("mr_clean.json"), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "pipelines/10/jobs": GlabResult(0, json.dumps(jobs), ""),
+            "statuses": GlabResult(0, json.dumps(statuses), ""),
+        }
+    )
+    gate, _ = make_gate(runner)
+
+    report = await gate.check(MR_URL, HEAD_SHA)
+
+    assert report.ci == CiStatus.PASS
+    assert len(report.checks) == 2
+    check_names = [c.name for c in report.checks]
+    assert check_names == ["test_job", "external_ci"]
+
+
+@pytest.mark.asyncio
+async def test_stale_pipeline_sha_reports_no_checks() -> None:
+    mr_data = json.loads(load_fixture("mr_clean.json"))
+    # Set head_pipeline.sha to an older commit
+    mr_data["head_pipeline"]["sha"] = "0000000000000000000000000000000000000000"
+
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, json.dumps(mr_data), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "statuses": GlabResult(0, "[]", ""),
+            "files/.gitlab-ci.yml": GlabResult(0, '{"file_name": ".gitlab-ci.yml"}', ""),
+        }
+    )
+    # Use small timeout to observe poll timeout when NO_CHECKS
+    clock = FakeClock()
+    gate = GitLabGate(
+        runner=runner,
+        clock=clock,
+        sleep=clock.sleep,
+        poll_interval_s=1.0,
+        poll_timeout_s=2.0,
+    )
+
+    report = await gate.check(MR_URL, HEAD_SHA)
+
+    assert report.ci == CiStatus.NO_CHECKS
+
+
+@pytest.mark.asyncio
+async def test_json_list_fails_closed_on_http_error() -> None:
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, load_fixture("mr_clean.json"), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "pipelines/10/jobs": GlabResult(
+                0,
+                '{"message": "500 Internal Server Error"}',
+                "glab: 500 Internal Server Error (HTTP 500)",
+            ),
+            "statuses": GlabResult(0, "[]", ""),
+        }
+    )
+    gate, _ = make_gate(runner)
+
+    with pytest.raises(GitLabGateError, match="HTTP 500"):
+        await gate.check(MR_URL, HEAD_SHA)
+
+
+@pytest.mark.asyncio
+async def test_has_ci_config_fails_closed_on_500() -> None:
+    mr_no_pipeline = json.loads(load_fixture("mr_clean.json"))
+    mr_no_pipeline["head_pipeline"] = None
+
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, json.dumps(mr_no_pipeline), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "statuses": GlabResult(0, "[]", ""),
+            "files/.gitlab-ci.yml": GlabResult(
+                0,
+                '{"message": "500 Internal Server Error"}',
+                "glab: 500 Internal Server Error (HTTP 500)",
+            ),
+        }
+    )
+    gate, _ = make_gate(runner)
+
+    with pytest.raises(GitLabGateError, match="HTTP 500"):
         await gate.check(MR_URL, HEAD_SHA)

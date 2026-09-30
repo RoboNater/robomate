@@ -117,7 +117,7 @@ def _repo_lock(directory: Path) -> Iterator[None]:
 
 
 async def _up(args: argparse.Namespace) -> None:
-    repo = resolve_repository(Path.cwd())
+    repo = resolve_repository(Path.cwd(), probe_cli=True)
     directory = state_dir(repo.root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)

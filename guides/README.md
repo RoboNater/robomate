@@ -10,5 +10,10 @@ The plan Step 5 content is in `worker.md`, `implementer.md` and `reviewer.md`
 and `assign_task(role="rebase")` points workers at it.
 
 File names are role names as they appear in `assign_task(role=...)`: lowercase
-slugs matching `[a-z][a-z0-9-]*`, with a `.md` suffix. Anything else here —
-this README included — is not a role and is not served.
+slugs matching `[a-z][a-z0-9-]*`, with a `.md` suffix. Anything else directly here —
+this README included — is not a role and is not served directly.
+
+Forge-specific appendices live in the `forge/` subdirectory (e.g. `forge/github.md`,
+`forge/gitlab.md`). When a forge is configured on the hub or requested via `?forge=`,
+the hub composes the role guide with the matching forge appendix before serving it (spec §10).
+
