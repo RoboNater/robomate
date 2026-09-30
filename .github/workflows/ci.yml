@@ -24,3 +24,15 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked mypy
       - run: uv run --locked pytest
+
+  # Native Windows, limited to the modules that pass there today (#58). It
+  # holds the stdio regression for #65, which cannot fail on Linux.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-packages --dev
+      - run: uv run --locked pytest tests/test_cli.py tests/test_registry.py tests/test_discovery.py

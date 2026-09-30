@@ -3,11 +3,15 @@
 import errno
 import json
 import os
+import queue
+import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -284,7 +288,8 @@ def test_status_renders_seeded_workflow_and_agents(
                                 capture_output=True, timeout=10)
         assert result.returncode == 0, result.stderr
         assert "Workflow: active — Build issue #43" in result.stdout
-        assert "Orchestrator: alice" in result.stdout
+        assert re.search(r"Orchestrator: alice  session \S+  last seen \d+s ago\n",
+                         result.stdout), result.stdout
         assert f"bob: codex / gpt-6-sol  alive  task {task.id}" in result.stdout
         assert "dave: unknown / unknown  released" in result.stdout
         assert f"{task.id}: implementer  bob  input-required" in result.stdout
@@ -439,3 +444,91 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
         for repo, process in ((root, first), (other, second)):
             if process.poll() is None:
                 stop(repo, env, process)
+
+
+def test_worker_mcp_first_call_needs_no_further_stdin(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """The first worker tool call validates HUB_WORKSPACE with git (#65).
+
+    On Windows a git child that inherits the MCP stdin pipe blocks until the
+    harness writes again, so check_in hung until a timeout or shutdown. After
+    sending check_in this test writes nothing more and requires the answer.
+    """
+    root, env = repository
+    workspace = (tmp_path / "charlie").resolve()
+    workspace.mkdir()
+    origin = "git@github.com:example/repo.git"
+    subprocess.run(["git", "init", "-b", "main"], cwd=workspace, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", origin], cwd=workspace, check=True)
+    (workspace / ".git" / "robo-agents-workspace.json").write_text(json.dumps({
+        "agent": "charlie", "path": str(workspace), "repository": origin,
+        "workspace_id": "c" * 64,
+    }))
+    with socket.socket() as available:
+        available.bind(("127.0.0.1", 0))
+        port = available.getsockname()[1]
+    hub = start(root, env, "--port", str(port))
+    worker: subprocess.Popen[bytes] | None = None
+    try:
+        info = await_hub(root, hub)
+        worker_env = {
+            **env, "ROBOMATE_HUB_URL": str(info["url"]),
+            "ROBOMATE_TOKEN_FILE": str(root / ".robomate" / "token"),
+            "AGENT_NAME": "charlie", "HUB_HARNESS": "claude-code", "HUB_MODEL": "opus",
+            "HUB_PROVIDER": "anthropic", "HUB_WORKSPACE": str(workspace),
+        }
+        worker = subprocess.Popen(
+            [CLI, "mcp", "--role", "worker"], cwd=workspace, env=worker_env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        stdin, stdout = worker.stdin, worker.stdout
+        assert stdin is not None and stdout is not None
+        responses: queue.Queue[dict[str, Any]] = queue.Queue()
+
+        def read() -> None:
+            for line in stdout:
+                responses.put(json.loads(line))
+
+        threading.Thread(target=read, daemon=True).start()
+        for payload in (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "check_in", "arguments": {}}},
+        ):
+            stdin.write((json.dumps(payload) + "\n").encode())
+            stdin.flush()
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                response = responses.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise AssertionError(
+                    "check_in got no answer without a further stdin write"
+                ) from None
+            if response.get("id") == 2:
+                break
+        result = response["result"]
+        assert not result.get("isError"), result
+        assert json.loads(result["content"][0]["text"])["status"] == "registered"
+        stdin.close()
+        worker.wait(timeout=10)
+        stop(root, env, hub)
+    finally:
+        if worker is not None and worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=10)
+        if hub.poll() is None:
+            hub.terminate()
+            hub.wait(timeout=10)
+
+
+@pytest.mark.parametrize(("seconds", "text"), [
+    (-3, "0s"), (42, "42s"), (125, "2m 5s"), (4 * 3600 + 61, "4h 1m"),
+])
+def test_status_age_is_compact(seconds: int, text: str) -> None:
+    assert cli._age(timedelta(seconds=seconds)) == text

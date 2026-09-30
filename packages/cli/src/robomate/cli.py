@@ -16,7 +16,7 @@ import urllib.request
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -203,6 +203,15 @@ def _down() -> None:
     print(f"Stopping hub at {endpoint.url}")
 
 
+def _age(elapsed: timedelta) -> str:
+    seconds = max(0, int(elapsed.total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+
+
 def _status(as_json: bool) -> None:
     """Show the discovered hub, retaining local metadata for stopped hubs."""
     try:
@@ -267,8 +276,12 @@ def _status(as_json: bool) -> None:
         print("Workflow: none")
     orchestrator = status["orchestrator"]
     if orchestrator:
+        # An age, not the hub's UTC timestamp, which read as hours stale in
+        # other zones (#65). Alice is only seen per call, so gaps of about two
+        # minutes while she holds wait_for_event are normal.
+        seen = datetime.fromisoformat(orchestrator["last_seen"])
         print(f"Orchestrator: {orchestrator['name']}  session {orchestrator['session']}"
-              f"  last seen {orchestrator['last_seen']}")
+              f"  last seen {_age(datetime.now(UTC) - seen)} ago")
     else:
         print("Orchestrator: none")
     print(f"Agents: {len(status['agents'])}")
