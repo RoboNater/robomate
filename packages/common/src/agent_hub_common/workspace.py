@@ -15,9 +15,12 @@ IDENTITY_FILE = "robo-agents-workspace.json"
 
 
 def git(workspace: Path, *args: str) -> str:
+    # stdin=DEVNULL: worker-mcp validates HUB_WORKSPACE with stdin owned by MCP.
+    # A child inheriting that pipe on Windows blocks until the next message (#65).
     try:
         return subprocess.run(
-            ["git", "-C", str(workspace), *args], check=True, capture_output=True, text=True
+            ["git", "-C", str(workspace), *args], check=True, capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ConfigurationError(

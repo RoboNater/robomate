@@ -36,9 +36,12 @@ class HubEndpoint:
 
 
 def _git(cwd: Path, *args: str) -> str:
+    # stdin=DEVNULL: `robomate mcp` reaches this with stdin owned by MCP. A
+    # child inheriting that pipe on Windows blocks until the next message (#65).
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=cwd, text=True, stderr=subprocess.PIPE
+            ["git", *args], cwd=cwd, text=True, stdin=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise DiscoveryError(f"cannot resolve repository with git {' '.join(args)}: {exc}") from exc
@@ -155,6 +158,7 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
                 ["glab", "auth", "status", f"--hostname={host}"],
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 timeout=2,
             )
             output = proc.stdout + proc.stderr
@@ -172,6 +176,7 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
                 ["gh", "auth", "status", f"--hostname={host}"],
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 timeout=2,
             )
             output = proc.stdout + proc.stderr

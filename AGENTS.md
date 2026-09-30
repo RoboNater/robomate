@@ -54,7 +54,9 @@ Don't pipe a check through `tail` or `head` to shorten it: the pipeline
 returns the last command's exit status, so a failing suite looks green. Use
 `set -o pipefail`, or redirect to a file and check `$?`.
 
-Verbatim what CI runs, in order. `--locked` fails instead of silently
+Verbatim what CI runs, in order. A second CI job runs `pytest tests/test_cli.py
+tests/test_registry.py tests/test_discovery.py` on native Windows, the modules
+that pass there today (#58). `--locked` fails instead of silently
 relocking, so an error there means `pyproject.toml` and `uv.lock` disagree —
 resolve that with uv, never by hand-editing the lockfile.
 
