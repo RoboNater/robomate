@@ -1,0 +1,31 @@
+{
+  "id": 2,
+  "iid": 2,
+  "project_id": 2,
+  "title": "Stale MR",
+  "state": "opened",
+  "target_branch": "main",
+  "source_branch": "stale-branch",
+  "user_notes_count": 0,
+  "merge_status": "can_be_merged",
+  "detailed_merge_status": "mergeable",
+  "sha": "ae902885739d1d768567744f2fb75838417d7908",
+  "merge_commit_sha": null,
+  "squash_commit_sha": null,
+  "web_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/2",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "head_pipeline": {
+    "id": 11,
+    "sha": "ae902885739d1d768567744f2fb75838417d7908",
+    "ref": "stale-branch",
+    "status": "success",
+    "web_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/11"
+  },
+  "diff_refs": {
+    "base_sha": "0b56cda79d90ec1fbcc09c09d6d73486d2060621",
+    "head_sha": "ae902885739d1d768567744f2fb75838417d7908",
+    "start_sha": "84388471501e9d0b03b0914d00c1cb457a55d89d"
+  },
+  "diverged_commits_count": 2
+}

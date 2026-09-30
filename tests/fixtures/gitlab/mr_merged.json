@@ -1,0 +1,31 @@
+{
+  "id": 1,
+  "iid": 1,
+  "project_id": 2,
+  "title": "Merged MR",
+  "state": "merged",
+  "target_branch": "main",
+  "source_branch": "feature",
+  "user_notes_count": 1,
+  "merge_status": "can_be_merged",
+  "detailed_merge_status": "not_open",
+  "sha": "a7f1f5e2fb871446bd8ea71ce3deb7963ff2d751",
+  "merge_commit_sha": "84388471501e9d0b03b0914d00c1cb457a55d89d",
+  "squash_commit_sha": null,
+  "web_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/1",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "head_pipeline": {
+    "id": 10,
+    "sha": "a7f1f5e2fb871446bd8ea71ce3deb7963ff2d751",
+    "ref": "feature",
+    "status": "success",
+    "web_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/10"
+  },
+  "diff_refs": {
+    "base_sha": "0b56cda79d90ec1fbcc09c09d6d73486d2060621",
+    "head_sha": "a7f1f5e2fb871446bd8ea71ce3deb7963ff2d751",
+    "start_sha": "0b56cda79d90ec1fbcc09c09d6d73486d2060621"
+  },
+  "diverged_commits_count": 0
+}

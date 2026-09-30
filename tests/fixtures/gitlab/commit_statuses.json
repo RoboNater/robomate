@@ -1,0 +1,16 @@
+[
+  {
+    "id": 501,
+    "sha": "a7f1f5e2fb871446bd8ea71ce3deb7963ff2d751",
+    "ref": "feature",
+    "status": "success",
+    "name": "external/security-scan",
+    "target_url": "https://sec.example.com/scan/1",
+    "description": "Security scan passed",
+    "created_at": "2026-09-30T02:20:00.000Z",
+    "started_at": null,
+    "finished_at": null,
+    "allow_failure": false,
+    "coverage": null
+  }
+]

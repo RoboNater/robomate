@@ -29,8 +29,8 @@ def _not_found(role: str) -> HTTPException:
     return HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no guide for role {role!r}")
 
 
-def guide_response(guides_dir: Path, role: str) -> Response:
-    """Serve `{role}.md` from the guides directory, or raise 404."""
+def guide_response(guides_dir: Path, role: str, forge: str | None = None) -> Response:
+    """Serve `{role}.md` from the guides directory, optionally composed with forge appendix."""
 
     if not ROLE_PATTERN.fullmatch(role):
         raise _not_found(role)
@@ -42,4 +42,10 @@ def guide_response(guides_dir: Path, role: str) -> Response:
     if not path.is_relative_to(root) or not path.is_file():
         raise _not_found(role)
 
-    return Response(content=path.read_bytes(), media_type=MEDIA_TYPE)
+    content = path.read_bytes()
+    if forge and ROLE_PATTERN.fullmatch(forge):
+        appendix_path = (root / "forge" / f"{forge}.md").resolve()
+        if appendix_path.is_file() and appendix_path.is_relative_to(root):
+            content = content + b"\n\n" + appendix_path.read_bytes()
+
+    return Response(content=content, media_type=MEDIA_TYPE)

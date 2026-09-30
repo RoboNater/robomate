@@ -1,0 +1,12 @@
+[
+  {
+    "id": 1,
+    "body": "Reviewer agent charlie on behalf of RoboNater: Approved.",
+    "system": false,
+    "resolvable": false,
+    "author": {
+      "id": 3,
+      "username": "RoboNater"
+    }
+  }
+]

@@ -169,9 +169,10 @@ def create_app(
         return JSONResponse(body, background=background)
 
     @app.get("/guides/{role}.md", include_in_schema=False, dependencies=[Depends(require_bearer)])
-    async def role_guide(role: str, request: Request) -> Response:
+    async def role_guide(role: str, request: Request, forge: str | None = None) -> Response:
+        effective_forge = forge
         if not accounting.enabled:
-            return guide_response(resolved.guides_dir, role)
+            return guide_response(resolved.guides_dir, role, forge=effective_forge)
         call = begin_a2a("get_role_guide")
         # The guide route carries no A2A identity. worker-mcp names itself in a
         # header, which is counted only when it is a registered agent's name.
@@ -179,7 +180,7 @@ def create_app(
         if claimed and store.agent_by_name(claimed) is not None:
             call.actor = claimed
         try:
-            response = guide_response(resolved.guides_dir, role)
+            response = guide_response(resolved.guides_dir, role, forge=effective_forge)
         except HTTPException as exc:
             call.outcome = "not_found"
             record_http(call, exc.status_code, 0, len(json.dumps({"detail": exc.detail})))

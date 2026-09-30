@@ -1,0 +1,14 @@
+{
+  "user_has_approved": false,
+  "user_can_approve": true,
+  "approved": true,
+  "approved_by": [
+    {
+      "user": {
+        "id": 4,
+        "username": "reviewer_agent",
+        "name": "Reviewer Agent"
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "main",
+  "commit": {
+    "id": "84388471501e9d0b03b0914d00c1cb457a55d89d",
+    "short_id": "84388471",
+    "title": "Merge branch 'test-probe' into 'main'",
+    "message": "Merge branch 'test-probe' into 'main'\n"
+  },
+  "merged": false,
+  "protected": true,
+  "default": true
+}

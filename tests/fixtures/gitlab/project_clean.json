@@ -1,0 +1,14 @@
+{
+  "id": 2,
+  "name": "robomate-glab-sandbox",
+  "path_with_namespace": "RoboNater/robomate-glab-sandbox",
+  "default_branch": "main",
+  "merge_method": "merge",
+  "squash_option": "default_off",
+  "automatic_rebase_enabled": false,
+  "merge_trains_enabled": false,
+  "only_allow_merge_if_pipeline_succeeds": false,
+  "only_allow_merge_if_all_discussions_are_resolved": false,
+  "auto_devops_enabled": false,
+  "ci_config_path": null
+}

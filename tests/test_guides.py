@@ -175,3 +175,54 @@ def test_the_rebase_guide_documents_every_result_field() -> None:
     text = (CHECKED_IN_GUIDES / f"{TaskRole.REBASE}.md").read_text(encoding="utf-8")
 
     assert {name for name in RebaseResult.model_fields if f"`{name}`" not in text} == set()
+
+
+def test_a_guide_composes_with_forge_appendix(guides: Path) -> None:
+    (guides / "forge").mkdir()
+    (guides / "forge" / "gitlab.md").write_text(
+        "# GitLab Commands\nglab mr create\n", encoding="utf-8"
+    )
+
+    response = guide_response(guides, "worker", forge="gitlab")
+    assert response.status_code == 200
+    assert GUIDE.encode("utf-8") in response.body
+    assert b"# GitLab Commands" in response.body
+    assert b"glab mr create" in response.body
+
+
+async def test_route_serves_composed_guide_with_forge_param(
+    app: FastAPI, client: httpx.AsyncClient, guides: Path
+) -> None:
+    (guides / "forge").mkdir()
+    (guides / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+
+    response = await client.get("/guides/worker.md?forge=github")
+    assert response.status_code == 200
+    assert GUIDE in response.text
+    assert "# GitHub Appendix" in response.text
+
+
+async def test_hub_with_forge_serves_unchanged_guide_without_param(
+    settings: HubSettings, guides: Path
+) -> None:
+    """Hub created with hub_info forge does not alter guide without ?forge= (r2-1)."""
+    from agent_hub.app import create_app
+
+    (guides / "forge").mkdir()
+    (guides / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+
+    hub_info = {"forge": "github", "hub_id": "test-hub-123"}
+    hub_app = create_app(settings, hub_info=hub_info)
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/worker.md")
+        assert response.status_code == 200
+        assert response.text == GUIDE
+        assert "# GitHub Appendix" not in response.text

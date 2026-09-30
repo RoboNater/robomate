@@ -1,0 +1,25 @@
+{
+  "id": 3,
+  "iid": 3,
+  "project_id": 2,
+  "title": "Conflicting MR",
+  "state": "opened",
+  "target_branch": "main",
+  "source_branch": "conflict-branch",
+  "user_notes_count": 0,
+  "merge_status": "cannot_be_merged",
+  "detailed_merge_status": "conflict",
+  "sha": "232ee469f8e43bc329bc3a4383a42fb876d838c9",
+  "merge_commit_sha": null,
+  "squash_commit_sha": null,
+  "web_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/3",
+  "has_conflicts": true,
+  "blocking_discussions_resolved": true,
+  "head_pipeline": null,
+  "diff_refs": {
+    "base_sha": "0b56cda79d90ec1fbcc09c09d6d73486d2060621",
+    "head_sha": "232ee469f8e43bc329bc3a4383a42fb876d838c9",
+    "start_sha": "84388471501e9d0b03b0914d00c1cb457a55d89d"
+  },
+  "diverged_commits_count": 2
+}
