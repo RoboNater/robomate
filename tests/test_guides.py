@@ -200,3 +200,29 @@ async def test_route_serves_composed_guide_with_forge_param(
     assert response.status_code == 200
     assert GUIDE in response.text
     assert "# GitHub Appendix" in response.text
+
+
+async def test_hub_with_forge_serves_unchanged_guide_without_param(
+    settings: HubSettings, guides: Path
+) -> None:
+    """Hub created with hub_info forge does not alter guide without ?forge= (r2-1)."""
+    from agent_hub.app import create_app
+
+    (guides / "forge").mkdir()
+    (guides / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+
+    hub_info = {"forge": "github", "hub_id": "test-hub-123"}
+    hub_app = create_app(settings, hub_info=hub_info)
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/worker.md")
+        assert response.status_code == 200
+        assert response.text == GUIDE
+        assert "# GitHub Appendix" not in response.text

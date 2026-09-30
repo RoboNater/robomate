@@ -49,11 +49,6 @@ def create_app(
 
     resolved = settings or HubSettings.from_env()
     hub_id = str(hub_info["hub_id"]) if hub_info is not None else uuid.uuid4().hex
-    default_forge = (
-        str(hub_info["forge"])
-        if hub_info is not None and hub_info.get("forge")
-        else None
-    )
     card = build_agent_card(resolved.public_url)
     store = HubStore(
         path=resolved.database_path,
@@ -175,7 +170,7 @@ def create_app(
 
     @app.get("/guides/{role}.md", include_in_schema=False, dependencies=[Depends(require_bearer)])
     async def role_guide(role: str, request: Request, forge: str | None = None) -> Response:
-        effective_forge = forge or default_forge
+        effective_forge = forge
         if not accounting.enabled:
             return guide_response(resolved.guides_dir, role, forge=effective_forge)
         call = begin_a2a("get_role_guide")

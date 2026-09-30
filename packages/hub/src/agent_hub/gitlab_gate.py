@@ -278,7 +278,7 @@ class GitLabGate:
             base_behind_main = base_sha != main_sha
 
         checks: list[Check] = []
-        seen_names: set[str] = set()
+        seen_pipeline_jobs: set[tuple[str, Any]] = set()
         stale_pipeline = False
         head_pipeline = mr_data.get("head_pipeline")
         if isinstance(head_pipeline, dict) and "id" in head_pipeline:
@@ -291,7 +291,7 @@ class GitLabGate:
                 pipeline_status = str(head_pipeline.get("status", ""))
                 pipeline_url = str(head_pipeline.get("web_url", ""))
                 jobs_data = await self._json_list(
-                    ref.api(f"pipelines/{pipeline_id}/jobs", paginate=True)
+                    ref.api(f"pipelines/{pipeline_id}/jobs?per_page=100", paginate=True)
                 )
                 if jobs_data:
                     for job in jobs_data:
@@ -309,7 +309,7 @@ class GitLabGate:
                                 )
                             )
                             if name:
-                                seen_names.add(name)
+                                seen_pipeline_jobs.add((name, pipeline_id))
                 else:
                     checks.append(
                         Check(
@@ -320,12 +320,12 @@ class GitLabGate:
                     )
 
         statuses = await self._json_list(
-            ref.api(f"repository/commits/{head}/statuses", paginate=True)
+            ref.api(f"repository/commits/{head}/statuses?per_page=100", paginate=True)
         )
         for st in statuses:
             if isinstance(st, dict):
                 name = str(st.get("name", ""))
-                if name and name in seen_names:
+                if name and (name, st.get("pipeline_id")) in seen_pipeline_jobs:
                     # Avoid double-counting pipeline jobs returned by commits/:sha/statuses
                     continue
                 allow_failure = bool(st.get("allow_failure", False))
@@ -339,17 +339,13 @@ class GitLabGate:
                         link=str(st.get("target_url", "") or st.get("web_url", "")),
                     )
                 )
-                if name:
-                    seen_names.add(name)
 
-        if stale_pipeline and not checks:
+        if stale_pipeline:
             ci = CiStatus.NO_CHECKS
         else:
             classified = classify_checks(checks)
             if classified is not None:
                 ci = classified
-            elif stale_pipeline:
-                ci = CiStatus.NO_CHECKS
             else:
                 has_ci = await self._has_ci_config(ref, head)
                 ci = CiStatus.NO_CHECKS if has_ci else CiStatus.NO_WORKFLOWS
@@ -418,13 +414,32 @@ class GitLabGate:
         text = result.stdout.strip()
         if not text:
             return []
+        if text.startswith("{"):
+            raise _failure(args, result)
         try:
-            data: Any = json.loads(text)
+            return _decode_json_arrays(text)
         except json.JSONDecodeError as exc:
             raise GitLabGateError(f"{_describe(args)} printed invalid JSON") from exc
-        if not isinstance(data, list):
-            raise _failure(args, result)
-        return data
+
+
+def _decode_json_arrays(text: str) -> list[Any]:
+    """Decode concatenated JSON arrays output by glab api --paginate ([...][...])."""
+    decoder = json.JSONDecoder()
+    pos = 0
+    length = len(text)
+    items: list[Any] = []
+    while pos < length:
+        while pos < length and text[pos].isspace():
+            pos += 1
+        if pos >= length:
+            break
+        val, end = decoder.raw_decode(text, idx=pos)
+        if isinstance(val, list):
+            items.extend(val)
+        else:
+            items.append(val)
+        pos = end
+    return items
 
 
 def _check_result(args: Sequence[str], result: GlabResult) -> None:

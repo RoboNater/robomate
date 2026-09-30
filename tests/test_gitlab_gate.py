@@ -464,13 +464,14 @@ async def test_deduplicate_pipeline_jobs_and_commit_statuses() -> None:
             "web_url": "https://gitlab-box.local/jobs/1",
         },
     ]
-    # Commit statuses returns the pipeline job again plus an external check
+    # Commit statuses returns the pipeline job again plus external checks
     statuses = [
         {
             "id": 1,
             "name": "test_job",
             "status": "success",
             "allow_failure": False,
+            "pipeline_id": 10,
             "target_url": "https://gitlab-box.local/jobs/1",
         },
         {
@@ -478,7 +479,16 @@ async def test_deduplicate_pipeline_jobs_and_commit_statuses() -> None:
             "name": "external_ci",
             "status": "success",
             "allow_failure": False,
+            "pipeline_id": None,
             "target_url": "https://ci.external.com/build/2",
+        },
+        {
+            "id": 3,
+            "name": "test_job",
+            "status": "success",
+            "allow_failure": False,
+            "pipeline_id": None,
+            "target_url": "https://external.ci/test_job",
         },
     ]
     runner = FakeGlab(
@@ -498,9 +508,11 @@ async def test_deduplicate_pipeline_jobs_and_commit_statuses() -> None:
     report = await gate.check(MR_URL, HEAD_SHA)
 
     assert report.ci == CiStatus.PASS
-    assert len(report.checks) == 2
-    check_names = [c.name for c in report.checks]
-    assert check_names == ["test_job", "external_ci"]
+    assert len(report.checks) == 3
+    links = [c.link for c in report.checks]
+    assert "https://gitlab-box.local/jobs/1" in links
+    assert "https://ci.external.com/build/2" in links
+    assert "https://external.ci/test_job" in links
 
 
 @pytest.mark.asyncio
@@ -517,7 +529,8 @@ async def test_stale_pipeline_sha_reports_no_checks() -> None:
             "repository/branches/main": GlabResult(
                 0, load_fixture("branch_main.json"), ""
             ),
-            "statuses": GlabResult(0, "[]", ""),
+            # External green statuses exist on the new head
+            "statuses": GlabResult(0, load_fixture("commit_statuses.json"), ""),
             "files/.gitlab-ci.yml": GlabResult(0, '{"file_name": ".gitlab-ci.yml"}', ""),
         }
     )
@@ -534,6 +547,38 @@ async def test_stale_pipeline_sha_reports_no_checks() -> None:
     report = await gate.check(MR_URL, HEAD_SHA)
 
     assert report.ci == CiStatus.NO_CHECKS
+
+
+@pytest.mark.asyncio
+async def test_paginate_concatenated_json_arrays() -> None:
+    page1 = [
+        {"id": 1, "name": "job1", "status": "success", "allow_failure": False, "web_url": "https://gl/1"},
+    ]
+    page2 = [
+        {"id": 2, "name": "job2", "status": "success", "allow_failure": False, "web_url": "https://gl/2"},
+    ]
+    # glab api --paginate concatenates arrays back to back
+    concatenated_pages = json.dumps(page1) + json.dumps(page2)
+
+    runner = FakeGlab(
+        {
+            "merge_requests/1?include_diverged_commits_count=true": GlabResult(
+                0, load_fixture("mr_clean.json"), ""
+            ),
+            "repository/branches/main": GlabResult(
+                0, load_fixture("branch_main.json"), ""
+            ),
+            "pipelines/10/jobs": GlabResult(0, concatenated_pages, ""),
+            "statuses": GlabResult(0, "[]", ""),
+        }
+    )
+    gate, _ = make_gate(runner)
+
+    report = await gate.check(MR_URL, HEAD_SHA)
+
+    assert report.ci == CiStatus.PASS
+    assert len(report.checks) == 2
+    assert [c.name for c in report.checks] == ["job1", "job2"]
 
 
 @pytest.mark.asyncio
