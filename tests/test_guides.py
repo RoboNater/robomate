@@ -175,3 +175,28 @@ def test_the_rebase_guide_documents_every_result_field() -> None:
     text = (CHECKED_IN_GUIDES / f"{TaskRole.REBASE}.md").read_text(encoding="utf-8")
 
     assert {name for name in RebaseResult.model_fields if f"`{name}`" not in text} == set()
+
+
+def test_a_guide_composes_with_forge_appendix(guides: Path) -> None:
+    (guides / "forge").mkdir()
+    (guides / "forge" / "gitlab.md").write_text(
+        "# GitLab Commands\nglab mr create\n", encoding="utf-8"
+    )
+
+    response = guide_response(guides, "worker", forge="gitlab")
+    assert response.status_code == 200
+    assert GUIDE.encode("utf-8") in response.body
+    assert b"# GitLab Commands" in response.body
+    assert b"glab mr create" in response.body
+
+
+async def test_route_serves_composed_guide_with_forge_param(
+    app: FastAPI, client: httpx.AsyncClient, guides: Path
+) -> None:
+    (guides / "forge").mkdir()
+    (guides / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+
+    response = await client.get("/guides/worker.md?forge=github")
+    assert response.status_code == 200
+    assert GUIDE in response.text
+    assert "# GitHub Appendix" in response.text
