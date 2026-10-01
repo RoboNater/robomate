@@ -534,8 +534,17 @@ itself.
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
-**Parallelism:** M5's gate adapter and forge detection can start after M1 and run alongside
-M2–M3. M4 depends on M2. M3's certification needs M2's join and worktrees.
+**Order:** M1, M5, M2, M3, M4, M6. The names stay M1–M6; only the order changed (#68).
+
+**Parallelism:** M5 goes first after M1. GitLab is an MVP goal (§1), its gate and forge
+detection need neither `join` nor worktrees, and #50 already prototyped both. It runs on the
+M1 topology, with runs prepared by `prepare-run.py`
+([M5 plan](development/implementation-plan-mvp-m5-gitlab.md)). For M2 this means the role
+guides are already forge-neutral and composed with a forge appendix at serve time.
+`guides/orchestrator.md` follows the same pattern, `join` reports the hub's forge (§5), and
+the GitLab preflight that `prepare-run.py` runs moves to `robomate submit` when M2 removes
+the script. M3's certification checks `glab` as well as `gh` (§9.3), and needs M2's join and
+worktrees. M4 depends on M2.
 
 ---
 
