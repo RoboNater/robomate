@@ -22,6 +22,8 @@ design, still in force where the MVP spec doesn't change it.
   schema version, wire `hub.schema_version`). Take a counter's value from there.
 - **Lessons learned: #3.** Earlier lessons are in [`docs/poc-lessons.md`](docs/poc-lessons.md).
 - **Minor nits: #4.**
+- **Local GitLab test instance and sandbox: #69.** Read it before any GitLab
+  work (M5) or a GitLab regression run.
 
 A bare `#N` here means a robomate issue. The specs and `docs/poc-*` predate the
 move, and their bare numbers are PoC issues.
