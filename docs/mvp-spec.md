@@ -397,7 +397,7 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed |
-| `check_merge_gate` | orchestrator | forge-dispatched (§10); same report shape |
+| `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape |
 | `ask_user` | orchestrator | **new** |
 
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
@@ -464,10 +464,29 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   or known to `glab` → GitLab; otherwise `--forge`. Recorded in `hub.json` and the workflow policy.
 - **Agents use the CLIs** (`gh`, `glab`) with their own authentication, as in the PoC.
 - **Merge gate** (`check_merge_gate`, read-only facts): a `ForgeGate` interface with
-  `GitHubGate` (the PoC implementation) and `GitLabGate`, which reads through `glab api` so the
-  hub needs no forge token of its own. It maps GitLab pipelines, `detailed_merge_status`, and
-  diverged-commit counts to the same report shape, following
+  `GitHubGate` (the PoC implementation) and `GitLabGate`, chosen at hub start from the forge
+  `up` recorded in `hub.json` (`gitlab` → `GitLabGate`, anything else → GitHub; restarts choose
+  the same). It maps GitLab pipelines, `detailed_merge_status`, and diverged-commit counts to
+  the same report shape, following
   [the GitLab feasibility study](feasibility-and-impact-of-supporting-gitlab-centric-workflows.md) §4.
+  - **Transport:** `glab api`, run with the environment of the operator who ran `robomate up`.
+    The hub holds no forge token and makes no HTTP calls to the forge.
+  - **Binding:** the gate reads only the hub's own project, whose host and path are parsed
+    once from `origin`; `--hostname` and every API path come from there, never from the MR
+    URL. A URL is accepted only as `https://<host>/<project>/-/merge_requests/<iid>`: no
+    userinfo, query, fragment, percent-encoding, or dot segment, and a port only if absent or
+    443; host and path segments compare case-insensitively. Anything else, including another
+    host or project, is refused with -32004 before any `glab` call. An origin served over
+    plain `http`, on another HTTPS port, or under a relative URL root is not supported; the
+    gate then fails closed on every call.
+  - **Pipelines:** every pipeline GitLab ran for the head SHA must pass, not only the MR's
+    `head_pipeline`. The gate lists them with `pipelines?sha=<head>` (each pipeline's own
+    status is a check) and reads `repository/commits/<head>/statuses` with `all` at its default,
+    keyed by job name and pipeline, so a green job in one pipeline cannot hide a red one in
+    another. Retrying a job or pipeline in place supersedes the earlier attempt; a new pipeline
+    for the same SHA supersedes nothing, so an older failure still fails the gate. Branch
+    pipelines are the supported configuration; a merged-results `head_pipeline`, whose SHA is
+    not the head, reads as `no_checks`.
 - **Merge:** the orchestrator merges with the forge CLI, bound to the approved SHA
   (`gh pr merge --match-head-commit …`; `glab mr merge --sha …` per the study §5).
 - **Unsupported on GitLab (preflight refuses or warns):** merge trains, auto-merge, server-side
@@ -515,7 +534,9 @@ Single operator. Loopback bind by default. One bearer token per hub in `.robomat
 read by `robomate mcp` through discovery, never written into harness configs. All token holders are
 trusted not to impersonate each other; identity and model metadata are self-declared (PoC §1).
 Agents share the operator's forge identity; the hub's typed reviewer verdict remains the
-approval record (PoC #37). Remote-agent mode requires a trusted network path.
+approval record (PoC #37). The merge gate runs the forge CLI with that identity, so it reads
+only the hub's own repository: a change-request URL, which arrives in untrusted worker
+results, never chooses the host or project (§10). Remote-agent mode requires a trusted network path.
 
 ---
 
@@ -573,7 +594,6 @@ worktrees. M4 depends on M2.
 | Tool surface | One static list (simple) vs per-role list via `tools/list_changed` (fewer schema tokens; harness support varies) | M3, from measured schema bytes |
 | Worktree root default | `<parent>/<repo>.robomate/` vs user state dir | M2 |
 | `gh`/`glab` merge vs local branch in a worktree | Remote-only branch delete + `robomate clean`, or merge from outside any checkout | M2 |
-| GitLab gate transport | `glab api` (recommended) vs direct REST with a hub-held token | M5 |
 | Certification bar | cycles / duration / pass rate over N attempts | M3 |
 | Default `reviewer_harness_differs` | keep `true` or relax to `false` for flexibility | M2 |
 

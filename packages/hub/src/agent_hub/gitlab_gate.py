@@ -1,9 +1,11 @@
 """The GitLab merge gate evaluating read-only MR facts through glab (spec §10).
 
 Deciding whether a GitLab Merge Request may merge requires querying `glab api`
-for MR details, diverged commit counts, pipeline jobs, commit status checks,
-and target branch tips. This module reads those facts and produces a standard
-GateReport conforming to ForgeGate.
+for MR details, diverged commit counts, the pipelines and commit statuses for
+the head, and target branch tips. This module reads those facts and produces a
+standard GateReport conforming to ForgeGate. The gate is bound to the hub's own
+project, parsed from `origin`; an MR URL anywhere else is refused before any
+`glab` call.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from time import monotonic
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from agent_hub_common import SHA_HEX_40_RE
 
@@ -39,11 +41,13 @@ GLAB_TIMEOUT_S = 30.0
 _STDERR_LIMIT = 500
 HTTP_ERROR_RE = re.compile(r"\(HTTP\s+([45]\d\d)\)")
 
-MR_URL_RE = re.compile(
-    r"https?://(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]+)?)"
-    r"/(?P<project>(?!\.\.?/)[A-Za-z0-9_.][A-Za-z0-9_./-]*?)"
-    r"/(?:-/)?merge_requests/(?P<iid>[1-9][0-9]*)/?"
-)
+# GitLab's project path rules: letters, digits, `_`, `-` and `.`, never
+# opening with `-`. The dot segments `.` and `..` are refused separately.
+_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")
+_HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+_IID_RE = re.compile(r"[1-9][0-9]{0,17}")
+_SCP_ORIGIN_RE = re.compile(r"(?:[^@/:]+@)?(?P<host>[^@/:]+):(?P<path>[^/].*)")
+_URL_LIMIT = 200
 
 
 class GitLabGateError(MergeGateError):
@@ -90,43 +94,152 @@ async def run_glab(args: Sequence[str]) -> GlabResult:
     )
 
 
+def _project_segments(path: str) -> tuple[str, ...] | None:
+    segments = tuple(path.split("/"))
+    if len(segments) < 2 or any(
+        segment in (".", "..") or not _SEGMENT_RE.fullmatch(segment) for segment in segments
+    ):
+        return None
+    return segments
+
+
 @dataclass(frozen=True, slots=True)
-class MergeRequestRef:
-    url: str
+class GitLabProject:
+    """The hub's own GitLab project: the only one its gate will read (§10, §12).
+
+    The host and path come from the operator's `origin`, never from an MR URL,
+    so a URL in a worker's result cannot point `glab` at another host or project.
+    """
+
     host: str
-    project: str
-    iid: int
+    segments: tuple[str, ...]
 
     @property
-    def hostname(self) -> str:
-        return self.host.split(":")[0]
+    def path(self) -> str:
+        return "/".join(self.segments)
+
+    @property
+    def web_url(self) -> str:
+        return f"https://{self.host}/{self.path}"
 
     @classmethod
-    def parse(cls, url: str) -> MergeRequestRef:
-        """Parse a GitLab MR URL into its host, project path, and IID."""
+    def from_origin(cls, origin: str) -> GitLabProject:
+        """Parse an SSH, scp-style or HTTPS origin into its host and project path.
+
+        The web URL is assumed to be `https://<host>/<path>`. An origin that
+        says otherwise — plain `http`, or HTTPS on a port other than 443 — is
+        refused. One under a relative URL root cannot be told from a nested
+        group; its API paths then name no project, so every gate call fails.
+        """
+
+        text = origin.strip()
+        if "://" in text:
+            try:
+                # urlsplit rejects a malformed bracketed host; .port a bad port.
+                parts = urlsplit(text)
+                port = parts.port
+                hostname = parts.hostname
+            except ValueError:
+                raise GitLabGateError("the origin's host or port is malformed") from None
+            scheme = parts.scheme.lower()
+            if scheme not in ("https", "ssh"):
+                raise GitLabGateError(
+                    f"the GitLab gate needs an https or ssh origin, not {scheme or 'none'}://"
+                )
+            if scheme == "https" and port not in (None, 443):
+                raise GitLabGateError(
+                    f"GitLab on HTTPS port {port} is not supported; only the default port"
+                )
+            host = hostname or ""
+            path = parts.path.removeprefix("/")
+            if parts.query or parts.fragment:
+                path = ""
+        elif match := _SCP_ORIGIN_RE.fullmatch(text):
+            host, path = match["host"], match["path"]
+        else:
+            raise GitLabGateError("the origin is not an SSH or HTTPS remote URL")
+        path = path.removesuffix("/").removesuffix(".git")
+        segments = _project_segments(path)
+        if not _HOST_RE.fullmatch(host) or segments is None:
+            # Name the host only: an HTTPS origin's userinfo may hold a token.
+            raise GitLabGateError(
+                f"cannot read a GitLab project from the origin on host {host!r}"
+            )
+        return cls(host=host.lower(), segments=segments)
+
+    def parse_mr_url(self, url: str) -> MergeRequestRef:
+        """Accept only a merge request of this project, so nothing else reaches `glab`.
+
+        `https://<host>/<project>/-/merge_requests/<iid>` and nothing more: no
+        userinfo, port other than 443, query, fragment, percent-encoding or dot
+        segment. Surrounding whitespace is trimmed, as the GitHub gate does;
+        any left inside is refused. The host and each path segment compare
+        case-insensitively, as GitLab routes them; the API calls use this
+        project's own spelling.
+        """
 
         text = url.strip()
-        match = MR_URL_RE.fullmatch(text)
-        if match is None:
-            raise ValueError(f"not a GitLab merge request URL: {url!r}")
-        return cls(
-            url=text.rstrip("/"),
-            host=match["host"],
-            project=match["project"].strip("/"),
-            iid=int(match["iid"]),
-        )
+
+        def refuse(reason: str) -> GitLabGateError:
+            shown = text if len(text) <= _URL_LIMIT else text[:_URL_LIMIT] + "..."
+            return GitLabGateError(
+                f"refusing merge request URL {shown!r}: {reason}; "
+                f"this hub's GitLab project is {self.web_url}"
+            )
+
+        if not text.isascii() or not text.isprintable() or " " in text:
+            raise refuse("it contains whitespace, control or non-ASCII characters")
+        if not text.startswith("https://"):
+            raise refuse("only https:// is accepted")
+        if "?" in text or "#" in text:
+            raise refuse("a query or fragment is not accepted")
+        if "%" in text or "\\" in text:
+            raise refuse("percent-encoding and backslashes are not accepted")
+        authority, _, path = text.removeprefix("https://").partition("/")
+        if "@" in authority:
+            raise refuse("userinfo is not accepted")
+        host, colon, port = authority.partition(":")
+        if colon and port != "443":
+            raise refuse(f"port {port!r} is not accepted; only the default HTTPS port")
+        if not _HOST_RE.fullmatch(host):
+            raise refuse("the host is malformed")
+        if host.lower() != self.host:
+            raise refuse(f"host {host!r} is not this hub's GitLab host")
+        segments = path.split("/")
+        if (
+            len(segments) < 4
+            or segments[-3:-1] != ["-", "merge_requests"]
+            or not _IID_RE.fullmatch(segments[-1])
+        ):
+            raise refuse("the path must end at /-/merge_requests/<iid>")
+        project = _project_segments("/".join(segments[:-3]))
+        if project is None:
+            raise refuse("the project path has an empty, dot or invalid segment")
+        if [s.lower() for s in project] != [s.lower() for s in self.segments]:
+            raise refuse("it is not this hub's project")
+        return MergeRequestRef(url=text, project=self, iid=int(segments[-1]))
 
     def api(self, path: str, *, paginate: bool = False) -> list[str]:
-        encoded_project = quote(self.project, safe="")
+        encoded_project = quote(self.path, safe="")
         endpoint = (
             f"projects/{encoded_project}/{path.lstrip('/')}"
             if path
             else f"projects/{encoded_project}"
         )
-        args = ["api", endpoint, f"--hostname={self.hostname}"]
+        args = ["api", endpoint, f"--hostname={self.host}"]
         if paginate:
             args.append("--paginate")
         return args
+
+
+@dataclass(frozen=True, slots=True)
+class MergeRequestRef:
+    url: str
+    project: GitLabProject
+    iid: int
+
+    def api(self, path: str, *, paginate: bool = False) -> list[str]:
+        return self.project.api(path, paginate=paginate)
 
 
 def classify_gitlab_status(status: str, *, allow_failure: bool = False) -> str:
@@ -206,8 +319,9 @@ def check_unsupported_project_settings(project_data: dict[str, Any]) -> list[str
 
 @dataclass(slots=True)
 class GitLabGate:
-    """Evaluate check_merge_gate (§10) for GitLab MRs through an injectable `glab` runner."""
+    """Evaluate check_merge_gate (§10) for the hub's GitLab project through `glab`."""
 
+    project: GitLabProject
     runner: GlabRunner = run_glab
     poll_timeout_s: float = POLL_TIMEOUT_S
     poll_interval_s: float = POLL_INTERVAL_S
@@ -220,7 +334,7 @@ class GitLabGate:
         if not SHA_HEX_40_RE.fullmatch(expected_head_sha):
             raise ValueError("expected_head_sha must be a 40-character hex commit SHA")
 
-        ref = MergeRequestRef.parse(pr_url)
+        ref = self.project.parse_mr_url(pr_url)
         expected = expected_head_sha.lower()
         start = self.clock()
         deadline = start + self.poll_timeout_s
@@ -277,70 +391,15 @@ class GitLabGate:
         else:
             base_behind_main = base_sha != main_sha
 
-        checks: list[Check] = []
-        seen_pipeline_jobs: set[tuple[str, Any]] = set()
-        stale_pipeline = False
         head_pipeline = mr_data.get("head_pipeline")
-        if isinstance(head_pipeline, dict) and "id" in head_pipeline:
-            pipeline_sha = str(head_pipeline.get("sha") or "").lower()
-            if pipeline_sha and pipeline_sha != head:
-                # The MR head has moved beyond this pipeline; don't read stale jobs.
-                stale_pipeline = True
-            else:
-                pipeline_id = head_pipeline["id"]
-                pipeline_status = str(head_pipeline.get("status", ""))
-                pipeline_url = str(head_pipeline.get("web_url", ""))
-                jobs_data = await self._json_list(
-                    ref.api(f"pipelines/{pipeline_id}/jobs?per_page=100", paginate=True)
-                )
-                if jobs_data:
-                    for job in jobs_data:
-                        if isinstance(job, dict):
-                            name = str(job.get("name", ""))
-                            allow_failure = bool(job.get("allow_failure", False))
-                            checks.append(
-                                Check(
-                                    name=name,
-                                    bucket=classify_gitlab_status(
-                                        str(job.get("status", "")),
-                                        allow_failure=allow_failure,
-                                    ),
-                                    link=str(job.get("web_url", "")),
-                                )
-                            )
-                            if name:
-                                seen_pipeline_jobs.add((name, pipeline_id))
-                else:
-                    checks.append(
-                        Check(
-                            name=f"pipeline:{pipeline_id}",
-                            bucket=classify_gitlab_status(pipeline_status),
-                            link=pipeline_url,
-                        )
-                    )
-
-        statuses = await self._json_list(
-            ref.api(f"repository/commits/{head}/statuses?per_page=100", paginate=True)
-        )
-        for st in statuses:
-            if isinstance(st, dict):
-                name = str(st.get("name", ""))
-                if name and (name, st.get("pipeline_id")) in seen_pipeline_jobs:
-                    # Avoid double-counting pipeline jobs returned by commits/:sha/statuses
-                    continue
-                allow_failure = bool(st.get("allow_failure", False))
-                checks.append(
-                    Check(
-                        name=name,
-                        bucket=classify_gitlab_status(
-                            str(st.get("status", "")),
-                            allow_failure=allow_failure,
-                        ),
-                        link=str(st.get("target_url", "") or st.get("web_url", "")),
-                    )
-                )
-
-        if stale_pipeline:
+        checks = await self._pipeline_checks(ref, head, head_pipeline)
+        if (
+            isinstance(head_pipeline, dict)
+            and str(head_pipeline.get("sha") or head).lower() != head
+        ):
+            # A merged-results pipeline tests a synthetic merge commit, and a
+            # head_pipeline left from before a push tests an older head;
+            # neither is a verdict on this head (unsupported or settling).
             ci = CiStatus.NO_CHECKS
         else:
             classified = classify_checks(checks)
@@ -365,6 +424,67 @@ class GitLabGate:
             mergeable=mergeable,
             merge_state_status=merge_state_status or detailed_merge_status,
         )
+
+    async def _pipeline_checks(
+        self, ref: MergeRequestRef, head: str, head_pipeline: Any
+    ) -> list[Check]:
+        """One check per pipeline GitLab ran for `head`, and one per job or status.
+
+        Every pipeline for the SHA counts, not only the MR's head_pipeline: a
+        project that runs both branch and MR pipelines must pass both. Each
+        pipeline's own status is a check, so one whose jobs are not visible yet
+        still holds the gate. The statuses query keeps its default `all=false`:
+        GitLab then returns only the latest attempt of each job, so a job
+        retried in place supersedes its earlier attempt, while a new pipeline
+        for the same SHA supersedes nothing. A status is keyed by its name and
+        pipeline, so a green `test` in one pipeline cannot hide a red one in
+        another.
+        """
+
+        pipelines = await self._json_list(
+            ref.api(f"pipelines?sha={head}&per_page=100", paginate=True)
+        )
+        if (
+            isinstance(head_pipeline, dict)
+            and "id" in head_pipeline
+            and str(head_pipeline.get("sha") or "").lower() == head
+        ):
+            # GitLab names it on the MR; count it even if the list lags behind.
+            pipelines.append(head_pipeline)
+        checks: list[Check] = []
+        links: dict[Any, str] = {}
+        for pipeline in pipelines:
+            if not isinstance(pipeline, dict) or pipeline.get("id") in links:
+                continue
+            pipeline_id = pipeline.get("id")
+            links[pipeline_id] = str(pipeline.get("web_url") or "")
+            checks.append(
+                Check(
+                    name=f"pipeline:{pipeline_id}",
+                    bucket=classify_gitlab_status(str(pipeline.get("status", ""))),
+                    link=links[pipeline_id],
+                )
+            )
+
+        statuses = await self._json_list(
+            ref.api(f"repository/commits/{head}/statuses?per_page=100", paginate=True)
+        )
+        for status in statuses:
+            if not isinstance(status, dict):
+                continue
+            name = str(status.get("name", ""))
+            pipeline_id = status.get("pipeline_id")
+            checks.append(
+                Check(
+                    name=name if pipeline_id is None else f"pipeline:{pipeline_id}/{name}",
+                    bucket=classify_gitlab_status(
+                        str(status.get("status", "")),
+                        allow_failure=bool(status.get("allow_failure", False)),
+                    ),
+                    link=str(status.get("target_url") or links.get(pipeline_id, "")),
+                )
+            )
+        return checks
 
     async def _has_ci_config(self, ref: MergeRequestRef, head: str) -> bool:
         """Check if CI configuration affirmatively exists for the project/commit."""
@@ -420,6 +540,19 @@ class GitLabGate:
             return _decode_json_arrays(text)
         except (json.JSONDecodeError, ValueError) as exc:
             raise GitLabGateError(f"{_describe(args)} printed invalid JSON") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class UnboundGitLabGate:
+    """The gate of a GitLab hub whose origin names no supported project.
+
+    The hub still serves; every gate call fails closed with the reason.
+    """
+
+    reason: str
+
+    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+        raise GitLabGateError(f"the GitLab merge gate is unavailable: {self.reason}")
 
 
 def _decode_json_arrays(text: str) -> list[Any]:

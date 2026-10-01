@@ -1,8 +1,13 @@
 import asyncio
 from dataclasses import replace
+from typing import cast
 
 import httpx
+import pytest
 from agent_hub import create_app
+from agent_hub.gitlab_gate import GitLabGate, GitLabProject, UnboundGitLabGate
+from agent_hub.merge_gate import MergeGate
+from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import HubStore
 from agent_hub_common import HubSettings
 from conftest import BASE_URL
@@ -80,3 +85,55 @@ async def test_the_routes_and_alices_tools_share_one_store(
         await client.get("/healthz")
 
     assert hub_store.path == settings.database_path
+
+
+SANDBOX_ORIGIN = "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git"
+
+
+def gate_of(app: FastAPI) -> object:
+    return cast(OrchestratorOps, app.state.orchestrator).gate
+
+
+@pytest.mark.parametrize(
+    "hub_info",
+    [
+        None,
+        {"hub_id": "h", "origin": "git@github.com:octo/sandbox.git", "forge": "github"},
+        {"hub_id": "h", "origin": "git@git.example:octo/sandbox.git", "forge": "unknown"},
+        {"hub_id": "h", "origin": SANDBOX_ORIGIN},
+    ],
+)
+def test_the_github_gate_serves_every_hub_not_detected_as_gitlab(
+    settings: HubSettings, hub_info: dict[str, str] | None
+) -> None:
+    assert type(gate_of(create_app(settings, hub_info=hub_info))) is MergeGate
+
+
+def test_a_gitlab_hub_binds_its_gate_to_the_origin_project_on_every_start(
+    settings: HubSettings,
+) -> None:
+    info = {"hub_id": "h", "origin": SANDBOX_ORIGIN, "forge": "gitlab"}
+
+    first, restarted = (gate_of(create_app(settings, hub_info=info)) for _ in range(2))
+
+    assert isinstance(first, GitLabGate) and isinstance(restarted, GitLabGate)
+    assert first.project == restarted.project == GitLabProject(
+        "gitlab-box.local", ("RoboNater", "robomate-glab-sandbox")
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://gitlab-box.local/a/b.git",
+        "https://[::1/a/b.git",
+        "https://[gitlab-box.local]/a/b.git",
+        "ssh://git@gitlab-box.local:port/a/b.git",
+    ],
+)
+def test_a_gitlab_hub_without_a_supported_origin_gets_a_gate_that_fails_closed(
+    settings: HubSettings, origin: str
+) -> None:
+    info = {"hub_id": "h", "origin": origin, "forge": "gitlab"}
+
+    assert isinstance(gate_of(create_app(settings, hub_info=info)), UnboundGitLabGate)

@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 from agent_hub_common import TaskState, WorkflowStatus
 from pydantic import Field
 
-from .merge_gate import MergeGate
+from .merge_gate import ForgeGate, MergeGate
 from .store import HubStore
 
 Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
@@ -37,9 +37,9 @@ OPERATIONS = (
 class OrchestratorOps:
     """The ten orchestrator operations over one store and merge gate."""
 
-    def __init__(self, store: HubStore, gate: MergeGate | None = None) -> None:
+    def __init__(self, store: HubStore, gate: ForgeGate | None = None) -> None:
         self.store = store
-        self.gate = gate if gate is not None else MergeGate()
+        self.gate: ForgeGate = gate if gate is not None else MergeGate()
 
     async def get_state(self) -> dict[str, Any]:
         """Read the workflow, agents and compact task summaries."""

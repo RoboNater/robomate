@@ -24,7 +24,9 @@ from .accounting import (
 )
 from .card import build_agent_card
 from .database import initialize_database
+from .gitlab_gate import GitLabGate, GitLabGateError, GitLabProject, UnboundGitLabGate
 from .guides import guide_response
+from .merge_gate import ForgeGate, MergeGate
 from .orchestrator import OrchestratorOps
 from .protocol import A2AProtocol, parse_error_response
 from .rpc import RpcDispatcher
@@ -37,6 +39,25 @@ logger = logging.getLogger(__name__)
 
 # Sent by worker-mcp on every request; only the guide route reads it (#78).
 AGENT_HEADER = "X-Hub-Agent"
+
+
+def select_gate(hub_info: Mapping[str, Any] | None) -> ForgeGate:
+    """Choose the merge gate from the forge `robomate up` detected (§8, §10).
+
+    `gitlab` gets a GitLabGate bound to the origin's project; anything else,
+    and a hub without hub_info, gets the GitHub gate. `up` detects the forge
+    again on every start, so a restart chooses the same gate.
+    """
+
+    if hub_info is None or hub_info.get("forge") != "gitlab":
+        return MergeGate()
+    try:
+        project = GitLabProject.from_origin(str(hub_info.get("origin") or ""))
+    except GitLabGateError as exc:
+        logger.warning("check_merge_gate will fail closed: %s", exc)
+        return UnboundGitLabGate(str(exc))
+    logger.info("check_merge_gate reads GitLab project %s", project.web_url)
+    return GitLabGate(project)
 
 
 def create_app(
@@ -56,7 +77,7 @@ def create_app(
         default_event_lease_s=resolved.event_lease_s,
     )
     protocol = A2AProtocol(store=store, settings=resolved)
-    orchestrator = OrchestratorOps(store)
+    orchestrator = OrchestratorOps(store, select_gate(hub_info))
     accounting = CallAccounting(
         resolved.database_path,
         enabled=resolved.call_accounting,
