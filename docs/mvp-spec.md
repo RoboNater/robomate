@@ -639,7 +639,7 @@ milestone shown, linking the robo-agents original for history.
 | `scripts/supervise-claude-code.sh` | Kept; referenced from the Claude Code harness profile |
 | `scripts/hub-report.py` | Folded into `robomate log` / `robomate status` |
 | `skills/alice-orchestrator` | Content moves to `guides/orchestrator.md` (M2); an optional thin `robomate` skill only points the agent at `join` |
-| `skills/alice-relay`, `docs/notes/relay-trial-*` | Archived |
+| `skills/alice-relay`, `docs/historical/poc/notes/relay-trial-*` | Archived |
 | `skills/worker`, `prompts/*.md` | Replaced by join responses (M2) |
 | `docs/user-guide.md` | Rewritten around `robomate` (M2, M3) |
 | `packages/worker_mcp` | Becomes `robomate mcp` |

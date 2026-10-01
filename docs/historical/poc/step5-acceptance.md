@@ -7,14 +7,14 @@ first-merge acceptance run if that repository already contains a merged pull
 request. It never deletes a failed run's branch or workspace.
 
 The versioned scenario is
-[`scenarios/step5c-untrusted.json`](../scenarios/step5c-untrusted.json). Each
+[`scenarios/step5c-untrusted.json`](../../../scenarios/step5c-untrusted.json). Each
 attempt creates a fresh issue, a run-namespaced branch, an additive marker, and
 a throwaway PR. Its JSON run manifest records the issue and PR URLs, base and
 head SHAs, worker identities, intended disturbances, every scripted action,
 and the evidence path. It contains no hub or GitHub credentials.
 
 The completed first acceptance run is recorded in
-[`docs/evidence/step5c-20260914-001.md`](evidence/step5c-20260914-001.md), with
+[`docs/evidence/step5c-20260914-001.md`](../../evidence/step5c-20260914-001.md), with
 the verifier's machine-readable output beside it.
 
 ## Run it
