@@ -93,7 +93,15 @@ hub-mediated forge tool (§16).
    `ci=fail` on !4, the first live terminal CI states. Auto DevOps is off, "Pipelines must
    succeed" is on, and pipelines are branch pipelines only. With that setting on, GitLab
    refuses `glab mr merge` while the head pipeline still runs.
-10. **No shared counter moves.** `GateReport` is already forge-neutral, typed results carry
+10. **What the commit-status and Notes APIs return, read live on 2026-10-01.** Sandbox
+    `main` at `08726cbdadc5ff198a13d7a346b24c678967e3ee` has two pipelines, 5 (push) and 6
+    (api), and each has a job named `test`. `GET …/repository/commits/<sha>/statuses`
+    without `all` returns both, each with its own `pipeline_id`. So GitLab's default,
+    `all=false` ("latest statuses only"), does not merge same-named jobs from different
+    pipelines. Its documented effect is to drop retried attempts of a job. That SHA has no
+    retried jobs, so the retry behaviour is not yet observed (Step 1 verifies it). A note
+    returned by the Notes API has an `id` but no `web_url`.
+11. **No shared counter moves.** `GateReport` is already forge-neutral, typed results carry
     `pr_url` and `pr_head_sha` unchanged, and nothing here touches the database.
 
 ## Design
@@ -173,15 +181,26 @@ is a later issue if someone needs it.
   on every `up` and passed in `hub_info`, so a restart picks the same gate. Nothing about
   it is stored in the database.
 - **Branch and MR pipelines for the same SHA** (#21). The supported configuration is the
-  sandbox's: branch pipelines only, which GitLab attaches as the MR's `head_pipeline`. If a
-  project also runs detached MR pipelines, there are two pipelines for one SHA. The gate
-  reads `head_pipeline`'s jobs, and `commits/<sha>/statuses` returns the jobs of *every*
-  pipeline for the SHA, keyed by `pipeline_id`. Jobs of the other pipeline therefore appear
-  as extra checks, and all of them must pass. This is the rule: **every pipeline that GitLab
-  ran for the head SHA must pass**, rather than whichever one is `head_pipeline`. A
-  redundant pipeline that GitLab auto-cancels shows as `cancel`; the gate then polls and
-  escalates, which is safe but needs the operator. Merged-results pipelines are unsupported
-  (above).
+  sandbox's: branch pipelines only, which GitLab attaches as the MR's `head_pipeline`. A
+  project that also runs detached MR pipelines has two or more pipelines for one SHA. The
+  rule is: **every pipeline that GitLab ran for the head SHA must pass**, not only
+  `head_pipeline`. The gate enumerates that set explicitly and does not rely on one
+  endpoint's defaults:
+  - `pipelines?sha=<head>` (paginated) lists every pipeline for the SHA. Each one's own
+    status becomes a check (`pipeline:<id>`). So a pipeline whose jobs are not visible yet
+    still holds the gate at `pending`.
+  - `repository/commits/<head>/statuses` (paginated, `all` left at its default `false`)
+    gives the latest attempt of every job in every one of those pipelines, plus external
+    statuses, each keyed by `(name, pipeline_id)` (fact 10). Same-named jobs in different
+    pipelines are separate checks, so a green `test` in one pipeline never hides a red
+    `test` in another.
+  - **Retries and supersession.** Retrying a job, or a whole pipeline, in place supersedes
+    the earlier attempt: GitLab marks that attempt retried, and the default query drops it
+    (documented; Step 1 verifies it live).
+    A *new* pipeline for the same SHA supersedes nothing; an older failed pipeline still
+    fails the gate. To clear a flaky failure, retry it in place. A canceled pipeline reads
+    as `cancel`, so the gate polls and then escalates, which is safe but needs the operator.
+  Merged-results pipelines are unsupported (above).
 
 ### Preflight
 
@@ -246,6 +265,10 @@ topology and the MR state.
   `discussions_not_resolved` blocker. Step 3 re-verifies `resolvable: false` live. The
   minimum `glab` version, 1.36.0, is still pinned, because the merge flags need it, and
   `up` checks it.
+- **The review URL is `<MR URL>#note_<id>`.** A note response has no `web_url` (fact 10),
+  so the appendix tells the reviewer to build `ReviewerResult.review_url` from the `id` in
+  the POST response, and to read the note back by that `id` before reporting it. Step 5's
+  evidence uses the same form.
 - Byte budget (§11, M6): the served bytes per role, before and after, go in the Step 3 PR.
 
 ### `WorkflowPolicy.forge`: not added
@@ -311,7 +334,7 @@ Each item is settled here and written into `docs/mvp-spec.md` by the step that i
 | GitLab gate transport (§15) | `glab api`, no hub-held token; §15 row removed, §10 states it | 1 |
 | Gate binding (§10, §12) | MR must be in the hub's origin project; other hosts or projects refused before any `glab` call | 1 |
 | `check_merge_gate` forge dispatch (§8) | By `hub.json` forge: `gitlab` gives `GitLabGate`, otherwise GitHub | 1 |
-| Pipelines (§10) | Every pipeline for the head SHA must pass; branch pipelines are the supported configuration | 1 |
+| Pipelines (§10) | Every pipeline for the head SHA must pass, enumerated by `pipelines?sha=` and the commit statuses; a retry in place supersedes, a new pipeline does not; branch pipelines are the supported configuration | 1 |
 | `--forge` and preflight content (§2, §10) | `up --forge`; checks table above; refuse only definite violations | 2 |
 | Unsupported configurations (§10) | Adds merged-results pipelines and policy `rebase`; permanent while the merge invariant stands; `ff` and semi-linear supported | 2 |
 | Minimum `glab` (§10) | 1.36.0, checked at `up` | 2 |
@@ -352,7 +375,9 @@ alone, and never change the sandbox's settings, runner, or `main`'s CI file.
 - `MergeRequestRef.parse` is replaced by a strict parser that checks a URL against the bound
   project (see [Gate transport](#gate-transport-15-glab-api)). Refusals raise
   `MergeGateError` and make no `glab` call.
-- Fixture tests for two pipelines on one SHA.
+- The gate's pipeline set is enumerated as in
+  [Gate selection and pipelines](#gate-selection-and-pipelines): `pipelines?sha=<head>`
+  plus the commit statuses, with `(name, pipeline_id)` as the check key.
 - §10, §8, and §15 deltas.
 
 **Tests** (`tests/test_gitlab_gate.py`, `tests/test_app.py`, `tests/test_rpc.py`).
@@ -362,9 +387,19 @@ alone, and never change the sandbox's settings, runner, or `main`'s CI file.
   percent-encoded `/`, a trailing `/diffs`, another project on the same host, and a prefix
   or suffix of the bound project path. Also accepted: an uppercase host and nested groups
   (`group/sub/project`) when the origin has them.
-- Pipelines: a branch pipeline and an MR pipeline on one SHA, both green, give `pass`; with
-  either one failed, `fail`; with a redundant one canceled, `cancelled`; a merged-results
-  `head_pipeline` (SHA not the head) gives `no_checks`.
+- Pipelines: a branch pipeline and an MR pipeline on one SHA, both green, give `pass`.
+  When both have a job with the same name, one failed and one green, the result is `fail`
+  whichever pipeline is `head_pipeline` and whatever the response order. A canceled one
+  gives `cancelled`. A pipeline listed by `pipelines?sha=` with no statuses yet gives
+  `pending`. An older failed pipeline next to a newer green one for the same SHA gives
+  `fail`. A merged-results `head_pipeline` (SHA not the head) gives `no_checks`.
+- Requests: the argv for the statuses query has `--paginate` and no `all=true`; the
+  pipelines query has `sha=<head>` and `--paginate`.
+- A fixture recorded from sandbox SHA `08726cb…` (pipelines 5 and 6, one `test` job each)
+  checks the parsing against real data.
+- Live, on a branch and MR created for this step in the sandbox: retry the pipeline's job in
+  place. The default statuses query must then return only the newest attempt, and
+  `all=true` both attempts. Record the result in the PR, then clean up per #69.
 - Dispatch: `/rpc` `check_merge_gate` on an app with `hub_info` forge `gitlab` reaches
   `GitLabGate`; with `github`, `MergeGate`; with no `hub_info`, `MergeGate`. Two app
   instances built from the same `hub_info` (a restart) choose the same gate.
@@ -426,8 +461,10 @@ uv run --project <robomate checkout> robomate down
   override, and returns 404 when the effective appendix is missing.
 - `guides/README.md` describes the composition. §10 deltas.
 - Live check: on a branch and MR created for this step in the sandbox, post one note with
-  the appendix's command, read it back (`resolvable: false`), then close the MR and delete
-  the branch.
+  the appendix's command, and take its `id` from the response. Read it back with
+  `glab api …/merge_requests/<iid>/notes/<id>` (`resolvable: false`). Open
+  `<MR URL>#note_<id>` in a browser and confirm it lands on that note, and record the URL
+  in the PR. Then close the MR and delete the branch.
 
 **Tests** (`tests/test_guides.py`, `tests/test_runtime_content.py`,
 `tests/test_accounting.py`).
@@ -435,6 +472,8 @@ uv run --project <robomate checkout> robomate down
   gives the GitLab appendix; a missing appendix gives 404; two app instances serve identical
   bytes.
 - No served worker guide, for either forge, contains `pr merge` or `mr merge`.
+- The served GitLab reviewer guide gives the review URL as `<MR URL>#note_<id>`, built from
+  the Notes API response's `id`.
 - `test_runtime_content.py`'s assertions on `gh` strings in guides move to the GitHub
   appendix. The skill's `gh pr merge` assertion is untouched.
 
