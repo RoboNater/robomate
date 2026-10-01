@@ -2,12 +2,16 @@
 
 import asyncio
 import time
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import httpx
 import pytest
+from agent_hub import create_app
 from agent_hub.database import database
-from agent_hub.merge_gate import MergeGate, MergeGateError
+from agent_hub.gitlab_gate import GitLabGate, GlabResult
+from agent_hub.merge_gate import GhResult, MergeGate, MergeGateError
 from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.rpc import (
     ACTOR_HEADER,
@@ -377,6 +381,131 @@ async def test_errors_map_to_stable_codes_with_the_original_message(
         INTERNAL_ERROR,
         "unexpected",
     )
+
+
+SANDBOX_ORIGIN = "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git"
+MR = "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/4"
+
+
+@asynccontextmanager
+async def serving(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as connected,
+    ):
+        yield connected
+
+
+class RecordingCli:
+    """Stands in for gh or glab: records each call and fails it."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def gh(self, args: Sequence[str]) -> GhResult:
+        self.calls.append(list(args))
+        return GhResult(1, "", "recorded")
+
+    async def glab(self, args: Sequence[str]) -> GlabResult:
+        self.calls.append(list(args))
+        return GlabResult(1, "", "recorded")
+
+
+@pytest.mark.parametrize(
+    ("hub_info", "url", "first_call"),
+    [
+        (
+            {"hub_id": "h", "origin": SANDBOX_ORIGIN, "forge": "gitlab"},
+            MR,
+            [
+                "api",
+                "projects/RoboNater%2Frobomate-glab-sandbox/merge_requests/4"
+                "?include_diverged_commits_count=true",
+                "--hostname=gitlab-box.local",
+            ],
+        ),
+        (
+            {"hub_id": "h", "origin": "git@github.com:octo/sandbox.git", "forge": "github"},
+            PR,
+            ["pr", "view", PR, "--json", "state,headRefOid,baseRefName,mergeable,mergeStateStatus"],
+        ),
+        (
+            None,
+            PR,
+            ["pr", "view", PR, "--json", "state,headRefOid,baseRefName,mergeable,mergeStateStatus"],
+        ),
+    ],
+)
+async def test_check_merge_gate_is_dispatched_by_the_hubs_forge(
+    settings: HubSettings,
+    hub_info: dict[str, str] | None,
+    url: str,
+    first_call: list[str],
+) -> None:
+    app = create_app(settings, hub_info=hub_info)
+    gate = cast(OrchestratorOps, app.state.orchestrator).gate
+    cli = RecordingCli()
+    if isinstance(gate, GitLabGate):
+        gate.runner = cli.glab
+    else:
+        assert isinstance(gate, MergeGate)
+        gate.runner = cli.gh
+
+    async with serving(app) as client:
+        code, text = error_of(
+            await call(client, "check_merge_gate", pr_url=url, expected_head_sha=HEAD)
+        )
+
+    assert code == MERGE_GATE_UNAVAILABLE and "recorded" in text
+    assert cli.calls == [first_call]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        PR,
+        "https://gitlab.com/RoboNater/robomate-glab-sandbox/-/merge_requests/4",
+        "https://gitlab-box.local/RoboNater/robomate-glab-scratch/-/merge_requests/4",
+        "https://gitlab-box.local:8443/RoboNater/robomate-glab-sandbox/-/merge_requests/4",
+        "http://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/4",
+    ],
+)
+async def test_a_gitlab_hub_refuses_another_projects_url_without_calling_glab(
+    settings: HubSettings, url: str
+) -> None:
+    app = create_app(
+        settings, hub_info={"hub_id": "h", "origin": SANDBOX_ORIGIN, "forge": "gitlab"}
+    )
+    gate = cast(GitLabGate, cast(OrchestratorOps, app.state.orchestrator).gate)
+    cli = RecordingCli()
+    gate.runner = cli.glab
+
+    async with serving(app) as client:
+        code, text = error_of(
+            await call(client, "check_merge_gate", pr_url=url, expected_head_sha=HEAD)
+        )
+
+    assert code == MERGE_GATE_UNAVAILABLE
+    assert text.startswith("refusing merge request URL")
+    assert cli.calls == []
+
+
+async def test_a_gitlab_hub_with_an_unsupported_origin_fails_the_gate_closed(
+    settings: HubSettings,
+) -> None:
+    info = {"hub_id": "h", "origin": "https://gitlab-box.local:8443/a/b.git", "forge": "gitlab"}
+
+    async with serving(create_app(settings, hub_info=info)) as client:
+        code, text = error_of(
+            await call(client, "check_merge_gate", pr_url=MR, expected_head_sha=HEAD)
+        )
+
+    assert code == MERGE_GATE_UNAVAILABLE
+    assert text.startswith("the GitLab merge gate is unavailable: GitLab on HTTPS port 8443")
 
 
 async def test_wait_for_event_holds_the_request_until_an_event_arrives(
