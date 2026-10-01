@@ -128,8 +128,8 @@ class GitLabProject:
 
         The web URL is assumed to be `https://<host>/<path>`. An origin that
         says otherwise — plain `http`, or HTTPS on a port other than 443 — is
-        refused, as is one served under a relative URL root, which looks like
-        a project path the gate then fails to find.
+        refused. One under a relative URL root cannot be told from a nested
+        group; its API paths then name no project, so every gate call fails.
         """
 
         text = origin.strip()
