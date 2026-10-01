@@ -121,6 +121,6 @@ and checkout can update only his own Git metadata. His launch prompt requires
 the trusted review-check helper to run tests and audit the actual assigned head
 in that persisted clone. Charlie uses a run-local `CODEX_HOME` and authentication
 symlink; global configuration is never edited. See
-[`docs/step6-acceptance.md`](../docs/step6-acceptance.md) for the automated sandbox
+[`docs/historical/poc/step6-acceptance.md`](../docs/historical/poc/step6-acceptance.md) for the automated sandbox
 demo and [`docs/user-guide.md`](../docs/user-guide.md) for user-facing setup on
 your own repositories.

@@ -196,12 +196,12 @@ alive across turns; OpenCode Charlie runs `opencode serve` with `run --attach`
 turns so his `worker-mcp` instance persists. Supervisors send only fixed
 continuation text. OpenCode has no OS sandbox: Charlie's generated config denies
 edits and external directories and allows a narrow shell list. See
-[the Windows attempt](evidence/step6-failed-20260919013155_2a972a49.md).
+[the Windows attempt](../../evidence/step6-failed-20260919013155_2a972a49.md).
 
 ## Networked topology (Step 7)
 
 The same harness runs the Step 7 topology from
-[`docs/plan-for-step-7-and-issue-70.md`](plan-for-step-7-and-issue-70.md)
+[`docs/historical/poc/plan-for-step-7-and-issue-70.md`](plan-for-step-7-and-issue-70.md)
 (#140). The hub, Alice and Charlie run in WSL2 (NAT mode). Bob runs natively on
 the Windows host and dials WSL's `eth0` address. The helpers live in
 `scripts/poc/step7.py`, and `scripts/poc/step6.py` stays the entry point. The port comes

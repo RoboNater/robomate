@@ -408,7 +408,7 @@ If you prefer running both Bob and Charlie with Claude Code:
 
 ### Codex Alice or OpenCode Workers
 - PR #72 introduced cross-platform launchers and support for Codex Alice (`codex app-server`) and OpenCode Charlie (`opencode serve`).
-- See [`docs/step6-acceptance.md`](step6-acceptance.md#native-windows-and-alternate-harnesses) and [`runtimes/README.md`](../runtimes/README.md) for detailed template configs.
+- See [`docs/historical/poc/step6-acceptance.md`](historical/poc/step6-acceptance.md#native-windows-and-alternate-harnesses) and [`runtimes/README.md`](../runtimes/README.md) for detailed template configs.
 
 ---
 

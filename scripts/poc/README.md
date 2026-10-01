@@ -9,5 +9,5 @@ outside the default `pytest` run and CI. To run those tests anyway:
 uv run --locked pytest scripts/poc/tests
 ```
 
-How the scripts were used is in [`docs/step5-acceptance.md`](../../docs/step5-acceptance.md)
-and [`docs/step6-acceptance.md`](../../docs/step6-acceptance.md).
+How the scripts were used is in [`docs/historical/poc/step5-acceptance.md`](../../docs/historical/poc/step5-acceptance.md)
+and [`docs/historical/poc/step6-acceptance.md`](../../docs/historical/poc/step6-acceptance.md).

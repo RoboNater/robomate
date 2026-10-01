@@ -12,6 +12,8 @@ the hub, tell each agent to join, submit the work, and read the report at the en
 
 ## How it works
 
+The MVP experience, as the [spec](docs/mvp-spec.md) (§2) defines it:
+
 ```sh
 robomate up                       # in your repo: starts this repo's hub
 # In each agent's harness, one line:
@@ -22,6 +24,13 @@ robomate submit sow.md            # or: robomate submit --issue 42
 robomate status                   # who's connected, what phase, which PR, what's blocked
 robomate report                   # merged SHA, review findings and where each one went
 ```
+
+**Works today (M1):** `robomate up`, `down`, `status`, and `ls`, and the `robomate mcp`
+bridge that connects every agent to the hub. Runs are still prepared with
+`scripts/prepare-run.py`, which writes each agent's configuration and launch prompt (see the
+[user guide](docs/user-guide.md)), and each worker uses its own full clone.
+**Planned:** GitLab (M5); the one-line joins, worktrees, and `robomate submit` (M2); harness
+installs and certification (M3); close-out and `robomate report` (M4).
 
 - **Pull model.** Agents connect to the hub over MCP and ask for work. The hub holds each
   request open until there is something to do, so no agent polls or spins.
@@ -43,15 +52,17 @@ robomate report                   # merged SHA, review findings and where each o
   workspace, never from Bob's files or summaries.
 - **Restarts are safe.** The hub, or any single agent, can restart mid-run without losing
   or repeating work.
-- **Nothing is dropped at close-out.** Every non-blocking review finding is either filed as
-  an issue, noted, or dropped with a recorded reason before a run can finish.
-- **It works across harnesses and models.** Any certified harness can take any role, with
-  any model and effort setting.
+- **Nothing is dropped at close-out** (M4). Every non-blocking review finding is either
+  filed as an issue, noted, or dropped with a recorded reason before a run can finish.
+- **It works across harnesses and models** (certification: M3). Any certified harness can
+  take any role, with any model and effort setting.
 
 ## Status
 
-robomate is in early development. The [MVP spec](docs/mvp-spec.md) describes the interface
-shown above, and it is being built now.
+robomate is in early development, and is now built with itself. M1 is done: the standalone
+hub with `robomate up/down/status/ls`, and `robomate mcp`. GitLab (M5) is next; see its
+[plan](docs/development/implementation-plan-mvp-m5-gitlab.md). Milestone status is on the
+[roadmap](https://github.com/RoboNater/robomate/issues/2).
 
 robomate grew out of a proof of concept, robo-agents, which ran the full
 issue → PR → review → merge loop on GitHub:
@@ -59,16 +70,25 @@ issue → PR → review → merge loop on GitHub:
 - Windows and WSL hosts were both used.
 - Its runs included changes-requested rounds, post-approval pushes, and stale-base rebases.
 
-The PoC's evidence and design are kept in [`docs/evidence/`](docs/evidence/) and
-[`docs/poc-spec.md`](docs/poc-spec.md).
+The PoC's design is in [`docs/poc-spec.md`](docs/poc-spec.md), its run evidence in
+[`docs/evidence/`](docs/evidence/), and its plans, runbooks, and worklog in
+[`docs/historical/poc/`](docs/historical/poc/).
 
 ## Documentation
 
 - [MVP spec](docs/mvp-spec.md): goals, architecture, interfaces, and plan
+- [Milestone plans](docs/development/): [M1](docs/development/implementation-plan-mvp-m1.md)
+  (done) and [M5, GitLab](docs/development/implementation-plan-mvp-m5-gitlab.md) (next)
+- GitLab: the [feasibility study](docs/feasibility-and-impact-of-supporting-gitlab-centric-workflows.md)
+  and the [investigation and prototype report](docs/gitlab-forge-support-investigation.md)
+- [Harness investigation](docs/harness-investigation-opencode-antigravity.md): OpenCode and
+  AntiGravity, for M3
+- [User guide](docs/user-guide.md): running a workflow today
 - [PoC spec](docs/poc-spec.md): the original design, frozen
 - [PoC README](docs/poc-readme.md): the PoC's README, as it stood at the move to robomate
 - [PoC lessons](docs/poc-lessons.md): what building and running the PoC taught us
 - [robo-agents issues](docs/robo-agents-issues.md): which PoC issues were carried into robomate
+- [Historical](docs/historical/): frozen PoC plans, runbooks, and notes
 
 ## License
 

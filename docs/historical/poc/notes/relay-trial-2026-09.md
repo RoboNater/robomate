@@ -6,7 +6,7 @@ then pastes the worker's reply back to her. Four issues ran this way on
 2026-09-10, to try the §5 loop by hand before Step 5 automates it.
 
 The fourth run (#26) used a written skill,
-[`skills/alice-relay/SKILL.md`](../../skills/alice-relay/SKILL.md), whose
+[`skills/alice-relay/SKILL.md`](../../../../skills/alice-relay/SKILL.md), whose
 templates are the prompts the first three runs settled on. Step 5's hub-mode
 `alice-orchestrator` skill is derived from it. Findings from the trial are
 tracked as #40–#44.

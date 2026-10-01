@@ -1,7 +1,7 @@
 # Agent Comms Hub
 
 This repository implements the proof of concept described in
-[`docs/poc-spec.md`](docs/poc-spec.md). The current implementation covers plan
+[`docs/poc-spec.md`](poc-spec.md). The current implementation covers plan
 Steps 1–6: the uv workspace, shared configuration and bearer-token
 provisioning, the SQLite schema, A2A agent-card discovery, the hub core (A2A
 request handlers, role-guide route, event queue, lease/heartbeat sweeper,
@@ -9,16 +9,16 @@ bearer enforcement), Alice's MCP tools over stdio (including the
 `check_merge_gate` merge gate), and worker MCP tools connecting Claude Code and
 Codex CLI workers to the hub, plus the durability contracts and reference
 harness that precedes Step 5's runtime behavior. The hub-mode
-[`alice-orchestrator`](skills/alice-orchestrator/SKILL.md) skill,
-runtime-neutral [`guides/`](guides), and launcher [`prompts/`](prompts) now
+[`alice-orchestrator`](../skills/alice-orchestrator/SKILL.md) skill,
+runtime-neutral [`guides/`](../guides), and launcher [`prompts/`](../prompts) now
 encode the Step 5B workflow. The prompts-only
-[`alice-relay`](skills/alice-relay/SKILL.md) skill remains as its reviewed
-baseline ([trial notes](docs/notes/relay-trial-2026-09.md)).
+[`alice-relay`](../skills/alice-relay/SKILL.md) skill remains as its reviewed
+baseline ([trial notes](historical/poc/notes/relay-trial-2026-09.md)).
 Step 6 adds persistent isolated worker clones and a real-worker localhost
-acceptance harness; see [reproduction](docs/step6-acceptance.md) and
-[verified evidence](docs/evidence/step6-20260918191713_f99578f4.md).
+acceptance harness; see [reproduction](historical/poc/step6-acceptance.md) and
+[verified evidence](evidence/step6-20260918191713_f99578f4.md).
 For orchestrating issues on your own repositories, see the
-[user guide](docs/user-guide.md).
+[user guide](user-guide.md).
 
 ## Run the hub
 
@@ -33,7 +33,7 @@ same state is found again no matter which working directory the process is
 started from; set `HUB_STATE_DIR` (which must be absolute) to move it. A
 relative `XDG_STATE_HOME` is invalid per the XDG base-directory specification
 and is ignored in favour of the `~/.local/state` fallback. Override the other
-defaults with the variables documented in [`.env.example`](.env.example). For a
+defaults with the variables documented in [`.env.example`](../.env.example). For a
 deployed process, inject `HUB_TOKEN` rather than sharing the generated token
 file.
 
@@ -163,7 +163,7 @@ design rests on:
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8420/guides/worker.md
 ```
 
-The files come from the [`guides/`](guides) directory of this checkout, found
+The files come from the [`guides/`](../guides) directory of this checkout, found
 from the installed package and never from the working directory; set
 `HUB_GUIDES_DIR` (absolute) to serve them from anywhere else. `{role}` is a role
 slug, never a path: an unknown role, an unwritten guide and a missing directory
@@ -190,4 +190,4 @@ uv run --locked pytest
 ```
 
 The Step 5C scripted acceptance driver and interactive Alice launchers are
-documented in [`docs/step5-acceptance.md`](docs/step5-acceptance.md).
+documented in [`docs/historical/poc/step5-acceptance.md`](historical/poc/step5-acceptance.md).

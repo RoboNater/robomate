@@ -9,21 +9,18 @@ loads into context on every operation.
 an issue or statement of work to a reviewed, merged PR. It is pull-model: one
 orchestrator (Alice) and the workers contact the hub, rather than a supervisor
 that spawns them. The hub is the only A2A server; workers are A2A clients over
-HTTP, so they need no inbound port. The code is seeded from the PoC and being
-reshaped into the MVP.
+HTTP, so they need no inbound port.
 
-[`docs/mvp-spec.md`](docs/mvp-spec.md) is the design of record — architecture,
-interfaces, the milestone plan (§13), locked decisions (§14). Read the section
-covering what you are changing; its §-numbers are the shared vocabulary in
-issues and commits. [`docs/poc-spec.md`](docs/poc-spec.md) is the frozen PoC
-design, still in force where the MVP spec doesn't change it.
+[`docs/mvp-spec.md`](docs/mvp-spec.md) is the design of record; its §-numbers
+are the shared vocabulary in issues and commits, and §13 orders the milestones.
+[`docs/poc-spec.md`](docs/poc-spec.md) is the frozen PoC design, in force where
+the MVP spec doesn't change it.
 
 - **Roadmap: #2.** Milestone status, and reservations of shared counters (DB
   schema version, wire `hub.schema_version`). Take a counter's value from there.
-- **Lessons learned: #3.** Earlier lessons are in [`docs/poc-lessons.md`](docs/poc-lessons.md).
-- **Minor nits: #4.**
-- **Local GitLab test instance and sandbox: #69.** Read it before any GitLab
-  work (M5) or a GitLab regression run.
+- **Lessons learned: #3** (earlier: [`docs/poc-lessons.md`](docs/poc-lessons.md)). **Minor nits: #4.**
+- **GitLab:** work is tracked in the [M5 plan](docs/development/implementation-plan-mvp-m5-gitlab.md).
+  Read #69 (test instance and sandbox) before any GitLab work or regression run.
 
 A bare `#N` here means a robomate issue. The specs and `docs/poc-*` predate the
 move, and their bare numbers are PoC issues.
@@ -32,16 +29,19 @@ move, and their bare numbers are PoC issues.
 
 ```
 packages/common/      agent_hub_common  — config, token, models, clock (shared)
-packages/cli/         robomate          — operator CLI (up/down)
+packages/cli/         robomate          — operator CLI (up/down/status/ls/mcp)
 packages/hub/         agent_hub         — HTTP A2A and RPC server + SQLite
 packages/worker_mcp/  worker_mcp        — MCP bridge for Alice and workers
+guides/               role guides the hub serves; forge/ holds forge appendices
+skills/, prompts/, runtimes/  Alice's skill, run prompts, harness configs (pre-M2 run path)
 tests/                one test_<module>.py per module, top-level
-scripts/              operator and test-harness scripts
-scripts/poc/          archived PoC acceptance scripts + tests; not in CI, not maintained
+scripts/              operator and test-harness scripts; scripts/poc/ is the PoC's: not in CI, not maintained
+docs/development/     milestone plans and operator procedures
+docs/historical/      frozen PoC docs: edit only to repair a link
 ```
 
 uv workspace, Python 3.12+. `agent-hub-common` is a workspace dependency of the
-other two; it must not depend on either.
+other packages; it must depend on none of them.
 
 ## Validation
 
@@ -68,7 +68,7 @@ and `mypy` cannot see a loop whose body never executes — and **re-read each
 edited function in its final form**, not just the diff hunks. If production
 code had to change to make a new test pass, say why in the PR description.
 
-`uv run robomate up` starts the hub on `http://127.0.0.1:8420` from the target repository.
+`uv run robomate up` starts the hub from the target repository (first free port from 8420, reused on restart).
 
 Tests that drive the app use conftest's `hub_store`, not `store`: a second
 `HubStore` on one database has its own `Signals`, so writes through one never

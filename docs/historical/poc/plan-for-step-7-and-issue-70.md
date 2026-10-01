@@ -124,7 +124,7 @@ DB schema v12 is reserved for this issue in roadmap #2.
   `--worker-only` render, then a real check-in and background heartbeats from
   Windows. The hub must show Bob's Windows vEthernet address and the WSL
   worker's loopback address. The statement of work is
-  `docs/notes/sow-step7-pr2-issue-126.md`, and it depends on the Windows
+  `docs/historical/poc/notes/sow-step7-pr2-issue-126.md`, and it depends on the Windows
   operator setup below.
 
 ### PR 3 — networked acceptance harness and #70 checks (#128, with #70)

@@ -1,7 +1,7 @@
 # Plan for Step 6 — localhost E2E
 
 Status: implementation and live acceptance complete, 2026-09-18.
-[Acceptance evidence](evidence/step6-20260918191713_f99578f4.md) records Phases 1–6.
+[Acceptance evidence](../../evidence/step6-20260918191713_f99578f4.md) records Phases 1–6.
 Phase 7 coordination merge and subsequent roadmap completion are recorded on
 the coordination PR and [Roadmap #2](https://github.com/RoboNater/robo-agents/issues/2).
 
@@ -190,7 +190,7 @@ Suggested checked-in assets:
   and introduce only the planned head and base changes from the driver clone;
 - `scripts/verify-step6-demo.sh` — verify local hub state and durable GitHub
   facts and emit machine-readable evidence;
-- `docs/step6-acceptance.md` — exact launch, recovery, evidence, and cleanup
+- `docs/historical/poc/step6-acceptance.md` — exact launch, recovery, evidence, and cleanup
   procedure.
 
 The preparation script must accept a caller-chosen absolute run directory. A

@@ -2,7 +2,7 @@
 
 Address `RoboNater/robo-agents#126` in one pull request against `main` of
 `RoboNater/robo-agents`. This is the second Step 7 prerequisite tracked in
-`RoboNater/robo-agents#128`. Read #128 and `docs/plan-for-step-7-and-issue-70.md`
+`RoboNater/robo-agents#128`. Read #128 and `docs/historical/poc/plan-for-step-7-and-issue-70.md`
 for context only; this run delivers #126 alone. DB schema **v12** is reserved
 for #126 in roadmap `RoboNater/robo-agents#2`; use it unchanged.
 
