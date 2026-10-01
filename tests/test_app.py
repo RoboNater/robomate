@@ -122,9 +122,18 @@ def test_a_gitlab_hub_binds_its_gate_to_the_origin_project_on_every_start(
     )
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://gitlab-box.local/a/b.git",
+        "https://[::1/a/b.git",
+        "https://[gitlab-box.local]/a/b.git",
+        "ssh://git@gitlab-box.local:port/a/b.git",
+    ],
+)
 def test_a_gitlab_hub_without_a_supported_origin_gets_a_gate_that_fails_closed(
-    settings: HubSettings,
+    settings: HubSettings, origin: str
 ) -> None:
-    info = {"hub_id": "h", "origin": "http://gitlab-box.local/a/b.git", "forge": "gitlab"}
+    info = {"hub_id": "h", "origin": origin, "forge": "gitlab"}
 
     assert isinstance(gate_of(create_app(settings, hub_info=info)), UnboundGitLabGate)

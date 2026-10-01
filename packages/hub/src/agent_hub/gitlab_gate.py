@@ -134,21 +134,23 @@ class GitLabProject:
 
         text = origin.strip()
         if "://" in text:
-            parts = urlsplit(text)
+            try:
+                # urlsplit rejects a malformed bracketed host; .port a bad port.
+                parts = urlsplit(text)
+                port = parts.port
+                hostname = parts.hostname
+            except ValueError:
+                raise GitLabGateError("the origin's host or port is malformed") from None
             scheme = parts.scheme.lower()
             if scheme not in ("https", "ssh"):
                 raise GitLabGateError(
                     f"the GitLab gate needs an https or ssh origin, not {scheme or 'none'}://"
                 )
-            try:
-                port = parts.port
-            except ValueError:
-                raise GitLabGateError("the origin's port is not a number") from None
             if scheme == "https" and port not in (None, 443):
                 raise GitLabGateError(
                     f"GitLab on HTTPS port {port} is not supported; only the default port"
                 )
-            host = parts.hostname or ""
+            host = hostname or ""
             path = parts.path.removeprefix("/")
             if parts.query or parts.fragment:
                 path = ""
@@ -170,8 +172,10 @@ class GitLabProject:
 
         `https://<host>/<project>/-/merge_requests/<iid>` and nothing more: no
         userinfo, port other than 443, query, fragment, percent-encoding or dot
-        segment. The host and each path segment compare case-insensitively,
-        as GitLab routes them; the API calls use this project's own spelling.
+        segment. Surrounding whitespace is trimmed, as the GitHub gate does;
+        any left inside is refused. The host and each path segment compare
+        case-insensitively, as GitLab routes them; the API calls use this
+        project's own spelling.
         """
 
         text = url.strip()

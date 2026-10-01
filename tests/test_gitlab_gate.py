@@ -166,6 +166,9 @@ def test_origin_binds_host_and_project(origin: str, host: str, path: str) -> Non
         "git@gitlab-box.local:/RoboNater/robomate-glab-sandbox.git",
         "https://gitlab-box.local/RoboNater/robomate-glab-sandbox.git?x=1",
         "https://[::1]/RoboNater/robomate-glab-sandbox.git",
+        "https://[::1/RoboNater/robomate-glab-sandbox.git",
+        "ssh://git@[gitlab-box.local]/RoboNater/robomate-glab-sandbox.git",
+        "ssh://git@gitlab-box.local:port/RoboNater/robomate-glab-sandbox.git",
         "/srv/git/robomate-glab-sandbox.git",
         "",
     ],
@@ -254,6 +257,7 @@ async def test_url_outside_the_bound_project_is_refused_before_any_glab_call(
         (ORIGIN, "https://GITLAB-BOX.LOCAL/RoboNater/robomate-glab-sandbox/-/merge_requests/1"),
         (ORIGIN, "https://gitlab-box.local:443/RoboNater/robomate-glab-sandbox/-/merge_requests/1"),
         (ORIGIN, "https://gitlab-box.local/robonater/Robomate-Glab-Sandbox/-/merge_requests/1"),
+        # Trimmed like the GitHub gate's PullRequestRef.parse; inner whitespace is refused.
         (ORIGIN, f"  {MR_URL}\n"),
         (
             "git@gitlab-box.local:group/sub/project.git",
