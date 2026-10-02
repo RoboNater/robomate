@@ -17,16 +17,21 @@ GUIDE = "# Worker\n\nLoop: await_assignment -> get_role_guide -> do -> submit_re
 def guides(settings: HubSettings) -> Path:
     settings.guides_dir.mkdir()
     (settings.guides_dir / "worker.md").write_text(GUIDE, encoding="utf-8", newline="\n")
+    forge_dir = settings.guides_dir / "forge"
+    forge_dir.mkdir()
+    (forge_dir / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
     return settings.guides_dir
 
 
-async def test_a_guide_is_served_as_markdown(
+async def test_a_guide_is_served_composed_with_the_default_appendix(
     app: FastAPI, client: httpx.AsyncClient, guides: Path
 ) -> None:
+    # Composition is the default: a hub without hub_info serves the GitHub
+    # appendix without any ?forge= query (M5 Step 3).
     response = await client.get("/guides/worker.md")
 
     assert response.status_code == 200
-    assert response.text == GUIDE
+    assert response.text == GUIDE + "\n\n# GitHub Appendix\n"
     assert response.headers["content-type"] == "text/markdown; charset=utf-8"
 
 
@@ -121,6 +126,8 @@ async def test_a_symlinked_guides_directory_still_serves(
     real = tmp_path / "checkout-guides"
     real.mkdir()
     (real / "worker.md").write_text(GUIDE, encoding="utf-8", newline="\n")
+    (real / "forge").mkdir()
+    (real / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
     try:
         settings.guides_dir.symlink_to(real, target_is_directory=True)
     except OSError as exc:
@@ -139,7 +146,7 @@ async def test_a_symlinked_guides_directory_still_serves(
         response = await client.get("/guides/worker.md")
 
     assert response.status_code == 200
-    assert response.text == GUIDE
+    assert response.text == GUIDE + "\n\n# GitHub Appendix\n"
 
 
 @pytest.mark.parametrize(
@@ -178,7 +185,6 @@ def test_the_rebase_guide_documents_every_result_field() -> None:
 
 
 def test_a_guide_composes_with_forge_appendix(guides: Path) -> None:
-    (guides / "forge").mkdir()
     (guides / "forge" / "gitlab.md").write_text(
         "# GitLab Commands\nglab mr create\n", encoding="utf-8"
     )
@@ -190,28 +196,61 @@ def test_a_guide_composes_with_forge_appendix(guides: Path) -> None:
     assert b"glab mr create" in response.body
 
 
+def test_a_missing_appendix_is_a_404_not_a_bare_guide(guides: Path) -> None:
+    """A request naming a forge is only servable with that appendix (spec §10)."""
+
+    with pytest.raises(HTTPException) as raised:
+        guide_response(guides, "worker", forge="gitlab")
+
+    assert raised.value.status_code == 404
+
+
 async def test_route_serves_composed_guide_with_forge_param(
     app: FastAPI, client: httpx.AsyncClient, guides: Path
 ) -> None:
-    (guides / "forge").mkdir()
-    (guides / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
 
-    response = await client.get("/guides/worker.md?forge=github")
+    response = await client.get("/guides/worker.md?forge=gitlab")
     assert response.status_code == 200
     assert GUIDE in response.text
-    assert "# GitHub Appendix" in response.text
+    assert "# GitLab Appendix" in response.text
 
 
-async def test_hub_with_forge_serves_unchanged_guide_without_param(
+async def test_route_forge_param_overrides_the_hub_forge(
     settings: HubSettings, guides: Path
 ) -> None:
-    """Hub created with hub_info forge does not alter guide without ?forge= (r2-1)."""
+    """`?forge=` remains an explicit override of the hub's forge (spec §10)."""
     from agent_hub.app import create_app
 
-    (guides / "forge").mkdir()
-    (guides / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
 
-    hub_info = {"forge": "github", "hub_id": "test-hub-123"}
+    hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
+    hub_app = create_app(settings, hub_info=hub_info)
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/worker.md?forge=github")
+        assert response.status_code == 200
+        assert GUIDE in response.text
+        assert "# GitHub Appendix" in response.text
+        assert "# GitLab Appendix" not in response.text
+
+
+async def test_gitlab_hub_serves_gitlab_appendix_by_default(
+    settings: HubSettings, guides: Path
+) -> None:
+    """A `gitlab` hub composes the GitLab appendix with no query param."""
+    from agent_hub.app import create_app
+
+    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
+
+    hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
     hub_app = create_app(settings, hub_info=hub_info)
 
     async with (
@@ -224,5 +263,77 @@ async def test_hub_with_forge_serves_unchanged_guide_without_param(
     ):
         response = await client.get("/guides/worker.md")
         assert response.status_code == 200
-        assert response.text == GUIDE
-        assert "# GitHub Appendix" not in response.text
+        assert GUIDE in response.text
+        assert "# GitLab Appendix" in response.text
+
+
+async def test_a_missing_effective_appendix_is_a_404(
+    settings: HubSettings, guides: Path
+) -> None:
+    """No bare guide without its forge commands: a missing effective appendix 404s."""
+    from agent_hub.app import create_app
+
+    hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
+    hub_app = create_app(settings, hub_info=hub_info)
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/worker.md")
+        assert response.status_code == 404
+
+
+async def test_two_instances_serve_identical_bytes(
+    settings: HubSettings, guides: Path
+) -> None:
+    """A restart serves the same composed bytes (restart/idempotency, #21)."""
+    from agent_hub.app import create_app
+
+    hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
+    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
+
+    bodies = []
+    for _ in range(2):
+        hub_app = create_app(settings, hub_info=hub_info)
+        async with (
+            hub_app.router.lifespan_context(hub_app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=hub_app),
+                base_url=BASE_URL,
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            ) as client,
+        ):
+            response = await client.get("/guides/worker.md")
+            assert response.status_code == 200
+            bodies.append(response.text)
+
+    assert bodies[0] == bodies[1]
+
+
+def test_no_served_worker_guide_contains_a_merge_command() -> None:
+    """Appendices are worker-only: no served role guide merges, on either forge."""
+
+    for role in ("implementer", "reviewer", "rebase", "worker"):
+        text = (CHECKED_IN_GUIDES / f"{role}.md").read_text(encoding="utf-8")
+        for forge in ("github", "gitlab"):
+            appendix = (CHECKED_IN_GUIDES / "forge" / f"{forge}.md").read_text(
+                encoding="utf-8"
+            )
+            served = text + "\n\n" + appendix
+            assert "pr merge" not in served
+            assert "mr merge" not in served
+
+
+def test_served_gitlab_reviewer_guide_builds_review_url_from_note_id() -> None:
+    """The GitLab reviewer guide gives `<MR URL>#note_<id>` from the Notes response."""
+
+    reviewer = (CHECKED_IN_GUIDES / "reviewer.md").read_text(encoding="utf-8")
+    appendix = (CHECKED_IN_GUIDES / "forge" / "gitlab.md").read_text(encoding="utf-8")
+    served = reviewer + "\n\n" + appendix
+    assert "<MR URL>#note_<id>" in served
+    assert "resolvable" in served

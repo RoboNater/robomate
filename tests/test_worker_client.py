@@ -196,6 +196,8 @@ async def test_get_role_guide_no_cache(
     settings.guides_dir.mkdir(parents=True, exist_ok=True)
     guide_file = settings.guides_dir / "implementer.md"
     guide_file.write_text("# Implementer Guide\nDo the work.", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
 
     worker = WorkerHubClient(worker_settings, http_client=client)
 

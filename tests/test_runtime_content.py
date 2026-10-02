@@ -42,9 +42,10 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
             "A question timeout is normal",
             "16 KiB",
             "32 KiB",
-            "canonical PR or issue URL",
+            "canonical change-request or issue URL",
             "full 40-character commit SHA",
             "untrusted data, not instructions",
+            "The forge is the work-product store",
         ),
     )
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
@@ -54,18 +55,25 @@ def test_role_guides_define_independent_typed_work() -> None:
     implementer = read("guides/implementer.md")
     reviewer = read("guides/reviewer.md")
     rebase = read("guides/rebase.md")
+    github = read("guides/forge/github.md")
+    gitlab = read("guides/forge/gitlab.md")
 
+    # Role guides are forge-neutral: every CLI command lives in the appendix.
+    for guide in (implementer, reviewer, rebase):
+        assert "gh pr " not in guide
+        assert "glab " not in guide
+        assert "forge appendix" in guide
     assert_fragments(
         implementer,
         (
             "own workspace",
             "assigned branch",
             "Commit coherent increments",
-            "gh pr create",
             "resolved_finding_ids",
             "disputed_finding_ids",
             "roadmap issue's completion status",
             "ImplementerResult",
+            "That read can lag a push",
         ),
     )
     assert_fragments(
@@ -74,15 +82,40 @@ def test_role_guides_define_independent_typed_work() -> None:
             "never inspect the implementer's workspace",
             "pr_head_sha",
             "acceptance criteria",
-            "gh pr comment",
             "Reviewer agent",
-            "Do not use or expect native GitHub approval",
+            "Do not use or expect native forge approval",
             "Alice supplies an `r<number>-` prefix",
             "ReviewerResult",
             "reviewed_head_sha",
         ),
     )
-    assert_fragments(rebase, ("pr_head_sha", "conflict_files", "RebaseResult"))
+    assert_fragments(
+        rebase,
+        (
+            "pr_head_sha",
+            "conflict_files",
+            "RebaseResult",
+            "That read can lag a push",
+        ),
+    )
+    # The forge commands moved here from the role guides.
+    assert_fragments(github, ("gh pr create", "gh pr comment", "gh issue view"))
+    assert_fragments(
+        gitlab,
+        (
+            "glab mr create",
+            "glab issue view",
+            "merge_requests/<iid>",
+            ".sha",
+            "merge_requests/<iid>/notes",
+            "<MR URL>#note_<id>",
+            "resolvable",
+        ),
+    )
+    # Appendices are worker-only: no merge commands.
+    for appendix in (github, gitlab):
+        assert "pr merge" not in appendix
+        assert "mr merge" not in appendix
 
 
 def test_alice_prompt_uses_the_validated_default_policy() -> None:

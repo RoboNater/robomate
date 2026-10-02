@@ -36,6 +36,8 @@ async def test_mock_worker_implements_task_end_to_end(tmp_path: Path) -> None:
     guides_dir = tmp_path / "guides"
     guides_dir.mkdir()
     (guides_dir / "implementer.md").write_text("# Implementer Guide", encoding="utf-8")
+    (guides_dir / "forge").mkdir()
+    (guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
 
     settings = HubSettings(
         host="127.0.0.1",
@@ -117,6 +119,8 @@ async def test_mock_worker_reviewer_task(tmp_path: Path) -> None:
     guides_dir = tmp_path / "guides"
     guides_dir.mkdir()
     (guides_dir / "reviewer.md").write_text("# Reviewer Guide", encoding="utf-8")
+    (guides_dir / "forge").mkdir()
+    (guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
 
     settings = HubSettings(
         host="127.0.0.1",

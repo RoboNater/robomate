@@ -191,7 +191,16 @@ def create_app(
 
     @app.get("/guides/{role}.md", include_in_schema=False, dependencies=[Depends(require_bearer)])
     async def role_guide(role: str, request: Request, forge: str | None = None) -> Response:
-        effective_forge = forge
+        # Composition is the default: the hub's forge picks the appendix
+        # (`gitlab` gives `gitlab.md`, anything else `github.md`, matching
+        # gate selection), and `?forge=` overrides it. A missing appendix for
+        # the effective forge is a 404, never a guide without its commands.
+        if forge:
+            effective_forge: str | None = forge
+        elif hub_info is not None and hub_info.get("forge") == "gitlab":
+            effective_forge = "gitlab"
+        else:
+            effective_forge = "github"
         if not accounting.enabled:
             return guide_response(resolved.guides_dir, role, forge=effective_forge)
         call = begin_a2a("get_role_guide")
