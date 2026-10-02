@@ -19,11 +19,11 @@ Important properties and limitations:
   JSON-RPC calls, WorkerHubClient A2A calls, and GitLab CLI/REST API calls.
   It passed hardcoded AgentProfile strings ("claude-code", "antigravity") in
   its client calls; no independent model or LLM agent harnesses were invoked.
-- diverged_commits_count: During the run, line 944 fetched the MR without
-  `?include_diverged_commits_count=true`. GitLab omitted the field from the
-  response, so the Python fallback `.get("diverged_commits_count", 1)` recorded 1.
-  The true git divergence between 08726cbd and 48369da3 was 2 commits (b1f6ecc and
-  merge commit 48369da3).
+- diverged_commits_count: During the run, lines 941-943 fetched the MR without
+  `?include_diverged_commits_count=true`, and line 944 recorded 1 via the
+  Python fallback `.get("diverged_commits_count", 1)` because GitLab omitted
+  the field. The true git divergence between 08726cbd and 48369da3 was 2 commits
+  (b1f6ecc and merge commit 48369da3).
 - Post-run formatting: Long string literals and line wraps were reformatted to
   comply with ruff E501 (line-length 100), and unused imports were removed.
 """
