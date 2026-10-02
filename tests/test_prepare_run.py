@@ -579,6 +579,9 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it() -> No
     )
     assert lines == [
         "cd /c/Users/Bob/runs/step7/bob",
+        "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob",
+        "export TEMP=C:/Users/Bob/runs/step7/tmp/bob",
+        "export TMP=C:/Users/Bob/runs/step7/tmp/bob",
         "CODEX_HOME=C:/Users/Bob/runs/step7/configs/bob-codex codex exec "
         "-C . --add-dir C:/Users/Bob/runs/step7/bob/.git --approve-for-me "
         "--model gpt-6-sol -c 'model_reasoning_effort=\"high\"' - "
@@ -589,6 +592,7 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it() -> No
         "charlie", "claude-code", posix, posix / "charlie", auto_start=False
     ) == [
         "cd /srv/run/charlie",
+        "export TMPDIR=/srv/run/tmp/charlie",
         "claude --strict-mcp-config --mcp-config /srv/run/configs/charlie.mcp.json "
         "--add-dir /srv/run",
     ]
@@ -1368,4 +1372,120 @@ def test_opencode_effort_with_no_auto_start_is_rejected_before_run_dir(
             auto_start=False,
         )
     assert not worker_run.exists()
+
+
+def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1. Local bash scripts on POSIX
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    tmp_parent = run_dir / "tmp"
+    assert tmp_parent.is_dir()
+    if os.name != "nt":
+        assert tmp_parent.stat().st_mode & 0o777 == 0o700
+
+    for name in ("alice", "bob", "charlie"):
+        agent_tmp = tmp_parent / name
+        assert agent_tmp.is_dir()
+        if os.name != "nt":
+            assert agent_tmp.stat().st_mode & 0o777 == 0o700
+        script = (run_dir / f"start-{name}.sh").read_text()
+        lines = [
+            line.strip()
+            for line in script.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        assert lines[0] == "set -e"
+        assert lines[1].startswith("cd ")
+        assert lines[2] == f"export TMPDIR={agent_tmp}"
+        assert len(lines) >= 4
+
+    # 2. Local PowerShell launch lines and start script
+    monkeypatch.setattr(os, "name", "nt")
+    for name, harness in (("alice", "claude-code"), ("bob", "claude-code"), ("charlie", "codex")):
+        workdir = run_dir / name
+        config = run_dir / "configs" / f"{name}.mcp.json"
+        prompt = run_dir / f"{name}.prompt.md"
+        agent_tmp = tmp_parent / name
+        ps_lines = PREPARE_RUN.launch_lines(
+            harness,
+            workdir,
+            config,
+            prompt,
+            None if name == "alice" else workdir / ".git",
+            tmp_dir=agent_tmp,
+        )
+        script = PREPARE_RUN.start_script(ps_lines, powershell=True)
+        lines = [
+            line.strip()
+            for line in script.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        assert lines[0] == '$ErrorActionPreference = "Stop"'
+        assert lines[1].startswith("cd ")
+        tmp_quoted = PREPARE_RUN.shell_word(str(agent_tmp), powershell=True)
+        assert lines[2] == f"$env:TEMP = {tmp_quoted}"
+        assert lines[3] == f"$env:TMP = {tmp_quoted}"
+        assert len(lines) >= 5
+
+    # 3. Remote worker-only output on POSIX
+    monkeypatch.setattr(os, "name", "posix")
+    worker_run = tmp_path / "worker_run"
+    token = tmp_path / "target/.robomate/token"
+    PREPARE_RUN.prepare_worker(
+        "bob",
+        str(tmp_path / "origin"),
+        worker_run,
+        "http://192.0.2.10:8420",
+        token,
+        "claude-code",
+    )
+    bob_tmp = worker_run / "tmp" / "bob"
+    assert bob_tmp.is_dir()
+    if os.name != "nt":
+        assert bob_tmp.stat().st_mode & 0o777 == 0o700
+    script = (worker_run / "start-bob.sh").read_text()
+    lines = [
+        line.strip()
+        for line in script.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert lines[0] == "set -e"
+    assert lines[1].startswith("cd ")
+    assert lines[2] == f"export TMPDIR={bob_tmp}"
+
+    # 4. Remote worker-only output on Windows host
+    win_out = tmp_path / "win_bundle"
+    root = PureWindowsPath("C:/work/robomate")
+    run = PureWindowsPath("C:/Users/Bob/runs/step7")
+    PREPARE_RUN.render_worker_bundle(
+        "bob",
+        "claude-code",
+        "2.1.277",
+        "anthropic",
+        "",
+        "",
+        "C:/private/token",
+        "http://172.26.115.68:8420",
+        root,
+        run,
+        run / "bob",
+        win_out,
+    )
+    win_bob_tmp = win_out / "tmp" / "bob"
+    assert win_bob_tmp.is_dir()
+    if os.name != "nt":
+        assert win_bob_tmp.stat().st_mode & 0o777 == 0o700
+    win_script = (win_out / "start-bob.sh").read_text()
+    win_lines = [
+        line.strip()
+        for line in win_script.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    assert win_lines[0] == "set -e"
+    assert win_lines[1] == "cd /c/Users/Bob/runs/step7/bob"
+    assert win_lines[2] == "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob"
+    assert win_lines[3] == "export TEMP=C:/Users/Bob/runs/step7/tmp/bob"
+    assert win_lines[4] == "export TMP=C:/Users/Bob/runs/step7/tmp/bob"
+
 
