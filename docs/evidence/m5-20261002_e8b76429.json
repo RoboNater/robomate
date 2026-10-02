@@ -1,0 +1,591 @@
+{
+  "run_id": "20261002_e8b76429",
+  "robomate_commit": "2239685b99091231d988fbe73528896c0d5c8b13",
+  "glab_version": "glab version 1.36.0",
+  "gitlab_version": {
+    "version": "19.4.1",
+    "revision": "191678a3764",
+    "kas": {
+      "enabled": true,
+      "externalUrl": "wss://gitlab-box.local/-/kubernetes-agent/",
+      "externalK8sProxyUrl": "https://gitlab-box.local/-/kubernetes-agent/k8s-proxy/",
+      "version": "19.4.1"
+    },
+    "enterprise": false
+  },
+  "project_settings": {
+    "merge_method": "merge",
+    "squash_option": "default_off",
+    "automatic_rebase_enabled": false,
+    "auto_devops_enabled": false,
+    "only_allow_merge_if_pipeline_succeeds": true,
+    "allow_merge_on_skipped_pipeline": false,
+    "remove_source_branch_after_merge": true
+  },
+  "runner_api": {
+    "id": 1,
+    "description": "Platform: Linux",
+    "ip_address": null,
+    "active": true,
+    "paused": false,
+    "is_shared": true,
+    "runner_type": "instance_type",
+    "name": null,
+    "online": true,
+    "created_by": {
+      "id": 4,
+      "username": "liam902",
+      "public_email": null,
+      "name": "LiamNosharemyname",
+      "state": "active",
+      "locked": false,
+      "avatar_url": "https://secure.gravatar.com/avatar/b91cee1b018038287e302b30659151eab28e360114bdbdf93925d09595432afb?s=80&d=identicon",
+      "web_url": "https://gitlab-box.local/liam902"
+    },
+    "created_at": "2026-09-30T17:41:34.108Z",
+    "status": "online",
+    "job_execution_status": "idle",
+    "tag_list": [],
+    "run_untagged": true,
+    "locked": false,
+    "maximum_timeout": 3600,
+    "access_level": "not_protected",
+    "version": "19.4.1",
+    "revision": "3c39fceb",
+    "platform": "linux",
+    "architecture": "amd64",
+    "contacted_at": "2026-10-02T20:35:55.182Z",
+    "maintenance_note": null,
+    "projects": [],
+    "groups": []
+  },
+  "runner_settings": {
+    "name": "runner01",
+    "gitlab_runner_version": "19.4.1",
+    "executor": "docker on Podman",
+    "concurrent": 1,
+    "memory_limit": "2 GiB",
+    "cpu_limit": "2 CPUs",
+    "pull_policy": [
+      "always",
+      "if-not-present"
+    ],
+    "tags": "untagged"
+  },
+  "up_preflight_lines": [
+    "PASS: glab version: glab >= 1.36.0",
+    "PASS: Authenticated: origin host gitlab-box.local",
+    "PASS: Project readable: web_url matches; developer access or more",
+    "PASS: Unsupported settings: no definite unsupported settings reported by the project API",
+    "PASS: Auto DevOps: off",
+    "PASS: Pipelines must succeed: on",
+    "INFO:     Started server process [34011]",
+    "INFO:     Waiting for application startup.",
+    "INFO:     Application startup complete.",
+    "Hub running at http://127.0.0.1:8421"
+  ],
+  "hub_json": {
+    "default_branch": "main",
+    "forge": "gitlab",
+    "hub_id": "90e1f74d2f164c49ae83b8105425251c",
+    "origin": "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git",
+    "pid": 34011,
+    "port": 8421,
+    "repo_root": "/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-sandbox",
+    "robomate_version": "0.1.0",
+    "started_at": "2026-10-02T20:37:39.543592+00:00",
+    "url": "http://127.0.0.1:8421"
+  },
+  "prepare_run_output": "{\n  \"checks\": {\n    \"agy_auth\": {\n      \"bob\": \"bob-agy: logged in (antigravity-oauth-token)\"\n    },\n    \"ci\": \"RoboNater/robomate-glab-sandbox has CI configured (allow_no_ci=false)\",\n    \"codex_auth\": {\n      \"codex\": \"no codex worker in this topology\"\n    },\n    \"glab_auth\": \"ok\",\n    \"merge\": \"RoboNater/robomate-glab-sandbox allows merge\",\n    \"versions\": {\n      \"agy\": \"1.2.15\",\n      \"claude\": \"2.1.287 (Claude Code)\"\n    }\n  },\n  \"configs\": {\n    \"alice\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/configs/alice.opencode.json\",\n    \"bob\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/configs/bob-agy/.gemini/config/mcp_config.json\",\n    \"charlie\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/configs/charlie.mcp.json\"\n  },\n  \"issue\": 1,\n  \"network\": {\n    \"hub_port\": 8421,\n    \"hub_url\": \"http://127.0.0.1:8421\",\n    \"public_url\": \"http://127.0.0.1:8421\",\n    \"remote_worker\": null\n  },\n  \"prompts\": {\n    \"alice\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/alice.prompt.md\",\n    \"bob\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/bob.prompt.md\",\n    \"charlie\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/charlie.prompt.md\"\n  },\n  \"repository\": \"git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git\",\n  \"run_dir\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance\",\n  \"slug\": \"RoboNater/robomate-glab-sandbox\",\n  \"start_scripts\": {\n    \"alice\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/start-alice.sh\",\n    \"bob\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/start-bob.sh\",\n    \"charlie\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/start-charlie.sh\"\n  },\n  \"workspaces\": {\n    \"bob\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/bob\",\n    \"charlie\": \"/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/charlie\"\n  }\n}\n\nStart scripts (run each in its own terminal, alice first):\n/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/start-alice.sh\n/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/start-bob.sh\n/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/start-charlie.sh\n\nAlice kickoff prompt: /home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/alice.prompt.md\n",
+  "alice_session_id": "01063688-9409-45dd-b37f-dea09f82917b",
+  "pipeline1": {
+    "id": 29,
+    "status": "success",
+    "sha": "3d35b6accbc649e543703a2d9d658a48b92c9d70"
+  },
+  "gate_check_1": {
+    "pr_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/11",
+    "pr_state": "open",
+    "expected_head_sha": "3d35b6accbc649e543703a2d9d658a48b92c9d70",
+    "current_head_sha": "3d35b6accbc649e543703a2d9d658a48b92c9d70",
+    "head_matches": true,
+    "ci": "pass",
+    "checks": [
+      {
+        "name": "pipeline:29",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/29"
+      },
+      {
+        "name": "pipeline:29/test",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/29"
+      }
+    ],
+    "base_ref": "main",
+    "base_sha": "08726cbdadc5ff198a13d7a346b24c678967e3ee",
+    "main_sha": "08726cbdadc5ff198a13d7a346b24c678967e3ee",
+    "base_behind_main": false,
+    "mergeable": "clean",
+    "merge_state_status": "mergeable",
+    "elapsed_s": 1.174
+  },
+  "review_round_1_note": {
+    "id": 17,
+    "url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/11#note_17",
+    "resolvable": false,
+    "finding_id": "r1-1"
+  },
+  "pipeline2": {
+    "id": 30,
+    "status": "success",
+    "sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f"
+  },
+  "gate_check_2": {
+    "pr_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/11",
+    "pr_state": "open",
+    "expected_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+    "current_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+    "head_matches": true,
+    "ci": "pass",
+    "checks": [
+      {
+        "name": "pipeline:30",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/30"
+      },
+      {
+        "name": "pipeline:30/test",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/30"
+      }
+    ],
+    "base_ref": "main",
+    "base_sha": "08726cbdadc5ff198a13d7a346b24c678967e3ee",
+    "main_sha": "08726cbdadc5ff198a13d7a346b24c678967e3ee",
+    "base_behind_main": false,
+    "mergeable": "clean",
+    "merge_state_status": "mergeable",
+    "elapsed_s": 12.559
+  },
+  "review_round_2_approval_note": {
+    "id": 19,
+    "url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/11#note_19",
+    "approved_head": "8ac16c68d77383db50050ff59887e9f907e8ae2f"
+  },
+  "main_before_sha": "08726cbdadc5ff198a13d7a346b24c678967e3ee",
+  "main_after_sha": "48369da387fff3188e34c9d97347aac7926290f0",
+  "unrelated_change": {
+    "branch": "issue-76-stale-base-unrelated",
+    "head": "b1f6ecc9d665c47a24c474fe45a783b6720ff8ed",
+    "mr_iid": 12
+  },
+  "gate_check_3": {
+    "pr_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/11",
+    "pr_state": "open",
+    "expected_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+    "current_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+    "head_matches": true,
+    "ci": "pass",
+    "checks": [
+      {
+        "name": "pipeline:30",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/30"
+      },
+      {
+        "name": "pipeline:30/test",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/30"
+      }
+    ],
+    "base_ref": "main",
+    "base_sha": "08726cbdadc5ff198a13d7a346b24c678967e3ee",
+    "main_sha": "48369da387fff3188e34c9d97347aac7926290f0",
+    "base_behind_main": true,
+    "mergeable": "unknown",
+    "merge_state_status": "checking",
+    "elapsed_s": 1.118
+  },
+  "stale_base_evidence": {
+    "base_behind_main": true,
+    "diverged_commits_count": 1,
+    "expected_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f"
+  },
+  "pipeline3": {
+    "id": 32,
+    "status": "success",
+    "sha": "83f98ef44f5c29c6a88d28f9ba39dff6bf79f998"
+  },
+  "gate_check_4": {
+    "pr_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/merge_requests/11",
+    "pr_state": "open",
+    "expected_head_sha": "83f98ef44f5c29c6a88d28f9ba39dff6bf79f998",
+    "current_head_sha": "83f98ef44f5c29c6a88d28f9ba39dff6bf79f998",
+    "head_matches": true,
+    "ci": "pass",
+    "checks": [
+      {
+        "name": "pipeline:32",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/32"
+      },
+      {
+        "name": "pipeline:32/test",
+        "bucket": "pass",
+        "link": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox/-/pipelines/32"
+      }
+    ],
+    "base_ref": "main",
+    "base_sha": "48369da387fff3188e34c9d97347aac7926290f0",
+    "main_sha": "48369da387fff3188e34c9d97347aac7926290f0",
+    "base_behind_main": false,
+    "mergeable": "clean",
+    "merge_state_status": "mergeable",
+    "elapsed_s": 12.514
+  },
+  "final_mr_state": {
+    "state": "merged",
+    "merge_commit_sha": "692306564b28e19c9555c868465843ec9e5460ab",
+    "squash_commit_sha": null,
+    "source_branch": "issue-1-queue-limit-b8630a",
+    "target_branch": "main",
+    "sha": "83f98ef44f5c29c6a88d28f9ba39dff6bf79f998"
+  },
+  "source_branch_deleted": true,
+  "worker_releases": {
+    "bob": {
+      "release": true
+    },
+    "charlie": {
+      "release": true
+    }
+  },
+  "hub_report_json": {
+    "agents": [
+      {
+        "bytes": {
+          "a2a": {
+            "received": 0,
+            "sent": 0
+          },
+          "mcp": {
+            "context": 0,
+            "received": 0,
+            "sent": 0
+          }
+        },
+        "calls": {
+          "active": 0,
+          "other": 0,
+          "total": 0,
+          "waiting": 0
+        },
+        "calls_source": "none",
+        "checked_in": true,
+        "errors": 0,
+        "first_seen": null,
+        "harness": null,
+        "heartbeats": 0,
+        "last_seen": null,
+        "model": null,
+        "name": "alice",
+        "provider": null,
+        "released": null,
+        "retries": 0,
+        "status": "done",
+        "time_s": {
+          "idle": null,
+          "total": null,
+          "turn": null,
+          "waiting": null
+        },
+        "timeouts": 0,
+        "wire_source": "none"
+      },
+      {
+        "bytes": {
+          "a2a": {
+            "received": 28239,
+            "sent": 6260
+          },
+          "mcp": {
+            "context": 0,
+            "received": 0,
+            "sent": 0
+          }
+        },
+        "calls": {
+          "active": 10,
+          "other": 2,
+          "total": 12,
+          "waiting": 0
+        },
+        "calls_source": "call_log",
+        "checked_in": true,
+        "errors": 0,
+        "first_seen": "2026-10-02T20:37:45.587Z",
+        "harness": "antigravity",
+        "heartbeats": 2,
+        "last_seen": "2026-10-02T20:39:14.633Z",
+        "model": "gemini-3.8-flash",
+        "name": "bob",
+        "provider": "google",
+        "released": "2026-10-02T20:39:14.633Z",
+        "retries": 0,
+        "status": "released",
+        "time_s": {
+          "idle": 52.175,
+          "total": 89.046,
+          "turn": 36.871,
+          "waiting": 0
+        },
+        "timeouts": 0,
+        "wire_source": "call_log"
+      },
+      {
+        "bytes": {
+          "a2a": {
+            "received": 19629,
+            "sent": 4695
+          },
+          "mcp": {
+            "context": 0,
+            "received": 0,
+            "sent": 0
+          }
+        },
+        "calls": {
+          "active": 6,
+          "other": 2,
+          "total": 8,
+          "waiting": 0
+        },
+        "calls_source": "call_log",
+        "checked_in": true,
+        "errors": 0,
+        "first_seen": "2026-10-02T20:37:45.642Z",
+        "harness": "claude-code",
+        "heartbeats": 2,
+        "last_seen": "2026-10-02T20:39:14.707Z",
+        "model": "claude-opus-5-5",
+        "name": "charlie",
+        "provider": "anthropic",
+        "released": "2026-10-02T20:39:14.707Z",
+        "retries": 0,
+        "status": "released",
+        "time_s": {
+          "idle": 85.724,
+          "total": 89.065,
+          "turn": 3.341,
+          "waiting": 0
+        },
+        "timeouts": 0,
+        "wire_source": "call_log"
+      }
+    ],
+    "report": {
+      "generated_at": "2026-10-02T20:39:16.068Z",
+      "in_progress": false,
+      "labels": true,
+      "notes": [],
+      "schema_version": 12,
+      "state_dir": "/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-sandbox/.robomate",
+      "telemetry": [
+        "/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/bob-telemetry.jsonl",
+        "/home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/charlie-telemetry.jsonl"
+      ],
+      "units": "Figures are serialized message-body bytes (hub call_log and worker telemetry, #78), not tokens and not billed cost: HTTP headers, TLS/TCP overhead and harness framing are excluded, and the byte-to-token ratio differs per provider."
+    },
+    "tasks": [
+      {
+        "assignee": "bob",
+        "blocking_findings": 0,
+        "created": "2026-10-02T20:37:45.700Z",
+        "finished": "2026-10-02T20:37:57.034Z",
+        "head_sha": "3d35b6accbc649e543703a2d9d658a48b92c9d70",
+        "id": "6fd0d73797964a5b95c73a150dd6b298",
+        "lease_duration_s": 1800.0,
+        "nonblocking_findings": 0,
+        "open": false,
+        "outcome": "completed",
+        "picked_up": null,
+        "pr_head_sha": null,
+        "pr_url": null,
+        "progress_notes": 1,
+        "questions": 0,
+        "result_bytes": 448,
+        "role": "implementer",
+        "state": "completed",
+        "title": "IMPLEMENT for sandbox#1",
+        "wall_s": 11.334
+      },
+      {
+        "assignee": "charlie",
+        "blocking_findings": 1,
+        "created": "2026-10-02T20:37:59.304Z",
+        "finished": "2026-10-02T20:38:01.127Z",
+        "head_sha": "3d35b6accbc649e543703a2d9d658a48b92c9d70",
+        "id": "57d32cdaa6024d0b8bde24f827d40ac8",
+        "lease_duration_s": 1800.0,
+        "nonblocking_findings": 0,
+        "open": false,
+        "outcome": "changes_requested",
+        "picked_up": null,
+        "pr_head_sha": "3d35b6accbc649e543703a2d9d658a48b92c9d70",
+        "pr_url": null,
+        "progress_notes": 0,
+        "questions": 0,
+        "result_bytes": 616,
+        "role": "reviewer",
+        "state": "completed",
+        "title": "REVIEW round 1 for MR !11",
+        "wall_s": 1.823
+      },
+      {
+        "assignee": "bob",
+        "blocking_findings": 0,
+        "created": "2026-10-02T20:38:01.189Z",
+        "finished": "2026-10-02T20:38:12.164Z",
+        "head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+        "id": "e57efee1a7ee4ec29ab55c3ae20df176",
+        "lease_duration_s": 1800.0,
+        "nonblocking_findings": 0,
+        "open": false,
+        "outcome": "completed",
+        "picked_up": null,
+        "pr_head_sha": null,
+        "pr_url": null,
+        "progress_notes": 0,
+        "questions": 0,
+        "result_bytes": 467,
+        "role": "implementer",
+        "state": "completed",
+        "title": "ADDRESS findings for MR !11",
+        "wall_s": 10.975
+      },
+      {
+        "assignee": "charlie",
+        "blocking_findings": 0,
+        "created": "2026-10-02T20:38:24.240Z",
+        "finished": "2026-10-02T20:38:25.758Z",
+        "head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+        "id": "4a8a1cec1cc44dc59501b312de2bf331",
+        "lease_duration_s": 1800.0,
+        "nonblocking_findings": 0,
+        "open": false,
+        "outcome": "approved",
+        "picked_up": null,
+        "pr_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+        "pr_url": null,
+        "progress_notes": 0,
+        "questions": 0,
+        "result_bytes": 482,
+        "role": "reviewer",
+        "state": "completed",
+        "title": "REVIEW round 2 for MR !11",
+        "wall_s": 1.518
+      },
+      {
+        "assignee": "bob",
+        "blocking_findings": 0,
+        "created": "2026-10-02T20:38:38.598Z",
+        "finished": "2026-10-02T20:38:53.160Z",
+        "head_sha": "83f98ef44f5c29c6a88d28f9ba39dff6bf79f998",
+        "id": "8fab606da4e043f7b406f3a50f3f6f3b",
+        "lease_duration_s": 1800.0,
+        "nonblocking_findings": 0,
+        "open": false,
+        "outcome": "completed",
+        "picked_up": null,
+        "pr_head_sha": "8ac16c68d77383db50050ff59887e9f907e8ae2f",
+        "pr_url": null,
+        "progress_notes": 0,
+        "questions": 0,
+        "result_bytes": 378,
+        "role": "rebase",
+        "state": "completed",
+        "title": "REBASE MR !11",
+        "wall_s": 14.562
+      }
+    ],
+    "totals": {
+      "bytes": {
+        "a2a": {
+          "received": 47868,
+          "sent": 10955
+        },
+        "a2a_total": 58823,
+        "mcp": {
+          "context": 0,
+          "received": 0,
+          "sent": 0
+        },
+        "mcp_total": 0
+      },
+      "calls": {
+        "active": 16,
+        "other": 4,
+        "total": 20,
+        "waiting": 0
+      },
+      "errors": 0,
+      "heartbeats": 4,
+      "retries": 0,
+      "time_s": {
+        "idle": 137.899,
+        "total": 178.111,
+        "turn": 40.212,
+        "waiting": 0
+      },
+      "timeouts": 0
+    },
+    "workflow": {
+      "created": "2026-10-02T20:37:45.427Z",
+      "decisions": [
+        {
+          "id": 1,
+          "key": null,
+          "rationale_bytes": 27,
+          "summary": "M5 acceptance run completed successfully",
+          "ts": "2026-10-02T20:39:14.577Z"
+        }
+      ],
+      "elapsed_s": 89.15,
+      "events": {
+        "agent_checked_in": 2,
+        "task_completed": 5,
+        "task_progress": 1
+      },
+      "goal": "Address issue #1 in RoboNater/robomate-glab-sandbox: Add maximum queue size limit to JobQueue",
+      "goal_bytes": 93,
+      "id": "1ff2adf0be854df89938a56f44611543",
+      "max_review_rounds": 3,
+      "max_wall_minutes": 120,
+      "merge_gate_calls": 0,
+      "merge_gate_readings": [],
+      "merged": null,
+      "messages": 13,
+      "policy": {
+        "allow_no_ci": false,
+        "max_review_rounds": 3,
+        "max_task_lease_min": 120,
+        "max_wall_minutes": 120,
+        "merge_method": "merge",
+        "pairing_wait_s": 120,
+        "role_policy": {
+          "implementer_capabilities": [],
+          "reviewer_capabilities": [],
+          "reviewer_harness_differs": true,
+          "reviewer_provider_differs": false
+        }
+      },
+      "policy_defaults": [],
+      "review_rounds_used": 1,
+      "review_tasks": 2,
+      "status": "done",
+      "wall_used_fraction": 0.012
+    }
+  },
+  "hub_report_md": "## Hub run report\n\n> Figures are serialized message-body bytes (hub call_log and worker telemetry, #78), not tokens and not billed cost: HTTP headers, TLS/TCP overhead and harness framing are excluded, and the byte-to-token ratio differs per provider.\n\nGenerated 2026-10-02T20:39:16.459Z from /home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-sandbox/.robomate (schema v12); telemetry: /home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/bob-telemetry.jsonl, /home/alfred/lw/w535-robomate/w535r-run-log/25-issue-76/m5-acceptance/charlie-telemetry.jsonl\n\n**Total:** 58823 body bytes (MCP 0, A2A 58823) over 20 hub calls (16 active, 0 waiting), 0 timeouts, 0 retries; agent time 2m58s (turn 0m40s, waiting 0m00s)\n\n### Workflow\n\n- id: 1ff2adf0be854df89938a56f44611543   status: done   created: 2026-10-02T20:37:45.427Z\n- goal: Address issue #1 in RoboNater/robomate-glab-sandbox: Add maximum queue size limit to JobQueue (93 bytes)\n- policy: {\"allow_no_ci\": false, \"max_review_rounds\": 3, \"max_task_lease_min\": 120, \"max_wall_minutes\": 120, \"merge_method\": \"merge\", \"pairing_wait_s\": 120, \"role_policy\": {\"implementer_capabilities\": [], \"reviewer_capabilities\": [], \"reviewer_harness_differs\": true, \"reviewer_provider_differs\": false}}\n- elapsed: 1m29s of max_wall_minutes 120 (1%)\n- review rounds used: 1 of max_review_rounds 3 (2 review task(s))\n- merge gate: 0 call(s) in call_log, 0 reading(s) logged\n- merged sha: -\n- events: agent_checked_in=2, task_completed=5, task_progress=1   messages: 13\n- decisions: 1\n  - 1 2026-10-02T20:39:14.577Z M5 acceptance run completed successfully (rationale 27 bytes)\n\n### Agents\n\n| agent | status | calls | active | waiting | other | timeouts | retries | MCP sent | MCP recv | A2A sent | A2A recv | turn | waiting | idle | total |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n| alice | done | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - | - | - | - |\n| bob | released | 12 | 10 | 0 | 2 | 0 | 0 | 0 | 0 | 6260 | 28239 | 0m37s | 0m00s | 0m52s | 1m29s |\n| charlie | released | 8 | 6 | 0 | 2 | 0 | 0 | 0 | 0 | 4695 | 19629 | 0m03s | 0m00s | 1m26s | 1m29s |\n| TOTAL |  | 20 | 16 | 0 | 4 | 0 | 0 | 0 | 0 | 10955 | 47868 | 0m40s | 0m00s | 2m18s | 2m58s |\n\ncalls: model-initiated hub tool calls (heartbeats excluded); active = made while holding an assigned task, waiting = a hold that returned timeout/null event. MCP = tool arguments/results at the model's context boundary; A2A = HTTP bodies between worker-mcp and the hub.\n\n### Tasks\n\n| task | role | assignee | state | outcome | lease | wall | head | questions | progress | title |\n|---|---|---|---|---|---|---|---|---|---|---|\n| 6fd0d737 | implementer | bob | completed | completed | 30m00s | 0m11s | 3d35b6accbc6 | 0 | 1 | IMPLEMENT for sandbox#1 |\n| 57d32cda | reviewer | charlie | completed | changes_requested | 30m00s | 0m02s | 3d35b6accbc6 | 0 | 0 | REVIEW round 1 for MR !11 |\n| e57efee1 | implementer | bob | completed | completed | 30m00s | 0m11s | 8ac16c68d773 | 0 | 0 | ADDRESS findings for MR !11 |\n| 4a8a1cec | reviewer | charlie | completed | approved | 30m00s | 0m02s | 8ac16c68d773 | 0 | 0 | REVIEW round 2 for MR !11 |\n| 8fab606d | rebase | bob | completed | completed | 30m00s | 0m15s | 83f98ef44f5c | 0 | 0 | REBASE MR !11 |\n"
+}

@@ -1,6 +1,6 @@
 # Implementation plan — MVP Milestone M5: GitLab
 
-Status: proposed. Tracking issue [#68](https://github.com/RoboNater/robomate/issues/68);
+Status: done (acceptance run [`docs/evidence/m5-20261002_e8b76429.md`](../evidence/m5-20261002_e8b76429.md)). Tracking issue [#68](https://github.com/RoboNater/robomate/issues/68);
 roadmap [#2](https://github.com/RoboNater/robomate/issues/2), section M5. Decision list and
 review items: [#21](https://github.com/RoboNater/robomate/issues/21).
 
