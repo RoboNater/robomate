@@ -25,12 +25,12 @@ robomate status                   # who's connected, what phase, which PR, what'
 robomate report                   # merged SHA, review findings and where each one went
 ```
 
-**Works today (M1):** `robomate up`, `down`, `status`, and `ls`, and the `robomate mcp`
-bridge that connects every agent to the hub. Runs are still prepared with
-`scripts/prepare-run.py`, which writes each agent's configuration and launch prompt (see the
-[user guide](docs/user-guide.md)), and each worker uses its own full clone.
-**Planned:** GitLab (M5); the one-line joins, worktrees, and `robomate submit` (M2); harness
-installs and certification (M3); close-out and `robomate report` (M4).
+**Works today (M1, M5):** `robomate up`, `down`, `status`, and `ls`, the `robomate mcp`
+bridge that connects every agent to the hub, and both GitHub and GitLab workflows. Runs are still
+prepared with `scripts/prepare-run.py`, which writes each agent's configuration and launch prompt
+(see the [user guide](docs/user-guide.md)), and each worker uses its own full clone.
+**Planned:** the one-line joins, worktrees, and `robomate submit` (M2); harness installs and
+certification (M3); close-out and `robomate report` (M4).
 
 - **Pull model.** Agents connect to the hub over MCP and ask for work. The hub holds each
   request open until there is something to do, so no agent polls or spins.
@@ -59,9 +59,9 @@ installs and certification (M3); close-out and `robomate report` (M4).
 
 ## Status
 
-robomate is in early development, and is now built with itself. M1 is done: the standalone
-hub with `robomate up/down/status/ls`, and `robomate mcp`. GitLab (M5) is next; see its
-[plan](docs/development/implementation-plan-mvp-m5-gitlab.md). Milestone status is on the
+robomate is in early development, and is now built with itself. M1 and M5 (GitLab) are done:
+the standalone hub with `robomate up/down/status/ls`, `robomate mcp`, and dual-forge support
+(GitHub and GitLab). M2 is next. Milestone status is on the
 [roadmap](https://github.com/RoboNater/robomate/issues/2).
 
 robomate grew out of a proof of concept, robo-agents, which ran the full
@@ -78,7 +78,7 @@ The PoC's design is in [`docs/poc-spec.md`](docs/poc-spec.md), its run evidence 
 
 - [MVP spec](docs/mvp-spec.md): goals, architecture, interfaces, and plan
 - [Milestone plans](docs/development/): [M1](docs/development/implementation-plan-mvp-m1.md)
-  (done) and [M5, GitLab](docs/development/implementation-plan-mvp-m5-gitlab.md) (next)
+  (done) and [M5, GitLab](docs/development/implementation-plan-mvp-m5-gitlab.md) (done; M2 next)
 - GitLab: the [feasibility study](docs/feasibility-and-impact-of-supporting-gitlab-centric-workflows.md)
   and the [investigation and prototype report](docs/gitlab-forge-support-investigation.md)
 - [Harness investigation](docs/harness-investigation-opencode-antigravity.md): OpenCode and

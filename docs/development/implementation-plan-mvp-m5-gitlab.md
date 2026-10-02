@@ -1,7 +1,9 @@
 # Implementation plan — MVP Milestone M5: GitLab
 
-Status: proposed. Tracking issue [#68](https://github.com/RoboNater/robomate/issues/68);
-roadmap [#2](https://github.com/RoboNater/robomate/issues/2), section M5. Decision list and
+Status: done (acceptance run
+[`docs/evidence/m5-20261002_e8b76429.md`](../evidence/m5-20261002_e8b76429.md)). Tracking issue
+[#68](https://github.com/RoboNater/robomate/issues/68); roadmap
+[#2](https://github.com/RoboNater/robomate/issues/2), section M5. Decision list and
 review items: [#21](https://github.com/RoboNater/robomate/issues/21).
 
 This plan turns [`docs/mvp-spec.md`](../mvp-spec.md) §13 row M5 into a sequence of
@@ -11,7 +13,7 @@ leaves open, the step that implements it also updates the spec (see
 "PoC §" or "study §" (the
 [GitLab feasibility study](../feasibility-and-impact-of-supporting-gitlab-centric-workflows.md)).
 
-M5 is the next milestone after M1, ahead of M2 (§13). It runs on the M1 topology: the hub
+M5 was executed after M1, ahead of M2 (§13). It runs on the M1 topology: the hub
 from `robomate up`, the `robomate mcp` bridges, and runs prepared by `scripts/prepare-run.py`.
 
 ## What M5 has to deliver

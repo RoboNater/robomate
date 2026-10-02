@@ -19,7 +19,7 @@ the MVP spec doesn't change it.
 - **Roadmap: #2.** Milestone status, and reservations of shared counters (DB
   schema version, wire `hub.schema_version`). Take a counter's value from there.
 - **Lessons learned: #3** (earlier: [`docs/poc-lessons.md`](docs/poc-lessons.md)). **Minor nits: #4.**
-- **GitLab:** work is tracked in the [M5 plan](docs/development/implementation-plan-mvp-m5-gitlab.md).
+- **GitLab:** supported as of M5 ([plan](docs/development/implementation-plan-mvp-m5-gitlab.md)).
   Read #69 (test instance and sandbox) before any GitLab work or regression run.
 
 A bare `#N` here means a robomate issue. The specs and `docs/poc-*` predate the
