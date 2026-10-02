@@ -213,3 +213,9 @@ def test_resolve_repository_detects_gitlab_forge(tmp_path: Path) -> None:
     info = resolve_repository(repo)
     assert info.forge == "gitlab"
     assert info.default_branch == "main"
+
+
+@pytest.mark.parametrize("origin", ["https://[::1/a/b.git", "https://[gitlab-box.local]/a/b.git"])
+def test_malformed_bracketed_host(origin: str) -> None:
+    assert extract_origin_host(origin) is None
+    assert detect_forge(origin, probe_cli=True) == "unknown"

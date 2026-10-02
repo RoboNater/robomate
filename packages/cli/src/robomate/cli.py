@@ -16,11 +16,13 @@ import urllib.request
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import anyio
+from agent_hub.forge_preflight import gitlab_preflight
 from agent_hub.main import serve_http
 from agent_hub_common import HubSettings, load_or_create_token, reserve_stdout
 from agent_hub_common.discovery import (
@@ -117,7 +119,9 @@ def _repo_lock(directory: Path) -> Iterator[None]:
 
 
 async def _up(args: argparse.Namespace) -> None:
-    repo = resolve_repository(Path.cwd(), probe_cli=True)
+    repo = resolve_repository(Path.cwd(), probe_cli=args.forge is None)
+    if args.forge:
+        repo = replace(repo, forge=args.forge)
     directory = state_dir(repo.root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
@@ -133,6 +137,16 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         str(old.get("url") or ""), str(old.get("hub_id") or "")
     ):
         raise RuntimeError(f"hub already running at {old['url']}")
+    if repo.forge == "unknown":
+        print("Warning: forge is unknown; check_merge_gate will use the GitHub gate. "
+              "Choose --forge github|gitlab to override.", flush=True)
+    elif repo.forge == "gitlab":
+        checks = await gitlab_preflight(repo.origin)
+        for check in checks:
+            print(f"{check.status.upper()}: {check.name}: {check.detail}", flush=True)
+        if any(check.status == "refuse" for check in checks):
+            raise RuntimeError("GitLab preflight refused startup; disable the named unsupported "
+                               "settings or correct the origin before running up again")
     requested_port = args.port if args.port is not None else old.get("port")
     sock, port = _bind(args.bind, int(requested_port) if requested_port is not None else None)
     overlay = dict(os.environ)
@@ -336,6 +350,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="robomate")
     commands = parser.add_subparsers(dest="command", required=True)
     up = commands.add_parser("up", help="run this repository's hub in the foreground")
+    up.add_argument("--forge", choices=("github", "gitlab"),
+                    help="override forge detection and record the choice in hub.json")
     up.add_argument("--bind", default="127.0.0.1")
     up.add_argument("--public-url")
     up.add_argument("--port", type=int)
