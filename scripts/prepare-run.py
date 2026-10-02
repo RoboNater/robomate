@@ -714,6 +714,7 @@ def launch_lines(
     model: str = "",
     effort: str = "",
     auto_start: bool = True,
+    tmp_dir: Path | None = None,
 ) -> list[str]:
     """One local agent's start lines for this platform; paths are shell-quoted.
 
@@ -732,7 +733,16 @@ def launch_lines(
         auto_start,
         powershell,
     )
-    return [f"cd {shell_word(str(workdir), powershell)}", *lines]
+    temp_lines = []
+    if tmp_dir is not None:
+        if powershell:
+            temp_lines = [
+                f"$env:TEMP = {shell_word(str(tmp_dir), powershell)}",
+                f"$env:TMP = {shell_word(str(tmp_dir), powershell)}",
+            ]
+        else:
+            temp_lines = [f"export TMPDIR={shell_word(str(tmp_dir), powershell)}"]
+    return [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, *lines]
 
 
 def start_script(lines: list[str], powershell: bool = False) -> str:
@@ -788,6 +798,7 @@ def worker_launch(
     model: str = "",
     effort: str = "",
     auto_start: bool = True,
+    tmp_dir: PurePath | None = None,
 ) -> list[str]:
     """A remote worker's launch lines, spelled for its host.
 
@@ -795,6 +806,8 @@ def worker_launch(
     ``<`` take Git Bash spellings, while arguments and variables handed to
     native programs (claude, codex, opencode, agy) keep forward-slash Windows paths (#75).
     """
+    if tmp_dir is None:
+        tmp_dir = run_dir / "tmp" / name
     prompt = run_dir / f"{name}.prompt.md"
     flags = model_flags(harness, model, effort, auto_start=auto_start)
     lines = harness_launch(
@@ -806,7 +819,16 @@ def worker_launch(
         flags,
         auto_start,
     )
-    return [f"cd {shell_word(git_bash_path(workspace))}", *lines]
+    is_windows = bool(run_dir.drive) or os.name == "nt"
+    if is_windows:
+        temp_lines = [
+            f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
+            f"export TEMP={shell_word(tmp_dir.as_posix())}",
+            f"export TMP={shell_word(tmp_dir.as_posix())}",
+        ]
+    else:
+        temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
+    return [f"cd {shell_word(git_bash_path(workspace))}", *temp_lines, *lines]
 
 
 def require_owner_only(path: Path) -> None:
@@ -904,6 +926,14 @@ def render_worker_bundle(
     """
     configs = out_dir / "configs"
     configs.mkdir(parents=True, mode=0o700, exist_ok=True)
+    tmp_parent = out_dir / "tmp"
+    tmp_parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        tmp_parent.chmod(0o700)
+    agent_tmp = tmp_parent / name
+    agent_tmp.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        agent_tmp.chmod(0o700)
     env = worker_env(
         name,
         harness,
@@ -1209,6 +1239,16 @@ def prepare(
     configs = run_dir / "configs"
     configs.mkdir(mode=0o700, exist_ok=True)
 
+    tmp_parent = run_dir / "tmp"
+    tmp_parent.mkdir(mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        tmp_parent.chmod(0o700)
+    for name in ("alice", *local):
+        agent_tmp = tmp_parent / name
+        agent_tmp.mkdir(mode=0o700, exist_ok=True)
+        if os.name != "nt":
+            agent_tmp.chmod(0o700)
+
     models = {"bob": bob_model, "charlie": charlie_model}
     capabilities = {"bob": bob_capabilities, "charlie": charlie_capabilities}
     rendered_configs: dict[str, str] = {}
@@ -1350,6 +1390,7 @@ def prepare(
             model,
             effort,
             auto_start,
+            tmp_dir=run_dir / "tmp" / name,
         )
         script = run_dir / f"start-{name}.{suffix}"
         write_script(script, start_script(lines, os.name == "nt"))

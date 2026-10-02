@@ -29,6 +29,10 @@ Keep the coordination directory outside both worker clones. The generated layout
 │   └── codex/
 │       ├── config.toml
 │       └── auth.json
+├── tmp/
+│   ├── alice/
+│   ├── bob/
+│   └── charlie/
 ├── alice-runtime/.claude/skills/alice-orchestrator/
 ├── bob/                     # independent full clone
 ├── charlie/                 # independent full clone
