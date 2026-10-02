@@ -87,11 +87,15 @@ async def test_definite_setting_refuses(setting: str) -> None:
 
 async def test_web_url_collision_refuses() -> None:
     checks = await gitlab_preflight(ORIGIN, runner=Runner(
-        {**BASE, "web_url": "https://host/gitlab/group/project"},
+        {**BASE, "web_url": "https://host/gitlab/group/project",
+         "automatic_rebase_enabled": True, "auto_devops_enabled": True},
     ))
     refusal = next(c for c in checks if c.status == "refuse")
     assert refusal.name == "Project readable"
     assert "relative URL root" in refusal.detail and "issues/80" in refusal.detail
+    assert "https://host/gitlab/group/project" in refusal.detail
+    assert "https://host/group/project" in refusal.detail
+    assert all(c.status == "warn" and "verified origin project" in c.detail for c in checks[3:])
 
 
 async def test_advisories() -> None:

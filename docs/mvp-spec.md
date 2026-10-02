@@ -491,6 +491,8 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
     not the head, reads as `no_checks`.
 - **Merge:** the orchestrator merges with the forge CLI, bound to the approved SHA
   (`gh pr merge --match-head-commit …`; `glab mr merge --sha …` per the study §5).
+  The orchestrator never uses auto-merge: a deferred merge could happen after its checks.
+  The GitLab run path passes `--auto-merge=false` explicitly (M5 Step 4).
 - **GitLab startup preflight:** prints one line per check: `glab` present and ≥ 1.36.0;
   authentication via `glab api --hostname <origin host> user`; project readable with developer
   access or more; unsupported settings; Auto DevOps; and "Pipelines must succeed".

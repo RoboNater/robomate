@@ -73,10 +73,11 @@ async def gitlab_preflight(
         if isinstance(web_url, str) and web_url.lower() != project.web_url.lower():
             checks.append(PreflightCheck(
                 "Project readable", "refuse",
-                "project web_url differs from https://<origin host>/<origin path>; "
+                f"project web_url {web_url!r} differs from expected {project.web_url!r}; "
                 "a relative URL root or project mismatch would make the gate report on "
                 "the wrong project. See https://github.com/RoboNater/robomate/issues/80",
             ))
+            data = None
         else:
             permissions = data.get("permissions")
             levels = []
@@ -98,7 +99,9 @@ async def gitlab_preflight(
 
     if data is None:
         for name in ("Unsupported settings", "Auto DevOps", "Pipelines must succeed"):
-            checks.append(PreflightCheck(name, "warn", "cannot check without project settings"))
+            checks.append(PreflightCheck(
+                name, "warn", "cannot check without verified origin project settings",
+            ))
         return checks
     errors = check_unsupported_project_settings(data)
     checks.append(PreflightCheck(

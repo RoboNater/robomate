@@ -350,7 +350,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="robomate")
     commands = parser.add_subparsers(dest="command", required=True)
     up = commands.add_parser("up", help="run this repository's hub in the foreground")
-    up.add_argument("--forge", choices=("github", "gitlab"))
+    up.add_argument("--forge", choices=("github", "gitlab"),
+                    help="override forge detection and record the choice in hub.json")
     up.add_argument("--bind", default="127.0.0.1")
     up.add_argument("--public-url")
     up.add_argument("--port", type=int)
