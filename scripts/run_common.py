@@ -444,9 +444,16 @@ def render_worker_prompt(agent: str) -> str:
     return instruction
 
 
-def parse_github_slug(repository: str) -> str | None:
+def parse_github_slug(repository: str, forge: str = "github") -> str | None:
     """Return ``owner/repo`` for GitHub URLs/SLUGs, else None for local paths."""
     text = repository.strip()
+    if forge == "gitlab":
+        from agent_hub.gitlab_gate import GitLabGateError, GitLabProject
+
+        try:
+            return GitLabProject.from_origin(text).path
+        except (GitLabGateError, ValueError):
+            return None
     if text.startswith("git@github.com:"):
         slug = text.removeprefix("git@github.com:").removesuffix(".git")
     elif "github.com/" in text:
@@ -459,6 +466,10 @@ def parse_github_slug(repository: str) -> str | None:
     if len(parts) != 2 or not all(parts):
         return None
     return f"{parts[0]}/{parts[1]}"
+
+
+parse_forge_slug = parse_github_slug
+
 
 
 def slug_clone_url(slug: str) -> str:

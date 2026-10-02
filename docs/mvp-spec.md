@@ -298,7 +298,7 @@ permissions, which certification catches per harness.
   - `closeout: true | false` (default `true`) — run the close-out task (§7.3).
   - `on_done: release | standby` (default `release`). Standby keeps workers joined for the
     next queued run; idle holds cost tokens, so `release` is the default when the queue is empty.
-  - `forge` — detected, not normally set.
+  - the hub's forge (§4, §10) applies; it is not a policy field.
 - Operator policy defaults live in `config.toml`; `robomate submit --policy k=v` overrides per run.
 
 ### 7.3 Close-out (#14, #15, #16)
@@ -463,7 +463,7 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
 ## 10. Forge support — GitHub and GitLab
 
 - **Detection** at `robomate up`: `github.com` → GitHub; a host in `config.toml: forge.gitlab_hosts`
-  or known to `glab` → GitLab; otherwise `--forge`. Recorded in `hub.json` and the workflow policy.
+  or known to `glab` → GitLab; otherwise `--forge`. Recorded in `hub.json`.
 - **Agents use the CLIs** (`gh`, `glab`) with their own authentication, as in the PoC.
 - **Merge gate** (`check_merge_gate`, read-only facts): a `ForgeGate` interface with
   `GitHubGate` (the PoC implementation) and `GitLabGate`, chosen at hub start from the forge
@@ -512,7 +512,7 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   `default_on`/`default_off` allow policy `merge` and `squash`; `always` allows only `squash`;
   `never` allows only `merge`, for each of project `merge`, `rebase_merge`, and `ff`.
   The orchestrator supplies the squash flag explicitly. Live matrix verification and its
-  run-path caller land in M5 Step 4.
+  run-path caller landed in M5 Step 4 (#75).
 - **Guides:** one guide per role, forge-neutral ("open a change request with your forge CLI"),
   composed at serve time with a short forge appendix (`guides/forge/github.md`,
   `guides/forge/gitlab.md`) holding the forge CLI commands the roles need

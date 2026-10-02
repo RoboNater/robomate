@@ -133,9 +133,10 @@ def test_alice_prompt_uses_the_validated_default_policy() -> None:
     assert "<roadmap-owner>/<roadmap-repository>#<roadmap-issue>" in prompt
     assert "throwaway run with no roadmap target" in prompt
     assert "roadmap issue `#2`" not in prompt
-    durable_goal = section(prompt, "Goal:", "GitHub comment identity account:")
+    durable_goal = section(prompt, "Goal:", "Forge comment identity account:")
     assert "<roadmap-owner>/<roadmap-repository>#<roadmap-issue>" in durable_goal
     assert "no roadmap edit" in durable_goal
+    assert "Forge: <forge> (host: <host>, project: <project>)." in prompt
 
     skill = read("skills/alice-orchestrator/SKILL.md")
     skill_match = re.search(r"```json\n(?P<policy>.*?)\n```", skill, flags=re.DOTALL)
@@ -210,6 +211,29 @@ def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
     )
 
 
+def test_alice_skill_covers_gitlab_merge_and_reads() -> None:
+    skill = read("skills/alice-orchestrator/SKILL.md")
+    assert_fragments(
+        skill,
+        (
+            "### GitLab merge and read-back",
+            (
+                "glab mr merge <iid> -R <host>/<project> --sha <approved head> "
+                "--auto-merge=false --squash/--squash=false --remove-source-branch --yes"
+            ),
+            'Use `--squash` when `policy.merge_method == "squash"`',
+            'state == "merged"',
+            "merge_commit_sha",
+            "squash_commit_sha",
+            "409",
+            "Pipelines must succeed",
+            "glab issue view",
+            "glab mr view",
+            "glab mr diff",
+        ),
+    )
+
+
 def test_alice_skill_documents_resume_and_redelivery_guards() -> None:
     skill = read("skills/alice-orchestrator/SKILL.md")
     assert_fragments(
@@ -277,7 +301,7 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
     )
 
     prompt = read("prompts/alice.md")
-    durable_goal = section(prompt, "Goal:", "GitHub comment identity account:")
+    durable_goal = section(prompt, "Goal:", "Forge comment identity account:")
     assert_fragments(
         durable_goal,
         ("replace that sentence with the statement text itself", "one run per pull request"),
