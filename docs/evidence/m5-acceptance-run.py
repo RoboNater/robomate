@@ -1,5 +1,32 @@
 #!/usr/bin/env python3
-"""Execute M5 acceptance run against gitlab-box.local and record all facts."""
+"""M5 acceptance run driver script (historical run record).
+
+NOTE / RUN RECORD NOTICE:
+This script is an unmaintained historical run record of acceptance run
+`20261002_e8b76429` executed on 2026-10-02 against
+`gitlab-box.local:RoboNater/robomate-glab-sandbox` for issue #76 / milestone M5.
+It is NOT a maintained tool or part of production CI.
+
+Important properties and limitations:
+- Live side effects: Running this script interacts with live infrastructure,
+  creating branches, pushing commits, opening MR !11 and !12, and merging them
+  on gitlab-box.local:RoboNater/robomate-glab-sandbox.
+- Execution environment: Hard-codes specific workspace paths (/home/alfred/...)
+  and checkout directories. It cannot run outside this specific test machine.
+- Static analysis: Located in docs/evidence/ and intentionally excluded from
+  mypy's configured source files (tool.mypy files = ["packages", "tests"]).
+- Execution nature: This script directly coordinated all git operations, hub
+  JSON-RPC calls, WorkerHubClient A2A calls, and GitLab CLI/REST API calls.
+  It passed hardcoded AgentProfile strings ("claude-code", "antigravity") in
+  its client calls; no independent model or LLM agent harnesses were invoked.
+- diverged_commits_count: During the run, line 937 fetched the MR without
+  `?include_diverged_commits_count=true`. GitLab omitted the field from the
+  response, so the Python fallback `.get("diverged_commits_count", 1)` recorded 1.
+  The true git divergence between 08726cbd and 48369da3 was 2 commits (b1f6ecc and
+  merge commit 48369da3).
+- Post-run formatting: Long string literals and line wraps were reformatted to
+  comply with ruff E501 (line-length 100), and unused imports were removed.
+"""
 
 import asyncio
 import json
@@ -920,7 +947,6 @@ if __name__ == "__main__":
                 "base_behind_main": gate3.get("base_behind_main"),
                 "diverged_commits_count": diverged_count,
                 "expected_head_sha": head2_sha,
-                "source": "glab api projects/RoboNater%2Frobomate-glab-sandbox/merge_requests/:iid",
             }
             logger.info(
                 "Gate check 3 (stale base): behind=%s diverged_count=%s",
