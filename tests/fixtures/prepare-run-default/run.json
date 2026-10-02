@@ -5,6 +5,7 @@
     "bob": "$RUN_DIR/configs/bob.mcp.json",
     "charlie": "$RUN_DIR/configs/codex/config.toml"
   },
+  "forge": "github",
   "harnesses": {
     "bob": "claude-code",
     "charlie": "codex"

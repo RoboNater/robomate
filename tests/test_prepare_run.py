@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -1142,6 +1143,8 @@ def test_bare_slug_expands_via_gh_protocol(
         manifest = PREPARE_RUN.prepare("test-org/test-repo", tmp_path / f"{protocol}-run",
                                        hub_repo=target, skip_github_checks=True)
         assert manifest["clone_repository"] == expected
+        prompt = (tmp_path / f"{protocol}-run" / "alice.prompt.md").read_text(encoding="utf-8")
+        assert "Forge: github (host: github.com, project: test-org/test-repo)." in prompt
     assert seen == [
         ("bob", "https://github.com/test-org/test-repo.git"),
         ("charlie", "https://github.com/test-org/test-repo.git"),
@@ -1525,3 +1528,233 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert win_lines[2] == "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob"
     assert win_lines[3] == "export TEMP=C:/Users/Bob/runs/step7/tmp/bob"
     assert win_lines[4] == "export TMP=C:/Users/Bob/runs/step7/tmp/bob"
+
+
+GL_ORIGIN = "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git"
+GL_BASE_PROJECT: dict[str, Any] = {
+    "id": 42,
+    "default_branch": "main",
+    "web_url": "https://gitlab-box.local/RoboNater/robomate-glab-sandbox",
+    "permissions": {"project_access": {"access_level": 40}},
+    "merge_method": "merge",
+    "squash_option": "default_off",
+    "auto_devops_enabled": False,
+    "ci_config_path": None,
+}
+
+
+def gitlab_hub_repo(
+    tmp_path: Path,
+    origin_url: str = GL_ORIGIN,
+    url: str = "http://127.0.0.1:8521",
+) -> Path:
+    repo = tmp_path / "gl-target"
+    state = repo / ".robomate"
+    state.mkdir(parents=True, exist_ok=True)
+    token = state / "token"
+    token.write_text("test-token\n")
+    token.chmod(0o600)
+    (state / "hub.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "url": url,
+                "port": PREPARE_RUN.url_port(url, "test"),
+                "hub_id": "abc",
+                "forge": "gitlab",
+                "origin": origin_url,
+            }
+        )
+    )
+    return repo
+
+
+def test_gitlab_requires_full_origin_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = gitlab_hub_repo(tmp_path)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    run_dir = tmp_path / "run"
+
+    # Bare slug rejected
+    with pytest.raises(ValueError, match="must be the full origin URL"):
+        PREPARE_RUN.prepare("RoboNater/robomate-glab-sandbox", run_dir, hub_repo=target)
+
+    # Local path rejected
+    with pytest.raises(ValueError, match="must be the full origin URL"):
+        PREPARE_RUN.prepare(str(tmp_path / "local"), run_dir, hub_repo=target)
+
+
+def test_gitlab_rejects_origin_differing_from_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = gitlab_hub_repo(tmp_path)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    run_dir = tmp_path / "run"
+    with pytest.raises(ValueError, match="differs from the running hub origin"):
+        PREPARE_RUN.prepare(
+            "git@gitlab-box.local:OtherGroup/other-project.git", run_dir, hub_repo=target
+        )
+
+
+def test_gitlab_slug_parsing() -> None:
+    assert (
+        RUN_COMMON.parse_github_slug(
+            "git@gitlab.com:group/subgroup/project.git", forge="gitlab"
+        )
+        == "group/subgroup/project"
+    )
+    assert (
+        RUN_COMMON.parse_github_slug(
+            "https://gitlab-box.local/RoboNater/robomate-glab-sandbox.git",
+            forge="gitlab",
+        )
+        == "RoboNater/robomate-glab-sandbox"
+    )
+    assert RUN_COMMON.parse_github_slug("/local/path", forge="gitlab") is None
+
+
+def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = gitlab_hub_repo(tmp_path)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+
+    calls: list[list[str]] = []
+
+    def make_runner(
+        user_data: dict[str, Any] | None = None,
+        project_data: dict[str, Any] | None = None,
+        ci_found: bool = True,
+        ci_error: Exception | None = None,
+    ) -> Callable[..., str]:
+        def runner(*args: str, **kwargs: Any) -> str:
+            calls.append(list(args))
+            assert args[0] != "gh", f"gh command unexpectedly invoked: {args}"
+            assert args[0] == "glab"
+            if list(args[1:4]) == ["api", "--hostname", "gitlab-box.local"]:
+                endpoint = args[4]
+                if endpoint == "user":
+                    if user_data is not None:
+                        return json.dumps(user_data)
+                    return json.dumps({"username": "testuser"})
+                if endpoint.startswith(
+                    "projects/RoboNater%2Frobomate-glab-sandbox/repository/files"
+                ):
+                    if ci_error is not None:
+                        raise ci_error
+                    if not ci_found:
+                        raise subprocess.CalledProcessError(
+                            1, list(args), output="404 File Not Found", stderr="(HTTP 404)"
+                        )
+                    return json.dumps({"file_name": ".gitlab-ci.yml"})
+                if endpoint == "projects/RoboNater%2Frobomate-glab-sandbox":
+                    if project_data is not None:
+                        return json.dumps(project_data)
+                    return json.dumps(GL_BASE_PROJECT)
+            raise AssertionError(f"unexpected call: {args}")
+
+        return runner
+
+    # 1. Auth failure
+    monkeypatch.setattr(
+        PREPARE_RUN, "run", make_runner(user_data={"message": "401 Unauthorized"})
+    )
+    with pytest.raises(ValueError, match="glab is not authenticated"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run1", hub_repo=target)
+
+    # 2. Project unreadable
+    monkeypatch.setattr(
+        PREPARE_RUN, "run", make_runner(project_data={"message": "404 Project Not Found"})
+    )
+    with pytest.raises(ValueError, match="cannot read project settings"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run2", hub_repo=target)
+
+    # 3. Web URL mismatch
+    bad_web = {**GL_BASE_PROJECT, "web_url": "https://other-box.local/RoboNater/robomate"}
+    monkeypatch.setattr(PREPARE_RUN, "run", make_runner(project_data=bad_web))
+    with pytest.raises(ValueError, match="differs from expected"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run3", hub_repo=target)
+
+    # 4. Developer access missing (access_level 20 < 30)
+    low_perm = {
+        **GL_BASE_PROJECT,
+        "permissions": {"project_access": {"access_level": 20}},
+    }
+    monkeypatch.setattr(PREPARE_RUN, "run", make_runner(project_data=low_perm))
+    with pytest.raises(ValueError, match="requires developer access"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run4", hub_repo=target)
+
+    # 5. Incompatible merge method
+    incompatible = {
+        **GL_BASE_PROJECT,
+        "merge_method": "merge",
+        "squash_option": "always",
+    }
+    monkeypatch.setattr(PREPARE_RUN, "run", make_runner(project_data=incompatible))
+    with pytest.raises(ValueError, match="does not allow the 'merge' merge method"):
+        PREPARE_RUN.prepare(
+            GL_ORIGIN, tmp_path / "run5", hub_repo=target, merge_method="merge"
+        )
+
+    # 6. CI presence - no CI file, auto_devops false -> allow_no_ci=True
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "bootstrap_clone",
+        lambda name, path, clone_from: {
+            "agent": name,
+            "path": str(path),
+            "repository": clone_from,
+            "workspace_id": f"w-{name}",
+        },
+    )
+    monkeypatch.setattr(PREPARE_RUN, "run", make_runner(ci_found=False))
+    run_dir6 = tmp_path / "run6"
+    manifest6 = PREPARE_RUN.prepare(
+        GL_ORIGIN, run_dir6, hub_repo=target, issue=12, account="testuser"
+    )
+    assert manifest6["policy"]["allow_no_ci"] is True
+    assert manifest6["forge"] == "gitlab"
+
+    # 6b. CI presence - network/5xx error refuses instead of failing open
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "run",
+        make_runner(
+            ci_error=subprocess.CalledProcessError(
+                1, ["glab"], output="500 Internal Server Error", stderr="500"
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot check CI configuration"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run6b", hub_repo=target)
+
+    # 7. Happy path with CI present -> allow_no_ci=False
+    calls.clear()
+    monkeypatch.setattr(PREPARE_RUN, "run", make_runner(ci_found=True))
+    run_dir7 = tmp_path / "run7"
+    manifest7 = PREPARE_RUN.prepare(
+        GL_ORIGIN, run_dir7, hub_repo=target, issue=12, account="testuser"
+    )
+    assert manifest7["policy"]["allow_no_ci"] is False
+    assert manifest7["forge"] == "gitlab"
+    assert all(c[0] != "gh" for c in calls)
+
+    alice_prompt = (run_dir7 / "alice.prompt.md").read_text(encoding="utf-8")
+    assert (
+        "Forge: gitlab (host: gitlab-box.local, project: RoboNater/robomate-glab-sandbox)."
+        in alice_prompt
+    )
+    assert "Forge comment identity account: `testuser`." in alice_prompt
+    assert "merge its merge request" in alice_prompt

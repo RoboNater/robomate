@@ -62,8 +62,9 @@ import subprocess
 import sys
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
+from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, check_merge_compatibility
 from agent_hub_common.discovery import read_hub_json
 from agent_hub_common.registry import hub_healthy, process_alive
 
@@ -420,8 +421,10 @@ def render_goal(
     issue: int | None,
     work: str | None,
     roadmap: str | None = None,
+    forge: str = "github",
 ) -> str:
     """The durable goal: the statement of work, or the one-issue sentence (#34)."""
+    change_term = "merge request" if forge == "gitlab" else "pull request"
     rendered = resolve_roadmap(roadmap, slug, repository)
     if rendered is not None:
         instructions = (
@@ -437,22 +440,32 @@ def render_goal(
             target = f"{slug or repository}#{issue}"
         else:
             target = "<issue-owner>/<issue-repository>#<issue>"
-        return f"Address issue `{target}`, merge its pull request, and close out. {instructions}"
+        return f"Address issue `{target}`, merge its {change_term}, and close out. {instructions}"
     if work is not None:
         return f"{work}\n\nWhen done, {THROWAWAY_CLOSE_OUT}."
     if issue is not None:
         target = f"{slug or repository}#{issue}"
     else:
         target = "<issue-owner>/<issue-repository>#<issue>"
-    return f"Address issue `{target}`, merge its pull request, and {THROWAWAY_CLOSE_OUT}."
+    return f"Address issue `{target}`, merge its {change_term}, and {THROWAWAY_CLOSE_OUT}."
 
 
-def render_alice_prompt(goal: str, account: str | None, policy: dict[str, Any]) -> str:
+def render_alice_prompt(
+    goal: str,
+    account: str | None,
+    policy: dict[str, Any],
+    forge: str = "github",
+    host: str | None = None,
+    project: str | None = None,
+) -> str:
     prompt = (ROOT / "prompts/alice.md").read_text(encoding="utf-8")
     begin = prompt.index("Goal:")
-    end = prompt.index("GitHub comment identity account:")
+    end = prompt.index("Forge comment identity account:")
     prompt = prompt[:begin] + "Goal: " + goal + "\n\n" + prompt[end:]
     prompt = prompt.replace("<account>", account if account else "<account>")
+    prompt = prompt.replace("<forge>", forge)
+    prompt = prompt.replace("<host>", host if host else "<host>")
+    prompt = prompt.replace("<project>", project if project else "<project>")
     begin = prompt.index("```json") + len("```json")
     end = prompt.index("```", begin)
     prompt = prompt[:begin] + "\n" + json.dumps(policy, indent=2) + "\n" + prompt[end:]
@@ -1103,6 +1116,7 @@ def prepare(
     hub_info = read_hub_json(hub_repo)
     if hub_info is None or not hub_info.get("pid"):
         raise ValueError(f"no running robomate hub in {hub_repo}; run robomate up first")
+    forge = str(hub_info.get("forge") or "github")
     live_url = str(hub_info["url"])
     live_port = int(hub_info["port"])
     if not process_alive(int(hub_info["pid"])) or not hub_healthy(
@@ -1146,8 +1160,35 @@ def prepare(
     resolved_state = hub_repo / ".robomate"
     if state_dir is not None and state_dir != resolved_state:
         raise ValueError("--state-dir is set by --hub-repo and cannot differ")
-    slug = parse_github_slug(repository)
-    goal = render_goal(slug, repository, issue, work_text, roadmap)
+    gl_project: GitLabProject | None = None
+    if forge == "gitlab":
+        try:
+            gl_project = GitLabProject.from_origin(repository)
+        except GitLabGateError as exc:
+            raise ValueError(
+                f"for gitlab, --repository must be the full origin URL (SSH or HTTPS), "
+                f"got {repository!r}: {exc}"
+            ) from None
+        hub_origin = hub_info.get("origin") if hub_info is not None else None
+        if hub_origin:
+            try:
+                hub_gl_project = GitLabProject.from_origin(str(hub_origin))
+                if gl_project != hub_gl_project:
+                    raise ValueError(
+                        f"--repository differs from the running hub origin {hub_origin!r}"
+                    )
+            except GitLabGateError:
+                if repository != str(hub_origin):
+                    raise ValueError(
+                        f"--repository differs from the running hub origin {hub_origin!r}"
+                    ) from None
+        slug = gl_project.path
+        clone_from = repository
+    else:
+        slug = parse_github_slug(repository, forge=forge)
+        clone_from = clone_source(repository, slug)
+
+    goal = render_goal(slug, repository, issue, work_text, roadmap, forge=forge)
     check_hub_workflow(hub_repo, run_dir, goal)
 
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
@@ -1155,51 +1196,163 @@ def prepare(
     # remote worker's version is probed on its own host by --worker-only.
     versions, parsed_versions = probe_versions({harnesses[name] for name in local})
 
-    # A bare owner/repo slug passes the gh checks below but is not a valid
-    # `git clone` argument; expand it to its https URL for bootstrapping.
-    clone_from = clone_source(repository, slug)
-    if slug is None and not skip_github_checks:
-        # Local paths (e.g. disposable test origins) have no GitHub API surface.
-        skip_github_checks = True
-    if not skip_github_checks:
-        check_gh_auth()
     policy_allow_no_ci = False
     merge_note = "skipped (local repository or --skip-github-checks)"
     ci_note = "skipped (local repository or --skip-github-checks)"
-    if slug is not None and not skip_github_checks:
-        settings = repo_settings(slug)
-        if settings.get("viewerPermission") not in ("ADMIN", "MAINTAIN", "WRITE"):
-            raise ValueError(
-                f"repository {slug} requires push access "
-                f"(viewerPermission {settings.get('viewerPermission')!r}); "
-                "check `gh auth status` and repo permissions"
+
+    if forge == "gitlab":
+        assert gl_project is not None
+        if not skip_github_checks:
+            try:
+                user_res = run("glab", "api", "--hostname", gl_project.host, "user")
+                user_data = json.loads(user_res)
+                if (
+                    not isinstance(user_data, dict)
+                    or not isinstance(user_data.get("username"), str)
+                    or "message" in user_data
+                ):
+                    raise ValueError(f"glab is not authenticated for host {gl_project.host}")
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                raise ValueError(
+                    f"glab is not authenticated for host {gl_project.host} (glab api user failed); "
+                    f"run `glab auth login --hostname {gl_project.host}` and retry"
+                ) from exc
+
+            try:
+                proj_res = run(
+                    "glab",
+                    "api",
+                    "--hostname",
+                    gl_project.host,
+                    f"projects/{quote(gl_project.path, safe='')}",
+                )
+                proj_data = json.loads(proj_res)
+                if (
+                    not isinstance(proj_data, dict)
+                    or not isinstance(proj_data.get("id"), int)
+                    or "message" in proj_data
+                ):
+                    raise ValueError(f"cannot read project settings for {slug}")
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                raise ValueError(
+                    f"cannot read project settings for {slug} on {gl_project.host}; "
+                    "check glab auth and repository name"
+                ) from exc
+
+            web_url = proj_data.get("web_url")
+            if isinstance(web_url, str) and web_url.lower() != gl_project.web_url.lower():
+                raise ValueError(
+                    f"project web_url {web_url!r} differs from expected {gl_project.web_url!r}"
+                )
+
+            permissions = proj_data.get("permissions")
+            levels = []
+            if isinstance(permissions, dict):
+                for key in ("project_access", "group_access"):
+                    access = permissions.get(key)
+                    if isinstance(access, dict) and isinstance(access.get("access_level"), int):
+                        levels.append(access["access_level"])
+            developer = bool(levels and max(levels) >= 30)
+            if not developer:
+                raise ValueError(
+                    f"repository {slug} requires developer access or more "
+                    f"(permissions {permissions!r}); check repo permissions"
+                )
+
+            errors = check_merge_compatibility(proj_data, merge_method)
+            if errors:
+                raise ValueError(
+                    f"repository {slug} does not allow the {merge_method!r} merge method: "
+                    f"{' '.join(errors)}"
+                )
+            merge_note = f"{slug} allows {merge_method}"
+
+            default_branch = str(proj_data.get("default_branch") or "main")
+            has_ci = False
+            try:
+                proj_path = quote(gl_project.path, safe="")
+                ci_path = quote(".gitlab-ci.yml", safe="")
+                ref = quote(default_branch, safe="")
+                file_res = run(
+                    "glab",
+                    "api",
+                    "--hostname",
+                    gl_project.host,
+                    f"projects/{proj_path}/repository/files/{ci_path}?ref={ref}",
+                )
+                if "404 File Not Found" not in file_res:
+                    has_ci = True
+            except subprocess.CalledProcessError as exc:
+                err_text = f"{exc.stdout or ''} {exc.stderr or ''} {exc}"
+                if not (
+                    "(HTTP 404)" in err_text
+                    or "404 File Not Found" in err_text
+                    or "404" in err_text
+                ):
+                    raise ValueError(
+                        f"cannot check CI configuration for {slug} on {gl_project.host}: {exc}; "
+                        "check network/auth or pass explicit --allow-no-ci true|false"
+                    ) from exc
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot check CI configuration for {slug} on {gl_project.host}: {exc}; "
+                    "check network/auth or pass explicit --allow-no-ci true|false"
+                ) from exc
+            if not has_ci:
+                has_ci = bool(
+                    proj_data.get("ci_config_path")
+                    or proj_data.get("auto_devops_enabled") is True
+                )
+
+            ci_note = (
+                f"{slug} has CI configured (allow_no_ci=false)"
+                if has_ci
+                else f"{slug} has no CI configured (allow_no_ci=true)"
             )
-        allowed = {
-            "squash": settings.get("squashMergeAllowed"),
-            "merge": settings.get("mergeCommitAllowed"),
-            "rebase": settings.get("rebaseMergeAllowed"),
-        }
-        if not allowed[merge_method]:
-            raise ValueError(
-                f"repository {slug} does not allow the {merge_method!r} merge method; "
-                "enable it in repository settings or pass another --merge-method"
-            )
-        merge_note = f"{slug} allows {merge_method}"
-        has_workflows = repo_has_workflows(slug)
-        ci_note = (
-            f"{slug} has workflows (allow_no_ci=false)"
-            if has_workflows
-            else f"{slug} has no workflows (allow_no_ci=true)"
-        )
-        detected = not has_workflows
-        policy_allow_no_ci = detected if allow_no_ci == "auto" else allow_no_ci == "true"
-    else:
-        if allow_no_ci == "auto":
-            policy_allow_no_ci = slug is None
-            if slug is None:
-                ci_note = "local repository has no GitHub workflows (allow_no_ci=true)"
+            detected = not has_ci
+            policy_allow_no_ci = detected if allow_no_ci == "auto" else allow_no_ci == "true"
         else:
             policy_allow_no_ci = allow_no_ci == "true"
+    else:
+        if slug is None and not skip_github_checks:
+            # Local paths (e.g. disposable test origins) have no GitHub API surface.
+            skip_github_checks = True
+        if not skip_github_checks:
+            check_gh_auth()
+        if slug is not None and not skip_github_checks:
+            settings = repo_settings(slug)
+            if settings.get("viewerPermission") not in ("ADMIN", "MAINTAIN", "WRITE"):
+                raise ValueError(
+                    f"repository {slug} requires push access "
+                    f"(viewerPermission {settings.get('viewerPermission')!r}); "
+                    "check `gh auth status` and repo permissions"
+                )
+            allowed = {
+                "squash": settings.get("squashMergeAllowed"),
+                "merge": settings.get("mergeCommitAllowed"),
+                "rebase": settings.get("rebaseMergeAllowed"),
+            }
+            if not allowed[merge_method]:
+                raise ValueError(
+                    f"repository {slug} does not allow the {merge_method!r} merge method; "
+                    "enable it in repository settings or pass another --merge-method"
+                )
+            merge_note = f"{slug} allows {merge_method}"
+            has_workflows = repo_has_workflows(slug)
+            ci_note = (
+                f"{slug} has workflows (allow_no_ci=false)"
+                if has_workflows
+                else f"{slug} has no workflows (allow_no_ci=true)"
+            )
+            detected = not has_workflows
+            policy_allow_no_ci = detected if allow_no_ci == "auto" else allow_no_ci == "true"
+        else:
+            if allow_no_ci == "auto":
+                policy_allow_no_ci = slug is None
+                if slug is None:
+                    ci_note = "local repository has no GitHub workflows (allow_no_ci=true)"
+            else:
+                policy_allow_no_ci = allow_no_ci == "true"
 
     policy = {
         "max_review_rounds": 3,
@@ -1334,8 +1487,21 @@ def prepare(
             encoding="utf-8",
         )
 
+    alice_host = (
+        gl_project.host
+        if forge == "gitlab" and gl_project is not None
+        else ("github.com" if slug else None)
+    )
+    alice_project = (
+        gl_project.path
+        if forge == "gitlab" and gl_project is not None
+        else slug
+    )
     (run_dir / "alice.prompt.md").write_text(
-        render_alice_prompt(goal, account, policy) + prompt_sections("alice", alice_harness),
+        render_alice_prompt(
+            goal, account, policy, forge=forge, host=alice_host, project=alice_project
+        )
+        + prompt_sections("alice", alice_harness),
         encoding="utf-8",
     )
     # The goal text is what Alice initializes with; path and hash tie it to the file.
@@ -1348,6 +1514,7 @@ def prepare(
 
     manifest = {
         "schema_version": 1,
+        "forge": forge,
         "repository": repository,
         "clone_repository": clone_from,
         "slug": slug,
@@ -1421,8 +1588,9 @@ def prepare(
     if not codex_auth:
         codex_auth = {"codex": "no codex worker in this topology"}
 
+    auth_key = "glab_auth" if forge == "gitlab" else "gh_auth"
     checks: dict[str, Any] = {
-        "gh_auth": "ok" if not skip_github_checks else "skipped",
+        auth_key: "ok" if not skip_github_checks else "skipped",
         "versions": versions,
         "merge": merge_note,
         "ci": ci_note,
