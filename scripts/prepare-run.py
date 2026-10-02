@@ -421,8 +421,10 @@ def render_goal(
     issue: int | None,
     work: str | None,
     roadmap: str | None = None,
+    forge: str = "github",
 ) -> str:
     """The durable goal: the statement of work, or the one-issue sentence (#34)."""
+    change_term = "merge request" if forge == "gitlab" else "pull request"
     rendered = resolve_roadmap(roadmap, slug, repository)
     if rendered is not None:
         instructions = (
@@ -438,14 +440,14 @@ def render_goal(
             target = f"{slug or repository}#{issue}"
         else:
             target = "<issue-owner>/<issue-repository>#<issue>"
-        return f"Address issue `{target}`, merge its pull request, and close out. {instructions}"
+        return f"Address issue `{target}`, merge its {change_term}, and close out. {instructions}"
     if work is not None:
         return f"{work}\n\nWhen done, {THROWAWAY_CLOSE_OUT}."
     if issue is not None:
         target = f"{slug or repository}#{issue}"
     else:
         target = "<issue-owner>/<issue-repository>#<issue>"
-    return f"Address issue `{target}`, merge its pull request, and {THROWAWAY_CLOSE_OUT}."
+    return f"Address issue `{target}`, merge its {change_term}, and {THROWAWAY_CLOSE_OUT}."
 
 
 def render_alice_prompt(
@@ -468,7 +470,6 @@ def render_alice_prompt(
     end = prompt.index("```", begin)
     prompt = prompt[:begin] + "\n" + json.dumps(policy, indent=2) + "\n" + prompt[end:]
     return prompt
-
 
 
 def prompt_sections(name: str, harness: str) -> str:
@@ -1187,7 +1188,7 @@ def prepare(
         slug = parse_github_slug(repository, forge=forge)
         clone_from = clone_source(repository, slug)
 
-    goal = render_goal(slug, repository, issue, work_text, roadmap)
+    goal = render_goal(slug, repository, issue, work_text, roadmap, forge=forge)
     check_hub_workflow(hub_repo, run_dir, goal)
 
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
@@ -1281,8 +1282,22 @@ def prepare(
                 )
                 if "404 File Not Found" not in file_res:
                     has_ci = True
-            except (OSError, subprocess.CalledProcessError):
-                pass
+            except subprocess.CalledProcessError as exc:
+                err_text = f"{exc.stdout or ''} {exc.stderr or ''} {exc}"
+                if not (
+                    "(HTTP 404)" in err_text
+                    or "404 File Not Found" in err_text
+                    or "404" in err_text
+                ):
+                    raise ValueError(
+                        f"cannot check CI configuration for {slug} on {gl_project.host}: {exc}; "
+                        "check network/auth or pass explicit --allow-no-ci true|false"
+                    ) from exc
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot check CI configuration for {slug} on {gl_project.host}: {exc}; "
+                    "check network/auth or pass explicit --allow-no-ci true|false"
+                ) from exc
             if not has_ci:
                 has_ci = bool(
                     proj_data.get("ci_config_path")
@@ -1338,7 +1353,6 @@ def prepare(
                     ci_note = "local repository has no GitHub workflows (allow_no_ci=true)"
             else:
                 policy_allow_no_ci = allow_no_ci == "true"
-
 
     policy = {
         "max_review_rounds": 3,

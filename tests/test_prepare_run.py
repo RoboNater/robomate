@@ -1143,6 +1143,8 @@ def test_bare_slug_expands_via_gh_protocol(
         manifest = PREPARE_RUN.prepare("test-org/test-repo", tmp_path / f"{protocol}-run",
                                        hub_repo=target, skip_github_checks=True)
         assert manifest["clone_repository"] == expected
+        prompt = (tmp_path / f"{protocol}-run" / "alice.prompt.md").read_text(encoding="utf-8")
+        assert "Forge: github (host: github.com, project: test-org/test-repo)." in prompt
     assert seen == [
         ("bob", "https://github.com/test-org/test-repo.git"),
         ("charlie", "https://github.com/test-org/test-repo.git"),
@@ -1635,6 +1637,7 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         user_data: dict[str, Any] | None = None,
         project_data: dict[str, Any] | None = None,
         ci_found: bool = True,
+        ci_error: Exception | None = None,
     ) -> Callable[..., str]:
         def runner(*args: str, **kwargs: Any) -> str:
             calls.append(list(args))
@@ -1649,8 +1652,12 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
                 if endpoint.startswith(
                     "projects/RoboNater%2Frobomate-glab-sandbox/repository/files"
                 ):
+                    if ci_error is not None:
+                        raise ci_error
                     if not ci_found:
-                        return "404 File Not Found"
+                        raise subprocess.CalledProcessError(
+                            1, list(args), output="404 File Not Found", stderr="(HTTP 404)"
+                        )
                     return json.dumps({"file_name": ".gitlab-ci.yml"})
                 if endpoint == "projects/RoboNater%2Frobomate-glab-sandbox":
                     if project_data is not None:
@@ -1720,6 +1727,19 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert manifest6["policy"]["allow_no_ci"] is True
     assert manifest6["forge"] == "gitlab"
 
+    # 6b. CI presence - network/5xx error refuses instead of failing open
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "run",
+        make_runner(
+            ci_error=subprocess.CalledProcessError(
+                1, ["glab"], output="500 Internal Server Error", stderr="500"
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot check CI configuration"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run6b", hub_repo=target)
+
     # 7. Happy path with CI present -> allow_no_ci=False
     calls.clear()
     monkeypatch.setattr(PREPARE_RUN, "run", make_runner(ci_found=True))
@@ -1737,4 +1757,4 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         in alice_prompt
     )
     assert "Forge comment identity account: `testuser`." in alice_prompt
-
+    assert "merge its merge request" in alice_prompt

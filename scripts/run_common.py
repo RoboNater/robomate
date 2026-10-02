@@ -445,7 +445,7 @@ def render_worker_prompt(agent: str) -> str:
 
 
 def parse_github_slug(repository: str, forge: str = "github") -> str | None:
-    """Return ``owner/repo`` for GitHub URLs/SLUGs, else None for local paths."""
+    """Return ``owner/repo`` for GitHub or GitLab URLs/slugs, else None for local paths."""
     text = repository.strip()
     if forge == "gitlab":
         from agent_hub.gitlab_gate import GitLabGateError, GitLabProject
@@ -469,7 +469,6 @@ def parse_github_slug(repository: str, forge: str = "github") -> str | None:
 
 
 parse_forge_slug = parse_github_slug
-
 
 
 def slug_clone_url(slug: str) -> str:

@@ -222,6 +222,7 @@ def test_alice_skill_covers_gitlab_merge_and_reads() -> None:
                 "--auto-merge=false --squash/--squash=false --remove-source-branch --yes"
             ),
             'Use `--squash` when `policy.merge_method == "squash"`',
+            "glab api --hostname <host> projects/<group%2Fproject>/merge_requests/<iid>",
             'state == "merged"',
             "merge_commit_sha",
             "squash_commit_sha",
