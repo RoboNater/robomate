@@ -28,7 +28,8 @@ or merge it.
 6. Push the branch and create or update the PR. For a new PR, use `gh pr create`
    and include the issue-closing reference requested by the assignment. Read the
    current PR head back with `gh pr view --json headRefOid`; do not report a
-   local-only or intermediate SHA.
+   local-only or intermediate SHA. That read can lag a push by a few seconds:
+   if it does not match the SHA you pushed, re-read it before reporting.
 7. Post necessary PR comments under the identity supplied in the assignment,
    using `Implementation agent <name> on behalf of <account>`. On an address
    task, respond to each finding on the PR:
