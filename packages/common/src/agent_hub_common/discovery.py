@@ -82,9 +82,13 @@ def state_dir(root: Path) -> Path:
 
 def extract_origin_host(origin: str) -> str | None:
     """Extract the remote host from an origin URL or scp-style address."""
-    parsed = urlparse(origin)
-    if parsed.hostname:
-        return parsed.hostname.lower()
+    try:
+        parsed = urlparse(origin)
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if host:
+        return host.lower()
     match = re.match(r"^(?:[^@]+@)?([^:/]+):", origin)
     if match:
         return match.group(1).lower()

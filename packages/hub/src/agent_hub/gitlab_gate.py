@@ -129,7 +129,8 @@ class GitLabProject:
         The web URL is assumed to be `https://<host>/<path>`. An origin that
         says otherwise — plain `http`, or HTTPS on a port other than 443 — is
         refused. One under a relative URL root cannot be told from a nested
-        group; its API paths then name no project, so every gate call fails.
+        group; its API paths then name no project or a different one. The
+        `up` preflight refuses the latter by checking the project web URL.
         """
 
         text = origin.strip()
@@ -311,10 +312,35 @@ def check_unsupported_project_settings(project_data: dict[str, Any]) -> list[str
         or project_data.get("merge_train_enforcement") is True
     ):
         errors.append(
-            "GitLab project has merge trains enabled, which queues merges asynchronously "
+            "GitLab project has merge trains enabled "
+            "(merge_trains_enabled or merge_train_enforcement), "
+            "which queues merges asynchronously "
             "and violates the SHA-bound merge invariant."
         )
+    if project_data.get("merge_pipelines_enabled") is True:
+        errors.append(
+            "GitLab project has merged-results pipelines enabled "
+            "(merge_pipelines_enabled=true); their synthetic SHA is not the reviewed head."
+        )
     return errors
+
+
+def check_merge_compatibility(project: dict[str, Any], merge_method: str) -> list[str]:
+    """Return refusals for a project's settings and the requested policy merge method."""
+    if merge_method == "rebase":
+        return ["Policy merge_method=rebase uses server-side rebase and violates SHA-bound merge."]
+    if merge_method not in ("merge", "squash"):
+        return [f"Unknown policy merge_method={merge_method!r}."]
+    if project.get("merge_method") not in ("merge", "rebase_merge", "ff"):
+        return ["Unknown project merge_method; cannot verify merge compatibility."]
+    squash = project.get("squash_option")
+    if squash not in ("default_on", "default_off", "always", "never"):
+        return ["Unknown project squash_option; cannot verify merge compatibility."]
+    if squash == "always" and merge_method == "merge":
+        return ["Project squash_option=always conflicts with policy merge_method=merge."]
+    if squash == "never" and merge_method == "squash":
+        return ["Project squash_option=never conflicts with policy merge_method=squash."]
+    return []
 
 
 @dataclass(slots=True)
