@@ -88,13 +88,13 @@ def _repo_lock(directory: Path) -> Iterator[None]:
     locked = False
     try:
         try:
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 if os.fstat(fd).st_size == 0:
                     os.write(fd, b"0")
                 os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
 
@@ -109,9 +109,9 @@ def _repo_lock(directory: Path) -> Iterator[None]:
     finally:
         try:
             if locked:
-                if os.name == "nt":
+                if sys.platform == "win32":
                     os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
                 else:
                     fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
