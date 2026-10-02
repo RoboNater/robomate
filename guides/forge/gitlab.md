@@ -1,32 +1,56 @@
 # GitLab Forge Appendix
 
-This appendix specifies GitLab-specific CLI commands using the `glab` tool and REST API.
+GitLab-specific CLI commands using the `glab` tool (minimum version 1.36.0)
+and the REST API through `glab api`. The role guide above says what to do;
+this appendix says how to do it on GitLab.
 
-## Change requests (Merge Requests)
+`<host>` is the GitLab host from the hub's origin project, `<project>` is that
+project's path (for example, `RoboNater/robomate-glab-sandbox`), and
+`<group%2Fproject>` is its URL-encoded form
+(`RoboNater%2Frobomate-glab-sandbox`). Pass `--hostname <host>` on every
+`glab api` call, and `-R <host>/<project>` wherever a `glab` subcommand
+selects the repository.
 
-- **Create merge request** (implementer):
+## Change requests (merge requests)
+
+- **Read an issue** (implementer, reviewer):
   ```sh
-  glab mr create -R <project_repo> --source-branch <branch> --target-branch <base_branch> --title "..." --description "..." --yes
+  glab issue view <issue-number-or-url> -R <host>/<project>
   ```
-- **Verify MR head SHA** (implementer, rebase):
-  `glab mr view` does not output raw JSON, so read the head SHA via `glab api` using the URL-encoded project path (e.g. `RoboNater%2Frobomate-glab-sandbox`):
+- **Read a change request** (reviewer):
+  ```sh
+  glab mr view <iid> -R <host>/<project> --comments
+  glab mr diff <iid> -R <host>/<project>
+  ```
+  `view` shows the title, body, and discussion; `diff` shows the raw diff.
+- **Create merge request** (implementer; flags checked against
+  `glab mr create --help` on 1.36.0):
+  ```sh
+  glab mr create -R <host>/<project> --source-branch <branch> --target-branch <base_branch> --title "..." --description "..." --yes
+  ```
+- **Verify MR head SHA** (implementer, reviewer, rebase):
+  `glab mr view` does not output raw JSON, so read the head SHA via `glab api`:
   ```sh
   glab api projects/<group%2Fproject>/merge_requests/<iid> --hostname <host>
   ```
-  Read the top-level `.sha` property from the returned JSON. Always verify the SHA from GitLab before submitting results.
+  Read the top-level `.sha` property from the returned JSON. Always verify the
+  SHA from GitLab before submitting results. That read can lag a push by a few
+  seconds, like the GitHub read: if it does not match the SHA you pushed,
+  re-read it before reporting.
 
 ## Discussions and reviews
 
-- **Post review note** (reviewer):
+- **Post review note** (reviewer) through the Notes REST API, which is part of
+  GitLab's stable REST API and does not change with `glab`'s subcommand layout:
   ```sh
-  glab mr note <iid> -R <project_repo> -m "Reviewer agent <name> on behalf of <account>..."
+  glab api --hostname <host> --method POST projects/<group%2Fproject>/merge_requests/<iid>/notes -F body=@review.md
   ```
-  Top-level MR notes created via `glab mr note` are non-resolvable (`resolvable: false`). Do not create resolvable discussion threads for review comments, as unresolved threads can block merges.
-
-## Merging
-
-- **SHA-bound merge** (Alice / orchestrator):
+  A note response carries an `id` but no `web_url`. Take the `id` from the
+  response and build `ReviewerResult.review_url` as `<MR URL>#note_<id>`. Read
+  the note back by that `id` before reporting it:
   ```sh
-  glab mr merge <iid> -R <project_repo> --sha <approved_head_sha> --auto-merge=false [--squash] --remove-source-branch --yes
+  glab api --hostname <host> projects/<group%2Fproject>/merge_requests/<iid>/notes/<id>
   ```
-  The merge is strictly bound to `<approved_head_sha>` via `--sha`. Always pass `--auto-merge=false` to prevent scheduling unverified auto-merges, and pass `--yes` to ensure non-interactive execution.
+  confirming `resolvable: false`. Top-level notes are non-resolvable and can
+  never become a `discussions_not_resolved` merge blocker. Do not create
+  resolvable discussion threads for review comments.

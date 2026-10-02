@@ -30,7 +30,14 @@ def _not_found(role: str) -> HTTPException:
 
 
 def guide_response(guides_dir: Path, role: str, forge: str | None = None) -> Response:
-    """Serve `{role}.md` from the guides directory, optionally composed with forge appendix."""
+    """Serve `{role}.md` from the guides directory, composed with a forge appendix.
+
+    Role guides are forge-neutral; the CLI commands live in the appendix, so a
+    request naming a forge is only servable with that appendix. When `forge`
+    is given, a missing or invalid appendix is a 404 rather than a guide
+    without its forge commands (spec §10). With no `forge`, the bare role
+    guide is served.
+    """
 
     if not ROLE_PATTERN.fullmatch(role):
         raise _not_found(role)
@@ -43,9 +50,13 @@ def guide_response(guides_dir: Path, role: str, forge: str | None = None) -> Res
         raise _not_found(role)
 
     content = path.read_bytes()
-    if forge and ROLE_PATTERN.fullmatch(forge):
-        appendix_path = (root / "forge" / f"{forge}.md").resolve()
-        if appendix_path.is_file() and appendix_path.is_relative_to(root):
-            content = content + b"\n\n" + appendix_path.read_bytes()
+    if forge is None:
+        return Response(content=content, media_type=MEDIA_TYPE)
+    if not ROLE_PATTERN.fullmatch(forge):
+        raise _not_found(role)
+    appendix_path = (root / "forge" / f"{forge}.md").resolve()
+    if not appendix_path.is_file() or not appendix_path.is_relative_to(root):
+        raise _not_found(role)
+    content = content + b"\n\n" + appendix_path.read_bytes()
 
     return Response(content=content, media_type=MEDIA_TYPE)

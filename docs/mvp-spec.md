@@ -515,7 +515,17 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   run-path caller land in M5 Step 4.
 - **Guides:** one guide per role, forge-neutral ("open a change request with your forge CLI"),
   composed at serve time with a short forge appendix (`guides/forge/github.md`,
-  `guides/forge/gitlab.md`) holding only the invariant-critical commands. No N×M guide copies.
+  `guides/forge/gitlab.md`) holding the forge CLI commands the roles need
+  (change-request, review, and issue reads). No N×M guide copies.
+  Composition is the default: the route appends the appendix for the hub's forge (`gitlab`
+  gives `gitlab.md`, anything else `github.md`, matching gate selection), `?forge=` overrides
+  it, and a missing appendix for the effective forge is a 404. Appendices are worker-only:
+  they hold no merge commands, since no worker role merges.
+- **GitLab review comments:** through the Notes REST API via `glab api`
+  (`POST projects/<project>/merge_requests/<iid>/notes`). Top-level notes are non-resolvable,
+  so they can never become a `discussions_not_resolved` merge blocker. A note response carries
+  an `id` but no `web_url`, so the reviewer builds `ReviewerResult.review_url` as
+  `<MR URL>#note_<id>` and reads the note back by that `id` before reporting it.
 - **Self-hosted:** base URL from origin; custom CA via the environment the CLIs already honor;
   the shared-account approval rule (PoC #37) applies unchanged.
 - **Acceptance:** the operator's self-hosted GitLab with a CI runner, plus the GitHub sandbox.

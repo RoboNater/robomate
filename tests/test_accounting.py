@@ -44,6 +44,8 @@ async def _drive_worker(
 
     settings.guides_dir.mkdir(parents=True, exist_ok=True)
     (settings.guides_dir / "implementer.md").write_text(f"# Guide\n{SECRET}\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
     worker = WorkerHubClient(
         WorkerSettings(
             hub_url=BASE_URL,
@@ -112,7 +114,8 @@ async def test_every_worker_call_is_tallied_with_its_bytes(
         assert finished[tool]["mcp_result_bytes"] > 0
         assert finished[tool]["mcp_request_bytes"] > 0
     guide = (settings.guides_dir / "implementer.md").read_bytes()
-    assert by_tool["get_role_guide"]["bytes_out"] == len(guide)
+    appendix = (settings.guides_dir / "forge" / "github.md").read_bytes()
+    assert by_tool["get_role_guide"]["bytes_out"] == len(guide) + len(b"\n\n") + len(appendix)
 
     # The raw stream carries the same records.
     assert [(r["tool"], r["bytes_out"]) for r in _records(settings.call_log_jsonl)] == [  # type: ignore[arg-type]
@@ -144,6 +147,8 @@ async def test_unidentified_callers_are_not_named_from_their_claims(
 ) -> None:
     settings.guides_dir.mkdir(parents=True, exist_ok=True)
     (settings.guides_dir / "reviewer.md").write_text("# Reviewer\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
 
     await client.post("/a2a", content=b"{not json")
     await client.get("/guides/reviewer.md", headers={"X-Hub-Agent": "mallory"})
