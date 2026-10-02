@@ -32,17 +32,6 @@
     "runner_type": "instance_type",
     "name": null,
     "online": true,
-    "created_by": {
-      "id": 4,
-      "username": "liam902",
-      "public_email": null,
-      "name": "LiamNosharemyname",
-      "state": "active",
-      "locked": false,
-      "avatar_url": "https://secure.gravatar.com/avatar/b91cee1b018038287e302b30659151eab28e360114bdbdf93925d09595432afb?s=80&d=identicon",
-      "web_url": "https://gitlab-box.local/liam902"
-    },
-    "created_at": "2026-09-30T17:41:34.108Z",
     "status": "online",
     "job_execution_status": "idle",
     "tag_list": [],
