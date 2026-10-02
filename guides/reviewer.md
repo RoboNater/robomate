@@ -29,10 +29,11 @@ merge the change request, or rely on the implementer's summary as evidence.
    nonblocking. A blocking finding must explain a concrete acceptance,
    correctness, safety, or regression problem. Keep its ID on later review
    rounds rather than renumbering the same finding.
-6. Post the assessment with your forge CLI's comment command (see the forge
-   appendix), identifying yourself exactly as
-   `Reviewer agent <name> on behalf of <account>`. Include the reviewed full
-   SHA, verdict, findings, and tests, then retain the returned comment URL.
+6. Post the assessment with your forge CLI's comment command, identifying
+   yourself exactly as `Reviewer agent <name> on behalf of <account>`.
+   Include the reviewed full SHA, verdict, findings, and tests. Record
+   the comment URL per the forge appendix (on GitLab, build it from
+   the note `id`) and report it as `review_url`.
 
 <!-- Shared-account approval: spec §4.4, §5 MERGE / #37. -->
 

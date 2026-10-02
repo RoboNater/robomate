@@ -493,7 +493,8 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   automatic rebase — each would break the client-verified, SHA-bound merge.
 - **Guides:** one guide per role, forge-neutral ("open a change request with your forge CLI"),
   composed at serve time with a short forge appendix (`guides/forge/github.md`,
-  `guides/forge/gitlab.md`) holding only the invariant-critical commands. No N×M guide copies.
+  `guides/forge/gitlab.md`) holding the forge CLI commands the roles need
+  (change-request, review, and issue reads). No N×M guide copies.
   Composition is the default: the route appends the appendix for the hub's forge (`gitlab`
   gives `gitlab.md`, anything else `github.md`, matching gate selection), `?forge=` overrides
   it, and a missing appendix for the effective forge is a 404. Appendices are worker-only:

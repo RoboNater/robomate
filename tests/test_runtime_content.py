@@ -55,11 +55,12 @@ def test_role_guides_define_independent_typed_work() -> None:
     implementer = read("guides/implementer.md")
     reviewer = read("guides/reviewer.md")
     rebase = read("guides/rebase.md")
+    worker = read("guides/worker.md")
     github = read("guides/forge/github.md")
     gitlab = read("guides/forge/gitlab.md")
 
     # Role guides are forge-neutral: every CLI command lives in the appendix.
-    for guide in (implementer, reviewer, rebase):
+    for guide in (implementer, reviewer, rebase, worker):
         assert "gh pr " not in guide
         assert "glab " not in guide
         assert "forge appendix" in guide
@@ -99,13 +100,17 @@ def test_role_guides_define_independent_typed_work() -> None:
         ),
     )
     # The forge commands moved here from the role guides.
-    assert_fragments(github, ("gh pr create", "gh pr comment", "gh issue view"))
+    assert_fragments(
+        github, ("gh pr create", "gh pr comment", "gh issue view", "gh pr view", "gh pr diff")
+    )
     assert_fragments(
         gitlab,
         (
             "glab mr create",
+            "glab mr view",
             "glab issue view",
             "merge_requests/<iid>",
+            "merge_requests/<iid>/changes",
             ".sha",
             "merge_requests/<iid>/notes",
             "<MR URL>#note_<id>",

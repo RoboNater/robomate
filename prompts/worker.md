@@ -62,7 +62,8 @@ The forge is the work-product store. Put code, diffs, full logs, and detailed
 review discussion there. Hub messages and results contain only compact status,
 typed metadata, and references. Always include the canonical change-request or
 issue URL and a full 40-character commit SHA when the result schema provides
-those fields. Read a pushed SHA back from the forge before reporting it.
+those fields. Read a pushed SHA back from the forge before reporting it. The
+role guide for each task names its forge appendix for the exact commands.
 
 Each message part is limited to 16 KiB and each compact typed result body to 32
 KiB. If a payload approaches those limits, shorten it and link to the forge; do

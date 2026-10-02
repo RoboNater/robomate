@@ -9,11 +9,17 @@ what to do; this appendix says how to do it on GitHub.
   ```sh
   gh issue view <issue-number-or-url>
   ```
+- **Read a change request** (reviewer):
+  ```sh
+  gh pr view <number-or-url> --comments
+  gh pr diff <number>
+  ```
+  `view` shows the title, body, and discussion; `diff` shows the raw diff.
 - **Create pull request** (implementer):
   ```sh
   gh pr create --head <branch> --base <base_branch> --title "..." --body "..."
   ```
-- **Verify PR head SHA** (implementer, rebase):
+- **Verify PR head SHA** (implementer, reviewer, rebase):
   ```sh
   gh pr view --json headRefOid -q .headRefOid
   ```

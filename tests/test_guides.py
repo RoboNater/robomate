@@ -319,12 +319,10 @@ def test_no_served_worker_guide_contains_a_merge_command() -> None:
     """Appendices are worker-only: no served role guide merges, on either forge."""
 
     for role in ("implementer", "reviewer", "rebase", "worker"):
-        text = (CHECKED_IN_GUIDES / f"{role}.md").read_text(encoding="utf-8")
         for forge in ("github", "gitlab"):
-            appendix = (CHECKED_IN_GUIDES / "forge" / f"{forge}.md").read_text(
-                encoding="utf-8"
+            served = bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode(
+                "utf-8"
             )
-            served = text + "\n\n" + appendix
             assert "pr merge" not in served
             assert "mr merge" not in served
 

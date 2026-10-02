@@ -4,11 +4,12 @@ GitLab-specific CLI commands using the `glab` tool (minimum version 1.36.0)
 and the REST API through `glab api`. The role guide above says what to do;
 this appendix says how to do it on GitLab.
 
-`<host>` is the GitLab host from the hub's origin project, and
-`<group%2Fproject>` is that project's URL-encoded path (for example,
-`RoboNater%2Frobomate-glab-sandbox` for `RoboNater/robomate-glab-sandbox`).
-Pass `--hostname <host>` on every `glab api` call. `<project_repo>` is the
-`glab` repository selector in `<host>/<project>` form.
+`<host>` is the GitLab host from the hub's origin project, `<project>` is that
+project's path (for example, `RoboNater/robomate-glab-sandbox`), and
+`<group%2Fproject>` is its URL-encoded form
+(`RoboNater%2Frobomate-glab-sandbox`). Pass `--hostname <host>` on every
+`glab api` call, and `-R <host>/<project>` wherever a `glab` subcommand
+selects the repository.
 
 ## Change requests (merge requests)
 
@@ -16,12 +17,19 @@ Pass `--hostname <host>` on every `glab api` call. `<project_repo>` is the
   ```sh
   glab issue view <issue-number-or-url> -R <host>/<project>
   ```
+- **Read a change request** (reviewer):
+  ```sh
+  glab mr view <iid> -R <host>/<project> --comments
+  glab api projects/<group%2Fproject>/merge_requests/<iid>/changes --hostname <host>
+  ```
+  `view` shows the title, body, and discussion; `changes` returns the head SHA
+  and the per-file diff.
 - **Create merge request** (implementer; flags checked against
   `glab mr create --help` on 1.36.0):
   ```sh
   glab mr create -R <host>/<project> --source-branch <branch> --target-branch <base_branch> --title "..." --description "..." --yes
   ```
-- **Verify MR head SHA** (implementer, rebase):
+- **Verify MR head SHA** (implementer, reviewer, rebase):
   `glab mr view` does not output raw JSON, so read the head SHA via `glab api`:
   ```sh
   glab api projects/<group%2Fproject>/merge_requests/<iid> --hostname <host>
