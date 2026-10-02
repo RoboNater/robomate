@@ -86,8 +86,10 @@ robomate log --timeline    # drill down when something looks wrong
 ```
 
 - `robomate up` detects the repo root, origin, forge, and default branch; runs preflight
-  (forge CLI auth, CI presence, allowed merge method); prints the hub URL and the three
-  join lines.
+  before serving. `--forge github|gitlab` overrides detection and is recorded in `hub.json`.
+  An unknown forge warns that `check_merge_gate` uses the GitHub gate. GitLab startup checks
+  are listed in §10; CI presence and merge-policy compatibility are checked where the policy
+  is known (the run preparation path, then `submit` in M2). Prints the hub URL and join lines.
 - For CLI harnesses, `robomate workspace bob` (or `robomate up --agents bob,charlie`) creates the agent's
   worktree and prints the path to start the harness in. IDE harnesses open that folder.
 - The statement of work can also be pasted to the orchestrator in chat; `robomate submit` is
@@ -489,8 +491,26 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
     not the head, reads as `no_checks`.
 - **Merge:** the orchestrator merges with the forge CLI, bound to the approved SHA
   (`gh pr merge --match-head-commit …`; `glab mr merge --sha …` per the study §5).
-- **Unsupported on GitLab (preflight refuses or warns):** merge trains, auto-merge, server-side
-  automatic rebase — each would break the client-verified, SHA-bound merge.
+- **GitLab startup preflight:** prints one line per check: `glab` present and ≥ 1.36.0;
+  authentication via `glab api --hostname <origin host> user`; project readable with developer
+  access or more; unsupported settings; Auto DevOps; and "Pipelines must succeed".
+  Unavailable CLI, auth, project, or version checks warn and allow startup, so restart does
+  not depend on forge reachability. Auto DevOps on warns (the gate cannot report
+  `no_workflows`); "Pipelines must succeed" off is a defense-in-depth note.
+  The project's `web_url` must match `https://<origin host>/<origin path>` case-insensitively;
+  a definite mismatch refuses startup because a relative URL root can select a different
+  project ([#80](https://github.com/RoboNater/robomate/issues/80)).
+- **Unsupported on GitLab:** startup refuses definite automatic server-side rebase,
+  merge trains or merge-train enforcement, and merged-results pipelines, naming the settings
+  to disable. Policy `merge_method=rebase` is also refused where the policy is known.
+  These are permanent restrictions while the client-verified, SHA-bound merge invariant
+  stands: they rewrite or test a different SHA. Project `ff` and `rebase_merge` (semi-linear)
+  are supported, with client-side rebase to a fresh approved head; they are subject to
+  squash compatibility. `check_merge_compatibility` implements that matrix for the run path:
+  `default_on`/`default_off` allow policy `merge` and `squash`; `always` allows only `squash`;
+  `never` allows only `merge`, for each of project `merge`, `rebase_merge`, and `ff`.
+  The orchestrator supplies the squash flag explicitly. Live matrix verification and its
+  run-path caller land in M5 Step 4.
 - **Guides:** one guide per role, forge-neutral ("open a change request with your forge CLI"),
   composed at serve time with a short forge appendix (`guides/forge/github.md`,
   `guides/forge/gitlab.md`) holding only the invariant-critical commands. No N×M guide copies.

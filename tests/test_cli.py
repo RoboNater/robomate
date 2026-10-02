@@ -534,3 +534,36 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
 ])
 def test_status_age_is_compact(seconds: int, text: str) -> None:
     assert cli._age(timedelta(seconds=seconds)) == text
+
+
+@pytest.mark.parametrize("origin", ["https://[::1/a/b.git", "https://[gitlab-box.local]/a/b.git"])
+def test_up_malformed_origin_warns_and_serves(
+    repository: tuple[Path, dict[str, str]], origin: str,
+) -> None:
+    root, env = repository
+    subprocess.run(["git", "remote", "set-url", "origin", origin], cwd=root, check=True)
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        assert info["forge"] == "unknown"
+        stop(root, env, process)
+        assert process.stdout is not None
+        assert "forge is unknown" in process.stdout.read()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+
+
+def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str]]) -> None:
+    root, env = repository
+    subprocess.run(["git", "remote", "set-url", "origin", "git@gitlab.com:group/project.git"],
+                   cwd=root, check=True)
+    process = start(root, env, "--forge", "github")
+    try:
+        assert await_hub(root, process)["forge"] == "github"
+        stop(root, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
