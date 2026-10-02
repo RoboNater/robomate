@@ -67,6 +67,7 @@ def test_windows_handle_probe_distinguishes_running_and_exited(
         WaitForSingleObject = FakeFunction(lambda handle, timeout: 258 if handle == 10 else 0)
         CloseHandle = FakeFunction(lambda handle: closed.append(int(handle)))
 
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: FakeKernel(), raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     assert registry._windows_process_alive(10)

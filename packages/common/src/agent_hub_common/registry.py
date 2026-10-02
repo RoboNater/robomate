@@ -98,10 +98,15 @@ def process_alive(pid: int) -> bool:
 def _windows_process_alive(pid: int) -> bool:
     """Probe a Windows process handle without delivering a console event."""
 
+    # An if, not an assert: inside a function mypy narrows sys.platform
+    # only on an if, and the narrowing is what types ctypes.WinDLL below.
+    if sys.platform != "win32":
+        raise OSError("Windows only")
+
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     open_process = kernel32.OpenProcess
     open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     open_process.restype = wintypes.HANDLE
@@ -115,7 +120,7 @@ def _windows_process_alive(pid: int) -> bool:
     if not handle:
         # Access denied means a process exists; other failures (notably an
         # invalid PID) mean it does not. The health check still verifies ID.
-        return int(ctypes.get_last_error()) == 5  # type: ignore[attr-defined]
+        return int(ctypes.get_last_error()) == 5
     try:
         # Zero timeout is a nonblocking state check. A signaled process has
         # exited; WAIT_TIMEOUT (or an indeterminate failure) is treated alive.

@@ -19,7 +19,7 @@ def guides(settings: HubSettings) -> Path:
     (settings.guides_dir / "worker.md").write_text(GUIDE, encoding="utf-8", newline="\n")
     forge_dir = settings.guides_dir / "forge"
     forge_dir.mkdir()
-    (forge_dir / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+    (forge_dir / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8", newline="\n")
     return settings.guides_dir
 
 
@@ -127,7 +127,7 @@ async def test_a_symlinked_guides_directory_still_serves(
     real.mkdir()
     (real / "worker.md").write_text(GUIDE, encoding="utf-8", newline="\n")
     (real / "forge").mkdir()
-    (real / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8")
+    (real / "forge" / "github.md").write_text("# GitHub Appendix\n", encoding="utf-8", newline="\n")
     try:
         settings.guides_dir.symlink_to(real, target_is_directory=True)
     except OSError as exc:
@@ -186,7 +186,7 @@ def test_the_rebase_guide_documents_every_result_field() -> None:
 
 def test_a_guide_composes_with_forge_appendix(guides: Path) -> None:
     (guides / "forge" / "gitlab.md").write_text(
-        "# GitLab Commands\nglab mr create\n", encoding="utf-8"
+        "# GitLab Commands\nglab mr create\n", encoding="utf-8", newline="\n"
     )
 
     response = guide_response(guides, "worker", forge="gitlab")
@@ -208,7 +208,9 @@ def test_a_missing_appendix_is_a_404_not_a_bare_guide(guides: Path) -> None:
 async def test_route_serves_composed_guide_with_forge_param(
     app: FastAPI, client: httpx.AsyncClient, guides: Path
 ) -> None:
-    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
+    (guides / "forge" / "gitlab.md").write_text(
+        "# GitLab Appendix\n", encoding="utf-8", newline="\n"
+    )
 
     response = await client.get("/guides/worker.md?forge=gitlab")
     assert response.status_code == 200
@@ -222,7 +224,9 @@ async def test_route_forge_param_overrides_the_hub_forge(
     """`?forge=` remains an explicit override of the hub's forge (spec §10)."""
     from agent_hub.app import create_app
 
-    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
+    (guides / "forge" / "gitlab.md").write_text(
+        "# GitLab Appendix\n", encoding="utf-8", newline="\n"
+    )
 
     hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
     hub_app = create_app(settings, hub_info=hub_info)
@@ -248,7 +252,9 @@ async def test_gitlab_hub_serves_gitlab_appendix_by_default(
     """A `gitlab` hub composes the GitLab appendix with no query param."""
     from agent_hub.app import create_app
 
-    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
+    (guides / "forge" / "gitlab.md").write_text(
+        "# GitLab Appendix\n", encoding="utf-8", newline="\n"
+    )
 
     hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
     hub_app = create_app(settings, hub_info=hub_info)
@@ -295,7 +301,9 @@ async def test_two_instances_serve_identical_bytes(
     from agent_hub.app import create_app
 
     hub_info = {"forge": "gitlab", "hub_id": "test-hub-123"}
-    (guides / "forge" / "gitlab.md").write_text("# GitLab Appendix\n", encoding="utf-8")
+    (guides / "forge" / "gitlab.md").write_text(
+        "# GitLab Appendix\n", encoding="utf-8", newline="\n"
+    )
 
     bodies = []
     for _ in range(2):
