@@ -90,6 +90,13 @@ wake a waiter on the other.
 - **Stop any hub you start**; leave ones from another checkout alone. Use
   `robomate down` for a hub started by `robomate up`. A `hub` entry point
   process serves HTTP only and must also be stopped when a test starts it.
+- **Edit a shared issue or PR body (roadmap #2 above all) so that a failure
+  writes nothing.** Snapshot the live body first. Build the new one in a
+  `mktemp` file: `/tmp` is shared across runs and worker names repeat. Chain
+  the steps with `&&` or run them under `set -euo pipefail`, never `;`, so a
+  failed step cannot reach `gh issue edit`. Anchor each change inside its own
+  section, because phrases repeat between milestones. Afterwards, diff the live
+  body against the snapshot.
 
 ## Changing things
 
