@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +16,12 @@ from conftest import message, rpc
 from worker_mcp.config import WorkerSettings
 
 ROOT = Path(__file__).resolve().parents[1]
+# Windows cannot execute the bash wrapper; it runs the same entry point directly.
+BOOTSTRAP = (
+    [sys.executable, str(ROOT / "scripts/bootstrap-workspace.py")]
+    if os.name == "nt"
+    else [str(ROOT / "scripts/bootstrap-workspace.sh")]
+)
 
 
 def command(*args: str) -> str:
@@ -46,7 +53,7 @@ def bootstrap(repository: Path, destination: Path, agent: str = "bob") -> dict[s
         dict[str, str],
         json.loads(
             command(
-                str(ROOT / "scripts/bootstrap-workspace.sh"),
+                *BOOTSTRAP,
                 agent,
                 str(destination),
                 str(repository),
@@ -68,7 +75,7 @@ def test_bootstrap_persistence_and_isolation(repository: Path, tmp_path: Path) -
     (bob / "uncommitted-marker").write_text("isolated")
     assert not (charlie / "uncommitted-marker").exists()
     result = subprocess.run(
-        [str(ROOT / "scripts/bootstrap-workspace.sh"), "bob", str(bob), str(repository)],
+        [*BOOTSTRAP, "bob", str(bob), str(repository)],
         capture_output=True,
         text=True,
     )
@@ -188,7 +195,7 @@ def test_bootstrap_missing_identity_error(repository: Path, tmp_path: Path) -> N
     destination = tmp_path / "interrupted"
     subprocess.run(["git", "clone", str(repository), str(destination)], check=True)
     result = subprocess.run(
-        [str(ROOT / "scripts/bootstrap-workspace.sh"), "bob", str(destination), str(repository)],
+        [*BOOTSTRAP, "bob", str(destination), str(repository)],
         capture_output=True,
         text=True,
     )

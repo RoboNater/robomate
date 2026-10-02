@@ -292,7 +292,11 @@ def test_call_accounting_is_off_unless_enabled(tmp_path: Path) -> None:
             {"HUB_CALL_ACCOUNTING": "1", "HUB_CALL_LOG_JSONL": "calls.jsonl"},
             "HUB_CALL_LOG_JSONL must be an absolute path",
         ),
-        ({"HUB_CALL_LOG_JSONL": "/abs/calls.jsonl"}, "requires HUB_CALL_ACCOUNTING=1"),
+        # absolute() adds the drive a Windows absolute path needs.
+        (
+            {"HUB_CALL_LOG_JSONL": str(Path("/abs/calls.jsonl").absolute())},
+            "requires HUB_CALL_ACCOUNTING=1",
+        ),
     ],
 )
 def test_call_accounting_settings_are_validated(

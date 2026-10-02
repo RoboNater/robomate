@@ -24,6 +24,14 @@ PREPARE_RUN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE_RUN)
 RUN_COMMON = sys.modules["run_common"]
 
+# A local run's start scripts are PowerShell on a Windows host, bash elsewhere.
+SCRIPT_SUFFIX = "ps1" if os.name == "nt" else "sh"
+bash_launch_lines = pytest.mark.skipif(
+    os.name == "nt",
+    reason="a Windows host renders PowerShell launch lines "
+    "(test_launch_lines_windows_powershell); these check the bash rendering",
+)
+
 
 def origin(tmp_path: Path) -> Path:
     path = tmp_path / "origin"
@@ -204,6 +212,7 @@ def test_script_help_loads() -> None:
 WINDOWS_RUN = PureWindowsPath("C:/Users/Bob/runs/step7")
 
 
+@bash_launch_lines
 @pytest.mark.parametrize("auto_start", [True, False])
 def test_claude_launch_lines_carry_model_effort_and_prompt(
     tmp_path: Path, auto_start: bool
@@ -227,6 +236,7 @@ def test_claude_launch_lines_carry_model_effort_and_prompt(
     assert len(lines) == 2
 
 
+@bash_launch_lines
 @pytest.mark.parametrize("auto_start", [True, False])
 def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
     tmp_path: Path, auto_start: bool
@@ -251,6 +261,7 @@ def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
     assert "--skip-git-repo-check" not in expected
 
 
+@bash_launch_lines
 @pytest.mark.parametrize("auto_start", [True, False])
 def test_opencode_launch_lines_carry_model_variant_and_prompt(
     tmp_path: Path, auto_start: bool
@@ -291,6 +302,7 @@ def test_opencode_launch_lines_carry_model_variant_and_prompt(
     assert lines == [f"cd {run_dir / 'charlie'}", expected]
 
 
+@bash_launch_lines
 @pytest.mark.parametrize("auto_start", [True, False])
 def test_antigravity_launch_lines_isolate_home_and_carry_model_effort(
     tmp_path: Path, auto_start: bool
@@ -333,9 +345,11 @@ def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
         "codex", run_dir / "alice-runtime", run_dir / "configs" / "alice-codex",
         run_dir / "alice.prompt.md", None,
     )
-    assert "--add-dir" not in alice[1] and "--model" not in alice[1] and " -c " not in alice[1]
+    # PowerShell sets CODEX_HOME on a line of its own.
+    command = alice[-1]
+    assert "--add-dir" not in command and "--model" not in command and " -c " not in command
     # Alice's runtime is not a clone, so Codex must skip its git-repo check (#45).
-    assert "-C . --skip-git-repo-check --approve-for-me" in alice[1]
+    assert "-C . --skip-git-repo-check --approve-for-me" in command
     claude = PREPARE_RUN.launch_lines(
         "claude-code", run_dir / "alice-runtime", run_dir / "configs" / "alice.mcp.json",
         run_dir / "alice.prompt.md", None,
@@ -403,6 +417,7 @@ def test_launch_lines_windows_powershell(
     )
 
 
+@bash_launch_lines
 @pytest.mark.parametrize("auto_start", [True, False])
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
 def test_start_scripts_take_metacharacter_paths_literally(
@@ -566,14 +581,17 @@ def test_url_port_falls_back_to_the_scheme_default() -> None:
 
 def test_remote_token_path_spells_the_wsl_share(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
-    assert PREPARE_RUN.remote_token_path(Path("/home/me/target/.robomate/token")) == (
+    # The hub host is WSL, so its token path is POSIX whatever runs the test.
+    assert PREPARE_RUN.remote_token_path(PurePosixPath("/home/me/target/.robomate/token")) == (
         "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\target\\.robomate\\token"
     )
     monkeypatch.delenv("WSL_DISTRO_NAME")
-    assert PREPARE_RUN.remote_token_path(Path("/srv/run/token")) == "/srv/run/token"
+    assert PREPARE_RUN.remote_token_path(PurePosixPath("/srv/run/token")) == "/srv/run/token"
 
 
-def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it() -> None:
+def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     lines = PREPARE_RUN.worker_launch(
         "bob", "codex", WINDOWS_RUN, WINDOWS_RUN / "bob", "gpt-6-sol", "high"
     )
@@ -588,9 +606,13 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it() -> No
         "< /c/Users/Bob/runs/step7/bob.prompt.md",
     ]
     posix = PurePosixPath("/srv/run")
-    assert PREPARE_RUN.worker_launch(
-        "charlie", "claude-code", posix, posix / "charlie", auto_start=False
-    ) == [
+    # A POSIX worker host renders its own lines; worker_launch reads the host.
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "name", "posix")
+        posix_lines = PREPARE_RUN.worker_launch(
+            "charlie", "claude-code", posix, posix / "charlie", auto_start=False
+        )
+    assert posix_lines == [
         "cd /srv/run/charlie",
         "export TMPDIR=/srv/run/tmp/charlie",
         "claude --strict-mcp-config --mcp-config /srv/run/configs/charlie.mcp.json "
@@ -608,7 +630,7 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
 ) -> None:
     statement = "Address `acme/app#7` and `acme/app#9` in one pull request.\n"
     work_file = tmp_path / "sow.md"
-    work_file.write_text(statement)
+    work_file.write_bytes(statement.encode())
     run_dir, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file)
     goal = manifest["work"]["goal"]
     assert goal.startswith(statement.strip()) and "no roadmap edit" in goal
@@ -735,6 +757,10 @@ GOLDEN_FILES = {
 }
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the golden files are a POSIX host's bash start scripts and path spellings",
+)
 def test_default_rendering_matches_the_golden_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -771,9 +797,9 @@ def test_no_auto_start_opens_each_agent_without_its_prompt(
                                 charlie_model="gpt-6-sol", auto_start=False)
     assert manifest["launch"]["auto_start"] is False
     for name in ("alice", "bob", "charlie"):
-        script = (run_dir / f"start-{name}.sh").read_text()
+        script = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text()
         assert "prompt.md" not in script and " -p " not in script and "exec" not in script
-    alice_script = (run_dir / "start-alice.sh").read_text()
+    alice_script = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
     assert "codex -C . --approve-for-me" in alice_script
     assert "--skip-git-repo-check" not in alice_script
 
@@ -783,7 +809,7 @@ def test_codex_alice_exec_uses_skip_git_repo_check(
 ) -> None:
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex",
                          alice_model="gpt-6-luna", alice_effort="xhigh")
-    script = (run_dir / "start-alice.sh").read_text()
+    script = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
     assert "codex exec -C . --skip-git-repo-check --approve-for-me" in script
     home = run_dir / "configs/alice-codex"
     config = tomllib.loads((home / "config.toml").read_text())
@@ -824,7 +850,8 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert bridge["env"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
     assert bridge["env"]["HUB_WORKSPACE"] == "C:/Users/Bob/runs/step7/bob"
     assert "HUB_TOKEN" not in bridge["env"]
-    assert written.stat().st_mode & 0o077 == 0
+    if os.name != "nt":
+        assert written.stat().st_mode & 0o077 == 0
 
     oc_out = tmp_path / "oc-bundle"
     oc_bundle = PREPARE_RUN.render_worker_bundle(
@@ -838,7 +865,8 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert oc_mcp["command"][-3:] == ["mcp", "--role", "worker"]
     assert oc_mcp["environment"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
     assert oc_mcp["environment"]["HUB_PROVIDER"] == "anthropic"
-    assert oc_written.stat().st_mode & 0o077 == 0
+    if os.name != "nt":
+        assert oc_written.stat().st_mode & 0o077 == 0
 
     agy_out = tmp_path / "agy-bundle"
     agy_bundle = PREPARE_RUN.render_worker_bundle(
@@ -854,7 +882,8 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert agy_mcp["args"][-3:] == ["mcp", "--role", "worker"]
     assert agy_mcp["env"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
     assert agy_mcp["env"]["HUB_PROVIDER"] == "google"
-    assert agy_written.stat().st_mode & 0o077 == 0
+    if os.name != "nt":
+        assert agy_written.stat().st_mode & 0o077 == 0
     agy_script = (agy_out / "start-bob.sh").read_text(encoding="utf-8")
     assert (
         'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
@@ -870,10 +899,12 @@ def test_worker_only_rejects_loose_missing_token_or_loopback_url(
     run_dir = tmp_path / "worker-run"
     token = tmp_path / "token"
     token.write_text("secret\n")
-    token.chmod(0o644)
-    with pytest.raises(ValueError, match="owner-only"):
-        PREPARE_RUN.prepare_worker("bob", "o/r", run_dir,
-                                   "http://192.0.2.10:8420", token, "claude-code")
+    if os.name != "nt":
+        # Windows mode bits say nothing; the token inherits its directory's ACL.
+        token.chmod(0o644)
+        with pytest.raises(ValueError, match="owner-only"):
+            PREPARE_RUN.prepare_worker("bob", "o/r", run_dir,
+                                       "http://192.0.2.10:8420", token, "claude-code")
     token.chmod(0o600)
     with pytest.raises(ValueError, match="cannot be loopback"):
         PREPARE_RUN.prepare_worker("bob", "o/r", run_dir,
@@ -952,8 +983,8 @@ def test_remote_worker_command_forwards_effort_and_auto_start(
     output = capsys.readouterr().out
     command = next(line for line in output.splitlines() if "--worker-only charlie" in line)
     assert "--charlie-effort 'high'" in command and command.endswith("--no-auto-start")
-    assert not (run_dir / "start-charlie.sh").exists()
-    assert (run_dir / "start-bob.sh").exists()
+    assert not (run_dir / f"start-charlie.{SCRIPT_SUFFIX}").exists()
+    assert (run_dir / f"start-bob.{SCRIPT_SUFFIX}").exists()
 
 
 def test_rerun_is_idempotent_and_preserves_clone_token_identity(
@@ -1040,7 +1071,7 @@ def test_fresh_run_produces_every_file(
     }
     for name in ("alice", "bob", "charlie"):
         assert (run_dir / f"{name}.prompt.md").exists()
-        assert (run_dir / f"start-{name}.sh").exists()
+        assert (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").exists()
     assert (run_dir / "alice-runtime/.claude/skills/alice-orchestrator").exists()
     report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
     assert set(report["configs"]) == {"alice", "bob", "charlie"}
@@ -1068,7 +1099,7 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
     expected = {"alice": ("sonnet", "high"), "bob": ("claude-opus-5-5", "max"),
                 "charlie": ("", "medium")}
     for name, (model, effort) in expected.items():
-        script = run_dir / f"start-{name}.sh"
+        script = run_dir / f"start-{name}.{SCRIPT_SUFFIX}"
         assert report["start_scripts"][name] == str(script)
         assert manifest["launch"]["agents"][name]["model"] == model
         assert manifest["launch"]["agents"][name]["effort"] == effort
@@ -1377,7 +1408,8 @@ def test_opencode_effort_with_no_auto_start_is_rejected_before_run_dir(
 def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 1. Local bash scripts on POSIX
+    host = os.name
+    # 1. Local start scripts: bash on POSIX, PowerShell on a Windows host
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     tmp_parent = run_dir / "tmp"
     assert tmp_parent.is_dir()
@@ -1389,15 +1421,20 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
         assert agent_tmp.is_dir()
         if os.name != "nt":
             assert agent_tmp.stat().st_mode & 0o777 == 0o700
-        script = (run_dir / f"start-{name}.sh").read_text()
+        script = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text()
         lines = [
             line.strip()
             for line in script.splitlines()
             if line.strip() and not line.startswith("#")
         ]
-        assert lines[0] == "set -e"
         assert lines[1].startswith("cd ")
-        assert lines[2] == f"export TMPDIR={agent_tmp}"
+        if host == "nt":
+            tmp_quoted = PREPARE_RUN.shell_word(str(agent_tmp), powershell=True)
+            assert lines[0] == '$ErrorActionPreference = "Stop"'
+            assert lines[2:4] == [f"$env:TEMP = {tmp_quoted}", f"$env:TMP = {tmp_quoted}"]
+        else:
+            assert lines[0] == "set -e"
+            assert lines[2] == f"export TMPDIR={agent_tmp}"
         assert len(lines) >= 4
 
     # 2. Local PowerShell launch lines and start script
@@ -1428,8 +1465,8 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
         assert lines[3] == f"$env:TMP = {tmp_quoted}"
         assert len(lines) >= 5
 
-    # 3. Remote worker-only output on POSIX
-    monkeypatch.setattr(os, "name", "posix")
+    # 3. Remote worker-only output on this host (Git Bash spellings on Windows)
+    monkeypatch.setattr(os, "name", host)
     worker_run = tmp_path / "worker_run"
     token = tmp_path / "target/.robomate/token"
     PREPARE_RUN.prepare_worker(
@@ -1452,7 +1489,8 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     ]
     assert lines[0] == "set -e"
     assert lines[1].startswith("cd ")
-    assert lines[2] == f"export TMPDIR={bob_tmp}"
+    bash_tmp = PREPARE_RUN.git_bash_path(bob_tmp) if host == "nt" else str(bob_tmp)
+    assert lines[2] == f"export TMPDIR={bash_tmp}"
 
     # 4. Remote worker-only output on Windows host
     win_out = tmp_path / "win_bundle"
