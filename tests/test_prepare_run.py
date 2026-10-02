@@ -1487,5 +1487,3 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert win_lines[2] == "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob"
     assert win_lines[3] == "export TEMP=C:/Users/Bob/runs/step7/tmp/bob"
     assert win_lines[4] == "export TMP=C:/Users/Bob/runs/step7/tmp/bob"
-
-
