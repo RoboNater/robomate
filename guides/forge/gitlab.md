@@ -20,10 +20,9 @@ selects the repository.
 - **Read a change request** (reviewer):
   ```sh
   glab mr view <iid> -R <host>/<project> --comments
-  glab api projects/<group%2Fproject>/merge_requests/<iid>/changes --hostname <host>
+  glab mr diff <iid> -R <host>/<project>
   ```
-  `view` shows the title, body, and discussion; `changes` returns the head SHA
-  and the per-file diff.
+  `view` shows the title, body, and discussion; `diff` shows the raw diff.
 - **Create merge request** (implementer; flags checked against
   `glab mr create --help` on 1.36.0):
   ```sh

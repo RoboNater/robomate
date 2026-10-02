@@ -21,11 +21,13 @@ what to do; this appendix says how to do it on GitHub.
   ```
 - **Verify PR head SHA** (implementer, reviewer, rebase):
   ```sh
-  gh pr view --json headRefOid -q .headRefOid
+  gh pr view <number-or-url> --json headRefOid -q .headRefOid
   ```
   Always read the current head SHA back from GitHub before submitting results.
-  That read can lag a push by a few seconds: if it does not match the SHA you
-  pushed, re-read it before reporting.
+  Name the change request explicitly: without an argument `gh` reads the
+  current branch, which fails on a detached checkout. That read can lag a push
+  by a few seconds: if it does not match the SHA you pushed, re-read it before
+  reporting.
 
 ## Discussions and reviews
 

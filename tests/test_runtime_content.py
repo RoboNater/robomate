@@ -108,9 +108,9 @@ def test_role_guides_define_independent_typed_work() -> None:
         (
             "glab mr create",
             "glab mr view",
+            "glab mr diff",
             "glab issue view",
             "merge_requests/<iid>",
-            "merge_requests/<iid>/changes",
             ".sha",
             "merge_requests/<iid>/notes",
             "<MR URL>#note_<id>",
