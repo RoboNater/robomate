@@ -1,0 +1,210 @@
+{
+  "repo-archive-tool": {
+    "id": 4,
+    "url": "https://gitlab-box.local/RoboNater/repo-archive-tool",
+    "visibility": "public",
+    "main_sha": "833ca9006c39de93ceea0068f02d00e0f61aec27",
+    "issue_map": [
+      {
+        "source_number": 10,
+        "source_url": "https://github.com/RoboNater/repo-archive-tool/issues/10",
+        "iid": 1,
+        "url": "https://gitlab-box.local/RoboNater/repo-archive-tool/-/work_items/1"
+      },
+      {
+        "source_number": 11,
+        "source_url": "https://github.com/RoboNater/repo-archive-tool/issues/11",
+        "iid": 2,
+        "url": "https://gitlab-box.local/RoboNater/repo-archive-tool/-/work_items/2"
+      },
+      {
+        "source_number": 12,
+        "source_url": "https://github.com/RoboNater/repo-archive-tool/issues/12",
+        "iid": 3,
+        "url": "https://gitlab-box.local/RoboNater/repo-archive-tool/-/work_items/3"
+      },
+      {
+        "source_number": 17,
+        "source_url": "https://github.com/RoboNater/repo-archive-tool/issues/17",
+        "iid": 4,
+        "url": "https://gitlab-box.local/RoboNater/repo-archive-tool/-/work_items/4"
+      },
+      {
+        "source_number": 21,
+        "source_url": "https://github.com/RoboNater/repo-archive-tool/issues/21",
+        "iid": 5,
+        "url": "https://gitlab-box.local/RoboNater/repo-archive-tool/-/work_items/5",
+        "comments": [
+          {
+            "source_id": 5747483973,
+            "source_url": "https://github.com/RoboNater/repo-archive-tool/issues/21#issuecomment-5747483973",
+            "note_id": 31
+          }
+        ]
+      }
+    ],
+    "source_refs": {
+      "refs/heads/codex/bootstrap-and-workflow": "fe5bb182198ddd5be44fadae06abb41aa41e68d5",
+      "refs/heads/codex/issue-7-documentation-first": "dbfdcd6f89fe4b89dba84a06e38cefc6ed98d76e",
+      "refs/heads/codex/phase-2-core-mirror-backup": "4d749ee940cf2767c120702a226bf51e96a0120e",
+      "refs/heads/codex/phase-3-reports-info-verification": "e263b6d08560a49a974572bd6e642b3e0da04b0d",
+      "refs/heads/codex/phase-4-lfs-submodules": "e2dbdc25f8fe53a9e19adccb64c6dc1731e848d4",
+      "refs/heads/codex/phase-5-current-capability-docs": "2effd480f86adb5430b5f6e7863016d8ff860729",
+      "refs/heads/codex/phase-6-snapshots-restore": "fc00a5a328ac3aff2e4fe4b51363b4cbd1c22196",
+      "refs/heads/codex/phase1-git-runner": "9505ade1717e39442e199cdd69f85a3e58e23fcb",
+      "refs/heads/main": "833ca9006c39de93ceea0068f02d00e0f61aec27",
+      "refs/pull/1/head": "fe5bb182198ddd5be44fadae06abb41aa41e68d5",
+      "refs/pull/14/head": "c2bd7f8754384816c9afbea4d39948e2500d7f10",
+      "refs/pull/16/head": "fc00a5a328ac3aff2e4fe4b51363b4cbd1c22196",
+      "refs/pull/18/head": "7e4baf94c23b078cff0c40481433b2353e6f59ca",
+      "refs/pull/19/head": "9048473bb22f1c3e4cfe85e5113033beefc895eb",
+      "refs/pull/20/head": "fcd2338bfc4e4f39c0a16058656214e017b5b2c0",
+      "refs/pull/22/head": "d5d78587c8b7e56920020ef3fc161fc4f8c54d47",
+      "refs/pull/3/head": "9505ade1717e39442e199cdd69f85a3e58e23fcb",
+      "refs/pull/4/head": "4d749ee940cf2767c120702a226bf51e96a0120e",
+      "refs/pull/5/head": "e263b6d08560a49a974572bd6e642b3e0da04b0d",
+      "refs/pull/6/head": "e2dbdc25f8fe53a9e19adccb64c6dc1731e848d4",
+      "refs/pull/8/head": "dbfdcd6f89fe4b89dba84a06e38cefc6ed98d76e",
+      "refs/pull/9/head": "2effd480f86adb5430b5f6e7863016d8ff860729"
+    },
+    "commit_count": 57,
+    "ci_sha": "38bf87639fe5a0cc0633aa3afec206a917526251",
+    "ci_config_path": ".gitlab-ci.yml@RoboNater/repo-archive-tool:38bf87639fe5a0cc0633aa3afec206a917526251",
+    "pipeline": {
+      "id": 35,
+      "sha": "833ca9006c39de93ceea0068f02d00e0f61aec27",
+      "ref": "main",
+      "web_url": "https://gitlab-box.local/RoboNater/repo-archive-tool/-/pipelines/35"
+    }
+  },
+  "print-my-calendar": {
+    "id": 5,
+    "url": "https://gitlab-box.local/RoboNater/print-my-calendar",
+    "visibility": "public",
+    "main_sha": "7e6ef91b43153b255ffae6e674c650a4ce44e091",
+    "issue_map": [
+      {
+        "source_number": 7,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/7",
+        "iid": 1,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/1"
+      },
+      {
+        "source_number": 8,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/8",
+        "iid": 2,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/2",
+        "comments": [
+          {
+            "source_id": 5552995537,
+            "source_url": "https://github.com/RoboNater/print-my-calendar/issues/8#issuecomment-5552995537",
+            "note_id": 32
+          }
+        ]
+      },
+      {
+        "source_number": 10,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/10",
+        "iid": 3,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/3"
+      },
+      {
+        "source_number": 11,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/11",
+        "iid": 4,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/4"
+      },
+      {
+        "source_number": 17,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/17",
+        "iid": 5,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/5"
+      },
+      {
+        "source_number": 18,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/18",
+        "iid": 6,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/6"
+      },
+      {
+        "source_number": 19,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/19",
+        "iid": 7,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/7"
+      },
+      {
+        "source_number": 20,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/20",
+        "iid": 8,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/8"
+      },
+      {
+        "source_number": 21,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/21",
+        "iid": 9,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/9"
+      },
+      {
+        "source_number": 22,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/22",
+        "iid": 10,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/10"
+      },
+      {
+        "source_number": 24,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/24",
+        "iid": 11,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/11"
+      },
+      {
+        "source_number": 27,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/27",
+        "iid": 12,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/12"
+      },
+      {
+        "source_number": 32,
+        "source_url": "https://github.com/RoboNater/print-my-calendar/issues/32",
+        "iid": 13,
+        "url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/work_items/13"
+      }
+    ],
+    "source_refs": {
+      "refs/heads/codex/25-installer-resources": "39974891c2bfcfc4c29a5fb30ded10aa18fe44eb",
+      "refs/heads/codex/issue-28-event-readability": "29c3c3386b5496bb446edb3740a7b1e72122ac5b",
+      "refs/heads/codex/phase-2-offline-month": "4e6d7c941e264323031160ec42ee0658f66a9ba2",
+      "refs/heads/codex/phase-3-yahoo-caldav": "96db4a68b6016a35d959f1fcf3bad0ba111b8165",
+      "refs/heads/codex/phase-4-printing-release": "4292572385391bab02a894d968e08f757a39212e",
+      "refs/heads/fix/16-landscape-print-negotiation": "e39a92d7ed39c39afc5aac1742830cfcb9672ca1",
+      "refs/heads/main": "7e6ef91b43153b255ffae6e674c650a4ce44e091",
+      "refs/pull/1/head": "7ecda71c847bc39549ee1002dbd41a41834406d2",
+      "refs/pull/15/head": "4292572385391bab02a894d968e08f757a39212e",
+      "refs/pull/23/head": "e39a92d7ed39c39afc5aac1742830cfcb9672ca1",
+      "refs/pull/26/head": "39974891c2bfcfc4c29a5fb30ded10aa18fe44eb",
+      "refs/pull/29/head": "29c3c3386b5496bb446edb3740a7b1e72122ac5b",
+      "refs/pull/3/head": "4e6d7c941e264323031160ec42ee0658f66a9ba2",
+      "refs/pull/31/head": "21de15f5bcadda6985fd5608de24be257e2664ae",
+      "refs/pull/6/head": "96db4a68b6016a35d959f1fcf3bad0ba111b8165"
+    },
+    "commit_count": 55,
+    "ci_sha": "feb09f766f6cdc8cd7b3d95d36772c18b490d9f0",
+    "ci_config_path": ".gitlab-ci.yml@RoboNater/print-my-calendar:feb09f766f6cdc8cd7b3d95d36772c18b490d9f0",
+    "pipeline": {
+      "id": 37,
+      "sha": "7e6ef91b43153b255ffae6e674c650a4ce44e091",
+      "ref": "main",
+      "web_url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/37"
+    }
+  },
+  "w520-engineering-handbooks": {
+    "id": 6,
+    "url": "https://gitlab-box.local/RoboNater/w520-engineering-handbooks",
+    "visibility": "private",
+    "main_sha": "e73d1e0e555852280fbb460a00e75d582a1fa2ba",
+    "issue_map": [],
+    "source_refs": {
+      "refs/heads/main": "e73d1e0e555852280fbb460a00e75d582a1fa2ba"
+    },
+    "commit_count": 3
+  }
+}
