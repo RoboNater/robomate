@@ -116,6 +116,21 @@ That runner also needs permission to install Inno Setup 6.7.1. Windows commands
 and their artifacts remain unverified on this instance. No runner was added or
 changed for this issue.
 
+Two trigger/artifact differences from GitHub remain deliberate limitations of
+this initial translation. Neither GitLab file has `workflow:rules`: every branch
+push can start CI, including updates to archived `github-pull/*` branches. This
+keeps future development branches directly usable for GitLab regression runs;
+calendar's GitHub configuration is narrower (main pushes and PRs). The serial
+instance runner may therefore queue extra work. Trigger optimization can be
+done when those mirrors' development workflow is chosen.
+
+The optional Windows job combines validation and self-contained outputs in one
+GitLab artifact archive on every enabled run, rather than uploading the latter
+only from main. GitLab artifact collection warns on missing paths and does not
+implement GitHub's `if-no-files-found: error` behavior here. These upload semantics
+have not been validated without a Windows runner; enabling Windows CI should
+include checking its expected output directories and artifact contents.
+
 Handbooks has no GitHub workflow on its imported main, so no CI was invented.
 Auto DevOps is disabled and the GitLab pipeline list is empty.
 
@@ -141,6 +156,7 @@ comparison failure. The successful run output is retained in
 
 ```sh
 python3 docs/development/gitlab-mirrors-100/verify.py
+uv run --locked mypy docs/development/gitlab-mirrors-100/verify.py
 ```
 
 For direct forge evidence, these commands show projects, branches, open issues,
@@ -167,9 +183,12 @@ glab api --hostname gitlab-box.local projects/5/pipelines/39/jobs
 ```
 
 Robomate repository validation passed: locked all-package dependency sync,
-Ruff, mypy (82 files), and pytest (1,027 tests). `UV_CACHE_DIR` was set to a
+Ruff, mypy (82 files), and pytest (1,028 tests on the final tree). `UV_CACHE_DIR` was set to a
 workspace-local cache under `.git/issue-100/uv-cache` because the default cache
 is outside the writable workspace. No robomate production code changed.
+The snapshot verifier has explicit type annotations and passed the separate
+mypy command above; the repository's normal mypy configuration covers only
+`packages` and `tests`.
 
 ## Roadmap decision
 

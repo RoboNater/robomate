@@ -4,28 +4,29 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 HOST = "gitlab-box.local"
 
 
-def command(*args):
+def command(*args: str) -> str:
     return subprocess.check_output(args, text=True)
 
 
-def gitlab(path):
+def gitlab(path: str) -> Any:
     result = json.loads(command("glab", "api", "--hostname", HOST, path))
     if isinstance(result, dict) and ("error" in result or "message" in result):
         raise RuntimeError(f"GitLab API error for {path}")
     return result
 
 
-def require(condition, message):
+def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
 
 
-def verify():
+def verify() -> None:
     inventory = json.loads((HERE / "inventory.json").read_text())
     pending_pipelines = []
     # Keep the temporary clones inside this checkout's configured workspace.
