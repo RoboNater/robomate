@@ -1,0 +1,53 @@
+# Portable checks run on runner01. WPF execution and installer validation require Windows.
+stages: [check]
+variables:
+  GIT_DEPTH: "0"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+linux-checks:
+  stage: check
+  image: mcr.microsoft.com/dotnet/sdk:8.0.424
+  variables:
+    EnableWindowsTargeting: "true"
+  timeout: 20m
+  script:
+    - dotnet restore YahooMonthPrint.sln --locked-mode
+    - dotnet format YahooMonthPrint.sln --verify-no-changes --no-restore
+    - dotnet build YahooMonthPrint.sln --configuration Release --no-restore
+    # This source test resolves Windows backslash ProjectReference paths with
+    # Path.GetFullPath before normalizing separators; retain it in Windows CI.
+    - dotnet test tests/YahooMonthPrint.Core.Tests --configuration Release --no-build --filter "FullyQualifiedName!=YahooMonthPrint.Core.Tests.ArchitectureSmokeTests.ProductionProjectDependenciesMatchAllowedGraph" --collect:"XPlat Code Coverage" --results-directory artifacts/test-results/core
+    - dotnet test tests/YahooMonthPrint.YahooCalDav.Tests --configuration Release --no-build --collect:"XPlat Code Coverage" --results-directory artifacts/test-results/caldav
+    - dotnet list YahooMonthPrint.sln package --vulnerable --include-transitive
+  artifacts:
+    when: always
+    paths: [artifacts/test-results/]
+    expire_in: 7 days
+windows-build-test-publish:
+  stage: check
+  tags: [windows]
+  # Enable only after an operator supplies a Windows PowerShell 7 runner with
+  # Git, .NET SDK 8.0.424, Windows Desktop runtime, and Chocolatey.
+  rules:
+    - if: '$RUN_WINDOWS_CI == "true"'
+  timeout: 20m
+  script:
+    - '$env:RELEASE_VERSION = "1.0.$env:CI_PIPELINE_IID"'
+    - ./eng/verify-tools.ps1 -BuildToolsOnly
+    - ./eng/test-InnoSetupDiscovery.ps1
+    - 'dotnet restore YahooMonthPrint.sln --locked-mode; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    - 'dotnet format YahooMonthPrint.sln --verify-no-changes --no-restore; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    - 'dotnet build YahooMonthPrint.sln --configuration Release --no-restore; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    - 'dotnet test YahooMonthPrint.sln --configuration Release --no-build --collect:"XPlat Code Coverage" --results-directory artifacts/test-results; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    - 'dotnet list YahooMonthPrint.sln package --vulnerable --include-transitive; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    - 'choco install innosetup --version=6.7.1 --yes --no-progress; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    - ./eng/build-installer.ps1 -Version $env:RELEASE_VERSION -SkipRestore -SkipBuild -SkipTests
+    - ./eng/render-print-samples.ps1
+  artifacts:
+    paths:
+      - artifacts/installer/
+      - artifacts/print-samples/
+      - artifacts/self-contained-validation/
+      - artifacts/test-results/
+      - artifacts/publish/win-x64/
+    expire_in: 7 days
