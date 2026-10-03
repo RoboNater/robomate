@@ -68,7 +68,7 @@ The copies in this directory are verified byte-for-byte against GitLab.
 | Project | CI commit | Main pipeline |
 |---|---|---|
 | repo-archive-tool | `38bf87639fe5a0cc0633aa3afec206a917526251` | [35](https://gitlab-box.local/RoboNater/repo-archive-tool/-/pipelines/35) |
-| print-my-calendar | `feb09f766f6cdc8cd7b3d95d36772c18b490d9f0` | [37](https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/37) |
+| print-my-calendar | `0f1c37a30c7b03ef55c32fb7acdbb41ea4525123` | [39](https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/39) |
 
 The only project settings set for CI were disabling Auto DevOps on creation and
 setting these two custom configuration paths. Both files passed
@@ -79,7 +79,8 @@ setting these two custom configuration paths. Both files passed
 pytest, and CLI help. Git and Git LFS are installed in the container so the
 integration tests exercise their real dependencies. The available instance
 runner is Linux with a Docker executor, so the GitHub Windows/macOS matrix axes
-cannot run here. The three Linux jobs pass on the unchanged imported main.
+cannot run here. The three Linux jobs pass on the unchanged imported main: jobs 38/39/40 each
+passed all 156 tests, plus formatting, lint, and CLI help.
 
 [print-my-calendar.gitlab-ci.yml](print-my-calendar.gitlab-ci.yml) uses the
 source's .NET SDK 8.0.424, locked restore, full-solution formatting, cross-build
@@ -87,6 +88,23 @@ with `EnableWindowsTargeting=true`, the portable Core and YahooCalDav test
 projects with coverage, and the dependency vulnerability report. Test artifacts
 are retained for seven days. WPF App/Printing tests and installer/sample execution
 require Windows; cross-building does not validate those runtime behaviors.
+
+The first calendar pipelines ([36](https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/36)
+and [37](https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/37))
+exposed a pre-existing Windows assumption in
+`ArchitectureSmokeTests.ProductionProjectDependenciesMatchAllowedGraph`: it
+passes backslash-containing project references to `Path.GetFullPath` before
+normalizing separators, leaving `..` unresolved on Linux. Only this test is
+excluded from the Linux Core run; the Windows job still runs it. No source test
+or production code was changed to make the adaptation pass. These failed
+pipelines remain available as evidence of the limitation. Pipeline
+[38](https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/38),
+created by pushing the CI branch before repinning the project setting, also
+used the previous configuration and failed on the same test. The final main
+pipeline 39 uses the corrected pin and succeeds: 29 Core tests passed and
+20 YahooCalDav tests passed. The source
+`RealYahooIntegrationTests.DiscoveryAndReadOnlyQueryAgainstOptInTestAccount`
+test remains skipped because it requires an opt-in live Yahoo test account.
 
 The complete Windows workflow is translated into a job tagged `windows`,
 including tool verification, Inno Setup discovery, all tests, installer build,
@@ -113,9 +131,13 @@ The verifier reads the snapshot inventory, freshly clones each GitLab repository
 inside this checkout's Git directory, runs `git fsck --full`, checks every source
 ref, walks their complete commit history, checks every copied issue/comment
 against GitHub, checks project visibility/default branch/CI configuration, and
-requires successful main pipelines. Temporary clones are removed on exit.
+requires successful main pipelines. It also compares the currently advertised
+GitHub refs, open issue set, and comment counts with the snapshot. Temporary
+clones are removed on exit.
 It exits nonzero on any failed comparison or pipeline still pending. Source
-issue edits after the snapshot can intentionally cause a comparison failure.
+repository or issue edits after the snapshot can intentionally cause a
+comparison failure. The successful run output is retained in
+[verification.txt](verification.txt).
 
 ```sh
 python3 docs/development/gitlab-mirrors-100/verify.py
@@ -140,8 +162,8 @@ Specific main-pipeline evidence:
 ```sh
 glab api --hostname gitlab-box.local projects/4/pipelines/35
 glab api --hostname gitlab-box.local projects/4/pipelines/35/jobs
-glab api --hostname gitlab-box.local projects/5/pipelines/37
-glab api --hostname gitlab-box.local projects/5/pipelines/37/jobs
+glab api --hostname gitlab-box.local projects/5/pipelines/39
+glab api --hostname gitlab-box.local projects/5/pipelines/39/jobs
 ```
 
 Robomate repository validation passed: locked all-package dependency sync,

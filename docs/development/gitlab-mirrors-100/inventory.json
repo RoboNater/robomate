@@ -187,13 +187,13 @@
       "refs/pull/6/head": "96db4a68b6016a35d959f1fcf3bad0ba111b8165"
     },
     "commit_count": 55,
-    "ci_sha": "feb09f766f6cdc8cd7b3d95d36772c18b490d9f0",
-    "ci_config_path": ".gitlab-ci.yml@RoboNater/print-my-calendar:feb09f766f6cdc8cd7b3d95d36772c18b490d9f0",
+    "ci_sha": "0f1c37a30c7b03ef55c32fb7acdbb41ea4525123",
+    "ci_config_path": ".gitlab-ci.yml@RoboNater/print-my-calendar:0f1c37a30c7b03ef55c32fb7acdbb41ea4525123",
     "pipeline": {
-      "id": 37,
+      "id": 39,
       "sha": "7e6ef91b43153b255ffae6e674c650a4ce44e091",
       "ref": "main",
-      "web_url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/37"
+      "web_url": "https://gitlab-box.local/RoboNater/print-my-calendar/-/pipelines/39"
     }
   },
   "w520-engineering-handbooks": {

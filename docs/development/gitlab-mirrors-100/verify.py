@@ -32,6 +32,30 @@ def verify():
     git_dir = Path(command("git", "rev-parse", "--absolute-git-dir").strip())
     with tempfile.TemporaryDirectory(prefix="issue-100-verify-", dir=git_dir) as tmp:
         for name, record in inventory.items():
+            advertised = command("git", "ls-remote", f"git@github.com:RoboNater/{name}.git")
+            live_refs = {
+                ref: sha
+                for sha, ref in (line.split() for line in advertised.splitlines())
+                if ref.startswith(("refs/heads/", "refs/tags/", "refs/pull/"))
+                and not ref.endswith("^{}")
+            }
+            require(live_refs == record["source_refs"], f"{name}: source refs changed")
+            pages = json.loads(
+                command(
+                    "gh",
+                    "api",
+                    "--paginate",
+                    "--slurp",
+                    f"repos/RoboNater/{name}/issues?state=open&per_page=100",
+                )
+            )
+            open_numbers = {
+                issue["number"] for page in pages for issue in page if "pull_request" not in issue
+            }
+            require(
+                open_numbers == {i["source_number"] for i in record["issue_map"]},
+                f"{name}: source open issues changed",
+            )
             project = gitlab(f"projects/{record['id']}")
             require(project["web_url"] == record["url"], f"{name}: wrong project")
             require(project["visibility"] == record["visibility"], f"{name}: visibility")
@@ -73,6 +97,10 @@ def verify():
                     f"{name}: issue body {mapping['iid']}",
                 )
                 require(dest["state"] == "opened", f"{name}: issue state")
+                require(
+                    source["comments"] == len(mapping.get("comments", [])),
+                    f"{name}: source comments changed",
+                )
                 for comment in mapping.get("comments", []):
                     original = json.loads(
                         command(
