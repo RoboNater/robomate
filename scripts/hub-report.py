@@ -709,7 +709,7 @@ def workflow_figures(
         "merge_gate_calls": len(calls),
         "merge_gate_readings": (
             stored_gate_readings(
-                r for r in snapshot["gate_reading"] if r["workflow_id"] == row["id"]
+                r for r in snapshot["gate_reading"] if r["workflow_id"] in (None, row["id"])
             ) if snapshot["schema_version"] >= 13 else gate_readings(decisions)
         ),
         "merged": merged_sha(decisions),

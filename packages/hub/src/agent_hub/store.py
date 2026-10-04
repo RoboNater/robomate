@@ -611,7 +611,9 @@ class HubStore:
             for check in report.checks
         ]
         with database(self.path) as connection:
-            workflow = connection.execute("SELECT id FROM workflow LIMIT 1").fetchone()
+            workflow = connection.execute(
+                "SELECT id FROM workflow ORDER BY created LIMIT 1"
+            ).fetchone()
             cursor = connection.execute(
                 "INSERT INTO gate_reading (ts, workflow_id, pr_url, expected_head_sha,"
                 " current_head_sha, pr_state, head_matches, ci, mergeable, merge_state_status,"

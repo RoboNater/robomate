@@ -13,7 +13,8 @@ from typing import Annotated, Any, Literal
 from agent_hub_common import TaskState, WorkflowStatus
 from pydantic import Field
 
-from .merge_gate import ForgeGate, MergeGate, MergeGateError
+from .merge_gate import ForgeGate, MergeGate
+from .rpc_errors import error_code
 from .store import HubStore
 
 Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
@@ -111,12 +112,8 @@ class OrchestratorOps:
         try:
             report = await self.gate.check(pr_url, expected_head_sha)
         except Exception as exc:
-            # Match /rpc's stable codes; stdio records the same failures.
-            code = -32004 if isinstance(exc, MergeGateError) else (
-                -32602 if isinstance(exc, ValueError) else -32603
-            )
             self.store.record_gate_reading(
-                pr_url, expected_head_sha, error_code=code,
+                pr_url, expected_head_sha, error_code=error_code(exc),
                 elapsed_s=round(monotonic() - started, 3),
             )
             raise

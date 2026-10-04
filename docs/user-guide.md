@@ -190,6 +190,8 @@ are capped at 256 characters in storage and sanitized and truncated for display;
 `--no-labels` omits check names and base branch labels. For pre-v13 databases,
 the report still extracts readings from Alice's decision rationales. Those old
 readings cannot be recovered during migration if Alice never logged them.
+Readings taken before workflow initialization retain a NULL workflow ID and are
+included in the run's report once its workflow has been initialized.
 
 ---
 

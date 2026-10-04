@@ -343,6 +343,23 @@ def test_v13_empty_table_does_not_fall_back_to_rationales(tmp_path: Path) -> Non
     assert built["workflow"]["merge_gate_readings"] == []
 
 
+def test_readings_before_workflow_initialization_appear_in_report(tmp_path: Path) -> None:
+    state = tmp_path / "hub-state"
+    initialize_database(state / "hub.db")
+    store = HubStore(state / "hub.db", clock=lambda: T0)
+    store.record_gate_reading(PR, HEAD, error_code=-32004, elapsed_s=0.1)
+    workflow_id = store.initialize_workflow("Include pre-initialization gate calls")
+    store.record_gate_reading(PR, HEAD, error_code=-32004, elapsed_s=0.2)
+
+    built = REPORT.build_report(state, now=T0 + timedelta(seconds=1))
+    first, second = built["workflow"]["merge_gate_readings"]
+    assert first["workflow_id"] is None
+    assert second["workflow_id"] == workflow_id
+    assert first["elapsed_s"] == 0.1 and second["elapsed_s"] == 0.2
+    assert first["error_code"] == second["error_code"] == -32004
+    assert "2 reading(s) logged" in REPORT.render_text(built)
+
+
 def test_v12_report_keeps_rationale_fallback_and_does_not_migrate(tmp_path: Path) -> None:
     state = seed_run(tmp_path)
     built = REPORT.build_report(state)
