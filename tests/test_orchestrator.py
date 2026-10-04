@@ -5,6 +5,7 @@ import json
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import count
 from pathlib import Path
@@ -14,9 +15,9 @@ from uuid import UUID
 import httpx
 import pytest
 from agent_hub.mcp import create_mcp
-from agent_hub.merge_gate import CiStatus, GateReport, Mergeable, MergeGate, PrState
+from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, MergeGate, PrState
 from agent_hub.orchestrator import OPERATIONS, OrchestratorOps
-from agent_hub.store import HubStore
+from agent_hub.store import MAX_CHECK_NAME_CHARS, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, TaskState
 from conftest import rpc
 from fastapi import FastAPI
@@ -27,6 +28,38 @@ FIXTURE = Path(__file__).parent / "fixtures" / "orchestrator-tools.json"
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+async def test_recording_caps_check_names_without_changing_response(store: HubStore) -> None:
+    name = "x" * (MAX_CHECK_NAME_CHARS + 100)
+
+    class LongNameGate(StubGate):
+        async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+            report = await super().check(pr_url, expected_head_sha)
+            return replace(report, checks=[Check(name, "pass", "https://example.com")])
+
+    result = await OrchestratorOps(store, LongNameGate()).check_merge_gate(PR, HEAD)
+    assert result["checks"][0]["name"] == name
+    with sqlite3.connect(store.path) as connection:
+        [checks] = connection.execute("SELECT checks_json FROM gate_reading").fetchone()
+    assert json.loads(checks) == [{"name": name[:MAX_CHECK_NAME_CHARS], "bucket": "pass"}]
+
+
+@pytest.mark.parametrize(("error", "code"), [(ValueError("bad URL"), -32602),
+                                           (RuntimeError("unexpected"), -32603)])
+async def test_other_gate_errors_are_recorded(
+    store: HubStore, error: Exception, code: int,
+) -> None:
+    class BrokenGate(StubGate):
+        async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+            raise error
+
+    with pytest.raises(type(error)) as raised:
+        await OrchestratorOps(store, BrokenGate()).check_merge_gate(PR, HEAD)
+    assert raised.value is error
+    with sqlite3.connect(store.path) as connection:
+        [recorded] = connection.execute("SELECT error_code FROM gate_reading").fetchone()
+    assert recorded == code
 
 
 class StubGate:

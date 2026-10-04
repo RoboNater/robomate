@@ -12,13 +12,20 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import BackgroundTasks
-from pydantic import ValidationError, validate_call
+from pydantic import validate_call
 from pydantic_core import to_jsonable_python
 
 from .accounting import CallAccounting, CallRecord, hub_id
-from .merge_gate import MergeGateError
 from .orchestrator import OPERATIONS, OrchestratorOps
-from .store import ConflictError, InvalidPolicyError, NotFoundError, PayloadTooLargeError
+from .rpc_errors import CONFLICT as CONFLICT
+from .rpc_errors import INTERNAL_ERROR as INTERNAL_ERROR
+from .rpc_errors import INVALID_PARAMS as INVALID_PARAMS
+from .rpc_errors import INVALID_REQUEST as INVALID_REQUEST
+from .rpc_errors import MERGE_GATE_UNAVAILABLE as MERGE_GATE_UNAVAILABLE
+from .rpc_errors import METHOD_NOT_FOUND as METHOD_NOT_FOUND
+from .rpc_errors import NOT_FOUND as NOT_FOUND
+from .rpc_errors import PAYLOAD_TOO_LARGE as PAYLOAD_TOO_LARGE
+from .rpc_errors import error_code
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +34,6 @@ logger = logging.getLogger(__name__)
 ACTOR_HEADER = "X-Robomate-Actor"
 SESSION_HEADER = "X-Robomate-Session"
 MAX_ACTOR_LENGTH = 128
-
-# JSON-RPC 2.0 codes, then this route's server errors. The codes are stable;
-# the message is the original error text, so the bridge can hand Alice the
-# same tool error she saw over stdio.
-INVALID_REQUEST = -32600
-METHOD_NOT_FOUND = -32601
-INVALID_PARAMS = -32602
-INTERNAL_ERROR = -32603
-NOT_FOUND = -32001
-CONFLICT = -32002
-PAYLOAD_TOO_LARGE = -32003
-MERGE_GATE_UNAVAILABLE = -32004
 
 
 class RpcError(Exception):
@@ -78,20 +73,6 @@ def parse_caller(headers: Mapping[str, str]) -> tuple[str, str] | None:
     return actor, str(parsed)
 
 
-def _error_code(exc: Exception) -> int:
-    if isinstance(exc, ValidationError | InvalidPolicyError | ValueError):
-        return INVALID_PARAMS
-    if isinstance(exc, NotFoundError):
-        return NOT_FOUND
-    if isinstance(exc, ConflictError):
-        return CONFLICT
-    if isinstance(exc, PayloadTooLargeError):
-        return PAYLOAD_TOO_LARGE
-    if isinstance(exc, MergeGateError):
-        return MERGE_GATE_UNAVAILABLE
-    return INTERNAL_ERROR
-
-
 class RpcDispatcher:
     """Validate and route one JSON-RPC request body."""
 
@@ -126,7 +107,7 @@ class RpcDispatcher:
         except RpcError as exc:
             return _error(request_id, exc.code, exc.message)
         except Exception as exc:
-            code = _error_code(exc)
+            code = error_code(exc)
             if code == INTERNAL_ERROR:
                 logger.exception("Unhandled error serving /rpc")
             return _error(request_id, code, str(exc))

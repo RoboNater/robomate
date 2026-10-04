@@ -1,6 +1,7 @@
 """Unit tests for GitLabGate adapter using recorded and mocked glab api fixtures."""
 
 import json
+import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from agent_hub.gitlab_gate import (
     map_detailed_merge_status,
 )
 from agent_hub.merge_gate import CiStatus, Mergeable, MergeGateError, PrState
+from agent_hub.orchestrator import OrchestratorOps
+from agent_hub.store import HubStore
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "gitlab"
 
@@ -29,6 +32,46 @@ BASE_SHA = "0b56cda79d90ec1fbcc09c09d6d73486d2060621"
 MAIN_SHA = "84388471501e9d0b03b0914d00c1cb457a55d89d"
 # Sandbox `main`, recorded 2026-10-01: pipelines 5 (push) and 6 (api), one `test` job each.
 SANDBOX_MAIN_SHA = "08726cbdadc5ff198a13d7a346b24c678967e3ee"
+
+
+async def test_orchestrator_records_gitlab_reading(store: HubStore) -> None:
+    runner = routes(
+        mr(pipeline(10, "success")), [pipeline(10, "success")],
+        [job("test", "success", 10)],
+    )
+    gate, _ = make_gate(runner)
+    result = await OrchestratorOps(store, gate).check_merge_gate(MR_URL, HEAD_SHA)
+    with sqlite3.connect(store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        [row] = connection.execute("SELECT * FROM gate_reading").fetchall()
+    assert row["workflow_id"] == store.get_state()["workflow"]["id"]
+    assert row["ts"] and row["error_code"] is None
+    for key, value in result.items():
+        if key == "checks":
+            assert json.loads(row["checks_json"]) == [
+                {"name": c["name"], "bucket": c["bucket"]} for c in value
+            ]
+        else:
+            assert row[key] == value
+
+
+@pytest.mark.parametrize("failure", ["unbound", "origin", "glab"])
+async def test_gitlab_gate_errors_are_recorded(store: HubStore, failure: str) -> None:
+    runner = FakeGlab({"merge_requests": GlabResult(1, "", "HTTP 500")})
+    bound, _ = make_gate(runner)
+    gate = UnboundGitLabGate("no origin") if failure == "unbound" else bound
+    url = MR_URL.replace("RoboNater", "somebody-else") if failure == "origin" else MR_URL
+    with pytest.raises(GitLabGateError):
+        await OrchestratorOps(store, gate).check_merge_gate(url, HEAD_SHA)
+    with sqlite3.connect(store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        [row] = connection.execute("SELECT * FROM gate_reading").fetchall()
+    assert row["error_code"] == -32004
+    assert row["pr_url"] == url and row["expected_head_sha"] == HEAD_SHA
+    assert row["elapsed_s"] >= 0 and row["current_head_sha"] is None
+    assert row["pr_state"] is None and row["checks_json"] == "[]"
+    if failure != "glab":
+        assert runner.calls == []
 
 
 def load_fixture(name: str) -> str:

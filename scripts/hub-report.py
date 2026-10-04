@@ -19,8 +19,8 @@ Figures are serialized message-body bytes (#78), never tokens: the hub cannot
 see a harness's token accounting. Payload text — task instructions, messages,
 results, event payloads, decision rationales, telemetry errors — is never
 printed; only sizes, counts, closed-set labels and validated identifiers. The
-free-text labels Alice writes herself (the workflow goal, task titles, and
-decision keys and summaries) are printed flattened to one line and truncated,
+free-text labels (workflow goal, task titles, decision keys and summaries,
+gate base refs and CI check names) are printed flattened to one line and truncated,
 and `--no-labels` leaves them out as well.
 
 Worker telemetry defaults to every `*-telemetry.jsonl` and `*.telemetry.jsonl`
@@ -60,6 +60,9 @@ HOLD_TOOLS = frozenset({"await_assignment", "wait_for_event"})
 EMPTY_OUTCOMES = frozenset({"timeout", "null_event"})
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 PR_URL_RE = re.compile(r"^https://[A-Za-z0-9.-]+/[A-Za-z0-9-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$")
+MR_URL_RE = re.compile(
+    r"^https://[A-Za-z0-9.-]+/(?:[A-Za-z0-9_.-]+/)+-/merge_requests/[1-9][0-9]*$"
+)
 # A worker name, tool name or outcome as the hub and worker-mcp write them.
 LABEL_RE = re.compile(r"^[A-Za-z0-9_./:-]{1,64}$")
 MERGED_SHA_RE = re.compile(
@@ -69,6 +72,8 @@ MERGED_SHA_RE = re.compile(
 )
 GATE_FIELDS = ("pr_state", "head_matches", "ci", "mergeable", "base_behind_main")
 GATE_SHA_FIELDS = ("expected_head_sha", "current_head_sha")
+STORED_GATE_FIELDS = (*GATE_FIELDS, "merge_state_status")
+STORED_GATE_SHA_FIELDS = (*GATE_SHA_FIELDS, "base_sha", "main_sha")
 LABEL_LIMIT = 120
 
 
@@ -242,7 +247,10 @@ def read_database(path: Path) -> dict[str, Any]:
             snapshot: dict[str, Any] = {
                 "schema_version": connection.execute("PRAGMA user_version").fetchone()[0],
             }
-            for table in ("workflow", "agent", "task", "message", "event", "decision", "call_log"):
+            for table in (
+                "workflow", "agent", "task", "message", "event", "decision", "call_log",
+                "gate_reading",
+            ):
                 snapshot[table] = (
                     [dict(row) for row in connection.execute(f"SELECT * FROM {table}")]
                     if table in tables
@@ -589,6 +597,7 @@ def agent_figures(
 
 
 def gate_readings(decisions: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Historical fallback for databases whose hub did not record readings."""
     readings = []
     for decision in decisions:
         for value in embedded_objects(decision["rationale"] or ""):
@@ -602,6 +611,35 @@ def gate_readings(decisions: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]
                 reading[key] = sha(value.get(key))
             reading["pr_url"] = pr_url(value.get("pr_url"))
             readings.append(reading)
+    return readings
+
+
+def stored_gate_readings(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Read hub facts without ever printing raw repository CI labels."""
+    readings = []
+    for row in sorted(rows, key=lambda item: item["id"]):
+        reading: dict[str, Any] = {"id": row["id"], "ts": row["ts"]}
+        for key in STORED_GATE_FIELDS:
+            item = row[key]
+            if key in ("head_matches", "base_behind_main"):
+                reading[key] = bool(item) if item is not None else None
+            else:
+                reading[key] = closed(item)
+        for key in STORED_GATE_SHA_FIELDS:
+            reading[key] = sha(row[key])
+        reading["workflow_id"] = closed(row["workflow_id"])
+        reading["pr_url"] = pr_url(row["pr_url"]) or (
+            row["pr_url"] if MR_URL_RE.fullmatch(row["pr_url"]) else None
+        )
+        reading["base_ref"] = label(row["base_ref"])
+        reading["elapsed_s"] = row["elapsed_s"]
+        reading["error_code"] = row["error_code"]
+        checks = json.loads(row["checks_json"])
+        reading["checks"] = [
+            {"name": label(check.get("name")), "bucket": closed(check.get("bucket"))}
+            for check in checks if isinstance(check, dict)
+        ] if isinstance(checks, list) else []
+        readings.append(reading)
     return readings
 
 
@@ -669,7 +707,11 @@ def workflow_figures(
         "review_rounds_used": rounds,
         "max_review_rounds": policy.get("max_review_rounds"),
         "merge_gate_calls": len(calls),
-        "merge_gate_readings": gate_readings(decisions),
+        "merge_gate_readings": (
+            stored_gate_readings(
+                r for r in snapshot["gate_reading"] if r["workflow_id"] in (None, row["id"])
+            ) if snapshot["schema_version"] >= 13 else gate_readings(decisions)
+        ),
         "merged": merged_sha(decisions),
         "decisions": [
             {
@@ -778,6 +820,11 @@ def build_report(
             workflow["goal"] = None
             for decision in workflow["decisions"]:
                 decision["summary"] = decision["key"] = None
+            for reading in workflow["merge_gate_readings"]:
+                if "base_ref" in reading:
+                    reading["base_ref"] = None
+                for check in reading.get("checks", []):
+                    check["name"] = None
         for task in tasks:
             task["title"] = None
     return {
@@ -936,11 +983,24 @@ def workflow_lines(workflow: Mapping[str, Any] | None) -> list[str]:
         f"{len(workflow['merge_gate_readings'])} reading(s) logged",
     ]
     for reading in workflow["merge_gate_readings"]:
-        facts = ", ".join(f"{key}={show(reading[key])}" for key in GATE_FIELDS)
+        fields = STORED_GATE_FIELDS if "id" in reading else GATE_FIELDS
+        facts = ", ".join(f"{key}={show(reading[key])}" for key in fields)
         head = reading["current_head_sha"] or reading["expected_head_sha"]
-        lines.append(
-            f"  - decision {reading['decision_id']} {reading['ts']}: {facts}, head={show(head)}"
+        source = (
+            f"reading {reading['id']}" if "id" in reading
+            else f"decision {reading['decision_id']}"
         )
+        lines.append(
+            f"  - {source} {reading['ts']}: {facts}, head={show(head)}"
+        )
+        if "id" in reading:
+            lines.append(
+                f"    pr={show(reading['pr_url'])}, base_ref={show(reading['base_ref'])}, "
+                f"base_sha={show(reading['base_sha'])}, main_sha={show(reading['main_sha'])}, "
+                f"elapsed_s={reading['elapsed_s']}, error_code={show(reading['error_code'])}"
+            )
+            for check in reading["checks"]:
+                lines.append(f"    check: {show(check['name'])} ({show(check['bucket'])})")
     lines.append(
         f"merged sha: {merged['sha']} (decision {merged['decision_id']})"
         if merged
