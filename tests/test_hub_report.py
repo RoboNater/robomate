@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import pytest
 from agent_hub.database import initialize_database
+from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
 
@@ -81,7 +82,9 @@ def seed_run(run_dir: Path, *, status: str = "done") -> Path:
     state = run_dir / "hub-state"
     state.mkdir(parents=True)
     database = state / "hub.db"
-    initialize_database(database)
+    # Preserve the pre-v13 report behavior using the actual shipped schema.
+    with sqlite3.connect(database) as legacy:
+        legacy.executescript((ROOT / "tests/fixtures/schema_v12.sql").read_text(encoding="utf-8"))
     policy = {"max_wall_minutes": 60, "max_review_rounds": 3, "allow_no_ci": False}
     connection = sqlite3.connect(database)
     with connection:
@@ -288,6 +291,70 @@ def test_a_seeded_run_produces_known_totals(tmp_path: Path) -> None:
     assert workflow["events"] == {"agent_checked_in": 2, "task_completed": 1}
     assert report["report"]["in_progress"] is False
     assert "2 unreadable telemetry line(s) skipped" in report["report"]["notes"]
+
+
+@pytest.mark.parametrize("url", [PR, "https://gitlab-box.local/group/sub/repo/-/merge_requests/7"])
+def test_v13_reports_stored_gate_facts_and_errors(tmp_path: Path, url: str) -> None:
+    state = seed_run(tmp_path)
+    initialize_database(state / "hub.db")
+    store = HubStore(state / "hub.db", clock=lambda: T0 + timedelta(seconds=2010))
+    report = GateReport(
+        pr_url=url, expected_head_sha=HEAD, current_head_sha=HEAD,
+        pr_state=PrState.OPEN, head_matches=True, ci=CiStatus.PASS,
+        mergeable=Mergeable.CLEAN, merge_state_status="mergeable",
+        base_ref="main\n\x1b[31m", base_sha=MERGED, main_sha=HEAD,
+        base_behind_main=False, elapsed_s=10,
+        checks=[Check("check\n\x1b" + "x" * 300, "pass", MARKER)],
+    )
+    store.record_gate_reading(url, HEAD, report=report, elapsed_s=report.elapsed_s)
+    store.record_gate_reading(url, HEAD, error_code=-32004, elapsed_s=2)
+    built = REPORT.build_report(state, now=T0 + timedelta(hours=1))
+    readings = built["workflow"]["merge_gate_readings"]
+    assert built["report"]["schema_version"] == 13
+    assert len(readings) == 2  # Never duplicate Alice's old rationale reading.
+    reading, failure = readings
+    assert reading["ts"] == at(2010) and reading["pr_url"] == url
+    assert reading["workflow_id"] == "f" * 32
+    assert reading["pr_state"] == "open" and reading["ci"] == "pass"
+    assert reading["head_matches"] is True and reading["base_behind_main"] is False
+    assert reading["base_sha"] == MERGED and reading["main_sha"] == HEAD
+    assert reading["merge_state_status"] == "mergeable" and reading["base_ref"] == "main [31m"
+    assert reading["elapsed_s"] == 10 and reading["error_code"] is None
+    [check] = reading["checks"]
+    assert check["bucket"] == "pass" and len(check["name"]) == REPORT.LABEL_LIMIT
+    assert check["name"].endswith("...") and "\n" not in check["name"]
+    assert failure["error_code"] == -32004 and failure["ci"] is None
+    assert failure["current_head_sha"] is None and failure["checks"] == []
+    for output in (json.dumps(built), REPORT.render_text(built), REPORT.render_text(built, True)):
+        assert MARKER not in output and "\x1b" not in output
+        assert "mergeable" in output and "-32004" in output
+    text = REPORT.render_text(built)
+    assert "2 reading(s) logged" in text and "check:" in text
+    assert "base_sha=" + MERGED in text
+    hidden = REPORT.build_report(state, labels=False)
+    assert hidden["workflow"]["merge_gate_readings"][0]["checks"][0]["name"] is None
+    assert hidden["workflow"]["merge_gate_readings"][0]["base_ref"] is None
+
+
+def test_v13_empty_table_does_not_fall_back_to_rationales(tmp_path: Path) -> None:
+    state = seed_run(tmp_path)
+    initialize_database(state / "hub.db")
+    built = REPORT.build_report(state)
+    assert built["workflow"]["merge_gate_readings"] == []
+
+
+def test_v12_report_keeps_rationale_fallback_and_does_not_migrate(tmp_path: Path) -> None:
+    state = seed_run(tmp_path)
+    built = REPORT.build_report(state)
+    assert built["report"]["schema_version"] == 12
+    [reading] = built["workflow"]["merge_gate_readings"]
+    assert reading["decision_id"] == 2 and reading["ci"] == "pass"
+    assert "decision 2" in REPORT.render_text(built)
+    with sqlite3.connect(state / "hub.db") as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'gate_reading'"
+        ).fetchone() is None
 
 
 def test_active_waiting_and_idle_sum_to_total_time(tmp_path: Path) -> None:

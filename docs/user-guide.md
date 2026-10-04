@@ -183,6 +183,14 @@ uv run --locked python scripts/hub-report.py \
 
 The report reads SQLite without changing it. `--format json` and `--format md` are available. Call accounting stores byte counts and labels, never payload text. `scripts/measure-call-bytes.py /absolute/empty-run-dir` starts a scratch `robomate up` hub and bridges to replay a published call sequence; `scripts/mock-alice.py --mcp` connects through an orchestrator bridge to an already running hub and a worker.
 
+The hub records each completed merge-gate call in `gate_reading` (DB schema v13),
+independently of call accounting. The report shows the PR/MR heads, CI checks,
+mergeability, base freshness, elapsed time, and any gate error code. Check names
+are capped at 256 characters in storage and sanitized and truncated for display;
+`--no-labels` omits check names and base branch labels. For pre-v13 databases,
+the report still extracts readings from Alice's decision rationales. Those old
+readings cannot be recovered during migration if Alice never logged them.
+
 ---
 
 ## Manual workspace bootstrap
