@@ -773,7 +773,7 @@ def test_migration_from_v11_adds_nullable_peer_addresses(tmp_path: Path) -> None
     assert columns["checkin_remote_addr"] == ("TEXT", 0, None)
     assert columns["last_remote_addr"] == ("TEXT", 0, None)
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 12
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     store = HubStore(path)
     bob = store.agent_by_name("bob")
     assert bob is not None
@@ -787,6 +787,33 @@ def test_migration_from_v11_adds_nullable_peer_addresses(tmp_path: Path) -> None
     bob = store.agent_by_name("bob")
     assert bob is not None
     assert (bob.checkin_remote_addr, bob.last_remote_addr) == (None, "192.0.2.10")
+
+
+def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: Path) -> None:
+    path = tmp_path / "v12.db"
+    _legacy_database(path, 12)
+    store = HubStore(path)
+    workflow_id = store.initialize_workflow("Existing v12 run")
+    with database(path) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'gate_reading'"
+        ).fetchone() is None
+
+    initialize_database(path)
+    initialize_database(path)
+
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 13
+        assert connection.execute("SELECT * FROM gate_reading").fetchall() == []
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert store.get_state()["workflow"]["id"] == workflow_id
+    store.record_gate_reading(
+        "https://github.com/example/repo/pull/1", "a" * 40,
+        error_code=-32004, elapsed_s=1.5,
+    )
+    with database(path) as connection:
+        [row] = connection.execute("SELECT * FROM gate_reading").fetchall()
+    assert row["workflow_id"] == workflow_id
 
 
 def test_a_null_declared_model_reads_as_unknown(tmp_path: Path) -> None:

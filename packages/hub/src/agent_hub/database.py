@@ -19,14 +19,15 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
-# v12 is #126's observed peer addresses on `agent`, after #77's v11
+# v13 is #105's durable gate readings. v12 is #126's observed peer addresses
+# on `agent`, after #77's v11
 # `agent.declared_model`, #78's v10 `call_log` byte accounting and #51's v9
 # durable binding from an assignment to its triggering event.
 # Bumping this means first dumping the version it replaces:
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class DatabaseVersionError(RuntimeError):
@@ -171,6 +172,28 @@ CREATE TABLE IF NOT EXISTS call_log (
     finished TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS gate_reading (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    workflow_id TEXT,
+    pr_url TEXT NOT NULL,
+    expected_head_sha TEXT NOT NULL,
+    current_head_sha TEXT,
+    pr_state TEXT,
+    head_matches INTEGER CHECK (head_matches IN (0, 1)),
+    ci TEXT,
+    mergeable TEXT,
+    merge_state_status TEXT,
+    base_ref TEXT,
+    base_sha TEXT,
+    main_sha TEXT,
+    base_behind_main INTEGER CHECK (base_behind_main IN (0, 1)),
+    elapsed_s REAL NOT NULL,
+    checks_json TEXT NOT NULL DEFAULT '[]',
+    error_code INTEGER,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_workflow_state ON task(workflow_id, state);
 CREATE INDEX IF NOT EXISTS idx_task_assignee ON task(assignee);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_source_event_id
@@ -256,7 +279,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v11 -> v12).
+        # (any of v1-v12 -> v13).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -267,6 +290,7 @@ def initialize_database(path: Path) -> None:
         _migrate_call_log(connection)
         _migrate_declared_model(connection)
         _migrate_peer_addresses(connection)
+        _migrate_gate_reading(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -454,6 +478,14 @@ def _migrate_peer_addresses(connection: sqlite3.Connection) -> None:
     for name, spec in PEER_ADDRESS_COLUMNS.items():
         if name not in columns:
             connection.execute(f"ALTER TABLE agent ADD COLUMN {name} {spec}")
+
+
+def _migrate_gate_reading(connection: sqlite3.Connection) -> None:
+    """Add gate facts independently of opt-in call accounting (#105, v13).
+
+    Earlier readings were never stored by the hub, so the table starts empty.
+    """
+    connection.execute(_canonical_tables()["gate_reading"])
 
 
 def _rebuild_drifted_tables(path: Path) -> None:

@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -20,6 +21,7 @@ from agent_hub.merge_gate import (
     classify_checks,
     run_gh,
 )
+from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import HubStore
 
 PR = "https://github.com/octo/sandbox/pull/7"
@@ -27,6 +29,49 @@ HEAD = "0123456789abcdef0123456789abcdef01234567"
 PUSHED = "1111111111111111111111111111111111111111"
 MAIN = "2222222222222222222222222222222222222222"
 OLD_MAIN = "3333333333333333333333333333333333333333"
+
+
+async def test_orchestrator_records_github_reading_once_per_call(store: HubStore) -> None:
+    gh = FakeGh(checks=[checks("pending"), checks("pass")])
+    merge_gate, _ = gate(gh)
+    ops = OrchestratorOps(store, merge_gate)
+    first = await ops.check_merge_gate(PR + "/", HEAD.upper())
+    second = await ops.check_merge_gate(PR, HEAD)
+    # Internal polls do not create additional readings, and no call accounting
+    # needs to be enabled to record the final facts.
+    assert gh.count("view") == 3
+    with sqlite3.connect(store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT * FROM gate_reading ORDER BY id").fetchall()
+        assert connection.execute("SELECT count(*) FROM call_log").fetchone()[0] == 0
+    assert len(rows) == 2
+    for row, result in zip(rows, (first, second), strict=True):
+        assert row["ts"]
+        assert row["workflow_id"] == store.get_state()["workflow"]["id"]
+        assert row["error_code"] is None
+        for key, value in result.items():
+            if key == "checks":
+                assert json.loads(row["checks_json"]) == [
+                    {"name": c["name"], "bucket": c["bucket"]} for c in value
+                ]
+            else:
+                assert row[key] == value
+    assert rows[0]["elapsed_s"] == 10.0
+
+
+async def test_github_failure_is_recorded_and_still_raised(store: HubStore) -> None:
+    merge_gate, _ = gate(FakeGh(view=GhResult(1, "", "HTTP 500 secret external text")))
+    with pytest.raises(MergeGateError, match="HTTP 500"):
+        await OrchestratorOps(store, merge_gate).check_merge_gate(PR, HEAD)
+    with sqlite3.connect(store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        [row] = connection.execute("SELECT * FROM gate_reading").fetchall()
+    assert row["error_code"] == -32004
+    assert row["pr_url"] == PR and row["expected_head_sha"] == HEAD
+    assert row["current_head_sha"] is None and row["ci"] is None
+    assert row["elapsed_s"] >= 0
+    assert json.loads(row["checks_json"]) == []
+    assert "secret external text" not in str(dict(row))
 
 
 def view(

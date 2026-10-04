@@ -47,6 +47,7 @@ from agent_hub_common import (
 from pydantic import ValidationError
 
 from .database import database
+from .merge_gate import GateReport
 from .signals import EVENT_KEY, Signals, context_key, task_key
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ DEFAULT_LEASE_MIN = 30.0
 DEFAULT_MAX_TASK_LEASE_MIN = 120.0
 DEFAULT_PROFILE = AgentProfile()
 LOST_REASON = "worker_lost"
+MAX_CHECK_NAME_CHARS = 256
 
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED)
 OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
@@ -586,6 +588,51 @@ class HubStore:
             cursor = connection.execute(
                 "INSERT INTO decision (ts, summary, rationale, key) VALUES (?, ?, ?, ?)",
                 (self._now_iso(), summary, rationale, key),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def record_gate_reading(
+        self,
+        pr_url: str,
+        expected_head_sha: str,
+        *,
+        report: GateReport | None = None,
+        error_code: int | None = None,
+        elapsed_s: float,
+    ) -> int:
+        """Append one gate result, including failures, without external error text.
+
+        A gate can be called before workflow initialization; its workflow ID is
+        then NULL. Check names are external labels, capped here and sanitized by
+        display consumers. Links are not needed to reconstruct the CI reading.
+        """
+        checks = [] if report is None else [
+            {"name": check.name[:MAX_CHECK_NAME_CHARS], "bucket": check.bucket}
+            for check in report.checks
+        ]
+        with database(self.path) as connection:
+            workflow = connection.execute("SELECT id FROM workflow LIMIT 1").fetchone()
+            cursor = connection.execute(
+                "INSERT INTO gate_reading (ts, workflow_id, pr_url, expected_head_sha,"
+                " current_head_sha, pr_state, head_matches, ci, mergeable, merge_state_status,"
+                " base_ref, base_sha, main_sha, base_behind_main, elapsed_s, checks_json,"
+                " error_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    self._now_iso(), workflow["id"] if workflow else None,
+                    report.pr_url if report else pr_url,
+                    report.expected_head_sha if report else expected_head_sha,
+                    report.current_head_sha if report else None,
+                    report.pr_state.value if report else None,
+                    report.head_matches if report else None,
+                    report.ci.value if report else None,
+                    report.mergeable.value if report else None,
+                    report.merge_state_status if report else None,
+                    report.base_ref if report else None,
+                    report.base_sha if report else None,
+                    report.main_sha if report else None,
+                    report.base_behind_main if report else None,
+                    elapsed_s, json.dumps(checks), error_code,
+                ),
             )
             return int(cursor.lastrowid or 0)
 

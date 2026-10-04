@@ -7,12 +7,13 @@ sees and what her tool list costs (tests/fixtures/orchestrator-tools.json).
 """
 
 from dataclasses import asdict
+from time import monotonic
 from typing import Annotated, Any, Literal
 
 from agent_hub_common import TaskState, WorkflowStatus
 from pydantic import Field
 
-from .merge_gate import ForgeGate, MergeGate
+from .merge_gate import ForgeGate, MergeGate, MergeGateError
 from .store import HubStore
 
 Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
@@ -106,7 +107,23 @@ class OrchestratorOps:
         Waits up to 60 s while CI or mergeability is still settling. Call it
         immediately before merging; earlier results are advisory.
         """
-        return asdict(await self.gate.check(pr_url, expected_head_sha))
+        started = monotonic()
+        try:
+            report = await self.gate.check(pr_url, expected_head_sha)
+        except Exception as exc:
+            # Match /rpc's stable codes; stdio records the same failures.
+            code = -32004 if isinstance(exc, MergeGateError) else (
+                -32602 if isinstance(exc, ValueError) else -32603
+            )
+            self.store.record_gate_reading(
+                pr_url, expected_head_sha, error_code=code,
+                elapsed_s=round(monotonic() - started, 3),
+            )
+            raise
+        self.store.record_gate_reading(
+            pr_url, expected_head_sha, report=report, elapsed_s=report.elapsed_s,
+        )
+        return asdict(report)
 
     async def reply(self, task_id: str, text: str, message_id: int) -> dict[str, bool]:
         """Answer the named worker question and return its task to working."""
