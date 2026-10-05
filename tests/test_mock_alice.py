@@ -2,7 +2,7 @@ import asyncio
 import importlib.util
 import json
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -264,18 +264,27 @@ def test_verify_endurance_telemetry_rejects_only_approximate_long_work(
         )
 
 
+# Generous upper bound for one full task; a healthy run takes well under a second.
+FULL_TASK_TIMEOUT_S = 20.0
+
+
 @pytest.mark.parametrize(
-    ("backend_kind", "agent_name", "harness"),
+    ("backend_kind", "agent_name", "harness", "assign_delay_s"),
     [
-        (backend_kind, agent_name, harness)
-        for backend_kind in ("direct", "mcp")
-        for agent_name, harness in (("bob", "claude-code"), ("charlie", "codex"))
+        *(
+            (backend_kind, agent_name, harness, 0.0)
+            for backend_kind in ("direct", "mcp")
+            for agent_name, harness in (("bob", "claude-code"), ("charlie", "codex"))
+        ),
+        # Alice slower than max_wait_s: the worker's first hold times out (#110).
+        ("direct", "bob", "claude-code", 1.5),
     ],
 )
 async def test_mock_alice_drives_worker_through_full_task(
     backend_kind: str,
     agent_name: str,
     harness: str,
+    assign_delay_s: float,
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / f"hub_{agent_name}.db"
@@ -316,13 +325,23 @@ async def test_mock_alice_drives_worker_through_full_task(
         ) as http_client,
     ):
         worker = WorkerHubClient(worker_settings, http_client=http_client)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + FULL_TASK_TIMEOUT_S
+
+        async def until_answered(wait: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+            # A hold ends in a timeout whenever mock Alice is slower than
+            # max_wait_s, as on a loaded Windows runner; the worker protocol
+            # retries it (#110).
+            while (response := await wait()).get("timeout") and loop.time() < deadline:
+                pass
+            return response
 
         async def run_worker() -> None:
             # 1. Check in
             await worker.check_in(["python"])
 
             # 2. Wait for assignment
-            assignment = await worker.await_assignment(timeout_s=2.0)
+            assignment = await until_answered(lambda: worker.await_assignment(timeout_s=2.0))
             assert assignment.get("task_id")
             task_id = assignment["task_id"]
             assert assignment["role"] == "implementer"
@@ -332,7 +351,9 @@ async def test_mock_alice_drives_worker_through_full_task(
             assert prog["ok"] is True
 
             # 4. Ask a question and receive answer
-            q_res = await worker.ask_alice(task_id, "Confirm design?", timeout_s=2.0)
+            q_res = await until_answered(
+                lambda: worker.ask_alice(task_id, "Confirm design?", timeout_s=2.0)
+            )
             assert "Approved" in q_res.get("reply", "")
 
             # 5. Submit result
@@ -345,10 +366,17 @@ async def test_mock_alice_drives_worker_through_full_task(
             assert res["status"] == "completed"
 
             # 6. Await assignment again -> should receive release
-            rel = await worker.await_assignment(timeout_s=2.0)
+            rel = await until_answered(lambda: worker.await_assignment(timeout_s=2.0))
             assert rel == {"release": True}
 
         async with alice_backend(backend_kind, store) as backend:
+            assign_task = backend.assign_task
+
+            async def delayed_assign_task(*args: Any) -> Any:
+                await asyncio.sleep(assign_delay_s)
+                return await assign_task(*args)
+
+            backend.assign_task = delayed_assign_task
             alice_task = asyncio.create_task(
                 mock_alice.drive_one_task_with_backend(
                     backend=backend,
@@ -356,7 +384,7 @@ async def test_mock_alice_drives_worker_through_full_task(
                     role="implementer",
                     title="Test Issue",
                     instructions="Please fix the issue.",
-                    timeout_s=5.0,
+                    timeout_s=FULL_TASK_TIMEOUT_S,
                     expected_harness=harness,
                     policy={"max_task_lease_min": 45},
                 )

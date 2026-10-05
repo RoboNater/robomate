@@ -7,7 +7,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -192,13 +194,32 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
     return "unknown"
 
 
+# On Windows, opening hub.json while write_hub_json's os.replace still holds
+# it, or while another process (antivirus, a concurrent reader) has it open
+# without FILE_SHARE_DELETE, fails with a transient sharing violation that the
+# C runtime reports as EACCES (#103). Retry briefly; a file that stays
+# unreadable still raises DiscoveryError.
+_READ_RETRY_DELAYS_S = (0.01, 0.02, 0.05, 0.1, 0.2, 0.2) if sys.platform == "win32" else ()
+
+
 def read_hub_json(root: Path) -> dict[str, Any] | None:
     path = state_dir(root) / "hub.json"
+    for delay in (*_READ_RETRY_DELAYS_S, None):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except PermissionError as exc:
+            if delay is None:
+                raise DiscoveryError(f"cannot read {path}: {exc}") from exc
+            time.sleep(delay)
+            continue
+        except (OSError, ValueError) as exc:
+            raise DiscoveryError(f"cannot read {path}: {exc}") from exc
+        break
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError) as exc:
+        value = json.loads(text)
+    except ValueError as exc:
         raise DiscoveryError(f"cannot read {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise DiscoveryError(f"invalid hub metadata in {path}")
