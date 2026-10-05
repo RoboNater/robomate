@@ -2,7 +2,10 @@
 
 import json
 import subprocess
+import sys
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 from agent_hub_common.discovery import (
@@ -86,3 +89,77 @@ def test_discovery_uses_sole_registry_hub_or_lists_choices(
     }])
     with pytest.raises(DiscoveryError, match="Registered hubs:.*hub.*other"):
         discover(tmp_path, {})
+
+
+@pytest.mark.parametrize("denials", [2, 3])
+def test_hub_json_read_retries_transient_permission_error(
+    repository: Path, monkeypatch: pytest.MonkeyPatch, denials: int
+) -> None:
+    # Two retries are allowed: two denials recover, a third is reported (#103).
+    write_hub_json(repository, {"port": 8420})
+    monkeypatch.setattr("agent_hub_common.discovery._READ_RETRY_DELAYS_S", (0.0, 0.0))
+    real_read_text = Path.read_text
+    attempts = 0
+
+    def flaky_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= denials:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    if denials < 3:
+        assert read_hub_json(repository) == {"port": 8420}
+    else:
+        with pytest.raises(DiscoveryError, match="Permission denied"):
+            read_hub_json(repository)
+    assert attempts == min(denials + 1, 3)
+
+
+def test_hub_json_invalid_content_is_not_retried(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repository / ".robomate").mkdir()
+    (repository / ".robomate/hub.json").write_text("[1]")
+    with pytest.raises(DiscoveryError, match="invalid hub metadata"):
+        read_hub_json(repository)
+    (repository / ".robomate/hub.json").write_text("{not json")
+    monkeypatch.setattr("agent_hub_common.discovery.time.sleep", pytest.fail)
+    with pytest.raises(DiscoveryError, match="cannot read"):
+        read_hub_json(repository)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows share-mode semantics")
+def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> None:
+    # Reproduces #103: os.replace and scanners hold hub.json with DELETE access;
+    # Python's open() does not pass FILE_SHARE_DELETE, so it fails with EACCES
+    # until that handle closes.
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete, share_all, open_existing = 0x00010000, 0x7, 3
+
+    write_hub_json(repository, {"port": 8420})
+    path = repository / ".robomate/hub.json"
+    handle = kernel32.CreateFileW(str(path), delete, share_all, None, open_existing, 0, None)
+    assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
+    try:
+        with pytest.raises(PermissionError):
+            path.read_text(encoding="utf-8")
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+    timer = threading.Timer(0.05, kernel32.CloseHandle, (handle,))
+    timer.start()
+    try:
+        assert read_hub_json(repository) == {"port": 8420}
+    finally:
+        timer.join()
