@@ -4,6 +4,15 @@
 # without editing it; WORK_FILE selects a statement of work instead of ISSUE.
 set -euo pipefail
 
+robomate_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# A config selects the configurable wrapper, without the example's pinned
+# settings masking its work source or other values.
+for argument in "$@"; do
+    case "${argument}" in
+        --config|--config=*) exec "${robomate_root}/scripts/prep-standard-run.sh" "$@" ;;
+    esac
+done
+
 TARGET_REPO_ISSUE="${TARGET_REPO_ISSUE-105}"
 WORK_FILE="${WORK_FILE-}"
 RUN_DIR="${RUN_DIR-27-issue-105}"
@@ -13,7 +22,6 @@ FORGE="${FORGE-github}"
 FORGE_USER_ACCOUNT="${FORGE_USER_ACCOUNT-RoboNater}"
 ROADMAP_ISSUE="${ROADMAP_ISSUE-2}"
 
-robomate_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 work_args=(--issue "${TARGET_REPO_ISSUE}")
 if [[ -n "${WORK_FILE}" ]]; then
     work_args=(--work-file "${WORK_FILE}")

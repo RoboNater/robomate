@@ -243,6 +243,14 @@ def test_bash_wrappers_preserve_arguments_and_stop_on_sync_failure(tmp_path: Pat
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             assert "--issue" not in calls[1]
             assert calls[1][-2:] == ["--work-file", "cli work.md"]
+            for config_args in (["--config", "settings with spaces.toml"],
+                                ["--config=settings with spaces.toml"]):
+                log.write_text("")
+                subprocess.run(["bash", str(ROOT / "scripts" / script), *config_args],
+                               check=True, cwd=tmp_path,
+                               env={**env, "WORK_FILE": "ignored environment.md"})
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+                assert calls[1][calls[1].index("python") + 2:] == config_args
         log.write_text("")
         result = subprocess.run(["bash", str(ROOT / "scripts" / script)],
                                 cwd=tmp_path, env={**env, "UV_TEST_EXIT": "7"})

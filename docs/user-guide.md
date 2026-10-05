@@ -199,6 +199,10 @@ scripts/prep-standard-run-area.sh --work-file ./statement.md --run-dir 03-work
 settings are `RUN_PARENT_DIR`, `TARGET_REPO_URL`, `FORGE`, `FORGE_USER_ACCOUNT`,
 and `ROADMAP_ISSUE`; extra CLI arguments pass through to the helper. An explicit
 CLI work source replaces the example's environment/default work selection.
+For reusable TOML settings, prefer `prep-standard-run.sh`. Passing `--config`
+to the older example delegates to that wrapper without the example's pinned
+settings or environment defaults, so its default issue cannot replace a
+configured work file.
 
 ## Remote workers and network addresses
 
