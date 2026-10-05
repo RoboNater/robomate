@@ -214,7 +214,7 @@ def read_hub_json(root: Path) -> dict[str, Any] | None:
                 raise DiscoveryError(f"cannot read {path}: {exc}") from exc
             time.sleep(delay)
             continue
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             raise DiscoveryError(f"cannot read {path}: {exc}") from exc
         break
     try:
