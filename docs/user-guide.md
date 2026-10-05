@@ -105,6 +105,99 @@ For a Codex Alice, the generated `start-alice.sh` uses `codex exec -C . --skip-g
 
 For work spanning several issues in **one PR**, use `--work-file /absolute/path/to/statement.md` instead of `--issue`. Name every issue with `owner/repo#number` and state the acceptance criteria. Use one run per PR. `--roadmap` is optional and asks Bob to propose any roadmap updates in the PR, then make approved updates after merge. `--alice-harness`, `--bob-harness`, and `--charlie-harness` select Claude Code or Codex; model and effort flags pass through to the launchers. `--no-auto-start` launches interactive sessions and leaves you to give each agent its rendered prompt.
 
+### Standard run helper (until M2)
+
+`scripts/prep-standard-run-area.py` combines creating the run directory, cloning
+the target repository into its `hub/` directory, and calling `prepare-run.py`.
+It prints a hub start command: run that in another terminal, keep the hub running,
+then press Enter in the helper's terminal. Launch the generated agent scripts as
+described above. When finished, run `uv run --locked --project /path/to/robomate
+robomate down` from the hub checkout. The helper does not start or stop the hub.
+Use a new run directory for each new job; an existing hub clone is reused only
+if its origin matches `--repository`. `prepare-run.py` still checks hub liveness
+and rejects incompatible existing workflows.
+
+From the robomate checkout, the Bash wrapper syncs the locked workspace and runs
+the Python helper; paths and arguments containing spaces are preserved:
+
+```sh
+scripts/prep-standard-run.sh --repository git@github.com:your-org/your-repo.git \
+  --run-parent-dir ~/working --run-dir 01-issue-42 --issue 42 --account your-user \
+  --roadmap 2 --bob-harness codex --bob-model your-model --bob-effort medium
+
+scripts/prep-standard-run.sh --repository git@github.com:your-org/your-repo.git \
+  --run-dir /absolute/path/to/02-work --work-file ./statement.md --account your-user
+```
+
+In PowerShell use the corresponding wrapper (each wrapper also works when called
+by absolute path from another directory):
+
+```powershell
+.\scripts\prep-standard-run.ps1 --repository git@github.com:your-org/your-repo.git `
+  --run-dir C:/runs/01-issue-42 --issue 42 --account your-user
+```
+
+For reusable settings, generate a flat **TOML** file, edit it, then prepare:
+
+```sh
+scripts/prep-standard-run.sh --generate-default-config ./standard-run.toml
+# Edit repository, run_dir, account, and either issue or work_file.
+scripts/prep-standard-run.sh --config ./standard-run.toml
+# Save the merged settings without cloning or contacting a hub:
+scripts/prep-standard-run.sh --config ./standard-run.toml --issue 43 \
+  --run-dir 03-issue-43 --generate-config ./next-run.toml
+```
+
+Both generation modes are alternatives to preparation and refuse to overwrite
+an existing file. `--generate-default-config` writes defaults only, ignoring any
+other settings; `--generate-config` writes defaults plus the config and CLI
+overrides. Neither starts a run. The default template has empty required values
+and `issue = 0` (unset), so fill it before preparing. Only TOML is supported;
+Python's standard library reads it without an extra dependency.
+
+Config keys match CLI names with underscores, for example:
+
+```toml
+repository = "git@github.com:your-org/your-repo.git"
+run_parent_dir = "~/working"
+run_dir = "01-issue-42"
+issue = 42
+account = "your-user"
+roadmap = "2"
+forge = "github"
+bob_harness = "codex"
+bob_model = "your-model"
+bob_effort = "medium"
+auto_start = true
+```
+
+Run names are relative to `run_parent_dir`; absolute `run_dir` paths override it.
+Relative `run_parent_dir` and `work_file` values in TOML resolve beside the config;
+CLI paths resolve from your current directory. Saved merged configs use absolute
+paths. Unknown keys and wrong value types are errors. CLI settings override the
+file, and a CLI `--work-file` replaces a configured issue (or vice versa).
+Choose exactly one work source. `--alice-harness`, `--bob-harness`, and
+`--charlie-harness`, with each agent's `--*-model` and `--*-effort`, customize
+launchers; the defaults are Claude, Claude, Codex with no model/effort pins.
+`--no-auto-start` overrides `auto_start = true`. `--forge github|gitlab` controls
+the printed hub command; the running hub remains the authority for forge
+selection. `--yes` skips the prompt only when you have already started that hub.
+Use `prepare-run.py` directly for advanced network and remote-worker options.
+
+The older `scripts/prep-standard-run-area.sh` is an editable example with pinned
+agent choices and robomate issue 105 defaults. It calls the same helper through
+the Bash wrapper. Override its variables through the environment, for example:
+
+```sh
+TARGET_REPO_ISSUE=42 RUN_DIR=01-issue-42 scripts/prep-standard-run-area.sh
+WORK_FILE="/absolute/path/to/statement.md" RUN_DIR=02-work \
+  scripts/prep-standard-run-area.sh
+```
+
+`WORK_FILE` replaces `TARGET_REPO_ISSUE` when nonempty. Other editable/environment
+settings are `RUN_PARENT_DIR`, `TARGET_REPO_URL`, `FORGE`, `FORGE_USER_ACCOUNT`,
+and `ROADMAP_ISSUE`; extra CLI arguments pass through to the helper.
+
 ## Remote workers and network addresses
 
 Start the hub with a dialable address and an explicit public URL:
