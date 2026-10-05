@@ -130,11 +130,12 @@ def test_hub_json_invalid_content_is_not_retried(
         read_hub_json(repository)
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows share-mode semantics")
 def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> None:
     # Reproduces #103: os.replace and scanners hold hub.json with DELETE access;
     # Python's open() does not pass FILE_SHARE_DELETE, so it fails with EACCES
     # until that handle closes.
+    if sys.platform != "win32":  # in the body, so mypy skips the rest off Windows
+        pytest.skip("Windows share-mode semantics")
     import ctypes
     from ctypes import wintypes
 
