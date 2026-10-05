@@ -171,9 +171,46 @@ def test_windows_hub_command_quotes_paths(monkeypatch: pytest.MonkeyPatch) -> No
     from types import SimpleNamespace
 
     monkeypatch.setattr(HELPER, "os", SimpleNamespace(name="nt"))
-    command = HELPER.hub_start_command(Path("C:/run's directory/hub"), "github")
-    assert "Set-Location -LiteralPath 'C:/run''s directory/hub'" in command
+    hub = Path("C:/run's directory/hub")
+    command = HELPER.hub_start_command(hub, "github")
+    quoted = str(hub).replace("'", "''")
+    assert f"Set-Location -LiteralPath '{quoted}'" in command
     assert "--forge github" in command
+
+
+@pytest.mark.skipif(
+    shutil.which("pwsh") is None and shutil.which("powershell") is None,
+    reason="requires PowerShell",
+)
+def test_powershell_wrapper_preserves_arguments_and_sync_failure(tmp_path: Path) -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    assert powershell is not None
+    log = tmp_path / "uv.jsonl"
+    fake = tmp_path / "fake_uv.py"
+    fake.write_text(
+        "import json, os, sys\n"
+        "with open(os.environ['UV_TEST_LOG'], 'a') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "sys.exit(int(os.environ.get('UV_TEST_EXIT', '0')))\n"
+    )
+    if os.name == "nt":
+        (tmp_path / "uv.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\n')
+    else:
+        executable = tmp_path / "uv"
+        executable.write_text(f"#!{sys.executable}\n" + fake.read_text())
+        executable.chmod(0o755)
+    env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+           "UV_TEST_LOG": str(log)}
+    command = [powershell, "-NoProfile", "-File", str(ROOT / "scripts/prep-standard-run.ps1"),
+               "--work-file", "work with spaces.md", "--account", "user with spaces"]
+    subprocess.run(command, check=True, cwd=tmp_path, env=env)
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls[0][:3] == ["sync", "--locked", "--all-packages"]
+    assert calls[1][-4:] == ["--work-file", "work with spaces.md", "--account", "user with spaces"]
+    log.write_text("")
+    result = subprocess.run(command, cwd=tmp_path, env={**env, "UV_TEST_EXIT": "7"})
+    assert result.returncode == 7
+    assert len(log.read_text().splitlines()) == 1
 
 
 @pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="requires Bash")
@@ -200,6 +237,12 @@ def test_bash_wrappers_preserve_arguments_and_stop_on_sync_failure(tmp_path: Pat
         if script == "prep-standard-run-area.sh":
             assert "--issue" not in calls[1]
             assert calls[1][calls[1].index("--work-file") + 1] == "work with spaces.md"
+            log.write_text("")
+            subprocess.run(["bash", str(ROOT / "scripts" / script),
+                            "--work-file", "cli work.md"], check=True, cwd=tmp_path, env=env)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            assert "--issue" not in calls[1]
+            assert calls[1][-2:] == ["--work-file", "cli work.md"]
         log.write_text("")
         result = subprocess.run(["bash", str(ROOT / "scripts" / script)],
                                 cwd=tmp_path, env={**env, "UV_TEST_EXIT": "7"})

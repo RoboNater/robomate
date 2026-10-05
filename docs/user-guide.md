@@ -192,11 +192,13 @@ the Bash wrapper. Override its variables through the environment, for example:
 TARGET_REPO_ISSUE=42 RUN_DIR=01-issue-42 scripts/prep-standard-run-area.sh
 WORK_FILE="/absolute/path/to/statement.md" RUN_DIR=02-work \
   scripts/prep-standard-run-area.sh
+scripts/prep-standard-run-area.sh --work-file ./statement.md --run-dir 03-work
 ```
 
 `WORK_FILE` replaces `TARGET_REPO_ISSUE` when nonempty. Other editable/environment
 settings are `RUN_PARENT_DIR`, `TARGET_REPO_URL`, `FORGE`, `FORGE_USER_ACCOUNT`,
-and `ROADMAP_ISSUE`; extra CLI arguments pass through to the helper.
+and `ROADMAP_ISSUE`; extra CLI arguments pass through to the helper. An explicit
+CLI work source replaces the example's environment/default work selection.
 
 ## Remote workers and network addresses
 

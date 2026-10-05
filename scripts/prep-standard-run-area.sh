@@ -18,6 +18,11 @@ work_args=(--issue "${TARGET_REPO_ISSUE}")
 if [[ -n "${WORK_FILE}" ]]; then
     work_args=(--work-file "${WORK_FILE}")
 fi
+for argument in "$@"; do
+    case "${argument}" in
+        --issue|--issue=*|--work-file|--work-file=*) work_args=() ;;
+    esac
+done
 
 exec "${robomate_root}/scripts/prep-standard-run.sh" \
     --repository "${TARGET_REPO_URL}" \
