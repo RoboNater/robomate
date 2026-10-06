@@ -779,6 +779,8 @@ def test_default_rendering_matches_the_golden_files(
     manifest = PREPARE_RUN.prepare(str(source), run_dir, issue=42,
                                    account="testuser", hub_repo=target)
     masks = {
+        # The interpreter running the tests, often under $ROOT: mask it first.
+        sys.executable: "$PYTHON",
         str(run_dir): "$RUN_DIR", str(source): "$ORIGIN",
         str(target): "$HUB_REPO", str(ROOT): "$ROOT",
         manifest["workspaces"]["bob"]["workspace_id"]: "$BOB_ID",

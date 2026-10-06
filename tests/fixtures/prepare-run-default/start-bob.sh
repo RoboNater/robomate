@@ -3,4 +3,4 @@
 set -e
 cd $RUN_DIR/bob
 export TMPDIR=$RUN_DIR/tmp/bob
-claude --permission-mode auto --strict-mcp-config --mcp-config $RUN_DIR/configs/bob.mcp.json --add-dir $RUN_DIR -p 'Read $RUN_DIR/bob.prompt.md and follow the instructions in it'
+$PYTHON $ROOT/scripts/claude-worker.py --agent bob --telemetry $RUN_DIR/bob-telemetry.jsonl --sessions $RUN_DIR/bob-sessions.jsonl --prompt 'Read $RUN_DIR/bob.prompt.md and follow the instructions in it' claude --permission-mode auto --strict-mcp-config --mcp-config $RUN_DIR/configs/bob.mcp.json --add-dir $RUN_DIR

@@ -24,7 +24,8 @@
         "effort": "",
         "harness": "claude-code",
         "model": "",
-        "script": "$RUN_DIR/start-bob.sh"
+        "script": "$RUN_DIR/start-bob.sh",
+        "sessions": "$RUN_DIR/bob-sessions.jsonl"
       },
       "charlie": {
         "effort": "",
