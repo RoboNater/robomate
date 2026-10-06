@@ -115,6 +115,43 @@ async def test_telemetry_records_the_hub_url_at_startup_and_on_each_heartbeat(
     assert (bob.checkin_remote_addr, bob.last_remote_addr) == ("127.0.0.1", "127.0.0.1")
 
 
+async def test_a_restarted_worker_checks_in_at_once_and_finishes_its_task(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+    tmp_path: Path,
+) -> None:
+    """#115: a resumed headless harness starts a new worker-mcp mid-task."""
+
+    telemetry_path = tmp_path / "bob.jsonl"
+    configured = replace(worker_settings, telemetry_log=telemetry_path)
+    async with WorkerHubClient(configured, http_client=client) as first:
+        await first.check_in()
+        task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
+        assert (await first.await_assignment(timeout_s=0.2))["task_id"] == task.id
+
+    events = [
+        json.loads(line)["event"]
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-2:] == ["detach", "session_stopped"]
+
+    async with WorkerHubClient(configured, http_client=client) as second:
+        assert (await second.check_in())["status"] == "registered"
+        res = await second.submit_result(
+            task.id,
+            ImplementerResult(
+                outcome=ImplementerOutcome.COMPLETED,
+                summary="Finished after a restart",
+                pr_url="https://github.com/org/repo/pull/1",
+                head_sha="0123456789abcdef0123456789abcdef01234567",
+            ),
+        )
+    assert res["status"] == "completed"
+    stored = hub_store.get_task(task.id)
+    assert stored is not None and stored.state is TaskState.COMPLETED
+
+
 async def test_check_in_reports_the_launcher_profile_to_get_state(
     client: httpx.AsyncClient, worker_settings: WorkerSettings, hub_store: HubStore
 ) -> None:

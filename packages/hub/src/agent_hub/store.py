@@ -946,6 +946,29 @@ class HubStore:
         self.signals.notify(context_key(agent.context_id))
         return released
 
+    def detach(self, name: str, worker_instance_id: str) -> bool:
+        """Free a cleanly stopped instance's slot so its successor can check in at once.
+
+        Only the live instance itself can detach, so this never displaces a
+        running worker. Status, current task and last heartbeat are left as
+        they are: a successor that checks in keeps the open task, and the
+        sweeper still declares the agent lost, failing that task, if none
+        arrives within the lost window (#115).
+        """
+
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            agent = self._require_agent(connection, name)
+            if agent.worker_instance_id != worker_instance_id or agent.status not in (
+                AgentStatus.IDLE,
+                AgentStatus.BUSY,
+            ):
+                return False
+            connection.execute(
+                "UPDATE agent SET worker_instance_id = '' WHERE name = ?", (name,)
+            )
+            return True
+
     def _require_agent(self, connection: Connection, name: str) -> AgentRecord:
         row = connection.execute("SELECT * FROM agent WHERE name = ?", (name,)).fetchone()
         if row is None:
