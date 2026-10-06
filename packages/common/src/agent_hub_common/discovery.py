@@ -227,6 +227,14 @@ def read_hub_json(root: Path) -> dict[str, Any] | None:
     return value
 
 
+# On Windows, os.replace cannot replace a destination that another process
+# holds open without FILE_SHARE_DELETE, and Python's open() never passes that
+# flag, so a concurrent reader (robomate status/down/discover) can cause a
+# transient PermissionError (winerror 5) (#114). Retry briefly, mirroring
+# _READ_RETRY_DELAYS_S.
+_WRITE_RETRY_DELAYS_S = (0.01, 0.02, 0.05, 0.1, 0.2, 0.2) if sys.platform == "win32" else ()
+
+
 def write_hub_json(root: Path, value: Mapping[str, Any]) -> None:
     directory = state_dir(root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -237,7 +245,14 @@ def write_hub_json(root: Path, value: Mapping[str, Any]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, directory / "hub.json")
+        for delay in (*_WRITE_RETRY_DELAYS_S, None):
+            try:
+                os.replace(temporary, directory / "hub.json")
+                break
+            except PermissionError:
+                if delay is None:
+                    raise
+                time.sleep(delay)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
