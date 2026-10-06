@@ -1,15 +1,18 @@
 import asyncio
 from dataclasses import replace
+from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
 from agent_hub import create_app
+from agent_hub.database import database
 from agent_hub.gitlab_gate import GitLabGate, GitLabProject, UnboundGitLabGate
 from agent_hub.merge_gate import MergeGate
 from agent_hub.orchestrator import OrchestratorOps
+from agent_hub.rpc_errors import OPERATOR_REQUIRED
 from agent_hub.store import HubStore
-from agent_hub_common import HubSettings
+from agent_hub_common import HubSettings, load_or_create_token
 from conftest import BASE_URL
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -42,9 +45,15 @@ def test_startup_provisions_a_token_file_when_none_is_injected(
     assert provisioned.token_file.exists()
 
 
-def test_operator_rpc_requires_token_and_exposes_identity(settings: HubSettings) -> None:
+def test_operator_rpc_requires_token_and_exposes_identity(
+    settings: HubSettings, tmp_path: Path
+) -> None:
     stopped = []
     info = {"hub_id": "test-hub", "repo_root": "/repo", "robomate_version": "0.1.0"}
+    operator_file = tmp_path / "registry" / "operator-token"
+    load_or_create_token(None, operator_file)
+    operator = {"X-Robomate-Operator": operator_file.read_text().strip()}
+    settings = replace(settings, operator_token_file=operator_file)
     app = create_app(settings, hub_info=info, shutdown=lambda: stopped.append(True))
     with TestClient(app) as client:
         assert client.get("/healthz").json() == {"status": "ok", "hub_id": "test-hub"}
@@ -57,10 +66,38 @@ def test_operator_rpc_requires_token_and_exposes_identity(settings: HubSettings)
             body = client.post("/rpc", json={**request, "id": request_id}, headers=headers).json()
             assert body == {"jsonrpc": "2.0", "id": request_id, "result": info}
         request["method"] = "hub.shutdown"
-        assert client.post("/rpc", json=request, headers=headers).json()["result"] == {
-            "stopping": True
-        }
+        # The bearer token alone, which every agent holds, is not enough (#128).
+        for wrong in ({}, {"X-Robomate-Operator": "guess"}):
+            body = client.post("/rpc", json=request, headers={**headers, **wrong}).json()
+            assert body["error"]["code"] == OPERATOR_REQUIRED
+        assert stopped == []
+        response = client.post("/rpc", json=request, headers={**headers, **operator})
+        assert response.json()["result"] == {"stopping": True}
     assert stopped == [True]
+    with database(settings.database_path) as connection:
+        rows = connection.execute(
+            "SELECT actor, session, method, outcome FROM rpc_audit ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (None, None, "hub.shutdown", f"error {OPERATOR_REQUIRED}"),
+        (None, None, "hub.shutdown", f"error {OPERATOR_REQUIRED}"),
+        ("operator", None, "hub.shutdown", "ok"),
+    ]
+
+
+def test_without_an_operator_token_file_operator_methods_are_refused(
+    settings: HubSettings, tmp_path: Path
+) -> None:
+    stopped = []
+    missing = replace(settings, operator_token_file=tmp_path / "absent" / "operator-token")
+    app = create_app(missing, hub_info={"hub_id": "h"}, shutdown=lambda: stopped.append(True))
+    request = {"jsonrpc": "2.0", "id": 1, "method": "hub.shutdown"}
+    headers = {"Authorization": f"Bearer {settings.token}", "X-Robomate-Operator": ""}
+    with TestClient(app) as client:
+        body = client.post("/rpc", json=request, headers=headers).json()
+    assert body["error"]["code"] == OPERATOR_REQUIRED
+    assert stopped == []
+    assert not missing.operator_token_file.exists()  # type: ignore[union-attr]
 
 
 async def test_the_sweeper_runs_only_for_the_lifetime_of_the_app(app: FastAPI) -> None:

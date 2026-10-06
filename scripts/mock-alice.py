@@ -466,6 +466,8 @@ async def drive_endurance(
     store.set_workflow_status(
         WorkflowStatus.DONE,
         f"Endurance scenario completed {cycles} cycles in {elapsed_s:.1f}s",
+        actor="mock-alice",
+        session=None,
     )
     row_counts = _verify_endurance_rows(store, expected_agent, task_ids, prior_task_ids)
     logger.info("Endurance scenario complete; database duplicate checks passed: %s", row_counts)
@@ -552,11 +554,17 @@ class DirectStoreBackend:
         return released
 
     async def set_workflow_status(self, status: str, summary: str) -> dict[str, Any]:
-        self.store.set_workflow_status(WorkflowStatus(status), summary)
+        self.store.set_workflow_status(
+            WorkflowStatus(status), summary, actor="mock-alice", session=None
+        )
         return {"ok": True}
 
     async def log_decision(self, summary: str, rationale: str, key: str | None) -> dict[str, Any]:
-        return {"id": self.store.log_decision(summary, rationale, key=key)}
+        return {
+            "id": self.store.log_decision(
+                summary, rationale, key=key, actor="mock-alice", session=None
+            )
+        }
 
 
 class McpBackend:

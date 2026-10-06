@@ -340,8 +340,8 @@ def test_events_survive_hub_restart(timed_store: HubStore, clock: FakeClock) -> 
 def test_state_guards_idempotency(store: HubStore) -> None:
 
     # 1. log_decision deduplication on key
-    d1 = store.log_decision("Summary A", "Rationale A", key="key-1")
-    d2 = store.log_decision("Summary A", "Rationale A", key="key-1")
+    d1 = store.log_decision("Summary A", "Rationale A", key="key-1", actor="alice", session=None)
+    d2 = store.log_decision("Summary A", "Rationale A", key="key-1", actor="alice", session=None)
     assert d1 == d2
     with database(store.path) as conn:
         count = conn.execute("SELECT COUNT(*) AS n FROM decision WHERE key = 'key-1'").fetchone()[
@@ -350,8 +350,10 @@ def test_state_guards_idempotency(store: HubStore) -> None:
         assert count == 1
 
     # 2. set_workflow_status duplicate audit entries
-    store.set_workflow_status(WorkflowStatus.PAUSED, "Paused work")
-    store.set_workflow_status(WorkflowStatus.PAUSED, "Paused work again")
+    store.set_workflow_status(WorkflowStatus.PAUSED, "Paused work", actor="alice", session=None)
+    store.set_workflow_status(
+        WorkflowStatus.PAUSED, "Paused work again", actor="alice", session=None
+    )
     with database(store.path) as conn:
         audit_rows = conn.execute(
             "SELECT * FROM decision WHERE rationale LIKE '%Workflow status set to paused%'"
@@ -605,7 +607,9 @@ def _alice_acts(store: HubStore, event: EventRecord) -> None:
         store.reply(payload["task_id"], "Approved.", message_id=payload["message_id"])
     elif event.kind in (EventKind.TASK_COMPLETED, EventKind.TASK_FAILED):
         store.release_agent(payload["agent"])
-        store.set_workflow_status(WorkflowStatus.DONE, f"Task {payload['task_id']} finished")
+        store.set_workflow_status(
+            WorkflowStatus.DONE, f"Task {payload['task_id']} finished", actor="alice", session=None
+        )
     elif event.kind is EventKind.TASK_PROGRESS:
         pass  # Alice reads progress; she writes nothing on it.
     else:
@@ -615,6 +619,8 @@ def _alice_acts(store: HubStore, event: EventRecord) -> None:
             f"Handled {event.kind.value}",
             "Recovery path (§5)",
             key=f"event:{event.id}:{event.kind.value}",
+            actor="alice",
+            session=None,
         )
 
 

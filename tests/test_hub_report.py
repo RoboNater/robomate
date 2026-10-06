@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
-from agent_hub.database import initialize_database
+from agent_hub.database import SCHEMA_VERSION, initialize_database
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
@@ -318,7 +318,7 @@ def test_v13_reports_stored_gate_facts_and_errors(tmp_path: Path, url: str) -> N
     store.record_gate_reading(url, HEAD, error_code=-32004, elapsed_s=2)
     built = REPORT.build_report(state, now=T0 + timedelta(hours=1))
     readings = built["workflow"]["merge_gate_readings"]
-    assert built["report"]["schema_version"] == 13
+    assert built["report"]["schema_version"] == SCHEMA_VERSION
     assert len(readings) == 2  # Never duplicate Alice's old rationale reading.
     reading, failure = readings
     assert reading["ts"] == at(2010) and reading["pr_url"] == url
@@ -493,7 +493,7 @@ def test_tasks_ended_by_alice_report_their_terminal_outcome(tmp_path: Path) -> N
 async def test_a_live_hub_database_is_read_without_being_modified(
     tmp_path: Path, hub_store: HubStore, client: httpx.AsyncClient, capsys: Any
 ) -> None:
-    hub_store.log_decision("Plan", MARKER, key="plan")
+    hub_store.log_decision("Plan", MARKER, key="plan", actor="alice", session=None)
     hub_store.check_in("bob")
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", MARKER)
     telemetry = tmp_path / "bob-telemetry.jsonl"

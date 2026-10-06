@@ -13,6 +13,8 @@ NOT_FOUND = -32001
 CONFLICT = -32002
 PAYLOAD_TOO_LARGE = -32003
 MERGE_GATE_UNAVAILABLE = -32004
+# An operator-only method called without the operator credential (#128).
+OPERATOR_REQUIRED = -32005
 
 
 def error_code(exc: Exception) -> int:

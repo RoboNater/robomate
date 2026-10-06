@@ -19,6 +19,10 @@ from fastapi import FastAPI
 
 TOKEN = "test-token"
 BASE_URL = "http://hub.test"
+# The orchestrator session the tests' client stands in as: every orchestrator
+# operation on /rpc must name its caller (#128).
+SESSION = "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a"
+CALLER_HEADERS = {"X-Robomate-Actor": "alice", "X-Robomate-Session": SESSION}
 
 # Waits are cut to fractions of a second: the tests exercise the hold, not the
 # production deadline.
@@ -97,7 +101,7 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url=BASE_URL,
-            headers={"Authorization": f"Bearer {TOKEN}"},
+            headers={"Authorization": f"Bearer {TOKEN}", **CALLER_HEADERS},
         ) as connected,
     ):
         yield connected

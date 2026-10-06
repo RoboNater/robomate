@@ -1,7 +1,9 @@
 import os
 import sys
+import threading
 from pathlib import Path
 
+import agent_hub_common.token as token_module
 import pytest
 from agent_hub_common import TokenError, load_or_create_token, token_matches
 
@@ -56,3 +58,24 @@ def test_failed_token_write_removes_partial_file(
     with pytest.raises(TokenError, match="cannot write"):
         load_or_create_token(None, path)
     assert not path.exists()
+
+
+def test_a_token_being_written_by_another_process_is_waited_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two `robomate up`s race to create the shared operator token (#128)."""
+
+    path = tmp_path / "operator-token"
+    path.touch(mode=0o600)
+    writer = threading.Timer(0.1, lambda: path.write_text("written-late\n"))
+    writer.start()
+    try:
+        assert load_or_create_token(None, path) == "written-late"
+    finally:
+        writer.join()
+
+    abandoned = tmp_path / "abandoned"
+    abandoned.touch(mode=0o600)
+    monkeypatch.setattr(token_module, "CREATION_GRACE_S", 0.05)
+    with pytest.raises(TokenError, match="empty"):
+        load_or_create_token(None, abandoned)

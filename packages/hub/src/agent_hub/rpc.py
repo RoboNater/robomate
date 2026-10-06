@@ -11,12 +11,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from agent_hub_common import token_matches
 from fastapi import BackgroundTasks
 from pydantic import validate_call
 from pydantic_core import to_jsonable_python
 
 from .accounting import CallAccounting, CallRecord, hub_id
-from .orchestrator import OPERATIONS, OrchestratorOps
+from .orchestrator import CALLER, OPERATIONS, Caller, OrchestratorOps
 from .rpc_errors import CONFLICT as CONFLICT
 from .rpc_errors import INTERNAL_ERROR as INTERNAL_ERROR
 from .rpc_errors import INVALID_PARAMS as INVALID_PARAMS
@@ -24,16 +25,29 @@ from .rpc_errors import INVALID_REQUEST as INVALID_REQUEST
 from .rpc_errors import MERGE_GATE_UNAVAILABLE as MERGE_GATE_UNAVAILABLE
 from .rpc_errors import METHOD_NOT_FOUND as METHOD_NOT_FOUND
 from .rpc_errors import NOT_FOUND as NOT_FOUND
+from .rpc_errors import OPERATOR_REQUIRED as OPERATOR_REQUIRED
 from .rpc_errors import PAYLOAD_TOO_LARGE as PAYLOAD_TOO_LARGE
 from .rpc_errors import error_code
 
 logger = logging.getLogger(__name__)
 
 # Self-declared by the orchestrator bridge (§12 threat model): they identify a
-# session for the one-orchestrator rule and accounting, never authorize.
+# session for the one-orchestrator rule, accounting and attribution, never
+# authorize. Every orchestrator operation must carry them (#128).
 ACTOR_HEADER = "X-Robomate-Actor"
 SESSION_HEADER = "X-Robomate-Session"
 MAX_ACTOR_LENGTH = 128
+# The operator credential, which agents do not hold (#128). It authorizes the
+# operator-only methods on top of the bearer token every agent has.
+OPERATOR_HEADER = "X-Robomate-Operator"
+
+# Read-only or high-frequency methods, whose rows would bury the actions the
+# audit exists to show (#128). Every other /rpc call leaves one rpc_audit row.
+UNAUDITED_METHODS = frozenset(
+    {"get_state", "wait_for_event", "hub.info", "hub.status", "hub.heartbeat", "hub.record_calls"}
+)
+# The audit row a takeover leaves, under the session that took over.
+SUPERSEDE_METHOD = "session.supersede"
 
 
 class RpcError(Exception):
@@ -73,6 +87,30 @@ def parse_caller(headers: Mapping[str, str]) -> tuple[str, str] | None:
     return actor, str(parsed)
 
 
+def require_operator(headers: Mapping[str, str], expected: str | None) -> None:
+    """Refuse an operator-only call that does not carry the operator credential.
+
+    The bearer token says only that the caller is on this hub, and every agent
+    holds it; the operator token is what says the operator sent the call. A
+    hub that loaded no operator token refuses every operator-only method.
+    """
+
+    if expected is None:
+        raise RpcError(OPERATOR_REQUIRED, "this hub has no operator credential loaded")
+    candidate = headers.get(OPERATOR_HEADER)
+    if candidate is None or not token_matches(candidate.strip(), expected):
+        raise RpcError(OPERATOR_REQUIRED, f"{OPERATOR_HEADER} with the operator token is required")
+
+
+@dataclass(slots=True)
+class _Audit:
+    """What one call's rpc_audit row records, filled in as dispatch learns it."""
+
+    method: str | None = None
+    actor: str | None = None
+    session: str | None = None
+
+
 class RpcDispatcher:
     """Validate and route one JSON-RPC request body."""
 
@@ -88,6 +126,8 @@ class RpcDispatcher:
         self.hub_info = hub_info
         self.shutdown = shutdown
         self.accounting = accounting
+        # Set by the app's lifespan from the operator token file (#128).
+        self.operator_token: str | None = None
         self.orchestrator: OrchestratorSession | None = None
         self._superseded_sessions: set[str] = set()
         self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
@@ -101,20 +141,42 @@ class RpcDispatcher:
         self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks
     ) -> dict[str, Any]:
         request_id = payload.get("id") if isinstance(payload, dict) else None
+        audit = _Audit()
         try:
-            result = await self._dispatch(payload, headers, background)
+            result = await self._dispatch(payload, headers, background, audit)
         except RpcError as exc:
+            self._audit(audit, f"error {exc.code}")
             return _error(request_id, exc.code, exc.message)
         except Exception as exc:
             code = error_code(exc)
             if code == INTERNAL_ERROR:
                 logger.exception("Unhandled error serving /rpc")
+            self._audit(audit, f"error {code}")
             return _error(request_id, code, str(exc))
+        self._audit(audit, "ok")
         return {"jsonrpc": "2.0", "id": request_id, "result": to_jsonable_python(result)}
 
+    def _audit(self, audit: _Audit, outcome: str) -> None:
+        method = audit.method if audit.method is not None else "invalid"
+        if method in UNAUDITED_METHODS:
+            return
+        self._record_audit(audit.actor, audit.session, method, outcome)
+
+    def _record_audit(
+        self, actor: str | None, session: str | None, method: str, outcome: str
+    ) -> None:
+        # The call itself has already happened, so a failed audit write is
+        # logged loudly rather than turned into an error for an applied call.
+        try:
+            self.ops.store.record_rpc_audit(actor, session, method, outcome)
+        except Exception:
+            logger.exception("Could not record the rpc_audit row for %s", method)
+
     async def _dispatch(
-        self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks
+        self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks, audit: _Audit
     ) -> Any:
+        if isinstance(payload, dict) and isinstance(payload.get("method"), str):
+            audit.method = payload["method"]
         if (
             not isinstance(payload, dict)
             or payload.get("jsonrpc") != "2.0"
@@ -124,6 +186,8 @@ class RpcDispatcher:
         ):
             raise RpcError(INVALID_REQUEST, "Invalid Request")
         caller = parse_caller(headers)
+        if caller is not None:
+            audit.actor, audit.session = caller
         method = payload["method"]
         if method == "hub.info" and self.hub_info is not None:
             return dict(self.hub_info)
@@ -149,6 +213,8 @@ class RpcDispatcher:
                 **summary,
             }
         if method == "hub.shutdown" and self.shutdown is not None:
+            require_operator(headers, self.operator_token)
+            audit.actor, audit.session = "operator", None
             background.add_task(self.shutdown)
             return {"stopping": True}
         if method == "hub.heartbeat":
@@ -192,14 +258,18 @@ class RpcDispatcher:
         unexpected = sorted(params.keys() - self._params[method])
         if unexpected:
             raise RpcError(INVALID_PARAMS, f"unexpected params for {method}: {unexpected}")
-        if caller is not None:
-            self._accept_session(*caller)
-        result = await operation(**params)
-        if (
-            caller is not None
-            and self.orchestrator is not None
-            and caller[1] != self.orchestrator.session
-        ):
+        if caller is None:
+            raise RpcError(
+                INVALID_REQUEST,
+                f"{method} requires the {ACTOR_HEADER} and {SESSION_HEADER} headers",
+            )
+        self._accept_session(*caller)
+        token = CALLER.set(Caller(*caller))
+        try:
+            result = await operation(**params)
+        finally:
+            CALLER.reset(token)
+        if self.orchestrator is not None and caller[1] != self.orchestrator.session:
             if method == "wait_for_event" and isinstance(result, dict):
                 event = result.get("event")
                 if isinstance(event, dict) and isinstance(event.get("delivery_id"), str):
@@ -272,6 +342,7 @@ class RpcDispatcher:
         if current is not None and current.session != session:
             self._superseded_sessions.add(current.session)
             self.ops.store.expire_event_leases()
+            self._record_audit(actor, session, SUPERSEDE_METHOD, "ok")
         self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
 
 

@@ -370,7 +370,7 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
     initialize_database(db_path)
     store = HubStore(db_path)
     store.initialize_workflow(policy={"merge_method": "squash"})
-    store.log_decision("Plan for issue #7", "Use the normal workflow")
+    store.log_decision("Plan for issue #7", "Use the normal workflow", actor="alice", session=None)
     store.check_in("bob", AgentProfile(harness="claude-code"))
     store.check_in("charlie", AgentProfile(harness="codex"))
     pr_url = "https://github.com/RoboNater/robo-agents-sandbox/pull/2"
@@ -434,8 +434,12 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
         "Merge invariant satisfied; executing squash merge",
         "Gate passed",
         key="event:10:merge",
+        actor="alice",
+        session=None,
     )
-    store.set_workflow_status(WorkflowStatus.DONE, "merged and wrapped up")
+    store.set_workflow_status(
+        WorkflowStatus.DONE, "merged and wrapped up", actor="alice", session=None
+    )
 
     manifest_path = tmp_path / "run.json"
     manifest_path.write_text(

@@ -939,7 +939,7 @@ def test_assignment_and_status_require_explicit_workflow_initialization(
     with pytest.raises(ConflictError, match="initialize_workflow.*assign_task"):
         store.assign_task("bob", "implementer", "Task", "Work")
     with pytest.raises(ConflictError, match="initialize_workflow.*set_workflow_status"):
-        store.set_workflow_status(WorkflowStatus.DONE, "Done")
+        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
 
     assert store.get_state()["workflow"] is None
     store.initialize_workflow("Address issue #5", {"max_task_lease_min": 10})

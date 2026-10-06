@@ -24,7 +24,7 @@ from typing import Any
 import anyio
 from agent_hub.forge_preflight import gitlab_preflight
 from agent_hub.main import serve_http
-from agent_hub_common import HubSettings, load_or_create_token, reserve_stdout
+from agent_hub_common import HubSettings, load_or_create_token, read_token_file, reserve_stdout
 from agent_hub_common.discovery import (
     DiscoveryError,
     Repository,
@@ -36,7 +36,14 @@ from agent_hub_common.discovery import (
     state_dir,
     write_hub_json,
 )
-from agent_hub_common.registry import deregister, hub_healthy, live_entries, process_alive, register
+from agent_hub_common.registry import (
+    deregister,
+    hub_healthy,
+    live_entries,
+    operator_token_path,
+    process_alive,
+    register,
+)
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
@@ -64,11 +71,14 @@ def _bind(host: str, port: int | None) -> tuple[socket.socket, int]:
     raise RuntimeError("no free port from 8420 upward")
 
 
-def _rpc(url: str, token: str, method: str) -> dict[str, Any]:
+def _rpc(url: str, token: str, method: str, *, operator_token: str | None = None) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    if operator_token is not None:
+        headers["X-Robomate-Operator"] = operator_token
     request = urllib.request.Request(
         f"{url.rstrip('/')}/rpc",
         data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(request, timeout=2) as response:
         result: dict[str, Any] = json.load(response)
@@ -173,6 +183,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     try:
         settings = HubSettings.from_env(overlay)
         load_or_create_token(settings.token, settings.token_file)
+        _provision_operator_token(settings, repo.root)
         info: dict[str, Any] = {
             "repo_root": str(repo.root),
             "origin": repo.origin,
@@ -210,10 +221,29 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         sock.close()
 
 
+def _provision_operator_token(settings: HubSettings, root: Path) -> None:
+    """Create the operator credential beside the machine registry (#128).
+
+    Agents read the repository and its `.robomate/`, so a path into either is
+    refused rather than handing them the one credential they must not hold.
+    The token and its path are never printed.
+    """
+
+    path = settings.operator_token_file
+    if path is None:
+        return
+    resolved = path.resolve()
+    if resolved.is_relative_to(root.resolve()):
+        raise RuntimeError("the operator token file must not be inside the repository")
+    resolved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    load_or_create_token(None, resolved, label="operator token")
+
+
 def _down() -> None:
     endpoint = discover(Path.cwd())
+    operator_token = read_token_file(operator_token_path(), "operator token")
     try:
-        result = _rpc(endpoint.url, endpoint.token, "hub.shutdown")
+        result = _rpc(endpoint.url, endpoint.token, "hub.shutdown", operator_token=operator_token)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"hub at {endpoint.url} rejected shutdown (HTTP {exc.code})") from exc
     except (OSError, urllib.error.URLError) as exc:

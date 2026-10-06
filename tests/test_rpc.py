@@ -22,24 +22,43 @@ from agent_hub.rpc import (
     MERGE_GATE_UNAVAILABLE,
     METHOD_NOT_FOUND,
     NOT_FOUND,
+    OPERATOR_HEADER,
+    OPERATOR_REQUIRED,
     PAYLOAD_TOO_LARGE,
     SESSION_HEADER,
+    SUPERSEDE_METHOD,
     RpcDispatcher,
+    RpcError,
+    require_operator,
 )
 from agent_hub.store import HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, HubSettings
-from conftest import BASE_URL, TOKEN, MonotonicClock, check_in, rpc
+from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from fastapi import FastAPI
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
-SESSION = "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a"
 
 
 async def call(
     client: httpx.AsyncClient, method: str, headers: dict[str, str] | None = None, **params: Any
 ) -> dict[str, Any]:
     response = await client.post("/rpc", json=rpc(method, params), headers=headers)
+    assert response.status_code == 200
+    return cast(dict[str, Any], response.json())
+
+
+async def bare_call(
+    app: FastAPI, method: str, headers: dict[str, str] | None = None, **params: Any
+) -> dict[str, Any]:
+    """Call with the bearer token and only the given headers, not the session's."""
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url=BASE_URL,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    ) as bare:
+        response = await bare.post("/rpc", json=rpc(method, params), headers=headers)
     assert response.status_code == 200
     return cast(dict[str, Any], response.json())
 
@@ -58,7 +77,7 @@ async def test_rpc_requires_the_bearer_token(app: FastAPI) -> None:
         wrong = {"Authorization": "Bearer wrong"}
         response = await bare.post("/rpc", json=rpc("get_state", {}), headers=wrong)
         assert response.status_code == 401
-        good = {"Authorization": f"Bearer {TOKEN}"}
+        good = {"Authorization": f"Bearer {TOKEN}", **CALLER_HEADERS}
         response = await bare.post("/rpc", json=rpc("get_state", {}), headers=good)
         assert response.json()["result"]["workflow"] is None
 
@@ -491,7 +510,7 @@ async def serving(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url=BASE_URL,
-            headers={"Authorization": f"Bearer {TOKEN}"},
+            headers={"Authorization": f"Bearer {TOKEN}", **CALLER_HEADERS},
         ) as connected,
     ):
         yield connected
@@ -668,7 +687,6 @@ async def test_the_callers_session_is_recorded_for_orchestrator_calls(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     dispatcher = cast(RpcDispatcher, app.state.rpc)
-    await call(client, "get_state")
     assert dispatcher.orchestrator is None
 
     headers = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION.upper()}
@@ -715,7 +733,7 @@ async def test_heartbeat_fences_old_session_and_releases_delivery(
         CONFLICT,
         "superseded by a newer orchestrator session",
     )
-    assert error_of(await call(client, "hub.heartbeat"))[0] == INVALID_REQUEST
+    assert error_of(await bare_call(app, "hub.heartbeat"))[0] == INVALID_REQUEST
     assert error_of(await call(client, "hub.heartbeat", new, unexpected=True)) == (
         INVALID_PARAMS,
         "hub.heartbeat takes no params",
@@ -762,8 +780,99 @@ async def test_malformed_caller_headers_are_refused(
         {ACTOR_HEADER: "a" * 129, SESSION_HEADER: SESSION},
         {ACTOR_HEADER: "alice", SESSION_HEADER: "not-a-uuid"},
     ):
-        body = await call(client, "log_decision", headers, summary="s", rationale="r")
+        body = await bare_call(app, "log_decision", headers, summary="s", rationale="r")
         assert error_of(body)[0] == INVALID_REQUEST
     assert cast(RpcDispatcher, app.state.rpc).orchestrator is None
     with database(hub_store.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == 0
+
+
+def audit_rows(store: HubStore) -> list[tuple[Any, ...]]:
+    with database(store.path) as connection:
+        rows = connection.execute(
+            "SELECT actor, session, method, outcome FROM rpc_audit ORDER BY id"
+        ).fetchall()
+    return [tuple(row) for row in rows]
+
+
+async def test_orchestrator_operations_require_the_caller_headers(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#128: the bearer token alone, which every agent holds, names no caller."""
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "origin": "o",
+        "forge": "github",
+        "url": BASE_URL,
+        "default_branch": "main",
+    }
+    for method, params in (
+        ("get_state", {}),
+        ("wait_for_event", {"timeout_s": 0}),
+        ("log_decision", {"summary": "s", "rationale": "r"}),
+        ("set_workflow_status", {"status": "escalated", "summary": "s"}),
+    ):
+        code, text = error_of(await bare_call(app, method, **params))
+        assert code == INVALID_REQUEST and ACTOR_HEADER in text, method
+    assert dispatcher.orchestrator is None
+    assert hub_store.get_state()["workflow"]["status"] == "active"
+    # Read-only operator views stay open to the bearer token.
+    assert "result" in await bare_call(app, "hub.info")
+    assert "result" in await bare_call(app, "hub.status")
+
+    logged = await call(client, "log_decision", summary="s", rationale="r")
+    assert "result" in logged
+    await call(client, "get_state")
+    await call(client, "wait_for_event", timeout_s=0)
+
+    refused = f"error {INVALID_REQUEST}"
+    assert audit_rows(hub_store) == [
+        (None, None, "log_decision", refused),
+        (None, None, "set_workflow_status", refused),
+        ("alice", SESSION, "log_decision", "ok"),
+    ]
+
+
+async def test_decisions_record_the_caller(client: httpx.AsyncClient, hub_store: HubStore) -> None:
+    await call(client, "set_workflow_status", status="paused", summary="Hold")
+    await call(client, "log_decision", summary="Plan", rationale="Why", key="k")
+
+    with database(hub_store.path) as connection:
+        rows = connection.execute(
+            "SELECT summary, actor, session FROM decision ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [("Hold", "alice", SESSION), ("Plan", "alice", SESSION)]
+    assert [row[2:] for row in audit_rows(hub_store)] == [
+        ("set_workflow_status", "ok"),
+        ("log_decision", "ok"),
+    ]
+
+
+async def test_a_session_takeover_leaves_an_audit_row(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    newer = "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"
+    await call(client, "get_state")
+    await call(client, "hub.heartbeat", {ACTOR_HEADER: "mallory", SESSION_HEADER: newer})
+    assert error_of(await call(client, "log_decision", summary="s", rationale="r"))[0] == CONFLICT
+
+    assert audit_rows(hub_store) == [
+        ("mallory", newer, SUPERSEDE_METHOD, "ok"),
+        ("alice", SESSION, "log_decision", f"error {CONFLICT}"),
+    ]
+    with database(hub_store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == 0
+
+
+def test_require_operator_accepts_only_the_operator_token() -> None:
+    require_operator({OPERATOR_HEADER: " secret "}, "secret")
+    for headers, expected in (
+        ({}, "secret"),
+        ({OPERATOR_HEADER: "wrong"}, "secret"),
+        ({OPERATOR_HEADER: "secret"}, None),
+    ):
+        with pytest.raises(RpcError) as raised:
+            require_operator(headers, expected)
+        assert raised.value.code == OPERATOR_REQUIRED
