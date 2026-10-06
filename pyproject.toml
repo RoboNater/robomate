@@ -40,9 +40,9 @@ filterwarnings = [
     # pytest imports tests as top-level test_* modules and conftest, not tests.*.
     'error::DeprecationWarning:^(agent_hub|agent_hub_common|robomate|worker_mcp|tests|test_[^.]+|conftest)(\.|$)',
     'error::PendingDeprecationWarning:^(agent_hub|agent_hub_common|robomate|worker_mcp|tests|test_[^.]+|conftest)(\.|$)',
-    # Known upstream warnings in #123; remove each ignore when upstream fixes it.
-    # Starlette's warning is attributed to fastapi.testclient by stacklevel=2.
-    'ignore:^Using `httpx` with `starlette\.testclient` is deprecated; install `httpx2` instead\.$:DeprecationWarning:^fastapi\.testclient$',
+    # #123: StarletteDeprecationWarning inherits UserWarning, so stays visible
+    # outside this policy's category scope; do not ignore it as DeprecationWarning.
+    # Known upstream AnyIO warning in #123; remove the ignore when upstream fixes it.
     # AnyIO's deprecated alias is accessed by starlette.testclient (stacklevel=3).
     'ignore:^The anyio\.abc\.BlockingPortal alias is deprecated, use anyio\.from_thread\.BlockingPortal instead\.$:DeprecationWarning:^starlette\.testclient$',
 ]
