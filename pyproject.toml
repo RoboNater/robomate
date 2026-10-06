@@ -35,6 +35,17 @@ members = ["packages/*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # #123 option 2: fail deprecations attributed to our packages and tests.
+    # pytest imports tests as top-level test_* modules and conftest, not tests.*.
+    'error::DeprecationWarning:^(agent_hub|agent_hub_common|robomate|worker_mcp|tests|test_[^.]+|conftest)(\.|$)',
+    'error::PendingDeprecationWarning:^(agent_hub|agent_hub_common|robomate|worker_mcp|tests|test_[^.]+|conftest)(\.|$)',
+    # #123: StarletteDeprecationWarning inherits UserWarning, so stays visible
+    # outside this policy's category scope; do not ignore it as DeprecationWarning.
+    # #127 tracks removing this AnyIO ignore when upstream fixes the alias access.
+    # AnyIO's deprecated alias is accessed by starlette.testclient (stacklevel=3).
+    'ignore:^The anyio\.abc\.BlockingPortal alias is deprecated, use anyio\.from_thread\.BlockingPortal instead\.$:DeprecationWarning:^starlette\.testclient$',
+]
 
 [tool.ruff]
 line-length = 100
