@@ -1351,7 +1351,8 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
     # #122: the guide's detached-run recipe reaches every worker, in both shells, and
     # the Claude note points a Claude worker at it.
     for recipe in (
-        'echo \\$? > $D/rc" >/dev/null 2>&1 &)',
+        # The directory is an argument, not program text: it may contain spaces.
+        """echo $? > "$1/rc"' sh "$D" >/dev/null 2>&1 &)""",
         "`$LASTEXITCODE > '$D/rc'\"",
         'for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done',
     ):

@@ -51,8 +51,8 @@ that file in separate foreground calls, each under your harness's tool limit
 because shell variables may not survive between calls:
 
 ```sh
-D=$(mktemp -d) && echo "$D" && (nohup sh -c "uv run --locked pytest > $D/out.log 2>&1; echo \$? > $D/rc" >/dev/null 2>&1 &)
-D=<dir>; for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done; cat "$D/rc" 2>/dev/null || echo running; tail -3 "$D/out.log"
+D=$(mktemp -d) && echo "$D" && (nohup sh -c 'uv run --locked pytest > "$1/out.log" 2>&1; echo $? > "$1/rc"' sh "$D" >/dev/null 2>&1 &)
+D='<dir>'; for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done; cat "$D/rc" 2>/dev/null || echo running; tail -3 "$D/out.log"
 ```
 
 On native Windows, run that in Git Bash, or this in PowerShell:
