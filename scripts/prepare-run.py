@@ -474,7 +474,8 @@ def prompt_sections(name: str, harness: str) -> str:
     agent is told to keep every hub wait at 100 s. In ``claude -p`` the process
     exits when the turn ends, and a background job can wake the agent only
     while its turn is still running, so it is told never to end its turn to
-    wait (#115).
+    wait (#115). A worker is also pointed at its guide's recipe for a local
+    command longer than one call (#122).
     """
     sections = []
     if harness == "claude-code":
@@ -488,7 +489,7 @@ def prompt_sections(name: str, harness: str) -> str:
             if name == "alice"
             else "`await_assignment` returns `release: true`"
         )
-        sections.append(
+        wait = (
             f"Do not end your turn until {last}. In print mode (`claude -p`) the "
             "process exits when your turn ends, and a background job can wake you only "
             "while your turn is still running. Never end your turn to wait for CI, a "
@@ -497,6 +498,13 @@ def prompt_sections(name: str, harness: str) -> str:
             "re-run a bounded check such as `gh pr checks <pr>` (GitHub) or "
             "`glab ci status` (GitLab) after a short `sleep`."
         )
+        if name != "alice":
+            # The recipe is in the worker guide inlined above (#122).
+            wait += (
+                " For a local command that outlasts one call, such as the full test "
+                "suite, use the detached-run recipe in the Waiting section above."
+            )
+        sections.append(wait)
     elif name == "alice":
         skill = ROOT / "skills/alice-orchestrator/SKILL.md"
         runtime_label = {
