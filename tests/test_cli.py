@@ -153,14 +153,15 @@ def test_up_creates_the_operator_token_beside_the_registry(
         assert len(operator_token) >= 32
         if sys.platform != "win32":
             assert operator_file.stat().st_mode & 0o777 == 0o600
-        for path in root.rglob("*"):
-            if path.is_file() and ".git" not in path.parts:
-                assert operator_token not in path.read_text(errors="replace"), path
         bearer = (root / ".robomate/token").read_text(encoding="utf-8").strip()
         refused = _shutdown_with_bearer_only(str(info["url"]), bearer)
         assert refused["error"]["code"] == -32005
         assert process.poll() is None
         stop(root, env, process)
+        # Once stopped: on Windows a running hub holds up.lock unreadable.
+        for path in root.rglob("*"):
+            if path.is_file() and ".git" not in path.parts:
+                assert operator_token not in path.read_text(errors="replace"), path
         assert process.stdout is not None and process.stderr is not None
         printed = process.stdout.read() + process.stderr.read()
         assert operator_token not in printed and str(operator_file) not in printed
