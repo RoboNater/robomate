@@ -34,9 +34,7 @@ def test_initialization_creates_complete_schema_and_is_idempotent(tmp_path: Path
     with database(path) as connection:
         tables = {
             row["name"]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -90,8 +88,7 @@ def _schema_objects(path: Path) -> dict[str, str]:
 
     with database(path) as connection:
         rows = connection.execute(
-            "SELECT name, sql FROM sqlite_master"
-            " WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+            "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
     return {row["name"]: " ".join(row["sql"].split()) for row in rows}
 
@@ -156,6 +153,7 @@ def test_migration_from_v2_carries_the_runtime_over_as_the_harness(tmp_path: Pat
     store = HubStore(path)
     harnesses = {agent.name: agent.harness for agent in store.agents()}
     assert harnesses == {"bob": "claude-code", "charlie": "codex", "dan": UNKNOWN}
+
 
 def test_migration_from_v2_adds_operation_table(tmp_path: Path) -> None:
     path = tmp_path / "v2_hub.db"
@@ -657,9 +655,7 @@ def test_a_failed_rebuild_rolls_back_the_rename_create_and_copy_together(
 
 
 @pytest.mark.parametrize("version", SHIPPED_VERSIONS)
-def test_the_rebuild_keeps_the_autoincrement_high_water_mark(
-    tmp_path: Path, version: int
-) -> None:
+def test_the_rebuild_keeps_the_autoincrement_high_water_mark(tmp_path: Path, version: int) -> None:
     """Deleting the highest rows before migrating must not let ids be reused.
 
     Dropping the old table drops its `sqlite_sequence` row, and copying rows
@@ -795,9 +791,12 @@ def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: 
     store = HubStore(path)
     workflow_id = store.initialize_workflow("Existing v12 run")
     with database(path) as connection:
-        assert connection.execute(
-            "SELECT name FROM sqlite_master WHERE name = 'gate_reading'"
-        ).fetchone() is None
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'gate_reading'"
+            ).fetchone()
+            is None
+        )
 
     initialize_database(path)
     initialize_database(path)
@@ -808,8 +807,10 @@ def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: 
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     assert store.get_state()["workflow"]["id"] == workflow_id
     store.record_gate_reading(
-        "https://github.com/example/repo/pull/1", "a" * 40,
-        error_code=-32004, elapsed_s=1.5,
+        "https://github.com/example/repo/pull/1",
+        "a" * 40,
+        error_code=-32004,
+        elapsed_s=1.5,
     )
     with database(path) as connection:
         [row] = connection.execute("SELECT * FROM gate_reading").fetchall()

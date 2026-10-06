@@ -34,11 +34,13 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
-        cwd=root, check=True,
+        cwd=root,
+        check=True,
     )
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
-        cwd=root, check=True,
+        cwd=root,
+        check=True,
     )
     env = {
         **os.environ,
@@ -52,8 +54,12 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 
 def start(root: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
-        [CLI, "up", *args], cwd=root, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        [CLI, "up", *args],
+        cwd=root,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
 
@@ -78,8 +84,9 @@ def await_hub(root: Path, process: subprocess.Popen[str]) -> dict[str, object]:
 
 def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> None:
     try:
-        result = subprocess.run([CLI, "down"], cwd=root, env=env, text=True,
-                                capture_output=True, timeout=10)
+        result = subprocess.run(
+            [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
         assert result.returncode == 0, result.stderr
         assert process.wait(timeout=10) == 0
     finally:
@@ -100,8 +107,9 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
         assert "/.robomate/" in (root / ".git/info/exclude").read_text()
         with urllib.request.urlopen(f"{info['url']}/healthz") as response:
             assert json.load(response)["hub_id"] == info["hub_id"]
-        second = subprocess.run([CLI, "up"], cwd=root, env=env, text=True,
-                                capture_output=True, timeout=10)
+        second = subprocess.run(
+            [CLI, "up"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
         assert second.returncode == 1
         assert "already running" in second.stderr
         stop(root, env, first)
@@ -127,8 +135,9 @@ def test_recorded_busy_port_is_refused(repository: tuple[Path, dict[str, str]]) 
         occupied.listen()
         port = occupied.getsockname()[1]
         write_hub_json(root, {"port": port, "hub_id": "old"})
-        result = subprocess.run([CLI, "up"], cwd=root, env=env, text=True,
-                                capture_output=True, timeout=10)
+        result = subprocess.run(
+            [CLI, "up"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
     assert result.returncode == 1
     assert str(port) in result.stderr and "--port" in result.stderr
 
@@ -224,27 +233,52 @@ def test_status_from_nested_directory_and_worktree(
     root, env = repository
     nested = root / "nested"
     nested.mkdir()
-    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                    "commit", "--allow-empty", "-m", "start"], cwd=root, check=True,
-                   capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "start",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     worktree = tmp_path / "linked"
-    subprocess.run(["git", "worktree", "add", "-b", "linked", str(worktree)],
-                   cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "linked", str(worktree)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     process = start(root, env)
     try:
         info = await_hub(root, process)
         for cwd in (nested, worktree):
-            result = subprocess.run([CLI, "status"], cwd=cwd, env=env, text=True,
-                                    capture_output=True, timeout=10)
+            result = subprocess.run(
+                [CLI, "status"], cwd=cwd, env=env, text=True, capture_output=True, timeout=10
+            )
             assert result.returncode == 0, result.stderr
             assert str(root) in result.stdout and str(info["url"]) in result.stdout
             assert "Workflow: none" in result.stdout
-            result = subprocess.run([CLI, "status", "--json"], cwd=cwd, env=env,
-                                    text=True, capture_output=True, timeout=10)
+            result = subprocess.run(
+                [CLI, "status", "--json"],
+                cwd=cwd,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
             assert json.loads(result.stdout)["repo_root"] == str(root)
         stop(root, env, process)
-        stopped = subprocess.run([CLI, "status"], cwd=worktree, env=env, text=True,
-                                 capture_output=True, timeout=10)
+        stopped = subprocess.run(
+            [CLI, "status"], cwd=worktree, env=env, text=True, capture_output=True, timeout=10
+        )
         assert stopped.returncode != 0
         assert "not running" in stopped.stdout
         assert str(info["url"]) in stopped.stdout
@@ -255,9 +289,7 @@ def test_status_from_nested_directory_and_worktree(
             process.wait(timeout=10)
 
 
-def test_status_renders_seeded_workflow_and_agents(
-    repository: tuple[Path, dict[str, str]]
-) -> None:
+def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[str, str]]) -> None:
     root, env = repository
     directory = root / ".robomate"
     directory.mkdir()
@@ -277,19 +309,23 @@ def test_status_renders_seeded_workflow_and_agents(
         request = urllib.request.Request(
             f"{info['url']}/rpc",
             data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "hub.heartbeat"}).encode(),
-            headers={"Authorization": f"Bearer {token}",
-                     "Content-Type": "application/json",
-                     "X-Robomate-Actor": "alice",
-                     "X-Robomate-Session": "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "X-Robomate-Actor": "alice",
+                "X-Robomate-Session": "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a",
+            },
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             assert json.load(response)["result"] == {"ok": True}
-        result = subprocess.run([CLI, "status"], cwd=root, env=env, text=True,
-                                capture_output=True, timeout=10)
+        result = subprocess.run(
+            [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
         assert result.returncode == 0, result.stderr
         assert "Workflow: active — Build issue #43" in result.stdout
-        assert re.search(r"Orchestrator: alice  session \S+  last seen \d+s ago\n",
-                         result.stdout), result.stdout
+        assert re.search(
+            r"Orchestrator: alice  session \S+  last seen \d+s ago\n", result.stdout
+        ), result.stdout
         assert f"bob: codex / gpt-6-sol  alive  task {task.id}" in result.stdout
         assert "dave: unknown / unknown  released" in result.stdout
         assert f"{task.id}: implementer  bob  input-required" in result.stdout
@@ -301,7 +337,7 @@ def test_status_renders_seeded_workflow_and_agents(
 
 
 def test_status_reports_auth_failure_without_calling_hub_stopped(
-    repository: tuple[Path, dict[str, str]]
+    repository: tuple[Path, dict[str, str]],
 ) -> None:
     root, env = repository
     process = start(root, env)
@@ -311,8 +347,9 @@ def test_status_reports_auth_failure_without_calling_hub_stopped(
         original = token_file.read_text()
         try:
             token_file.write_text("incorrect-token")
-            result = subprocess.run([CLI, "status"], cwd=root, env=env, text=True,
-                                    capture_output=True, timeout=10)
+            result = subprocess.run(
+                [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            )
             assert result.returncode == 1
             assert "HTTP 401" in result.stderr
             assert "not running" not in result.stdout
@@ -328,19 +365,28 @@ def test_status_uses_registry_fallback_and_explicit_url(
     root, env = repository
     other = tmp_path / "worker-clone"
     other.mkdir()
-    subprocess.run(["git", "init", "-b", "main"], cwd=other, check=True,
-                   capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=other, check=True, capture_output=True)
     process = start(root, env)
     try:
         info = await_hub(root, process)
-        fallback = subprocess.run([CLI, "status"], cwd=other, env=env, text=True,
-                                  capture_output=True, timeout=10)
+        fallback = subprocess.run(
+            [CLI, "status"], cwd=other, env=env, text=True, capture_output=True, timeout=10
+        )
         assert fallback.returncode == 0, fallback.stderr
         assert str(root) in fallback.stdout and str(info["url"]) in fallback.stdout
-        explicit_env = {**env, "ROBOMATE_HUB_URL": str(info["url"]),
-                        "ROBOMATE_TOKEN_FILE": str(root / ".robomate/token")}
-        explicit = subprocess.run([CLI, "status"], cwd=tmp_path, env=explicit_env,
-                                  text=True, capture_output=True, timeout=10)
+        explicit_env = {
+            **env,
+            "ROBOMATE_HUB_URL": str(info["url"]),
+            "ROBOMATE_TOKEN_FILE": str(root / ".robomate/token"),
+        }
+        explicit = subprocess.run(
+            [CLI, "status"],
+            cwd=tmp_path,
+            env=explicit_env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
         assert explicit.returncode == 0, explicit.stderr
         assert str(root) in explicit.stdout and str(info["url"]) in explicit.stdout
     finally:
@@ -348,34 +394,45 @@ def test_status_uses_registry_fallback_and_explicit_url(
 
 
 def test_status_with_unreachable_explicit_url_does_not_claim_current_repo(
-    repository: tuple[Path, dict[str, str]]
+    repository: tuple[Path, dict[str, str]],
 ) -> None:
     root, env = repository
-    explicit_env = {**env, "ROBOMATE_HUB_URL": "http://127.0.0.1:1",
-                    "ROBOMATE_TOKEN": "test-token"}
-    result = subprocess.run([CLI, "status", "--json"], cwd=root, env=explicit_env,
-                            text=True, capture_output=True, timeout=10)
+    explicit_env = {**env, "ROBOMATE_HUB_URL": "http://127.0.0.1:1", "ROBOMATE_TOKEN": "test-token"}
+    result = subprocess.run(
+        [CLI, "status", "--json"],
+        cwd=root,
+        env=explicit_env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
     assert result.returncode == 1
     assert json.loads(result.stdout) == {
-        "running": False, "repo_root": None, "url": "http://127.0.0.1:1", "port": 1,
+        "running": False,
+        "repo_root": None,
+        "url": "http://127.0.0.1:1",
+        "port": 1,
     }
-    human = subprocess.run([CLI, "status"], cwd=root, env=explicit_env,
-                           text=True, capture_output=True, timeout=10)
+    human = subprocess.run(
+        [CLI, "status"], cwd=root, env=explicit_env, text=True, capture_output=True, timeout=10
+    )
     assert human.returncode == 1
     assert human.stdout.startswith("Hub: not running")
     assert str(root) not in human.stdout
 
 
 def test_status_uses_matching_hub_health_when_pid_is_not_visible(
-    repository: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     root, _ = repository
     state = root / ".robomate"
     state.mkdir()
     (state / "token").write_text("test-token")
-    write_hub_json(root, {"url": "http://127.0.0.1:8420", "port": 8420,
-                          "pid": 1234, "hub_id": "same-hub"})
+    write_hub_json(
+        root, {"url": "http://127.0.0.1:8420", "port": 8420, "pid": 1234, "hub_id": "same-hub"}
+    )
     monkeypatch.chdir(root)
     monkeypatch.setattr(cli, "process_alive", lambda _pid: False)
     monkeypatch.setattr(cli, "hub_healthy", lambda _url, hub_id: hub_id == "same-hub")
@@ -390,22 +447,27 @@ def test_status_uses_matching_hub_health_when_pid_is_not_visible(
 
 
 def test_status_reports_unreachable_with_visible_recorded_pid(
-    repository: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     root, _ = repository
     state = root / ".robomate"
     state.mkdir()
-    write_hub_json(root, {"url": "http://127.0.0.1:8420", "port": 8420,
-                          "pid": 1234, "hub_id": "same-hub"})
+    write_hub_json(
+        root, {"url": "http://127.0.0.1:8420", "port": 8420, "pid": 1234, "hub_id": "same-hub"}
+    )
     monkeypatch.chdir(root)
     monkeypatch.setattr(cli, "process_alive", lambda _pid: True)
     monkeypatch.setattr(cli, "hub_healthy", lambda _url, _hub_id: False)
     with pytest.raises(SystemExit, match="1"):
         cli._status(True)
     assert json.loads(capsys.readouterr().out) == {
-        "running": False, "repo_root": str(root), "url": "http://127.0.0.1:8420",
-        "port": 8420, "reason": "unreachable; recorded pid 1234 is visible",
+        "running": False,
+        "repo_root": str(root),
+        "url": "http://127.0.0.1:8420",
+        "port": 8420,
+        "reason": "unreachable; recorded pid 1234 is visible",
     }
 
 
@@ -415,21 +477,29 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
     root, env = repository
     other = tmp_path / "other"
     other.mkdir()
-    subprocess.run(["git", "init", "-b", "main"], cwd=other, check=True,
-                   capture_output=True)
-    subprocess.run(["git", "remote", "add", "origin", "git@github.com:example/other.git"],
-                   cwd=other, check=True)
-    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD",
-                    "refs/remotes/origin/main"], cwd=other, check=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=other, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:example/other.git"],
+        cwd=other,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=other,
+        check=True,
+    )
     first = start(root, env)
     second = start(other, env)
     try:
         first_info = await_hub(root, first)
         second_info = await_hub(other, second)
-        register({"repo_root": "/stale", "url": "http://127.0.0.1:1",
-                  "hub_id": "stale", "pid": 999999}, env)
-        result = subprocess.run([CLI, "ls"], cwd=root, env=env, text=True,
-                                capture_output=True, timeout=10)
+        register(
+            {"repo_root": "/stale", "url": "http://127.0.0.1:1", "hub_id": "stale", "pid": 999999},
+            env,
+        )
+        result = subprocess.run(
+            [CLI, "ls"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
         assert result.returncode == 0, result.stderr
         lines = result.stdout.splitlines()
         assert len(lines) == 2
@@ -437,8 +507,9 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
         assert any(str(other) in line and str(second_info["url"]) in line for line in lines)
         assert all("agents 0" in line and "workflow none" in line for line in lines)
         assert "stale" not in registry_path(env).read_text()
-        result = subprocess.run([CLI, "ls", "--json"], cwd=root, env=env, text=True,
-                                capture_output=True, timeout=10)
+        result = subprocess.run(
+            [CLI, "ls", "--json"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
         assert len(json.loads(result.stdout)) == 2
     finally:
         for repo, process in ((root, first), (other, second)):
@@ -459,14 +530,19 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
     workspace = (tmp_path / "charlie").resolve()
     workspace.mkdir()
     origin = "git@github.com:example/repo.git"
-    subprocess.run(["git", "init", "-b", "main"], cwd=workspace, check=True,
-                   capture_output=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=workspace, check=True, capture_output=True)
     subprocess.run(["git", "remote", "add", "origin", origin], cwd=workspace, check=True)
     identity = workspace / ".git" / "robo-agents-workspace.json"
-    identity.write_text(json.dumps({
-        "agent": "charlie", "path": str(workspace), "repository": origin,
-        "workspace_id": "c" * 64,
-    }))
+    identity.write_text(
+        json.dumps(
+            {
+                "agent": "charlie",
+                "path": str(workspace),
+                "repository": origin,
+                "workspace_id": "c" * 64,
+            }
+        )
+    )
     identity.chmod(0o600)
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))
@@ -476,14 +552,22 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
     try:
         info = await_hub(root, hub)
         worker_env = {
-            **env, "ROBOMATE_HUB_URL": str(info["url"]),
+            **env,
+            "ROBOMATE_HUB_URL": str(info["url"]),
             "ROBOMATE_TOKEN_FILE": str(root / ".robomate" / "token"),
-            "AGENT_NAME": "charlie", "HUB_HARNESS": "claude-code", "HUB_MODEL": "opus",
-            "HUB_PROVIDER": "anthropic", "HUB_WORKSPACE": str(workspace),
+            "AGENT_NAME": "charlie",
+            "HUB_HARNESS": "claude-code",
+            "HUB_MODEL": "opus",
+            "HUB_PROVIDER": "anthropic",
+            "HUB_WORKSPACE": str(workspace),
         }
         worker = subprocess.Popen(
-            [CLI, "mcp", "--role", "worker"], cwd=workspace, env=worker_env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            [CLI, "mcp", "--role", "worker"],
+            cwd=workspace,
+            env=worker_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
         stdin, stdout = worker.stdin, worker.stdout
         assert stdin is not None and stdout is not None
@@ -495,12 +579,23 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
 
         threading.Thread(target=read, daemon=True).start()
         for payload in (
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0"}}},
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
+            },
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-             "params": {"name": "check_in", "arguments": {}}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "check_in", "arguments": {}},
+            },
         ):
             stdin.write((json.dumps(payload) + "\n").encode())
             stdin.flush()
@@ -529,16 +624,23 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
             hub.wait(timeout=10)
 
 
-@pytest.mark.parametrize(("seconds", "text"), [
-    (-3, "0s"), (42, "42s"), (125, "2m 5s"), (4 * 3600 + 61, "4h 1m"),
-])
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [
+        (-3, "0s"),
+        (42, "42s"),
+        (125, "2m 5s"),
+        (4 * 3600 + 61, "4h 1m"),
+    ],
+)
 def test_status_age_is_compact(seconds: int, text: str) -> None:
     assert cli._age(timedelta(seconds=seconds)) == text
 
 
 @pytest.mark.parametrize("origin", ["https://[::1/a/b.git", "https://[gitlab-box.local]/a/b.git"])
 def test_up_malformed_origin_warns_and_serves(
-    repository: tuple[Path, dict[str, str]], origin: str,
+    repository: tuple[Path, dict[str, str]],
+    origin: str,
 ) -> None:
     root, env = repository
     subprocess.run(["git", "remote", "set-url", "origin", origin], cwd=root, check=True)
@@ -557,8 +659,11 @@ def test_up_malformed_origin_warns_and_serves(
 
 def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str]]) -> None:
     root, env = repository
-    subprocess.run(["git", "remote", "set-url", "origin", "git@gitlab.com:group/project.git"],
-                   cwd=root, check=True)
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", "git@gitlab.com:group/project.git"],
+        cwd=root,
+        check=True,
+    )
     process = start(root, env, "--forge", "github")
     try:
         assert await_hub(root, process)["forge"] == "github"

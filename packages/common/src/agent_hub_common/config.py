@@ -294,9 +294,7 @@ class HubSettings:
             sweep_interval_s=_positive_seconds(
                 env, "HUB_SWEEP_INTERVAL_S", DEFAULT_SWEEP_INTERVAL_S
             ),
-            event_lease_s=_positive_seconds(
-                env, "HUB_EVENT_LEASE_S", DEFAULT_EVENT_LEASE_S
-            ),
+            event_lease_s=_positive_seconds(env, "HUB_EVENT_LEASE_S", DEFAULT_EVENT_LEASE_S),
             call_accounting=_FLAG_VALUES[raw_accounting],
             call_log_jsonl=call_log_jsonl,
         )

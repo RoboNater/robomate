@@ -102,9 +102,7 @@ async def test_every_worker_call_is_tallied_with_its_bytes(
 
     # The hub and the worker measure the same wire from either end.
     finished = {
-        record["tool"]: record
-        for record in _records(telemetry)
-        if record.get("phase") == "success"
+        record["tool"]: record for record in _records(telemetry) if record.get("phase") == "success"
     }
     for tool, row in by_tool.items():
         assert row["bytes_in"] == finished[tool]["http_request_bytes"], tool
@@ -197,8 +195,9 @@ def _mcp(tmp_path: Path) -> tuple[McpAccounting, Path]:
     path = tmp_path / "hub.db"
     initialize_database(path)
     accounting = CallAccounting(path, enabled=True)
-    return McpAccounting(accounting.record,
-                         frozenset({"wait_for_event", "get_state", "reply"})), path
+    return McpAccounting(
+        accounting.record, frozenset({"wait_for_event", "get_state", "reply"})
+    ), path
 
 
 def _call(tool: str, request_id: int, **arguments: Any) -> dict[str, Any]:
@@ -277,8 +276,7 @@ def test_nothing_is_recorded_while_accounting_is_off(tmp_path: Path) -> None:
     path = tmp_path / "hub.db"
     initialize_database(path)
     jsonl = tmp_path / "calls.jsonl"
-    mcp = McpAccounting(CallAccounting(path, enabled=False, jsonl_path=jsonl).record,
-                        frozenset())
+    mcp = McpAccounting(CallAccounting(path, enabled=False, jsonl_path=jsonl).record, frozenset())
     mcp.observe_request(_call("get_state", 1), 10)
     mcp.observe_response(_result(1, {}), 10)
 

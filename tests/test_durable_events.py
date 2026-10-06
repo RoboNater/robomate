@@ -538,7 +538,7 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
             # redelivery must not put a second answer on the wire.
             replies = conn.execute(
                 "SELECT * FROM message WHERE direction = 'from_alice'"
-                " AND parts_json LIKE '%\"hub.kind\": \"reply\"%'"
+                ' AND parts_json LIKE \'%"hub.kind": "reply"%\''
             ).fetchall()
             assert len(replies) == 1
             from_alice = conn.execute(

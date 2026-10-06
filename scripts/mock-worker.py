@@ -822,8 +822,7 @@ def verify_scenario(
         raise ScenarioError("merge commit is not a one-parent squash commit")
 
     decision_evidence = [
-        {"ts": item["ts"], "summary": item["summary"], "key": item["key"]}
-        for item in decisions
+        {"ts": item["ts"], "summary": item["summary"], "key": item["key"]} for item in decisions
     ]
     phase_checks = {
         "PLAN": any(str(item["summary"]).startswith("Plan for issue") for item in decisions),
@@ -831,9 +830,7 @@ def verify_scenario(
         "REVIEW": sum(role == "reviewer" for _, role, _ in observed) == 2,
         "ADDRESS": observed[2][2].startswith("ADDRESS for "),
         "MERGE": any(str(item["key"] or "").endswith(":merge") for item in decisions),
-        "WRAP-UP": any(
-            item["rationale"] == "Workflow status set to done" for item in decisions
-        ),
+        "WRAP-UP": any(item["rationale"] == "Workflow status set to done" for item in decisions),
     }
     missing_phases = [phase for phase, verified in phase_checks.items() if not verified]
     if missing_phases:
@@ -845,9 +842,7 @@ def verify_scenario(
         "canary_in_implementer_result": canary in initial_summary,
         "configured_pairing_retained": observed[0][:2] == ("bob", "implementer")
         and observed[1][:2] == ("charlie", "reviewer"),
-        "squash_policy_retained": (workflow.get("policy") or {}).get(
-            "merge_method", "squash"
-        )
+        "squash_policy_retained": (workflow.get("policy") or {}).get("merge_method", "squash")
         == "squash",
         "ci_completed_before_merge": ci_completed_before_merge,
         "approval_posted_before_merge": approval_posted_before_merge,

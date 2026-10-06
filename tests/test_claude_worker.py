@@ -51,15 +51,26 @@ def fake_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_on: st
 
 def launch(tmp_path: Path, fake: Path, max_resumes: int = 2) -> int:
     return int(
-        CLAUDE_WORKER.main([
-            "--agent", "bob",
-            "--telemetry", str(tmp_path / "bob-telemetry.jsonl"),
-            "--sessions", str(tmp_path / "bob-sessions.jsonl"),
-            "--prompt", "Read bob.prompt.md and follow the instructions in it",
-            "--max-resumes", str(max_resumes),
-            "--resume-delay-s", "0",
-            sys.executable, str(fake), "--model", "opus",
-        ])
+        CLAUDE_WORKER.main(
+            [
+                "--agent",
+                "bob",
+                "--telemetry",
+                str(tmp_path / "bob-telemetry.jsonl"),
+                "--sessions",
+                str(tmp_path / "bob-sessions.jsonl"),
+                "--prompt",
+                "Read bob.prompt.md and follow the instructions in it",
+                "--max-resumes",
+                str(max_resumes),
+                "--resume-delay-s",
+                "0",
+                sys.executable,
+                str(fake),
+                "--model",
+                "opus",
+            ]
+        )
     )
 
 
@@ -80,15 +91,27 @@ def test_a_worker_that_exits_before_release_resumes_the_same_conversation(
     session_id = first[first.index("--session-id") + 1]
     assert str(uuid.UUID(session_id)) == session_id
     assert first == [
-        "--model", "opus", "--session-id", session_id,
-        "-p", "Read bob.prompt.md and follow the instructions in it",
+        "--model",
+        "opus",
+        "--session-id",
+        session_id,
+        "-p",
+        "Read bob.prompt.md and follow the instructions in it",
     ]
     assert second == [
-        "--model", "opus", "--resume", session_id, "-p", CLAUDE_WORKER.CONTINUE_PROMPT,
+        "--model",
+        "opus",
+        "--resume",
+        session_id,
+        "-p",
+        CLAUDE_WORKER.CONTINUE_PROMPT,
     ]
     sessions = jsonl(tmp_path / "bob-sessions.jsonl")
     assert [(r["event"], r["resumes"], r.get("released")) for r in sessions] == [
-        ("start", 0, None), ("exit", 0, False), ("resume", 1, None), ("exit", 1, True),
+        ("start", 0, None),
+        ("exit", 0, False),
+        ("resume", 1, None),
+        ("exit", 1, True),
     ]
     assert {r["session_id"] for r in sessions} == {session_id}
     assert {r["agent"] for r in sessions} == {"bob"}
@@ -103,15 +126,17 @@ def test_resumes_stop_at_the_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     launches = jsonl(tmp_path / "argv.jsonl")
     assert ["--resume" in argv for argv in launches] == [False, True, True]
     assert jsonl(tmp_path / "bob-sessions.jsonl")[-1] | {"timestamp": None} == {
-        "timestamp": None, "agent": "bob", "event": "exit",
+        "timestamp": None,
+        "agent": "bob",
+        "event": "exit",
         "session_id": launches[0][launches[0].index("--session-id") + 1],
-        "resumes": 2, "exit_code": 3, "released": False,
+        "resumes": 2,
+        "exit_code": 3,
+        "released": False,
     }
 
 
-def test_a_released_worker_is_not_resumed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_released_worker_is_not_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = fake_harness(tmp_path, monkeypatch, release_on="start")
 
     assert launch(tmp_path, fake) == 0
@@ -121,9 +146,24 @@ def test_a_released_worker_is_not_resumed(
 
 def test_the_claude_command_is_required() -> None:
     with pytest.raises(SystemExit):
-        CLAUDE_WORKER.parse_args(["--agent", "bob", "--telemetry", "t", "--sessions", "s",
-                                  "--prompt", "p"])
+        CLAUDE_WORKER.parse_args(
+            ["--agent", "bob", "--telemetry", "t", "--sessions", "s", "--prompt", "p"]
+        )
     # A `--` before the command is accepted and dropped.
-    args = CLAUDE_WORKER.parse_args(["--agent", "bob", "--telemetry", "t", "--sessions", "s",
-                                     "--prompt", "p", "--", "claude", "--prompt", "x"])
+    args = CLAUDE_WORKER.parse_args(
+        [
+            "--agent",
+            "bob",
+            "--telemetry",
+            "t",
+            "--sessions",
+            "s",
+            "--prompt",
+            "p",
+            "--",
+            "claude",
+            "--prompt",
+            "x",
+        ]
+    )
     assert args.command == ["claude", "--prompt", "x"]

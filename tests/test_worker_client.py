@@ -101,9 +101,7 @@ async def test_telemetry_records_the_hub_url_at_startup_and_on_each_heartbeat(
         await worker.check_in()
         await asyncio.sleep(0.05)
 
-    records = [
-        json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()
-    ]
+    records = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
     [started] = [record for record in records if record["event"] == "session_started"]
     heartbeats = [record for record in records if record["event"] == "heartbeat"]
     assert started["hub_url"] == BASE_URL
@@ -465,9 +463,7 @@ async def test_stream_rpc_json_error_raises_protocol_error(
     assert "not assigned to bob" in exc_info.value.message.lower()
 
 
-async def test_retry_on_503(
-    worker_settings: WorkerSettings, tmp_path: Path
-) -> None:
+async def test_retry_on_503(worker_settings: WorkerSettings, tmp_path: Path) -> None:
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -113,12 +113,17 @@ class OrchestratorOps:
             report = await self.gate.check(pr_url, expected_head_sha)
         except Exception as exc:
             self.store.record_gate_reading(
-                pr_url, expected_head_sha, error_code=error_code(exc),
+                pr_url,
+                expected_head_sha,
+                error_code=error_code(exc),
                 elapsed_s=round(monotonic() - started, 3),
             )
             raise
         self.store.record_gate_reading(
-            pr_url, expected_head_sha, report=report, elapsed_s=report.elapsed_s,
+            pr_url,
+            expected_head_sha,
+            report=report,
+            elapsed_s=report.elapsed_s,
         )
         return asdict(report)
 

@@ -271,7 +271,6 @@ def test_alice_skill_documents_resume_and_redelivery_guards() -> None:
         assert f"`{title_form}`" in skill
 
 
-
 def test_alice_skill_takes_a_statement_of_work() -> None:
     """A goal naming two issues landing in one PR closes both of them (#101)."""
     skill = read("skills/alice-orchestrator/SKILL.md")

@@ -43,6 +43,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "SIM", "UP"]
 
+[tool.ruff.format]
+exclude = ["docs/historical/**"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

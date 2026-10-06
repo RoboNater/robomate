@@ -78,9 +78,7 @@ async def _call(
     if getattr(result, "isError", False):
         error_msg = ""
         if hasattr(result, "content") and result.content:
-            error_msg = "; ".join(
-                getattr(item, "text", str(item)) for item in result.content
-            )
+            error_msg = "; ".join(getattr(item, "text", str(item)) for item in result.content)
         raise RuntimeError(f"Tool {name} failed: {error_msg or result}")
     return _extract_tool_data(result)
 
@@ -198,9 +196,7 @@ def verify_endurance_telemetry(
         if isinstance(record, dict) and record.get("worker_instance_id") == worker_instance_id
     ]
     if not records:
-        raise RuntimeError(
-            f"Telemetry has no records for worker instance {worker_instance_id!r}"
-        )
+        raise RuntimeError(f"Telemetry has no records for worker instance {worker_instance_id!r}")
 
     successful = [
         record
@@ -227,9 +223,7 @@ def verify_endurance_telemetry(
     if not isinstance(heartbeat_s, (int, float)) or heartbeat_s <= 0:
         raise RuntimeError("Telemetry has no valid heartbeat interval for the current worker")
     tool_times = sorted(
-        _telemetry_time(record)
-        for record in records
-        if record.get("event") == "tool_call"
+        _telemetry_time(record) for record in records if record.get("event") == "tool_call"
     )
     heartbeat_times = sorted(
         _telemetry_time(record)
@@ -248,9 +242,7 @@ def verify_endurance_telemetry(
         covering = [timestamp for timestamp in heartbeat_times if before < timestamp < after]
         if len(covering) < 2:
             continue
-        heartbeat_gaps = [
-            right - left for left, right in pairwise([before, *covering, after])
-        ]
+        heartbeat_gaps = [right - left for left, right in pairwise([before, *covering, after])]
         coverage_gap_s = max(heartbeat_gaps)
         if coverage_gap_s <= heartbeat_s * 2:
             long_work_tool_gap_s = max(long_work_tool_gap_s, tool_gap_s)
@@ -300,9 +292,7 @@ def wait_for_endurance_telemetry(
     last_error: RuntimeError | None = None
     while monotonic() < deadline:
         try:
-            return verify_endurance_telemetry(
-                path, long_task_id, worker_instance_id, lost_after_s
-            )
+            return verify_endurance_telemetry(path, long_task_id, worker_instance_id, lost_after_s)
         except RuntimeError as exc:
             last_error = exc
             sleep(0.5)
@@ -501,9 +491,7 @@ class AliceBackend(Protocol):
 
     async def get_state(self) -> dict[str, Any]: ...
 
-    async def wait_for_event(
-        self, timeout_s: float, ack: str | None = None
-    ) -> dict[str, Any]: ...
+    async def wait_for_event(self, timeout_s: float, ack: str | None = None) -> dict[str, Any]: ...
 
     async def assign_task(
         self, agent: str, role: str, title: str, instructions: str, event_id: int
@@ -536,9 +524,7 @@ class DirectStoreBackend:
     async def get_state(self) -> dict[str, Any]:
         return self.store.get_state()
 
-    async def wait_for_event(
-        self, timeout_s: float, ack: str | None = None
-    ) -> dict[str, Any]:
+    async def wait_for_event(self, timeout_s: float, ack: str | None = None) -> dict[str, Any]:
         # Direct database mode may be observing another process, whose Signals
         # registry cannot wake this store instance. The shared driver reconciles
         # state after an empty slice, so 50 ms deliberately polls SQLite at up to
@@ -550,9 +536,7 @@ class DirectStoreBackend:
         self, agent: str, role: str, title: str, instructions: str, event_id: int
     ) -> dict[str, Any]:
         task = asdict(
-            self.store.assign_task(
-                agent, role, title, instructions, source_event_id=event_id
-            )
+            self.store.assign_task(agent, role, title, instructions, source_event_id=event_id)
         )
         await asyncio.sleep(0)
         return task
@@ -571,9 +555,7 @@ class DirectStoreBackend:
         self.store.set_workflow_status(WorkflowStatus(status), summary)
         return {"ok": True}
 
-    async def log_decision(
-        self, summary: str, rationale: str, key: str | None
-    ) -> dict[str, Any]:
+    async def log_decision(self, summary: str, rationale: str, key: str | None) -> dict[str, Any]:
         return {"id": self.store.log_decision(summary, rationale, key=key)}
 
 
@@ -593,9 +575,7 @@ class McpBackend:
     async def get_state(self) -> dict[str, Any]:
         return await _call_dict(self.session, "get_state")
 
-    async def wait_for_event(
-        self, timeout_s: float, ack: str | None = None
-    ) -> dict[str, Any]:
+    async def wait_for_event(self, timeout_s: float, ack: str | None = None) -> dict[str, Any]:
         arguments: dict[str, Any] = {"timeout_s": timeout_s}
         if ack is not None:
             arguments["ack"] = ack
@@ -633,9 +613,7 @@ class McpBackend:
             {"status": status, "summary": summary},
         )
 
-    async def log_decision(
-        self, summary: str, rationale: str, key: str | None
-    ) -> dict[str, Any]:
+    async def log_decision(self, summary: str, rationale: str, key: str | None) -> dict[str, Any]:
         return await _call_dict(
             self.session,
             "log_decision",
@@ -676,9 +654,7 @@ def _find_task(state: dict[str, Any], assignee: str) -> dict[str, Any] | None:
     )
 
 
-def _check_harness(
-    agent_name: str, checked_in_harness: Any, expected_harness: str | None
-) -> None:
+def _check_harness(agent_name: str, checked_in_harness: Any, expected_harness: str | None) -> None:
     if expected_harness is not None and checked_in_harness != expected_harness:
         raise ValueError(
             f"Worker {agent_name!r} checked in with harness {checked_in_harness!r}, "
@@ -793,9 +769,7 @@ async def drive_one_task_with_backend(
         )
         if not isinstance(checkin_event_id, int):
             raise RuntimeError("Initial assignment has no durable check-in event id")
-        task = await backend.assign_task(
-            agent_name, role, title, instructions, checkin_event_id
-        )
+        task = await backend.assign_task(agent_name, role, title, instructions, checkin_event_id)
         task_id = str(task.get("id") or "")
         logger.info("Task assigned: id=%s title=%r", task_id, title)
         if crash_at == "after_action":
@@ -805,10 +779,9 @@ async def drive_one_task_with_backend(
         if crash_at == "before_ack" and last_delivery_id:
             raise AliceCrashError("Simulated Alice crash before ack")
 
-        terminal_recovery = (
-            existing_task is not None
-            and existing_task.get("state")
-            in (TaskState.COMPLETED.value, TaskState.FAILED.value)
+        terminal_recovery = existing_task is not None and existing_task.get("state") in (
+            TaskState.COMPLETED.value,
+            TaskState.FAILED.value,
         )
         delivered = await backend.wait_for_event(
             0.05 if terminal_recovery else 5.0,
@@ -817,9 +790,14 @@ async def drive_one_task_with_backend(
         event = delivered.get("event") if isinstance(delivered, dict) else None
         if not isinstance(event, dict):
             current = _find_task(await backend.get_state(), expected_agent)
-            if current is not None and current.get("id") == task_id and current.get("state") in (
-                TaskState.COMPLETED.value,
-                TaskState.FAILED.value,
+            if (
+                current is not None
+                and current.get("id") == task_id
+                and current.get("state")
+                in (
+                    TaskState.COMPLETED.value,
+                    TaskState.FAILED.value,
+                )
             ):
                 task_finished = True
                 result_data = current.get("result") or {}
@@ -975,7 +953,8 @@ def main() -> None:
         help="Drive Alice through robomate mcp against an existing robomate up hub",
     )
     parser.add_argument(
-        "--bridge-cmd", "--hub-cmd",
+        "--bridge-cmd",
+        "--hub-cmd",
         default=f'"{Path(sys.executable).with_name("robomate")}" mcp --role orchestrator',
         help="Orchestrator bridge command for --mcp (parsed quote-aware)",
     )
@@ -1040,9 +1019,7 @@ def main() -> None:
             initialize_database(db_path)
             store = HubStore(db_path)
             lost_after_s = HubSettings.from_env().lost_after_s
-            long_work_s = (
-                lost_after_s + 30.0 if args.long_work_s is None else args.long_work_s
-            )
+            long_work_s = lost_after_s + 30.0 if args.long_work_s is None else args.long_work_s
             result = asyncio.run(
                 drive_endurance(
                     store,

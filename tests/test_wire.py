@@ -53,10 +53,7 @@ def test_wire_fixtures_round_trip_a2a_sdk_models(fixture_name: str) -> None:
 
     # Validate request against a2a-sdk model and assert wire shape round-trips
     validated_req: (
-        SendMessageRequest
-        | SendStreamingMessageRequest
-        | GetTaskRequest
-        | CancelTaskRequest
+        SendMessageRequest | SendStreamingMessageRequest | GetTaskRequest | CancelTaskRequest
     )
     if method == "message/send":
         validated_req = SendMessageRequest.model_validate(data["request"])
@@ -76,15 +73,11 @@ def test_wire_fixtures_round_trip_a2a_sdk_models(fixture_name: str) -> None:
     validated_resp = JSONRPCSuccessResponse.model_validate(data["response"])
     if method == "message/send":
         msg_result = Message.model_validate(data["response"]["result"])
-        dumped_result = msg_result.model_dump(
-            mode="json", exclude_none=True, by_alias=True
-        )
+        dumped_result = msg_result.model_dump(mode="json", exclude_none=True, by_alias=True)
         assert dumped_result == data["response"]["result"]
     else:
         task_result = Task.model_validate(data["response"]["result"])
-        dumped_result = task_result.model_dump(
-            mode="json", exclude_none=True, by_alias=True
-        )
+        dumped_result = task_result.model_dump(mode="json", exclude_none=True, by_alias=True)
         assert dumped_result == data["response"]["result"]
     dumped_resp = validated_resp.model_dump(mode="json", exclude_none=True, by_alias=True)
     assert dumped_resp == data["response"]
@@ -110,14 +103,10 @@ def test_no_unprefixed_hub_keys_in_packages_code() -> None:
         text = py_file.read_text(encoding="utf-8")
         for match in meta_get_re.finditer(text):
             key = match.group(1)
-            assert key.startswith("hub."), (
-                f"Unprefixed metadata.get key {key!r} in {py_file}"
-            )
+            assert key.startswith("hub."), f"Unprefixed metadata.get key {key!r} in {py_file}"
         for match in meta_sub_re.finditer(text):
             key = match.group(1)
-            assert key.startswith("hub."), (
-                f"Unprefixed metadata subscript key {key!r} in {py_file}"
-            )
+            assert key.startswith("hub."), f"Unprefixed metadata subscript key {key!r} in {py_file}"
 
         tree = ast.parse(text, filename=str(py_file))
         for node in ast.walk(tree):
@@ -142,9 +131,8 @@ def test_no_unprefixed_hub_keys_in_packages_code() -> None:
                                 assert key_node.value.startswith("hub."), msg
             elif isinstance(node, ast.Call):
                 func = node.func
-                is_text_part = (
-                    (isinstance(func, ast.Name) and func.id == "text_part")
-                    or (isinstance(func, ast.Attribute) and func.attr == "text_part")
+                is_text_part = (isinstance(func, ast.Name) and func.id == "text_part") or (
+                    isinstance(func, ast.Attribute) and func.attr == "text_part"
                 )
                 if is_text_part:
                     for kw in node.keywords:
@@ -283,9 +271,9 @@ async def test_tasks_get_populated_history_has_only_prefixed_metadata(
     history_len_before = len(store.task_history(task.id))
     reused_id = store.open_question(task.id, "bob", "old question text", sent_as="legacy-q-999")
     assert reused_id == legacy_q_row_id
-    assert (
-        store.pending_events() == events_before
-    ), "Retried question must not queue duplicate event"
+    assert store.pending_events() == events_before, (
+        "Retried question must not queue duplicate event"
+    )
     assert len(store.task_history(task.id)) == history_len_before, "No new row should be added"
 
     # Dispatch tasks/get with full history
@@ -313,10 +301,7 @@ async def test_tasks_get_populated_history_has_only_prefixed_metadata(
     # Specifically check part metadata on each history message
     history = resp_data["result"]["history"]
     part_metas = [
-        part["metadata"]
-        for msg in history
-        for part in msg.get("parts", [])
-        if "metadata" in part
+        part["metadata"] for msg in history for part in msg.get("parts", []) if "metadata" in part
     ]
     assert len(part_metas) >= 6, "Expected part metadata on history messages"
     for pmeta in part_metas:

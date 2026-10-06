@@ -94,8 +94,7 @@ class RpcDispatcher:
             name: validate_call(getattr(ops, name)) for name in OPERATIONS
         }
         self._params = {
-            name: frozenset(inspect.signature(getattr(ops, name)).parameters)
-            for name in OPERATIONS
+            name: frozenset(inspect.signature(getattr(ops, name)).parameters) for name in OPERATIONS
         }
 
     async def dispatch(
@@ -140,8 +139,11 @@ class RpcDispatcher:
                 "forge": self.hub_info["forge"],
                 "url": self.hub_info["url"],
                 "default_branch": self.hub_info["default_branch"],
-                "orchestrator": None if session is None else {
-                    "name": session.actor, "session": session.session,
+                "orchestrator": None
+                if session is None
+                else {
+                    "name": session.actor,
+                    "session": session.session,
                     "last_seen": session.last_seen.isoformat(),
                 },
                 **summary,
@@ -194,7 +196,8 @@ class RpcDispatcher:
             self._accept_session(*caller)
         result = await operation(**params)
         if (
-            caller is not None and self.orchestrator is not None
+            caller is not None
+            and self.orchestrator is not None
             and caller[1] != self.orchestrator.session
         ):
             if method == "wait_for_event" and isinstance(result, dict):
@@ -207,14 +210,32 @@ class RpcDispatcher:
     @staticmethod
     def _call_record(row: Any, actor: str) -> CallRecord:
         if not isinstance(row, dict) or set(row) != {
-            "boundary", "actor", "tool", "outcome", "bytes_in", "bytes_out",
-            "started", "finished", "status", "content_bytes", "repeat_bytes", "task_id",
+            "boundary",
+            "actor",
+            "tool",
+            "outcome",
+            "bytes_in",
+            "bytes_out",
+            "started",
+            "finished",
+            "status",
+            "content_bytes",
+            "repeat_bytes",
+            "task_id",
         }:
             raise RpcError(INVALID_PARAMS, "invalid call record")
         if row["boundary"] != "mcp" or row["actor"] != actor:
             raise RpcError(INVALID_PARAMS, "call record actor or boundary mismatch")
-        if row["tool"] not in (*OPERATIONS, "initialize", "tools/list", "ping",
-                               "resources/list", "prompts/list", "unknown", "other"):
+        if row["tool"] not in (
+            *OPERATIONS,
+            "initialize",
+            "tools/list",
+            "ping",
+            "resources/list",
+            "prompts/list",
+            "unknown",
+            "other",
+        ):
             raise RpcError(INVALID_PARAMS, "invalid call tool")
         if row["outcome"] not in ("ok", "error", "null_event", "event"):
             raise RpcError(INVALID_PARAMS, "invalid call outcome")

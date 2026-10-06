@@ -22,8 +22,9 @@ def _request(
 ) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
-                         "params": params or {}}).encode(),
+        data=json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+        ).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=2) as response:
@@ -66,10 +67,17 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
         port = listener.getsockname()[1]
     process = subprocess.Popen(
         [sys.executable, "-m", "agent_hub.main"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        env={**os.environ, "HUB_STATE_DIR": str(tmp_path),
-             "HUB_DB_PATH": str(tmp_path / "hub.db"), "HUB_TOKEN": "test-token",
-             "HUB_HOST": "127.0.0.1", "HUB_PORT": str(port)},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **os.environ,
+            "HUB_STATE_DIR": str(tmp_path),
+            "HUB_DB_PATH": str(tmp_path / "hub.db"),
+            "HUB_TOKEN": "test-token",
+            "HUB_HOST": "127.0.0.1",
+            "HUB_PORT": str(port),
+        },
     )
     try:
         deadline = time.monotonic() + 10
@@ -80,29 +88,41 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
                 break
             except OSError:
                 assert process.poll() is None and time.monotonic() < deadline, (
-                    process.stderr.read().decode() if process.poll() is not None and process.stderr
+                    process.stderr.read().decode()
+                    if process.poll() is not None and process.stderr
                     else "timed out"
                 )
                 time.sleep(0.02)
         metadata = {
-            MetaKeys.AGENT: "bob", MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
-            MetaKeys.OPERATION_ID: "op-1", MetaKeys.WORKER_INSTANCE_ID: "bob-1",
+            MetaKeys.AGENT: "bob",
+            MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+            MetaKeys.OPERATION_ID: "op-1",
+            MetaKeys.WORKER_INSTANCE_ID: "bob-1",
         }
-        body = {"message": {"messageId": "m-1", "role": "user",
-                            "parts": [{"kind": "text", "text": "READY"}],
-                            "metadata": metadata}}
+        body = {
+            "message": {
+                "messageId": "m-1",
+                "role": "user",
+                "parts": [{"kind": "text", "text": "READY"}],
+                "metadata": metadata,
+            }
+        }
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/a2a",
-            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "message/send",
-                             "params": body}).encode(),
-            headers={"Authorization": "Bearer test-token", "Content-Type": "application/json",
-                     "X-Forwarded-For": "203.0.113.7"},
+            data=json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": body}
+            ).encode(),
+            headers={
+                "Authorization": "Bearer test-token",
+                "Content-Type": "application/json",
+                "X-Forwarded-For": "203.0.113.7",
+            },
         )
         with urllib.request.urlopen(request, timeout=2) as response:
             assert "result" in json.load(response)
-        assert _request(f"http://127.0.0.1:{port}/rpc", "test-token", "hub.shutdown")[
-            "result"
-        ] == {"stopping": True}
+        assert _request(f"http://127.0.0.1:{port}/rpc", "test-token", "hub.shutdown")["result"] == {
+            "stopping": True
+        }
         process.wait(timeout=5)
         assert process.returncode == 0
         assert process.stdout is not None and process.stdout.read() == b""

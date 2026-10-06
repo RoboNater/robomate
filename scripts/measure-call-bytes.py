@@ -110,9 +110,7 @@ def structured(result: Any) -> Any:
     return json.loads(result.content[0].text) if result.content else None
 
 
-async def alice(
-    session: ClientSession, calls: list[dict[str, Any]], skipped: Counter[str]
-) -> None:
+async def alice(session: ClientSession, calls: list[dict[str, Any]], skipped: Counter[str]) -> None:
     delivery: str | None = None
     event_id: int | None = None
     for call in calls:
@@ -166,9 +164,7 @@ async def worker(
     await session.call_tool("check_in", dict(check_in["input"]))
     done = 0
     while True:
-        assignment = structured(
-            await session.call_tool("await_assignment", {"timeout_s": hold_s})
-        )
+        assignment = structured(await session.call_tool("await_assignment", {"timeout_s": hold_s}))
         if assignment.get("release"):
             log(f"{name} released")
             return
@@ -193,23 +189,37 @@ async def replay(
     port = free_port()
     repo = run_dir / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True,
-                   capture_output=True)
-    subprocess.run(["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
-                   cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD",
-                    "refs/remotes/origin/main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     state = repo / ".robomate"
     command = str(Path(sys.executable).with_name("robomate"))
     base_env = {k: v for k, v in os.environ.items() if not k.startswith("HUB_")}
-    hub_env = base_env | {"XDG_STATE_HOME": str(run_dir / "xdg"),
+    hub_env = base_env | {
+        "XDG_STATE_HOME": str(run_dir / "xdg"),
         "HUB_CALL_LOG_JSONL": str(run_dir / "hub-calls.jsonl"),
     }
     skipped: Counter[str] = Counter()
     started = time.monotonic()
     hub_process = await asyncio.create_subprocess_exec(
-        command, "up", "--port", str(port), cwd=repo, env=hub_env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        command,
+        "up",
+        "--port",
+        str(port),
+        cwd=repo,
+        env=hub_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.monotonic() + 20
@@ -227,7 +237,9 @@ async def replay(
         }
         async with AsyncExitStack() as stack:
             alice_params = StdioServerParameters(
-                command=command, args=["mcp", "--role", "orchestrator"], env=bridge_env,
+                command=command,
+                args=["mcp", "--role", "orchestrator"],
+                env=bridge_env,
             )
             read, write = await stack.enter_async_context(stdio_client(alice_params))
             alice_session = await stack.enter_async_context(ClientSession(read, write))
@@ -236,11 +248,11 @@ async def replay(
             sessions = {}
             for name, (harness, provider) in HARNESS.items():
                 env = bridge_env | {
-                "AGENT_NAME": name,
-                "HUB_HARNESS": harness,
-                "HUB_PROVIDER": provider,
-                "HUB_TELEMETRY_LOG": str(run_dir / f"{name}-telemetry.jsonl"),
-                "HUB_HEARTBEAT_S": str(heartbeat_s),
+                    "AGENT_NAME": name,
+                    "HUB_HARNESS": harness,
+                    "HUB_PROVIDER": provider,
+                    "HUB_TELEMETRY_LOG": str(run_dir / f"{name}-telemetry.jsonl"),
+                    "HUB_HEARTBEAT_S": str(heartbeat_s),
                 }
                 params = StdioServerParameters(
                     command=command, args=["mcp", "--role", "worker", "--name", name], env=env
@@ -329,8 +341,7 @@ def report(
         "skipped_calls": run["skipped"],
         "per_actor": per_actor,
         "per_tool": [
-            {"boundary": b, "actor": a, "tool": t, **v}
-            for (b, a, t), v in sorted(per_tool.items())
+            {"boundary": b, "actor": a, "tool": t, **v} for (b, a, t), v in sorted(per_tool.items())
         ],
         "wait_for_event": {
             "calls": len(waits),
@@ -406,15 +417,15 @@ def markdown(data: dict[str, Any], stem: str) -> str:
         )
     lines += [
         "",
-        "## `wait_for_event` and `{\"event\": null}`",
+        '## `wait_for_event` and `{"event": null}`',
         "",
         f"- Replay: {waits['null_event']} of {waits['calls']} results were"
-        f" `{{\"event\": null}}` (share {waits['null_share_calls']}), "
+        f' `{{"event": null}}` (share {waits["null_share_calls"]}), '
         f"{waits['null_bytes_out']} of {waits['bytes_out']} bytes out. Each null result is"
         f" {', '.join(map(str, waits['null_bytes_each'])) or '-'} bytes on the wire.",
         f"- Recorded run, from its durations rather than from accounting: "
         f"{waits['recorded_run_timeouts']} of {waits['recorded_run_calls']} of Alice's"
-        " waits lasted at least their `timeout_s`, i.e. returned `{\"event\": null}`.",
+        ' waits lasted at least their `timeout_s`, i.e. returned `{"event": null}`.',
         "",
         "## How much `get_state` repeats itself",
         "",

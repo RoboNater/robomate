@@ -70,9 +70,10 @@ def test_discovery_prefers_explicit_then_repo(repository: Path) -> None:
     write_hub_json(repository, {"url": "http://repo:8420", "hub_id": "repo-id"})
     (repository / ".robomate/token").write_text("repo-token\n")
     assert discover(repository, {}) == HubEndpoint("http://repo:8420", "repo-token")
-    assert discover(repository, {
-        "ROBOMATE_HUB_URL": "http://explicit:8421/", "ROBOMATE_TOKEN": "explicit-token"
-    }) == HubEndpoint("http://explicit:8421", "explicit-token")
+    assert discover(
+        repository,
+        {"ROBOMATE_HUB_URL": "http://explicit:8421/", "ROBOMATE_TOKEN": "explicit-token"},
+    ) == HubEndpoint("http://explicit:8421", "explicit-token")
 
 
 def test_discovery_uses_sole_registry_hub_or_lists_choices(
@@ -84,9 +85,10 @@ def test_discovery_uses_sole_registry_hub_or_lists_choices(
     one = {"repo_root": str(root), "url": "http://registry:8420", "hub_id": "one"}
     monkeypatch.setattr("agent_hub_common.registry.live_entries", lambda env: [one])
     assert discover(tmp_path, {}) == HubEndpoint("http://registry:8420", "registry-token")
-    monkeypatch.setattr("agent_hub_common.registry.live_entries", lambda env: [one, {
-        "repo_root": "/other", "url": "http://other:8421", "hub_id": "two"
-    }])
+    monkeypatch.setattr(
+        "agent_hub_common.registry.live_entries",
+        lambda env: [one, {"repo_root": "/other", "url": "http://other:8421", "hub_id": "two"}],
+    )
     with pytest.raises(DiscoveryError, match="Registered hubs:.*hub.*other"):
         discover(tmp_path, {})
 
@@ -143,8 +145,13 @@ def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> N
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
-        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
     ]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     delete, share_all, open_existing = 0x00010000, 0x7, 3

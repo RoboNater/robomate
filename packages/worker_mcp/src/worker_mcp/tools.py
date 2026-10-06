@@ -96,8 +96,10 @@ def create_worker_mcp(
         """
         resolved = await resolve()
         return await invoke(
-            resolved, "await_assignment", resolved.await_assignment(timeout_s),
-            {"timeout_s": timeout_s}
+            resolved,
+            "await_assignment",
+            resolved.await_assignment(timeout_s),
+            {"timeout_s": timeout_s},
         )
 
     @server.tool()

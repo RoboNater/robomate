@@ -22,9 +22,7 @@ from mcp.server.fastmcp import FastMCP
 from .accounting import McpAccounting
 
 logger = logging.getLogger(__name__)
-RETRYABLE = frozenset({
-    "get_state", "wait_for_event", "check_merge_gate", "assign_task", "reply"
-})
+RETRYABLE = frozenset({"get_state", "wait_for_event", "check_merge_gate", "assign_task", "reply"})
 
 
 class SupersededSessionError(RuntimeError):
@@ -145,11 +143,13 @@ class OrchestratorBridge:
                         raise RuntimeError(message)
                     result: dict[str, Any] = body["result"]
                     if self._heartbeat is None and method not in (
-                        "hub.heartbeat", "hub.record_calls"
+                        "hub.heartbeat",
+                        "hub.record_calls",
                     ):
                         self._heartbeat = asyncio.create_task(self._heartbeat_loop())
                     if self._accounting_task is None and method not in (
-                        "hub.heartbeat", "hub.record_calls"
+                        "hub.heartbeat",
+                        "hub.record_calls",
                     ):
                         self._accounting_task = asyncio.create_task(self._accounting_loop())
                     return result

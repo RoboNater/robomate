@@ -48,6 +48,7 @@ other packages; it must depend on none of them.
 ```sh
 uv sync --locked --all-packages --dev
 uv run --locked ruff check .
+uv run --locked ruff format --check .
 uv run --locked mypy
 uv run --locked pytest
 ```

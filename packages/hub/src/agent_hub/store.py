@@ -318,9 +318,7 @@ def _message(row: Row) -> MessageRecord:
         context_id=row["context_id"],
         sender=row["sender"],
         direction=row["direction"],
-        parts=[
-            _normalize_part(part) for part in parts if isinstance(part, dict)
-        ]
+        parts=[_normalize_part(part) for part in parts if isinstance(part, dict)]
         if isinstance(parts, list)
         else [],
         ts=row["ts"],
@@ -502,21 +500,25 @@ class HubStore:
             ).fetchone()
             agents = [
                 {
-                    "name": row["name"], "harness": row["harness"],
-                    "model": row["model"], "status": row["status"],
+                    "name": row["name"],
+                    "harness": row["harness"],
+                    "model": row["model"],
+                    "status": row["status"],
                     "alive": row["status"] != AgentStatus.LOST.value,
                     "current_task": row["current_task_id"],
                 }
                 for row in connection.execute(
-                    "SELECT name, harness, model, status, current_task_id"
-                    " FROM agent ORDER BY name"
+                    "SELECT name, harness, model, status, current_task_id FROM agent ORDER BY name"
                 )
             ]
             tasks = [
                 {
-                    "id": row["id"], "role": row["role"],
-                    "assignee": row["assignee"], "state": row["state"],
-                    "pr_url": None, "head_sha": row["pr_head_sha"],
+                    "id": row["id"],
+                    "role": row["role"],
+                    "assignee": row["assignee"],
+                    "state": row["state"],
+                    "pr_url": None,
+                    "head_sha": row["pr_head_sha"],
                 }
                 for row in connection.execute(
                     "SELECT id, role, assignee, state, pr_head_sha FROM task"
@@ -547,14 +549,17 @@ class HubStore:
                 task["state"] == TaskState.INPUT_REQUIRED.value for task in tasks
             )
         return {
-            "workflow": None if workflow is None else {
+            "workflow": None
+            if workflow is None
+            else {
                 "status": workflow["status"],
                 "headline": next(
                     (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
                     "",
                 )[:160],
             },
-            "agents": agents, "tasks": tasks,
+            "agents": agents,
+            "tasks": tasks,
             "pending_questions": pending_questions,
         }
 
@@ -575,14 +580,10 @@ class HubStore:
                 (self._now_iso(), summary, f"Workflow status set to {status.value}"),
             )
 
-    def log_decision(
-        self, summary: str, rationale: str, key: str | None = None
-    ) -> int:
+    def log_decision(self, summary: str, rationale: str, key: str | None = None) -> int:
         with database(self.path) as connection:
             if key is not None:
-                row = connection.execute(
-                    "SELECT id FROM decision WHERE key = ?", (key,)
-                ).fetchone()
+                row = connection.execute("SELECT id FROM decision WHERE key = ?", (key,)).fetchone()
                 if row is not None:
                     return int(row["id"])
             cursor = connection.execute(
@@ -606,10 +607,14 @@ class HubStore:
         then NULL. Check names are external labels, capped here and sanitized by
         display consumers. Links are not needed to reconstruct the CI reading.
         """
-        checks = [] if report is None else [
-            {"name": check.name[:MAX_CHECK_NAME_CHARS], "bucket": check.bucket}
-            for check in report.checks
-        ]
+        checks = (
+            []
+            if report is None
+            else [
+                {"name": check.name[:MAX_CHECK_NAME_CHARS], "bucket": check.bucket}
+                for check in report.checks
+            ]
+        )
         with database(self.path) as connection:
             workflow = connection.execute(
                 "SELECT id FROM workflow ORDER BY created LIMIT 1"
@@ -620,7 +625,8 @@ class HubStore:
                 " base_ref, base_sha, main_sha, base_behind_main, elapsed_s, checks_json,"
                 " error_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    self._now_iso(), workflow["id"] if workflow else None,
+                    self._now_iso(),
+                    workflow["id"] if workflow else None,
                     report.pr_url if report else pr_url,
                     report.expected_head_sha if report else expected_head_sha,
                     report.current_head_sha if report else None,
@@ -633,7 +639,9 @@ class HubStore:
                     report.base_sha if report else None,
                     report.main_sha if report else None,
                     report.base_behind_main if report else None,
-                    elapsed_s, json.dumps(checks), error_code,
+                    elapsed_s,
+                    json.dumps(checks),
+                    error_code,
                 ),
             )
             return int(cursor.lastrowid or 0)
@@ -749,13 +757,8 @@ class HubStore:
             else:
                 previous = AgentStatus(row["status"])
                 previous_instance = str(row["worker_instance_id"])
-                if (
-                    previous in (AgentStatus.IDLE, AgentStatus.BUSY)
-                    and previous_instance
-                ):
-                    raise DuplicateAgentError(
-                        f"agent {name} already has a live worker instance"
-                    )
+                if previous in (AgentStatus.IDLE, AgentStatus.BUSY) and previous_instance:
+                    raise DuplicateAgentError(f"agent {name} already has a live worker instance")
                 # A returning worker keeps its context id so Alice reads one
                 # unbroken thread per agent across restarts.
                 context_id = row["context_id"]
@@ -876,10 +879,7 @@ class HubStore:
             now = self._now()
             now_iso = to_iso(now)
             agent = self._require_agent(connection, name)
-            if (
-                agent.worker_instance_id != worker_instance_id
-                or agent.status is AgentStatus.LOST
-            ):
+            if agent.worker_instance_id != worker_instance_id or agent.status is AgentStatus.LOST:
                 return False
             connection.execute(
                 "UPDATE agent SET last_heartbeat = MAX(last_heartbeat, ?),"
@@ -907,9 +907,7 @@ class HubStore:
                     (to_iso(cap), now_iso, task.id),
                 )
                 return True
-            renewed = min(
-                max(now + timedelta(seconds=task.lease_duration_s), current_expiry), cap
-            )
+            renewed = min(max(now + timedelta(seconds=task.lease_duration_s), current_expiry), cap)
             if renewed != current_expiry:
                 connection.execute(
                     "UPDATE task SET lease_expires = ?, updated = ? WHERE id = ?",
@@ -964,9 +962,7 @@ class HubStore:
                 AgentStatus.BUSY,
             ):
                 return False
-            connection.execute(
-                "UPDATE agent SET worker_instance_id = '' WHERE name = ?", (name,)
-            )
+            connection.execute("UPDATE agent SET worker_instance_id = '' WHERE name = ?", (name,))
             return True
 
     def _require_agent(self, connection: Connection, name: str) -> AgentRecord:
@@ -1901,8 +1897,7 @@ class HubStore:
     def _lose_agents(self, connection: Connection, cutoff: str) -> list[int]:
         live = (AgentStatus.IDLE, AgentStatus.BUSY)
         rows = connection.execute(
-            f"SELECT * FROM agent WHERE status IN ({_placeholders(live)})"
-            " AND last_heartbeat <= ?",
+            f"SELECT * FROM agent WHERE status IN ({_placeholders(live)}) AND last_heartbeat <= ?",
             (*(status.value for status in live), cutoff),
         ).fetchall()
         emitted = []

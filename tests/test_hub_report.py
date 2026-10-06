@@ -299,11 +299,19 @@ def test_v13_reports_stored_gate_facts_and_errors(tmp_path: Path, url: str) -> N
     initialize_database(state / "hub.db")
     store = HubStore(state / "hub.db", clock=lambda: T0 + timedelta(seconds=2010))
     report = GateReport(
-        pr_url=url, expected_head_sha=HEAD, current_head_sha=HEAD,
-        pr_state=PrState.OPEN, head_matches=True, ci=CiStatus.PASS,
-        mergeable=Mergeable.CLEAN, merge_state_status="mergeable",
-        base_ref="main\n\x1b[31m", base_sha=MERGED, main_sha=HEAD,
-        base_behind_main=False, elapsed_s=10,
+        pr_url=url,
+        expected_head_sha=HEAD,
+        current_head_sha=HEAD,
+        pr_state=PrState.OPEN,
+        head_matches=True,
+        ci=CiStatus.PASS,
+        mergeable=Mergeable.CLEAN,
+        merge_state_status="mergeable",
+        base_ref="main\n\x1b[31m",
+        base_sha=MERGED,
+        main_sha=HEAD,
+        base_behind_main=False,
+        elapsed_s=10,
         checks=[Check("check\n\x1b" + "x" * 300, "pass", MARKER)],
     )
     store.record_gate_reading(url, HEAD, report=report, elapsed_s=report.elapsed_s)
@@ -369,9 +377,12 @@ def test_v12_report_keeps_rationale_fallback_and_does_not_migrate(tmp_path: Path
     assert "decision 2" in REPORT.render_text(built)
     with sqlite3.connect(state / "hub.db") as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
-        assert connection.execute(
-            "SELECT name FROM sqlite_master WHERE name = 'gate_reading'"
-        ).fetchone() is None
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'gate_reading'"
+            ).fetchone()
+            is None
+        )
 
 
 def test_active_waiting_and_idle_sum_to_total_time(tmp_path: Path) -> None:

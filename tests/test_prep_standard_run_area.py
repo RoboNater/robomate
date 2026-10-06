@@ -24,7 +24,8 @@ SPEC.loader.exec_module(HELPER)
 
 
 def test_generation_round_trip_and_no_preparation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unexpected(*args: Any, **kwargs: Any) -> None:
         pytest.fail("config generation must not run git or prepare-run")
@@ -34,13 +35,27 @@ def test_generation_round_trip_and_no_preparation(
     HELPER.main(["--generate-default-config", str(blank), "--issue", "99"])
     assert tomllib.loads(blank.read_text()) == HELPER.DEFAULTS
     target = tmp_path / "configured.toml"
-    HELPER.main([
-        "--config", str(blank), "--generate-config", str(target),
-        "--repository", "git@github.com:owner/repo.git", "--issue", "42",
-        "--run-parent-dir", str(tmp_path / "with spaces"), "--run-dir", "run",
-        "--account", 'user"name', "--bob-model", "model\\with\ncharacters",
-        "--no-auto-start",
-    ])
+    HELPER.main(
+        [
+            "--config",
+            str(blank),
+            "--generate-config",
+            str(target),
+            "--repository",
+            "git@github.com:owner/repo.git",
+            "--issue",
+            "42",
+            "--run-parent-dir",
+            str(tmp_path / "with spaces"),
+            "--run-dir",
+            "run",
+            "--account",
+            'user"name',
+            "--bob-model",
+            "model\\with\ncharacters",
+            "--no-auto-start",
+        ]
+    )
     values = tomllib.loads(target.read_text())
     assert values["issue"] == 42
     assert values["run_dir"] == str(tmp_path / "with spaces/run")
@@ -57,16 +72,17 @@ def test_generation_round_trip_and_no_preparation(
 
 
 def test_config_paths_and_cli_work_replacement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config = config_dir / "settings.toml"
     config.write_text('run_parent_dir = "../runs"\nrun_dir = "one"\nissue = 42\n')
     monkeypatch.chdir(tmp_path)
-    args = HELPER.parser().parse_args([
-        "--config", str(config), "--work-file", "cli work.md", "--bob-harness", "codex"
-    ])
+    args = HELPER.parser().parse_args(
+        ["--config", str(config), "--work-file", "cli work.md", "--bob-harness", "codex"]
+    )
     values = HELPER.settings(args)
     assert values["issue"] == 0
     assert values["work_file"] == str(tmp_path / "cli work.md")
@@ -75,17 +91,24 @@ def test_config_paths_and_cli_work_replacement(
     config.write_text('work_file = "statement.md"\n')
     values = HELPER.settings(HELPER.parser().parse_args(["--config", str(config)]))
     assert values["work_file"] == str(config_dir / "statement.md")
-    values = HELPER.settings(HELPER.parser().parse_args([
-        "--config", str(config), "--issue", "43"
-    ]))
+    values = HELPER.settings(HELPER.parser().parse_args(["--config", str(config), "--issue", "43"]))
     assert values["work_file"] == "" and values["issue"] == 43
 
 
-@pytest.mark.parametrize("content", [
-    "isssue = 42", 'issue = "42"', "issue = true", "auto_start = 1",
-    "issue = -1", 'forge = "other"', 'bob_harness = "other"',
-    'issue = 42\nwork_file = "statement.md"', "not toml",
-])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "isssue = 42",
+        'issue = "42"',
+        "issue = true",
+        "auto_start = 1",
+        "issue = -1",
+        'forge = "other"',
+        'bob_harness = "other"',
+        'issue = 42\nwork_file = "statement.md"',
+        "not toml",
+    ],
+)
 def test_bad_config_fails_before_mutation(tmp_path: Path, content: str) -> None:
     config = tmp_path / "invalid.toml"
     config.write_text(content)
@@ -106,14 +129,29 @@ def test_incomplete_preparation_does_not_create_run(tmp_path: Path, flags: list[
 
 @pytest.mark.parametrize("work_file", [False, True])
 def test_prepare_clones_and_forwards_arguments(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work_file: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    work_file: bool,
 ) -> None:
     source = tmp_path / "source repo"
     subprocess.run(["git", "init", "-b", "main", str(source)], check=True, capture_output=True)
-    subprocess.run([
-        "git", "-C", str(source), "-c", "user.name=Test", "-c", "user.email=test@example.com",
-        "commit", "--allow-empty", "-m", "baseline"
-    ], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
     run_dir = tmp_path / "run with spaces"
     statement = tmp_path / "work file.md"
     statement.write_text("Do the assigned work.")
@@ -131,10 +169,24 @@ def test_prepare_clones_and_forwards_arguments(
     monkeypatch.setattr(HELPER.subprocess, "run", run)
     prompted: list[str] = []
     monkeypatch.setattr("builtins.input", lambda message: prompted.append(message))
-    args = ["--repository", str(source), "--run-dir", str(run_dir), "--account", "tester",
-            "--roadmap", "owner/repo#2", "--bob-harness", "codex",
-            "--bob-model", "model with spaces", "--bob-effort", "high", "--no-auto-start",
-            *flags]
+    args = [
+        "--repository",
+        str(source),
+        "--run-dir",
+        str(run_dir),
+        "--account",
+        "tester",
+        "--roadmap",
+        "owner/repo#2",
+        "--bob-harness",
+        "codex",
+        "--bob-model",
+        "model with spaces",
+        "--bob-effort",
+        "high",
+        "--no-auto-start",
+        *flags,
+    ]
     HELPER.main(args)
     assert (run_dir / "hub/.git").is_dir()
     assert len(prompted) == 1
@@ -161,8 +213,19 @@ def test_prepare_failure_is_not_hidden(tmp_path: Path, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(HELPER.subprocess, "run", fail)
     with pytest.raises(SystemExit) as error:
-        HELPER.main(["--repository", "repo", "--run-dir", str(tmp_path / "run"),
-                     "--account", "tester", "--issue", "42", "--yes"])
+        HELPER.main(
+            [
+                "--repository",
+                "repo",
+                "--run-dir",
+                str(tmp_path / "run"),
+                "--account",
+                "tester",
+                "--issue",
+                "42",
+                "--yes",
+            ]
+        )
     assert error.value.code == 1
 
 
@@ -199,10 +262,21 @@ def test_powershell_wrapper_preserves_arguments_and_sync_failure(tmp_path: Path)
         executable = tmp_path / "uv"
         executable.write_text(f"#!{sys.executable}\n" + fake.read_text())
         executable.chmod(0o755)
-    env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
-           "UV_TEST_LOG": str(log)}
-    command = [powershell, "-NoProfile", "-File", str(ROOT / "scripts/prep-standard-run.ps1"),
-               "--work-file", "work with spaces.md", "--account", "user with spaces"]
+    env = {
+        **os.environ,
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+        "UV_TEST_LOG": str(log),
+    }
+    command = [
+        powershell,
+        "-NoProfile",
+        "-File",
+        str(ROOT / "scripts/prep-standard-run.ps1"),
+        "--work-file",
+        "work with spaces.md",
+        "--account",
+        "user with spaces",
+    ]
     subprocess.run(command, check=True, cwd=tmp_path, env=env)
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert calls[0][:3] == ["sync", "--locked", "--all-packages"]
@@ -225,12 +299,19 @@ def test_bash_wrappers_preserve_arguments_and_stop_on_sync_failure(tmp_path: Pat
         "sys.exit(int(os.environ.get('UV_TEST_EXIT', '0')))\n"
     )
     fake_uv.chmod(0o755)
-    env = {**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
-           "UV_TEST_LOG": str(log)}
+    env = {
+        **os.environ,
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+        "UV_TEST_LOG": str(log),
+    }
     for script in ("prep-standard-run.sh", "prep-standard-run-area.sh"):
         log.write_text("")
-        subprocess.run(["bash", str(ROOT / "scripts" / script), "--account", "user with spaces"],
-                       check=True, cwd=tmp_path, env={**env, "WORK_FILE": "work with spaces.md"})
+        subprocess.run(
+            ["bash", str(ROOT / "scripts" / script), "--account", "user with spaces"],
+            check=True,
+            cwd=tmp_path,
+            env={**env, "WORK_FILE": "work with spaces.md"},
+        )
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         assert calls[0][:3] == ["sync", "--locked", "--all-packages"]
         assert calls[1][-2:] == ["--account", "user with spaces"]
@@ -238,21 +319,31 @@ def test_bash_wrappers_preserve_arguments_and_stop_on_sync_failure(tmp_path: Pat
             assert "--issue" not in calls[1]
             assert calls[1][calls[1].index("--work-file") + 1] == "work with spaces.md"
             log.write_text("")
-            subprocess.run(["bash", str(ROOT / "scripts" / script),
-                            "--work-file", "cli work.md"], check=True, cwd=tmp_path, env=env)
+            subprocess.run(
+                ["bash", str(ROOT / "scripts" / script), "--work-file", "cli work.md"],
+                check=True,
+                cwd=tmp_path,
+                env=env,
+            )
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             assert "--issue" not in calls[1]
             assert calls[1][-2:] == ["--work-file", "cli work.md"]
-            for config_args in (["--config", "settings with spaces.toml"],
-                                ["--config=settings with spaces.toml"]):
+            for config_args in (
+                ["--config", "settings with spaces.toml"],
+                ["--config=settings with spaces.toml"],
+            ):
                 log.write_text("")
-                subprocess.run(["bash", str(ROOT / "scripts" / script), *config_args],
-                               check=True, cwd=tmp_path,
-                               env={**env, "WORK_FILE": "ignored environment.md"})
+                subprocess.run(
+                    ["bash", str(ROOT / "scripts" / script), *config_args],
+                    check=True,
+                    cwd=tmp_path,
+                    env={**env, "WORK_FILE": "ignored environment.md"},
+                )
                 calls = [json.loads(line) for line in log.read_text().splitlines()]
-                assert calls[1][calls[1].index("python") + 2:] == config_args
+                assert calls[1][calls[1].index("python") + 2 :] == config_args
         log.write_text("")
-        result = subprocess.run(["bash", str(ROOT / "scripts" / script)],
-                                cwd=tmp_path, env={**env, "UV_TEST_EXIT": "7"})
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / script)], cwd=tmp_path, env={**env, "UV_TEST_EXIT": "7"}
+        )
         assert result.returncode == 7
         assert len(log.read_text().splitlines()) == 1

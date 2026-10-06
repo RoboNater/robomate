@@ -296,7 +296,10 @@ In GitLab, `detailed_merge_status` evaluates 24 authoritative states:
   - Implement a structural, normalized URL parser using `urlsplit` and longest matching allowlisted base URL (`HUB_GITLAB_BASE_URLS`):
     ```python
     SEG = r"(?!\.\.?/)[A-Za-z0-9_.][A-Za-z0-9_.-]*"
-    PATH_RE = re.compile(rf"^/(?P<project>{SEG}(?:/{SEG})*)/-/merge_requests/(?P<number>[1-9][0-9]*)/?$")
+    PATH_RE = re.compile(
+        rf"^/(?P<project>{SEG}(?:/{SEG})*)/-/merge_requests/(?P<number>[1-9][0-9]*)/?$"
+    )
+
 
     def parse_gitlab_mr_url(url: str, trusted_base_urls: list[str]) -> tuple[str, str, int, str]:
         """
@@ -309,14 +312,22 @@ In GitLab, `detailed_merge_status` evaluates 24 authoritative states:
         if cand.username or cand.password or cand.query or cand.fragment:
             raise MergeGateError(f"URL contains forbidden userinfo/query/fragment: {url}")
 
-        cand_netloc = f"{cand.hostname.lower()}:{cand.port}" if cand.port and cand.port != 443 else cand.hostname.lower()
+        cand_netloc = (
+            f"{cand.hostname.lower()}:{cand.port}"
+            if cand.port and cand.port != 443
+            else cand.hostname.lower()
+        )
         cand_origin = f"https://{cand_netloc}"
         cand_path = cand.path
 
         matching_bases = []
         for b in trusted_base_urls:
             b_parts = urlsplit(b.strip())
-            b_netloc = f"{b_parts.hostname.lower()}:{b_parts.port}" if b_parts.port and b_parts.port != 443 else b_parts.hostname.lower()
+            b_netloc = (
+                f"{b_parts.hostname.lower()}:{b_parts.port}"
+                if b_parts.port and b_parts.port != 443
+                else b_parts.hostname.lower()
+            )
             b_origin = f"https://{b_netloc}"
             b_path = b_parts.path.rstrip("/")
             if cand_origin == b_origin:
@@ -330,7 +341,7 @@ In GitLab, `detailed_merge_status` evaluates 24 authoritative states:
         matching_bases.sort(key=lambda x: len(x[1]), reverse=True)
         best_base, best_b_path = matching_bases[0]
 
-        remainder = cand_path[len(best_b_path):]
+        remainder = cand_path[len(best_b_path) :]
         match = PATH_RE.fullmatch(remainder)
         if not match:
             raise MergeGateError(f"Invalid GitLab MR path or segment traversal: {remainder}")
