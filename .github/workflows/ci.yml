@@ -22,6 +22,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --all-packages --dev
       - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
       - run: uv run --locked pytest
 
@@ -36,5 +37,6 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --all-packages --dev
       - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
       - run: uv run --locked pytest
