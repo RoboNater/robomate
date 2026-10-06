@@ -476,7 +476,10 @@ def prompt_sections(name: str, harness: str) -> str:
     """Harness notes and the post-release close-out appended to a rendered prompt (#30).
 
     Claude Code backgrounds any tool call still running at 120 s, so a Claude
-    agent is told to keep every hub wait at 100 s.
+    agent is told to keep every hub wait at 100 s. In ``claude -p`` the process
+    exits when the turn ends, and a background job can wake the agent only
+    while its turn is still running, so it is told never to end its turn to
+    wait (#115).
     """
     sections = []
     if harness == "claude-code":
@@ -484,6 +487,20 @@ def prompt_sections(name: str, harness: str) -> str:
         sections.append(
             f"Use a 100 second wait time for all hub waits including {waits}. This "
             "prevents the wait from being shifted to a background task by the harness."
+        )
+        last = (
+            "the workflow is `done` or `escalated`"
+            if name == "alice"
+            else "`await_assignment` returns `release: true`"
+        )
+        sections.append(
+            f"Do not end your turn until {last}. In print mode (`claude -p`) the "
+            "process exits when your turn ends, and a background job can wake you only "
+            "while your turn is still running. Never end your turn to wait for CI, a "
+            "background command, or a long test run, and do not use `run_in_background` "
+            "for a wait. Wait in the foreground with calls kept under 120 s: for example, "
+            "re-run a bounded check such as `gh pr checks <pr>` (GitHub) or "
+            "`glab ci status` (GitLab) after a short `sleep`."
         )
     elif name == "alice":
         skill = ROOT / "skills/alice-orchestrator/SKILL.md"

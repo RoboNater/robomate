@@ -189,6 +189,14 @@ pass it as `ack` on the next `wait_for_event(ack=<delivery_id>)`; do not ack
 before the action. A timeout is normal, so wait again until the wall-time rail
 expires.
 
+<!-- Headless turn end: #115. -->
+
+In a headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) the
+process exits when your turn ends. End your turn only once the workflow is
+`done` or you have escalated with an operator question. Never end it to wait for
+CI, a worker, or a background command: keep waiting in the foreground with
+`wait_for_event` or the merge gate, each call kept under 120 s on Claude Code.
+
 Before a delivered event causes more than one action, call `log_decision` first
 with a deterministic checkpoint key such as `event:<event-id>:<action>`. On
 redelivery, call `get_state`, repeat the same checkpoint call, and inspect

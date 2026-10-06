@@ -1114,6 +1114,26 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
     assert bob_env["HUB_MODEL"] == "claude-opus-5-5"
 
 
+def test_rendered_prompts_forbid_ending_the_turn_to_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A headless worker that ends its turn to wait for CI exits and loses its task (#115).
+    run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="claude-code")
+    bob = " ".join((run_dir / "bob.prompt.md").read_text(encoding="utf-8").split())
+    charlie = " ".join((run_dir / "charlie.prompt.md").read_text(encoding="utf-8").split())
+    alice = " ".join((run_dir / "alice.prompt.md").read_text(encoding="utf-8").split())
+    guide_rule = (
+        "Your turn ends only after `await_assignment` returns `release: true`. "
+        "A headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits"
+    )
+    # The worker guide's rule reaches every harness; the Claude note only claude-code.
+    assert guide_rule in bob and guide_rule in charlie
+    claude_rule = "Do not end your turn until `await_assignment` returns `release: true`."
+    assert claude_rule in bob and claude_rule not in charlie
+    assert "do not use `run_in_background` for a wait" in bob
+    assert "Do not end your turn until the workflow is `done` or `escalated`." in alice
+
+
 def test_same_harness_pair_renders_both_claude_configs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
