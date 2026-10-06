@@ -40,6 +40,7 @@ Keep the coordination directory outside both worker clones. The generated layout
 ├── bob.prompt.md
 ├── charlie.prompt.md
 ├── bob-telemetry.jsonl
+├── bob-sessions.jsonl      # Claude Code worker: conversation IDs
 ├── start-alice.sh
 ├── start-bob.sh
 ├── start-charlie.sh
@@ -89,7 +90,7 @@ To resume the existing workflow, use its original run directory, hub clone,
 goal (the same `--issue` or `--work-file` and roadmap selection), and policy
 options such as merge method, harnesses, capabilities, and CI setting.
 
-The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and ten enabled tools; a Codex worker gets six worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report.
+The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and ten enabled tools; a Codex worker gets six worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report. An auto-started Claude Code worker runs under `scripts/claude-worker.py`, which resumes the same conversation if `claude -p` exits before Alice releases the worker and logs each conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md).
 
 Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s configured SSH or HTTPS protocol. It checks `gh auth status`, the harness versions, the repository's merge setting, and the presence of CI workflows before creating the run. A local repository or `--skip-github-checks` skips the GitHub checks. It links Codex authentication into the run-local home and reports `codex login status`. A rerun with the same run directory preserves clean clones and their identity files; a dirty clone causes an actionable error. The start scripts quote paths with spaces or shell metacharacters and keep Codex sessions available for inspection.
 
