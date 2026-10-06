@@ -62,6 +62,12 @@ fails instead of silently relocking, so an error there means `pyproject.toml`
 and `uv.lock` disagree — resolve that with uv, never by hand-editing the
 lockfile.
 
+pytest treats `DeprecationWarning` and `PendingDeprecationWarning` attributed
+to our packages and tests as errors; other third-party deprecations remain
+warnings (#123). `ResourceWarning` is outside this policy (see #121). Any
+`filterwarnings` `ignore`, in config or a test marker, must be targeted and
+have a comment naming the issue that tracks it.
+
 Green CI is not the bar: it only covers what has tests. Before opening a PR,
 also **run every script and entry point the PR touches** at least once — `ruff`
 and `mypy` cannot see a loop whose body never executes — and **re-read each
