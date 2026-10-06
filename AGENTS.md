@@ -63,8 +63,9 @@ and `uv.lock` disagree — resolve that with uv, never by hand-editing the
 lockfile.
 
 pytest treats `DeprecationWarning` and `PendingDeprecationWarning` attributed
-to our packages and tests as errors; other third-party deprecations remain
-warnings (#123). `ResourceWarning` is outside this policy (see #121). Any
+to our packages and tests as errors; deprecations attributed to third-party
+code remain warnings (#123). Attribution follows the warning's `stacklevel`.
+`ResourceWarning` is outside this policy (see #121). Any
 `filterwarnings` `ignore`, in config or a test marker, must be targeted and
 have a comment naming the issue that tracks it.
 

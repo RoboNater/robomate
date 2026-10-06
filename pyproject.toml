@@ -42,7 +42,7 @@ filterwarnings = [
     'error::PendingDeprecationWarning:^(agent_hub|agent_hub_common|robomate|worker_mcp|tests|test_[^.]+|conftest)(\.|$)',
     # #123: StarletteDeprecationWarning inherits UserWarning, so stays visible
     # outside this policy's category scope; do not ignore it as DeprecationWarning.
-    # Known upstream AnyIO warning in #123; remove the ignore when upstream fixes it.
+    # #127 tracks removing this AnyIO ignore when upstream fixes the alias access.
     # AnyIO's deprecated alias is accessed by starlette.testclient (stacklevel=3).
     'ignore:^The anyio\.abc\.BlockingPortal alias is deprecated, use anyio\.from_thread\.BlockingPortal instead\.$:DeprecationWarning:^starlette\.testclient$',
 ]
