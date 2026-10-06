@@ -249,9 +249,7 @@ async def test_worker_calls_require_the_current_instance_id(
 
 
 async def test_a_message_with_no_task_must_be_the_check_in(client: httpx.AsyncClient) -> None:
-    body = await post(
-        client, "message/send", message("hello", metadata={MetaKeys.AGENT: "bob"})
-    )
+    body = await post(client, "message/send", message("hello", metadata={MetaKeys.AGENT: "bob"}))
 
     assert body["error"]["code"] == -32602
     assert "READY" in body["error"]["message"]
@@ -514,9 +512,7 @@ async def test_a_question_holds_until_alice_replies(
     async def alice() -> None:
         event = await hub_store.wait_for_event(2.0)
         assert event is not None and event.kind is EventKind.WORKER_QUESTION
-        hub_store.reply(
-            event.payload["task_id"], "main", message_id=event.payload["message_id"]
-        )
+        hub_store.reply(event.payload["task_id"], "main", message_id=event.payload["message_id"])
 
     async def worker() -> httpx.Response:
         return await client.post(
@@ -751,9 +747,7 @@ async def test_a_result_between_part_and_result_caps_keeps_its_full_summary(
     task = hub_store.get_task(task_id)
     assert task is not None and task.result is not None
     assert task.result["summary"] == summary
-    assert hub_store.task_history(task_id)[-1].parts[0]["text"].startswith(
-        "Typed result recorded"
-    )
+    assert hub_store.task_history(task_id)[-1].parts[0]["text"].startswith("Typed result recorded")
 
 
 async def test_a_failed_result_is_reported_as_such(

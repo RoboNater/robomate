@@ -133,29 +133,40 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     ensure_excluded(repo.git_common_dir)
     old = read_hub_json(repo.root) or {}
     old_pid = int(old.get("pid") or 0)
-    if old_pid and process_alive(old_pid) and hub_healthy(
-        str(old.get("url") or ""), str(old.get("hub_id") or "")
+    if (
+        old_pid
+        and process_alive(old_pid)
+        and hub_healthy(str(old.get("url") or ""), str(old.get("hub_id") or ""))
     ):
         raise RuntimeError(f"hub already running at {old['url']}")
     if repo.forge == "unknown":
-        print("Warning: forge is unknown; check_merge_gate will use the GitHub gate. "
-              "Choose --forge github|gitlab to override.", flush=True)
+        print(
+            "Warning: forge is unknown; check_merge_gate will use the GitHub gate. "
+            "Choose --forge github|gitlab to override.",
+            flush=True,
+        )
     elif repo.forge == "gitlab":
         checks = await gitlab_preflight(repo.origin)
         for check in checks:
             print(f"{check.status.upper()}: {check.name}: {check.detail}", flush=True)
         if any(check.status == "refuse" for check in checks):
-            raise RuntimeError("GitLab preflight refused startup; disable the named unsupported "
-                               "settings or correct the origin before running up again")
+            raise RuntimeError(
+                "GitLab preflight refused startup; disable the named unsupported "
+                "settings or correct the origin before running up again"
+            )
     requested_port = args.port if args.port is not None else old.get("port")
     sock, port = _bind(args.bind, int(requested_port) if requested_port is not None else None)
     overlay = dict(os.environ)
-    overlay.update({
-        "HUB_STATE_DIR": str(directory), "HUB_HOST": args.bind, "HUB_PORT": str(port),
-        "HUB_DB_PATH": str(directory / "hub.db"),
-        "HUB_TOKEN_FILE": str(directory / "token"),
-        "HUB_CALL_ACCOUNTING": "0" if args.no_call_accounting else "1",
-    })
+    overlay.update(
+        {
+            "HUB_STATE_DIR": str(directory),
+            "HUB_HOST": args.bind,
+            "HUB_PORT": str(port),
+            "HUB_DB_PATH": str(directory / "hub.db"),
+            "HUB_TOKEN_FILE": str(directory / "token"),
+            "HUB_CALL_ACCOUNTING": "0" if args.no_call_accounting else "1",
+        }
+    )
     overlay.pop("HUB_TOKEN", None)
     if args.public_url:
         overlay["HUB_PUBLIC_URL"] = args.public_url
@@ -163,10 +174,16 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         settings = HubSettings.from_env(overlay)
         load_or_create_token(settings.token, settings.token_file)
         info: dict[str, Any] = {
-            "repo_root": str(repo.root), "origin": repo.origin, "forge": repo.forge,
-            "default_branch": repo.default_branch, "url": settings.public_url, "port": port,
-            "pid": os.getpid(), "started_at": datetime.now(UTC).isoformat(),
-            "robomate_version": VERSION, "hub_id": old.get("hub_id") or uuid.uuid4().hex,
+            "repo_root": str(repo.root),
+            "origin": repo.origin,
+            "forge": repo.forge,
+            "default_branch": repo.default_branch,
+            "url": settings.public_url,
+            "port": port,
+            "pid": os.getpid(),
+            "started_at": datetime.now(UTC).isoformat(),
+            "robomate_version": VERSION,
+            "hub_id": old.get("hub_id") or uuid.uuid4().hex,
         }
 
         def started() -> None:
@@ -181,7 +198,8 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         finally:
             current = read_hub_json(repo.root)
             if (
-                current and current.get("hub_id") == info["hub_id"]
+                current
+                and current.get("hub_id") == info["hub_id"]
                 and current.get("pid") == os.getpid()
             ):
                 current["pid"] = None
@@ -237,8 +255,12 @@ def _status(as_json: bool) -> None:
 
     def stopped(url: str, port: object, reason: str | None = None) -> None:
         known_root = root if not explicit else None
-        stopped = {"running": False, "repo_root": str(known_root) if known_root else None,
-                   "url": url, "port": port}
+        stopped = {
+            "running": False,
+            "repo_root": str(known_root) if known_root else None,
+            "url": url,
+            "port": port,
+        }
         if reason is not None:
             stopped["reason"] = reason
         if as_json:
@@ -294,20 +316,27 @@ def _status(as_json: bool) -> None:
         # other zones (#65). Alice is only seen per call, so gaps of about two
         # minutes while she holds wait_for_event are normal.
         seen = datetime.fromisoformat(orchestrator["last_seen"])
-        print(f"Orchestrator: {orchestrator['name']}  session {orchestrator['session']}"
-              f"  last seen {_age(datetime.now(UTC) - seen)} ago")
+        print(
+            f"Orchestrator: {orchestrator['name']}  session {orchestrator['session']}"
+            f"  last seen {_age(datetime.now(UTC) - seen)} ago"
+        )
     else:
         print("Orchestrator: none")
     print(f"Agents: {len(status['agents'])}")
     for agent in status["agents"]:
-        life = ("released" if agent["status"] == "released"
-                else "alive" if agent["alive"] else "lost")
-        print(f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
-              f"  task {agent['current_task'] or '-'}")
+        life = (
+            "released" if agent["status"] == "released" else "alive" if agent["alive"] else "lost"
+        )
+        print(
+            f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
+            f"  task {agent['current_task'] or '-'}"
+        )
     print(f"Open tasks: {len(status['tasks'])}")
     for task in status["tasks"]:
-        print(f"  {task['id']}: {task['role']}  {task['assignee'] or '-'}  {task['state']}"
-              f"  PR {task['pr_url'] or '-'}  head {task['head_sha'] or '-'}")
+        print(
+            f"  {task['id']}: {task['role']}  {task['assignee'] or '-'}  {task['state']}"
+            f"  PR {task['pr_url'] or '-'}  head {task['head_sha'] or '-'}"
+        )
     print(f"Pending questions: {status['pending_questions']}")
 
 
@@ -323,15 +352,23 @@ def _ls(as_json: bool) -> None:
             phase = status["workflow"]["status"] if status["workflow"] else "none"
         except (OSError, urllib.error.URLError, RuntimeError, KeyError):
             agent_count, phase = None, "unknown"
-        hubs.append({"repo_root": str(repo), "url": url,
-                     "agent_count": agent_count, "workflow_status": phase})
+        hubs.append(
+            {
+                "repo_root": str(repo),
+                "url": url,
+                "agent_count": agent_count,
+                "workflow_status": phase,
+            }
+        )
     if as_json:
         print(json.dumps(hubs))
     else:
         for hub in hubs:
             count = hub["agent_count"] if hub["agent_count"] is not None else "?"
-            print(f"{hub['repo_root']}  {hub['url']}  agents {count}"
-                  f"  workflow {hub['workflow_status']}")
+            print(
+                f"{hub['repo_root']}  {hub['url']}  agents {count}"
+                f"  workflow {hub['workflow_status']}"
+            )
 
 
 async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
@@ -350,8 +387,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="robomate")
     commands = parser.add_subparsers(dest="command", required=True)
     up = commands.add_parser("up", help="run this repository's hub in the foreground")
-    up.add_argument("--forge", choices=("github", "gitlab"),
-                    help="override forge detection and record the choice in hub.json")
+    up.add_argument(
+        "--forge",
+        choices=("github", "gitlab"),
+        help="override forge detection and record the choice in hub.json",
+    )
     up.add_argument("--bind", default="127.0.0.1")
     up.add_argument("--public-url")
     up.add_argument("--port", type=int)

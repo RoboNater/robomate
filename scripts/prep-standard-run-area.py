@@ -46,10 +46,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--config", type=Path, help="flat TOML config file")
     mode = result.add_mutually_exclusive_group()
     mode.add_argument("--generate-default-config", type=Path, metavar="PATH")
-    mode.add_argument("--generate-config", type=Path, metavar="PATH",
-                      help="write merged defaults, config and CLI values instead of preparing")
-    result.add_argument("--yes", action="store_true",
-                        help="skip the hub-start prompt (hub must already be running)")
+    mode.add_argument(
+        "--generate-config",
+        type=Path,
+        metavar="PATH",
+        help="write merged defaults, config and CLI values instead of preparing",
+    )
+    result.add_argument(
+        "--yes", action="store_true", help="skip the hub-start prompt (hub must already be running)"
+    )
     work = result.add_mutually_exclusive_group()
     for key, default in DEFAULTS.items():
         flag = "--" + key.replace("_", "-")
@@ -100,9 +105,7 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
         if values[key]:
             values[key] = canonical_path(values[key], Path.cwd())
     if values["run_dir"]:
-        values["run_dir"] = canonical_path(
-            values["run_dir"], Path(values["run_parent_dir"])
-        )
+        values["run_dir"] = canonical_path(values["run_dir"], Path(values["run_parent_dir"]))
     validate(values, preparing=False)
     return values
 
@@ -116,7 +119,12 @@ def validate(values: dict[str, Any], *, preparing: bool) -> None:
         raise ValueError("forge must be github or gitlab")
     for name in ("alice", "bob", "charlie"):
         if values[f"{name}_harness"].lower() not in (
-            "claude", "claude-code", "codex", "opencode", "antigravity", "agy"
+            "claude",
+            "claude-code",
+            "codex",
+            "opencode",
+            "antigravity",
+            "agy",
         ):
             raise ValueError(f"invalid {name}_harness")
     if not preparing:
@@ -137,8 +145,10 @@ def write_config(path: Path, values: dict[str, Any]) -> None:
     """Create a flat TOML file; refuse to overwrite an existing file."""
     lines = ["# Standard run settings. Empty strings / issue = 0 mean unset."]
     for key, value in values.items():
-        literal = str(value).lower() if type(value) in (int, bool) else json.dumps(
-            value, ensure_ascii=False
+        literal = (
+            str(value).lower()
+            if type(value) in (int, bool)
+            else json.dumps(value, ensure_ascii=False)
         )
         lines.append(f"{key} = {literal}")
     with path.expanduser().open("x", encoding="utf-8") as stream:
@@ -148,8 +158,10 @@ def write_config(path: Path, values: dict[str, Any]) -> None:
 
 def hub_start_command(hub: Path, forge: str) -> str:
     if os.name == "nt":
+
         def quote(value: str) -> str:
             return "'" + value.replace("'", "''") + "'"
+
         return (
             f"Set-Location -LiteralPath {quote(str(hub))}; "
             f"uv run --locked --project {quote(str(ROOT))} robomate up --forge {forge}"
@@ -167,7 +179,9 @@ def prepare(values: dict[str, Any], *, yes: bool) -> None:
     if hub.exists():
         origin = subprocess.run(
             ["git", "-C", str(hub), "remote", "get-url", "origin"],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if origin != values["repository"]:
             raise ValueError(f"existing hub origin {origin!r} differs from repository")
@@ -179,9 +193,18 @@ def prepare(values: dict[str, Any], *, yes: bool) -> None:
     print(hub_start_command(hub, values["forge"]), flush=True)
     if not yes:
         input("Press Enter once the hub is running, or Ctrl-C to abort: ")
-    command = [sys.executable, str(ROOT / "scripts/prepare-run.py"),
-               "--hub-repo", str(hub), "--repository", values["repository"],
-               "--run-dir", str(run_dir), "--account", values["account"]]
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/prepare-run.py"),
+        "--hub-repo",
+        str(hub),
+        "--repository",
+        values["repository"],
+        "--run-dir",
+        str(run_dir),
+        "--account",
+        values["account"],
+    ]
     if values["issue"]:
         command += ["--issue", str(values["issue"])]
     else:

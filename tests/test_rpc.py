@@ -68,8 +68,11 @@ async def test_hub_status_is_compact_and_reports_open_work(
 ) -> None:
     dispatcher = cast(RpcDispatcher, app.state.rpc)
     dispatcher.hub_info = {
-        "repo_root": "/repo", "origin": "git@github.com:example/repo.git",
-        "forge": "github", "url": "http://hub.test", "default_branch": "main",
+        "repo_root": "/repo",
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": "http://hub.test",
+        "default_branch": "main",
     }
     hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
@@ -77,26 +80,39 @@ async def test_hub_status_is_compact_and_reports_open_work(
     headers = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
     await call(client, "hub.heartbeat", headers)
     result = (await call(client, "hub.status"))["result"]
-    assert {key: result[key] for key in (
-        "repo_root", "origin", "forge", "url", "default_branch"
-    )} == dispatcher.hub_info
+    assert {
+        key: result[key] for key in ("repo_root", "origin", "forge", "url", "default_branch")
+    } == dispatcher.hub_info
     assert result["workflow"]["status"] == "active"
     assert result["orchestrator"]["name"] == "alice"
     assert result["orchestrator"]["session"] == SESSION
     assert result["orchestrator"]["last_seen"]
-    assert result["agents"] == [{
-        "name": "bob", "harness": "codex", "model": "gpt-6-sol",
-        "status": "busy", "alive": True, "current_task": task.id,
-    }]
-    assert result["tasks"] == [{
-        "id": task.id, "role": "implementer", "assignee": "bob",
-        "state": "input-required", "pr_url": None, "head_sha": None,
-    }]
+    assert result["agents"] == [
+        {
+            "name": "bob",
+            "harness": "codex",
+            "model": "gpt-6-sol",
+            "status": "busy",
+            "alive": True,
+            "current_task": task.id,
+        }
+    ]
+    assert result["tasks"] == [
+        {
+            "id": task.id,
+            "role": "implementer",
+            "assignee": "bob",
+            "state": "input-required",
+            "pr_url": None,
+            "head_sha": None,
+        }
+    ]
     assert result["pending_questions"] == 1
     assert "secret instructions" not in str(result)
     assert "question text" not in str(result)
     assert error_of(await call(client, "hub.status", unexpected=True)) == (
-        INVALID_PARAMS, "hub.status takes no params"
+        INVALID_PARAMS,
+        "hub.status takes no params",
     )
 
 
@@ -104,76 +120,124 @@ async def test_hub_status_shows_known_review_pr_and_head(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     cast(RpcDispatcher, app.state.rpc).hub_info = {
-        "repo_root": "/repo", "origin": "git@github.com:example/repo.git",
-        "forge": "github", "url": "http://hub.test", "default_branch": "main",
+        "repo_root": "/repo",
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": "http://hub.test",
+        "default_branch": "main",
     }
     hub_store.check_in("bob", AgentProfile())
     hub_store.check_in("dave", AgentProfile())
     implement = hub_store.assign_task("bob", "implementer", "Build", "build")
-    hub_store.submit_result(implement.id, "bob", {
-        "outcome": "completed", "summary": "done", "pr_url": PR, "head_sha": HEAD,
-    })
+    hub_store.submit_result(
+        implement.id,
+        "bob",
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "pr_url": PR,
+            "head_sha": HEAD,
+        },
+    )
     other_pr = "https://github.com/octo/sandbox/pull/8"
     other_head = "b" * 40
     second = hub_store.assign_task("dave", "implementer", "Build other", "build")
-    hub_store.submit_result(second.id, "dave", {
-        "outcome": "completed", "summary": "done", "pr_url": other_pr,
-        "head_sha": other_head,
-    })
-    prior_review = hub_store.assign_task("dave", "reviewer", "Prior review", "review",
-                                         pr_head_sha=other_head)
-    hub_store.submit_result(prior_review.id, "dave", {
-        "verdict": "changes_requested", "summary": "needs changes",
-        "pr_url": other_pr, "reviewed_head_sha": other_head,
-    })
-    review = hub_store.assign_task("bob", "reviewer", "Review", "review",
-                                   pr_head_sha=HEAD)
-    unknown = hub_store.assign_task("dave", "reviewer", "Review unknown", "review",
-                                    pr_head_sha="c" * 40)
+    hub_store.submit_result(
+        second.id,
+        "dave",
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "pr_url": other_pr,
+            "head_sha": other_head,
+        },
+    )
+    prior_review = hub_store.assign_task(
+        "dave", "reviewer", "Prior review", "review", pr_head_sha=other_head
+    )
+    hub_store.submit_result(
+        prior_review.id,
+        "dave",
+        {
+            "verdict": "changes_requested",
+            "summary": "needs changes",
+            "pr_url": other_pr,
+            "reviewed_head_sha": other_head,
+        },
+    )
+    review = hub_store.assign_task("bob", "reviewer", "Review", "review", pr_head_sha=HEAD)
+    unknown = hub_store.assign_task(
+        "dave", "reviewer", "Review unknown", "review", pr_head_sha="c" * 40
+    )
     result = (await call(client, "hub.status"))["result"]
-    assert result["tasks"] == [{
-        "id": review.id, "role": "reviewer", "assignee": "bob", "state": "submitted",
-        "pr_url": PR, "head_sha": HEAD,
-    }, {
-        "id": unknown.id, "role": "reviewer", "assignee": "dave", "state": "submitted",
-        "pr_url": None, "head_sha": "c" * 40,
-    }]
+    assert result["tasks"] == [
+        {
+            "id": review.id,
+            "role": "reviewer",
+            "assignee": "bob",
+            "state": "submitted",
+            "pr_url": PR,
+            "head_sha": HEAD,
+        },
+        {
+            "id": unknown.id,
+            "role": "reviewer",
+            "assignee": "dave",
+            "state": "submitted",
+            "pr_url": None,
+            "head_sha": "c" * 40,
+        },
+    ]
 
 
 async def test_bridge_call_rows_are_recorded_as_mcp_for_the_session_actor(
-    app: FastAPI, hub_store: HubStore,
+    app: FastAPI,
+    hub_store: HubStore,
 ) -> None:
     app.state.accounting.enabled = True
-    headers = {"Authorization": f"Bearer {TOKEN}", ACTOR_HEADER: "alice",
-               SESSION_HEADER: SESSION}
+    headers = {"Authorization": f"Bearer {TOKEN}", ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
     row = {
-        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
-        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
-        "finished": "2026-01-01T00:00:01Z", "status": None,
-        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+        "boundary": "mcp",
+        "actor": "alice",
+        "tool": "get_state",
+        "outcome": "ok",
+        "bytes_in": 55,
+        "bytes_out": 120,
+        "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z",
+        "status": None,
+        "content_bytes": 100,
+        "repeat_bytes": 0,
+        "task_id": None,
     }
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                          base_url=BASE_URL, headers=headers) as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=BASE_URL, headers=headers
+        ) as client,
     ):
         assert (await call(client, "hub.record_calls", calls=[row]))["result"] == {
-            "recorded": 1, "rejected": 0,
+            "recorded": 1,
+            "rejected": 0,
         }
         bad = {**row, "actor": "bob"}
         assert (await call(client, "hub.record_calls", calls=[bad, row]))["result"] == {
-            "recorded": 1, "rejected": 1,
+            "recorded": 1,
+            "rejected": 1,
         }
         backwards = {**row, "started": "2026-01-01T00:00:02Z"}
         assert (await call(client, "hub.record_calls", calls=[backwards]))["result"] == {
-            "recorded": 1, "rejected": 0,
+            "recorded": 1,
+            "rejected": 0,
         }
-        assert error_of(await call(client, "hub.record_calls", headers={SESSION_HEADER: ""},
-                                   calls=[row]))[0] == INVALID_REQUEST
+        assert (
+            error_of(
+                await call(client, "hub.record_calls", headers={SESSION_HEADER: ""}, calls=[row])
+            )[0]
+            == INVALID_REQUEST
+        )
     with database(hub_store.path) as connection:
-        rows = connection.execute(
-            "SELECT boundary, actor, content_bytes FROM call_log"
-        ).fetchall()
+        rows = connection.execute("SELECT boundary, actor, content_bytes FROM call_log").fetchall()
     assert [tuple(row) for row in rows] == [("mcp", "alice", 100)] * 3
 
 
@@ -181,18 +245,32 @@ async def test_disabled_hub_identifies_accounting_as_off(
     client: httpx.AsyncClient,
 ) -> None:
     row = {
-        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
-        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
-        "finished": "2026-01-01T00:00:01Z", "status": None,
-        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+        "boundary": "mcp",
+        "actor": "alice",
+        "tool": "get_state",
+        "outcome": "ok",
+        "bytes_in": 55,
+        "bytes_out": 120,
+        "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z",
+        "status": None,
+        "content_bytes": 100,
+        "repeat_bytes": 0,
+        "task_id": None,
     }
-    result = await call(client, "hub.record_calls", headers={ACTOR_HEADER: "alice",
-                                                      SESSION_HEADER: SESSION}, calls=[row])
+    result = await call(
+        client,
+        "hub.record_calls",
+        headers={ACTOR_HEADER: "alice", SESSION_HEADER: SESSION},
+        calls=[row],
+    )
     assert result["result"] == {"recorded": 0, "rejected": 0, "disabled": True}
 
 
 async def test_superseded_bridge_can_flush_accounting_without_reclaiming_session(
-    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore,
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
 ) -> None:
     app.state.accounting.enabled = True
     old = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
@@ -201,13 +279,22 @@ async def test_superseded_bridge_can_flush_accounting_without_reclaiming_session
     assert "result" in await call(client, "get_state", old)
     assert "result" in await call(client, "get_state", new)
     row = {
-        "boundary": "mcp", "actor": "alice", "tool": "get_state", "outcome": "ok",
-        "bytes_in": 55, "bytes_out": 120, "started": "2026-01-01T00:00:00Z",
-        "finished": "2026-01-01T00:00:01Z", "status": None,
-        "content_bytes": 100, "repeat_bytes": 0, "task_id": None,
+        "boundary": "mcp",
+        "actor": "alice",
+        "tool": "get_state",
+        "outcome": "ok",
+        "bytes_in": 55,
+        "bytes_out": 120,
+        "started": "2026-01-01T00:00:00Z",
+        "finished": "2026-01-01T00:00:01Z",
+        "status": None,
+        "content_bytes": 100,
+        "repeat_bytes": 0,
+        "task_id": None,
     }
     assert (await call(client, "hub.record_calls", old, calls=[row]))["result"] == {
-        "recorded": 1, "rejected": 0,
+        "recorded": 1,
+        "rejected": 0,
     }
     dispatcher = cast(RpcDispatcher, app.state.rpc)
     assert dispatcher.orchestrator is not None
@@ -300,8 +387,14 @@ async def test_every_json_rpc_id_is_echoed_and_other_ids_are_refused(
         ),
         (
             "assign_task",
-            {"agent": "bob", "role": "r", "title": "t", "instructions": "i", "event_id": 1,
-             "lease_min": 0},
+            {
+                "agent": "bob",
+                "role": "r",
+                "title": "t",
+                "instructions": "i",
+                "event_id": 1,
+                "lease_min": 0,
+            },
             "lease_min",
         ),
         ("wait_for_event", {"timeout_s": 121}, "timeout_s"),
@@ -312,8 +405,7 @@ async def test_every_json_rpc_id_is_echoed_and_other_ids_are_refused(
     ],
 )
 async def test_params_are_validated_with_the_tool_constraints(
-    client: httpx.AsyncClient, hub_store: HubStore, method: str, params: dict[str, Any],
-    field: str
+    client: httpx.AsyncClient, hub_store: HubStore, method: str, params: dict[str, Any], field: str
 ) -> None:
     code, text = error_of(await call(client, method, **params))
 
@@ -364,8 +456,13 @@ async def test_errors_map_to_stable_codes_with_the_original_message(
     assert event is not None
     code, text = error_of(
         await call(
-            client, "assign_task", agent="bob", role="implementer", title="Big",
-            instructions="x" * MAX_MESSAGE_PART_BYTES, event_id=event.id,
+            client,
+            "assign_task",
+            agent="bob",
+            role="implementer",
+            title="Big",
+            instructions="x" * MAX_MESSAGE_PART_BYTES,
+            event_id=event.id,
         )
     )
     assert code == PAYLOAD_TOO_LARGE and f"maximum is {MAX_MESSAGE_PART_BYTES} bytes" in text
@@ -582,8 +679,13 @@ async def test_the_callers_session_is_recorded_for_orchestrator_calls(
     assert first.last_seen.tzinfo is not None
 
     newer = "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"
-    await call(client, "log_decision", {ACTOR_HEADER: "alice", SESSION_HEADER: newer},
-               summary="s", rationale="r")
+    await call(
+        client,
+        "log_decision",
+        {ACTOR_HEADER: "alice", SESSION_HEADER: newer},
+        summary="s",
+        rationale="r",
+    )
     assert dispatcher.orchestrator is not None
     assert dispatcher.orchestrator.session == newer
 
@@ -606,14 +708,17 @@ async def test_heartbeat_fences_old_session_and_releases_delivery(
     again = (await call(client, "wait_for_event", new, timeout_s=0))["result"]["event"]
     assert again["id"] == first["id"] and again["delivery_attempts"] == 2
     assert error_of(await call(client, "get_state", old)) == (
-        CONFLICT, "superseded by a newer orchestrator session"
+        CONFLICT,
+        "superseded by a newer orchestrator session",
     )
     assert error_of(await call(client, "hub.heartbeat", old)) == (
-        CONFLICT, "superseded by a newer orchestrator session"
+        CONFLICT,
+        "superseded by a newer orchestrator session",
     )
     assert error_of(await call(client, "hub.heartbeat"))[0] == INVALID_REQUEST
     assert error_of(await call(client, "hub.heartbeat", new, unexpected=True)) == (
-        INVALID_PARAMS, "hub.heartbeat takes no params"
+        INVALID_PARAMS,
+        "hub.heartbeat takes no params",
     )
 
 

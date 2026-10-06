@@ -349,9 +349,7 @@ def _migrate_worker_heartbeat(connection: sqlite3.Connection) -> None:
             "ALTER TABLE agent ADD COLUMN worker_instance_id TEXT NOT NULL DEFAULT ''"
         )
     if "last_heartbeat" not in agent_columns:
-        connection.execute(
-            "ALTER TABLE agent ADD COLUMN last_heartbeat TEXT NOT NULL DEFAULT ''"
-        )
+        connection.execute("ALTER TABLE agent ADD COLUMN last_heartbeat TEXT NOT NULL DEFAULT ''")
         connection.execute("UPDATE agent SET last_heartbeat = last_seen")
     if "last_progress_at" not in agent_columns:
         connection.execute("ALTER TABLE agent ADD COLUMN last_progress_at TEXT")
@@ -591,9 +589,7 @@ def _sequence_value(connection: sqlite3.Connection, table: str) -> int | None:
     ).fetchone()
     if exists is None:
         return None
-    row = connection.execute(
-        "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
-    ).fetchone()
+    row = connection.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone()
     return None if row is None else int(row["seq"])
 
 
@@ -610,17 +606,13 @@ def _restore_sequence(connection: sqlite3.Connection, table: str, high_water: in
 
     if high_water is None:
         return
-    row = connection.execute(
-        "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
-    ).fetchone()
+    row = connection.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)).fetchone()
     if row is None:
         connection.execute(
             "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)", (table, high_water)
         )
     elif int(row["seq"]) < high_water:
-        connection.execute(
-            "UPDATE sqlite_sequence SET seq = ? WHERE name = ?", (high_water, table)
-        )
+        connection.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = ?", (high_water, table))
 
 
 @contextmanager

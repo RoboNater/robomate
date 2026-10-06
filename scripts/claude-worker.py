@@ -90,15 +90,21 @@ def log_session(path: Path, **fields: object) -> None:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--agent", required=True)
-    parser.add_argument("--telemetry", type=Path, required=True,
-                        help="the worker's HUB_TELEMETRY_LOG")
-    parser.add_argument("--sessions", type=Path, required=True,
-                        help="JSONL file each launch and exit is appended to")
+    parser.add_argument(
+        "--telemetry", type=Path, required=True, help="the worker's HUB_TELEMETRY_LOG"
+    )
+    parser.add_argument(
+        "--sessions",
+        type=Path,
+        required=True,
+        help="JSONL file each launch and exit is appended to",
+    )
     parser.add_argument("--prompt", required=True, help="the first turn's -p prompt")
     parser.add_argument("--max-resumes", type=int, default=DEFAULT_MAX_RESUMES)
     parser.add_argument("--resume-delay-s", type=float, default=DEFAULT_RESUME_DELAY_S)
-    parser.add_argument("command", nargs=argparse.REMAINDER,
-                        help="the claude command and its flags, without -p")
+    parser.add_argument(
+        "command", nargs=argparse.REMAINDER, help="the claude command and its flags, without -p"
+    )
     args = parser.parse_args(argv)
     if args.command[:1] == ["--"]:
         args.command = args.command[1:]
@@ -118,13 +124,21 @@ def run(args: argparse.Namespace) -> int:
     resumes = 0
     while True:
         action = "resume" if resumes else "start"
-        log_session(args.sessions, agent=args.agent, event=action,
-                    session_id=session_id, resumes=resumes)
+        log_session(
+            args.sessions, agent=args.agent, event=action, session_id=session_id, resumes=resumes
+        )
         print(f"{args.agent}: claude {action}, conversation {session_id}", file=sys.stderr)
         exit_code = subprocess.run([*command, *turn], check=False).returncode
         done = released(args.telemetry, start)
-        log_session(args.sessions, agent=args.agent, event="exit", session_id=session_id,
-                    resumes=resumes, exit_code=exit_code, released=done)
+        log_session(
+            args.sessions,
+            agent=args.agent,
+            event="exit",
+            session_id=session_id,
+            resumes=resumes,
+            exit_code=exit_code,
+            released=done,
+        )
         if done:
             print(f"{args.agent}: released by Alice after {resumes} resume(s)", file=sys.stderr)
             return 0

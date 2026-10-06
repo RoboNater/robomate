@@ -34,8 +34,13 @@ async def serve_http(
     )
     server = HubServer(
         uvicorn.Config(
-            app, host=settings.host, port=settings.port, log_config=log_config,
-            access_log=False, timeout_graceful_shutdown=2, proxy_headers=False,
+            app,
+            host=settings.host,
+            port=settings.port,
+            log_config=log_config,
+            access_log=False,
+            timeout_graceful_shutdown=2,
+            proxy_headers=False,
         )
     )
     serving = asyncio.create_task(server.serve(sockets=sockets))

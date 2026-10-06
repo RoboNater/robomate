@@ -38,9 +38,23 @@ bash_launch_lines = pytest.mark.skipif(
 def origin(tmp_path: Path) -> Path:
     path = tmp_path / "origin"
     subprocess.run(["git", "init", "-b", "main", str(path)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(path), "-c", "user.name=Test",
-                    "-c", "user.email=test@example.com", "commit", "--allow-empty",
-                    "-m", "baseline"], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
     return path
 
 
@@ -51,14 +65,22 @@ def hub_repo(tmp_path: Path, url: str = "http://127.0.0.1:8521") -> Path:
     token = state / "token"
     token.write_text("test-token\n")
     token.chmod(0o600)
-    (state / "hub.json").write_text(json.dumps({"pid": os.getpid(), "url": url,
-                                                  "port": PREPARE_RUN.url_port(url, "test"),
-                                                  "hub_id": "abc"}))
+    (state / "hub.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "url": url,
+                "port": PREPARE_RUN.url_port(url, "test"),
+                "hub_id": "abc",
+            }
+        )
+    )
     return repo
 
 
 def running_hub(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     url: str = "http://127.0.0.1:8521",
 ) -> Path:
     target = hub_repo(tmp_path, url)
@@ -93,7 +115,8 @@ def prepare(
 
 
 def test_configs_use_bridge_and_existing_hub(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     assert manifest["state_dir"] == str(tmp_path / "target/.robomate")
@@ -114,7 +137,8 @@ def test_configs_use_bridge_and_existing_hub(
 
 
 def test_codex_alice_uses_orchestrator_bridge(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex")
     config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
@@ -124,7 +148,8 @@ def test_codex_alice_uses_orchestrator_bridge(
 
 
 def test_missing_or_different_hub_is_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = origin(tmp_path)
     with pytest.raises(ValueError, match="--hub-repo is required"):
@@ -132,21 +157,26 @@ def test_missing_or_different_hub_is_rejected(
     target = hub_repo(tmp_path)
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     with pytest.raises(ValueError, match="differs from the running hub"):
-        PREPARE_RUN.prepare(str(source), tmp_path / "run", hub_repo=target,
-                            hub_url="http://127.0.0.1:9999")
+        PREPARE_RUN.prepare(
+            str(source), tmp_path / "run", hub_repo=target, hub_url="http://127.0.0.1:9999"
+        )
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: False)
     with pytest.raises(ValueError, match="not responding"):
         PREPARE_RUN.prepare(str(source), tmp_path / "run", hub_repo=target)
 
 
 def test_rerun_preserves_clones_and_external_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, first = prepare(tmp_path, monkeypatch)
     token_path = tmp_path / "target/.robomate/token"
     original_token = token_path.read_text()
     second = PREPARE_RUN.prepare(
-        str(tmp_path / "origin"), run_dir, issue=42, account="tester",
+        str(tmp_path / "origin"),
+        run_dir,
+        issue=42,
+        account="tester",
         hub_repo=tmp_path / "target",
     )
     assert first["workspaces"] == second["workspaces"]
@@ -158,7 +188,8 @@ def test_rerun_preserves_clones_and_external_token(
 
 
 def test_existing_hub_workflow_requires_the_same_run_and_goal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = origin(tmp_path)
     target = running_hub(tmp_path, monkeypatch)
@@ -181,23 +212,29 @@ def test_existing_hub_workflow_requires_the_same_run_and_goal(
     with pytest.raises(ValueError, match="original run directory and goal"):
         PREPARE_RUN.prepare(str(source), run_dir, issue=43, hub_repo=target)
     with pytest.raises(ValueError, match="policy differs.*original preparation options"):
-        PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target,
-                            merge_method="merge")
+        PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target, merge_method="merge")
     resumed = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
     assert resumed["work"]["goal"] == goal
 
 
 def test_worker_only_uses_token_file_not_bearer_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path, "http://192.0.2.1:8521")
-    monkeypatch.setattr(PREPARE_RUN, "probe_versions",
-                        lambda _: ({"claude": "2.1"}, {"claude-code": "2.1"}))
+    monkeypatch.setattr(
+        PREPARE_RUN, "probe_versions", lambda _: ({"claude": "2.1"}, {"claude-code": "2.1"})
+    )
     run_dir = tmp_path / "remote"
-    PREPARE_RUN.prepare_worker("bob", str(source), run_dir,
-                               "http://192.0.2.1:8521", target / ".robomate/token",
-                               "claude-code")
+    PREPARE_RUN.prepare_worker(
+        "bob",
+        str(source),
+        run_dir,
+        "http://192.0.2.1:8521",
+        target / ".robomate/token",
+        "claude-code",
+    )
     config = json.loads((run_dir / "configs/bob.mcp.json").read_text())
     env = config["mcpServers"]["robomate"]["env"]
     assert env["ROBOMATE_TOKEN_FILE"] == str(target / ".robomate/token")
@@ -205,8 +242,12 @@ def test_worker_only_uses_token_file_not_bearer_value(
 
 
 def test_script_help_loads() -> None:
-    result = subprocess.run([sys.executable, str(ROOT / "scripts/prepare-run.py"), "--help"],
-                            capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/prepare-run.py"), "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert "--hub-repo" in result.stdout
 
 
@@ -223,8 +264,14 @@ def test_claude_launch_lines_carry_model_effort_and_prompt(
     config = run_dir / "configs" / "bob.mcp.json"
     prompt = run_dir / "bob.prompt.md"
     lines = PREPARE_RUN.launch_lines(
-        "claude-code", run_dir / "bob", config, prompt, run_dir / "bob" / ".git",
-        "opus[1m]", "high", auto_start,
+        "claude-code",
+        run_dir / "bob",
+        config,
+        prompt,
+        run_dir / "bob" / ".git",
+        "opus[1m]",
+        "high",
+        auto_start,
     )
     assert lines[0] == f"cd {run_dir / 'bob'}"
     command = lines[1]
@@ -334,9 +381,7 @@ def test_antigravity_launch_lines_isolate_home_and_carry_model_effort(
         f"--dangerously-skip-permissions --add-dir {run_dir}"
     )
     expected = (
-        f"{base} -p 'Read {prompt} and follow the instructions in it'"
-        if auto_start
-        else base
+        f"{base} -p 'Read {prompt} and follow the instructions in it'" if auto_start else base
     )
     assert lines == [f"cd {run_dir / 'charlie'}", expected]
 
@@ -344,8 +389,11 @@ def test_antigravity_launch_lines_isolate_home_and_carry_model_effort(
 def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
     run_dir = (tmp_path / "run").resolve()
     alice = PREPARE_RUN.launch_lines(
-        "codex", run_dir / "alice-runtime", run_dir / "configs" / "alice-codex",
-        run_dir / "alice.prompt.md", None,
+        "codex",
+        run_dir / "alice-runtime",
+        run_dir / "configs" / "alice-codex",
+        run_dir / "alice.prompt.md",
+        None,
     )
     # PowerShell sets CODEX_HOME on a line of its own.
     command = alice[-1]
@@ -353,21 +401,27 @@ def test_launch_lines_omit_unset_model_and_effort(tmp_path: Path) -> None:
     # Alice's runtime is not a clone, so Codex must skip its git-repo check (#45).
     assert "-C . --skip-git-repo-check --approve-for-me" in command
     claude = PREPARE_RUN.launch_lines(
-        "claude-code", run_dir / "alice-runtime", run_dir / "configs" / "alice.mcp.json",
-        run_dir / "alice.prompt.md", None,
+        "claude-code",
+        run_dir / "alice-runtime",
+        run_dir / "configs" / "alice.mcp.json",
+        run_dir / "alice.prompt.md",
+        None,
     )
     assert claude[1].startswith("claude --permission-mode auto --strict-mcp-config")
 
 
-def test_launch_lines_windows_powershell(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_launch_lines_windows_powershell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "name", "nt")
     run_dir = (tmp_path / "run").resolve()
     prompt = run_dir / "charlie.prompt.md"
     lines = PREPARE_RUN.launch_lines(
-        "codex", run_dir / "charlie", run_dir / "configs" / "codex", prompt,
-        run_dir / "charlie" / ".git", "gpt-6-sol", "high",
+        "codex",
+        run_dir / "charlie",
+        run_dir / "configs" / "codex",
+        prompt,
+        run_dir / "charlie" / ".git",
+        "gpt-6-sol",
+        "high",
     )
     text = "\n".join(lines)
     assert "$env:CODEX_HOME" in text
@@ -378,7 +432,10 @@ def test_launch_lines_windows_powershell(
     # PowerShell strips embedded double quotes; -c falls back to the raw string.
     assert "-c 'model_reasoning_effort=high'" in text
     assert PREPARE_RUN.model_flags("claude-code", "opus[1m]", "max", powershell=True) == [
-        "--model", "'opus[1m]'", "--effort", "max",
+        "--model",
+        "'opus[1m]'",
+        "--effort",
+        "max",
     ]
     oc_lines = PREPARE_RUN.launch_lines(
         "opencode",
@@ -474,9 +531,7 @@ def test_start_scripts_take_metacharacter_paths_literally(
     # directory, and Codex's stdin redirect the real prompt file.
     stub = "claude() { pwd; }; codex() { pwd; }; opencode() { pwd; }; agy() { pwd; }"
     script = PREPARE_RUN.start_script([stub, *lines])
-    result = subprocess.run(
-        ["bash"], input=script, text=True, capture_output=True, cwd=tmp_path
-    )
+    result = subprocess.run(["bash"], input=script, text=True, capture_output=True, cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(workdir)
 
@@ -547,16 +602,22 @@ def test_roadmap_passes_non_bare_numbers_through_verbatim() -> None:
     ],
 )
 def test_render_goal_roadmap_combinations(
-    kind: str, kwargs: dict[str, object], check: str,
-    roadmap: str | None, expected_roadmap: str | None,
+    kind: str,
+    kwargs: dict[str, object],
+    check: str,
+    roadmap: str | None,
+    expected_roadmap: str | None,
     has_roadmap_instructions: bool,
 ) -> None:
     """Each {--issue, --work-file, neither} x {no roadmap, N, #N, OWNER/REPO#N} goal (#34)."""
     slug = "test-org/test-repo"
     repository = "git@github.com:test-org/test-repo.git"
     goal = PREPARE_RUN.render_goal(
-        slug, repository,
-        kwargs.get("issue"), kwargs.get("work"), roadmap,
+        slug,
+        repository,
+        kwargs.get("issue"),
+        kwargs.get("work"),
+        roadmap,
     )
     assert check in goal
     if not has_roadmap_instructions:
@@ -628,7 +689,8 @@ def test_git_bash_path_only_rewrites_windows_drives() -> None:
 
 
 def test_work_file_becomes_the_goal_and_manifest_entry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     statement = "Address `acme/app#7` and `acme/app#9` in one pull request.\n"
     work_file = tmp_path / "sow.md"
@@ -638,26 +700,32 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
     assert goal.startswith(statement.strip()) and "no roadmap edit" in goal
     assert manifest["issue"] is None
     assert manifest["work"] == {
-        "goal": goal, "path": str(work_file.resolve()),
-        "sha256": hashlib.sha256(statement.encode()).hexdigest(), "roadmap": None,
+        "goal": goal,
+        "path": str(work_file.resolve()),
+        "sha256": hashlib.sha256(statement.encode()).hexdigest(),
+        "roadmap": None,
     }
     assert json.loads((run_dir / "run.json").read_text())["work"] == manifest["work"]
 
 
 def test_issue_goal_defaults_to_no_roadmap_edit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     goal = manifest["work"]["goal"]
-    assert goal == (f"Address issue `{tmp_path / 'origin'}#42`, merge its pull request, "
-                    "and close out with no roadmap edit; record the merge only in the "
-                    "workflow summary.")
+    assert goal == (
+        f"Address issue `{tmp_path / 'origin'}#42`, merge its pull request, "
+        "and close out with no roadmap edit; record the merge only in the "
+        "workflow summary."
+    )
     assert goal in (run_dir / "alice.prompt.md").read_text()
     assert manifest["work"]["roadmap"] is None
 
 
 def test_prepare_records_the_rendered_roadmap_in_run_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, manifest = prepare(tmp_path, monkeypatch, roadmap="2")
     assert manifest["work"]["roadmap"] == f"{tmp_path / 'origin'}#2"
@@ -666,18 +734,19 @@ def test_prepare_records_the_rendered_roadmap_in_run_json(
 
 
 def test_work_file_with_roadmap_appends_bob_instructions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     work_file = tmp_path / "sow.md"
     work_file.write_text("Address two issues together.\n")
-    _, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file,
-                          roadmap="5")
+    _, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file, roadmap="5")
     assert manifest["work"]["roadmap"] == f"{tmp_path / 'origin'}#5"
     assert "should make a decision on what roadmap" in manifest["work"]["goal"]
 
 
 def test_work_file_with_issue_fails_actionably(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     work_file = tmp_path / "sow.md"
     work_file.write_text("Do the work.\n")
@@ -686,10 +755,14 @@ def test_work_file_with_issue_fails_actionably(
     assert not (tmp_path / "run").exists()
 
 
-@pytest.mark.parametrize("content,expected", [(None, "does not exist"),
-                                                ("", "is empty"), (" \n\t", "is empty")])
+@pytest.mark.parametrize(
+    "content,expected", [(None, "does not exist"), ("", "is empty"), (" \n\t", "is empty")]
+)
 def test_missing_or_empty_work_file_fails_actionably(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str | None, expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: str | None,
+    expected: str,
 ) -> None:
     work_file = tmp_path / "sow.md"
     if content is not None:
@@ -700,36 +773,44 @@ def test_missing_or_empty_work_file_fails_actionably(
 
 
 def test_fails_when_gh_unauthenticated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = hub_repo(tmp_path)
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
-    monkeypatch.setattr(PREPARE_RUN, "probe_versions",
-                        lambda _: ({"claude": "2", "codex": "1"},
-                                   {"claude-code": "2", "codex": "1"}))
-    monkeypatch.setattr(PREPARE_RUN, "check_gh_auth",
-                        lambda: (_ for _ in ()).throw(ValueError("gh is not authenticated")))
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "check_gh_auth",
+        lambda: (_ for _ in ()).throw(ValueError("gh is not authenticated")),
+    )
     with pytest.raises(ValueError, match="authenticated"):
-        PREPARE_RUN.prepare("test-org/test-repo", (tmp_path / "run").resolve(),
-                            hub_repo=target)
+        PREPARE_RUN.prepare("test-org/test-repo", (tmp_path / "run").resolve(), hub_repo=target)
 
 
 def test_fails_when_runtime_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path)
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
-    monkeypatch.setattr(PREPARE_RUN, "probe_versions",
-                        lambda _: (_ for _ in ()).throw(
-                            ValueError("requires the 'codex' CLI on PATH")))
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: (_ for _ in ()).throw(ValueError("requires the 'codex' CLI on PATH")),
+    )
     with pytest.raises(ValueError, match="requires the 'codex' CLI on PATH"):
-        PREPARE_RUN.prepare(str(source), (tmp_path / "run").resolve(),
-                            hub_repo=target)
+        PREPARE_RUN.prepare(str(source), (tmp_path / "run").resolve(), hub_repo=target)
 
 
 def test_no_token_or_clone_path_inside_clones(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     token = "test-token"
@@ -764,25 +845,33 @@ GOLDEN_FILES = {
     reason="the golden files are a POSIX host's bash start scripts and path spellings",
 )
 def test_default_rendering_matches_the_golden_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path, "http://127.0.0.1:8420")
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
-    monkeypatch.setattr(PREPARE_RUN, "probe_versions",
-                        lambda _: ({"claude": "2.1.277 (Claude Code)",
-                                    "codex": "codex-cli 0.154.0"},
-                                   {"claude-code": "2.1.277", "codex": "0.154.0"}))
-    monkeypatch.setattr(PREPARE_RUN, "codex_login_status",
-                        lambda _: "Logged in using ChatGPT")
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: (
+            {"claude": "2.1.277 (Claude Code)", "codex": "codex-cli 0.154.0"},
+            {"claude-code": "2.1.277", "codex": "0.154.0"},
+        ),
+    )
+    monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "Logged in using ChatGPT")
     run_dir = tmp_path / "run"
-    manifest = PREPARE_RUN.prepare(str(source), run_dir, issue=42,
-                                   account="testuser", hub_repo=target)
+    manifest = PREPARE_RUN.prepare(
+        str(source), run_dir, issue=42, account="testuser", hub_repo=target
+    )
     masks = {
         # The interpreter running the tests, often under $ROOT: mask it first.
         sys.executable: "$PYTHON",
-        str(run_dir): "$RUN_DIR", str(source): "$ORIGIN",
-        str(target): "$HUB_REPO", str(ROOT): "$ROOT",
+        str(run_dir): "$RUN_DIR",
+        str(source): "$ORIGIN",
+        str(target): "$HUB_REPO",
+        str(ROOT): "$ROOT",
         manifest["workspaces"]["bob"]["workspace_id"]: "$BOB_ID",
         manifest["workspaces"]["charlie"]["workspace_id"]: "$CHARLIE_ID",
     }
@@ -795,10 +884,12 @@ def test_default_rendering_matches_the_golden_files(
 
 
 def test_no_auto_start_opens_each_agent_without_its_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_dir, manifest = prepare(tmp_path, monkeypatch, alice_harness="codex",
-                                charlie_model="gpt-6-sol", auto_start=False)
+    run_dir, manifest = prepare(
+        tmp_path, monkeypatch, alice_harness="codex", charlie_model="gpt-6-sol", auto_start=False
+    )
     assert manifest["launch"]["auto_start"] is False
     for name in ("alice", "bob", "charlie"):
         script = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text()
@@ -809,42 +900,64 @@ def test_no_auto_start_opens_each_agent_without_its_prompt(
 
 
 def test_codex_alice_exec_uses_skip_git_repo_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex",
-                         alice_model="gpt-6-luna", alice_effort="xhigh")
+    run_dir, _ = prepare(
+        tmp_path, monkeypatch, alice_harness="codex", alice_model="gpt-6-luna", alice_effort="xhigh"
+    )
     script = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
     assert "codex exec -C . --skip-git-repo-check --approve-for-me" in script
     home = run_dir / "configs/alice-codex"
     config = tomllib.loads((home / "config.toml").read_text())
-    assert set(config["mcp_servers"]["robomate"]["enabled_tools"]) == set(
-        PREPARE_RUN.ALICE_TOOLS
-    )
+    assert set(config["mcp_servers"]["robomate"]["enabled_tools"]) == set(PREPARE_RUN.ALICE_TOOLS)
 
 
 @pytest.mark.parametrize("value", ["gemini", "claude-desktop", ""])
 def test_unsupported_harness_names_fail_before_any_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["prepare-run.py", "--repository", "test-org/test-repo",
-                                  "--run-dir", str(tmp_path / "run"),
-                                  "--alice-harness", value])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare-run.py",
+            "--repository",
+            "test-org/test-repo",
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--alice-harness",
+            value,
+        ],
+    )
     with pytest.raises(SystemExit, match="expected claude, codex, opencode, or antigravity"):
         PREPARE_RUN.main()
     assert not (tmp_path / "run").exists()
 
 
 def test_remote_worker_config_carries_windows_paths_and_a_private_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGY_HOME", str(tmp_path / "no-agy-login"))
     root = PureWindowsPath("C:/work/robomate")
     run = PureWindowsPath("C:/Users/Bob/runs/step7")
     out_dir = tmp_path / "bundle"
     PREPARE_RUN.render_worker_bundle(
-        "bob", "claude-code", "2.1.277", "anthropic", "", "",
-        "C:/private/token", "http://172.26.115.68:8420", root, run,
-        run / "bob", out_dir,
+        "bob",
+        "claude-code",
+        "2.1.277",
+        "anthropic",
+        "",
+        "",
+        "C:/private/token",
+        "http://172.26.115.68:8420",
+        root,
+        run,
+        run / "bob",
+        out_dir,
     )
     written = out_dir / "configs/bob.mcp.json"
     text = written.read_text()
@@ -859,9 +972,18 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
 
     oc_out = tmp_path / "oc-bundle"
     oc_bundle = PREPARE_RUN.render_worker_bundle(
-        "bob", "opencode", "1.18.32", "anthropic", "opencode/claude-sonnet-4-6", "",
-        "C:/private/token", "http://172.26.115.68:8420", root, run,
-        run / "bob", oc_out,
+        "bob",
+        "opencode",
+        "1.18.32",
+        "anthropic",
+        "opencode/claude-sonnet-4-6",
+        "",
+        "C:/private/token",
+        "http://172.26.115.68:8420",
+        root,
+        run,
+        run / "bob",
+        oc_out,
     )
     assert oc_bundle["config"] == "C:/Users/Bob/runs/step7/configs/bob.opencode.json"
     oc_written = oc_out / "configs/bob.opencode.json"
@@ -874,9 +996,18 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
 
     agy_out = tmp_path / "agy-bundle"
     agy_bundle = PREPARE_RUN.render_worker_bundle(
-        "bob", "antigravity", "1.2.7", "google", "gemini-3.1-pro-high", "",
-        "C:/private/token", "http://172.26.115.68:8420", root, run,
-        run / "bob", agy_out,
+        "bob",
+        "antigravity",
+        "1.2.7",
+        "google",
+        "gemini-3.1-pro-high",
+        "",
+        "C:/private/token",
+        "http://172.26.115.68:8420",
+        root,
+        run,
+        run / "bob",
+        agy_out,
     )
     assert agy_bundle["config"] == (
         "C:/Users/Bob/runs/step7/configs/bob-agy/.gemini/config/mcp_config.json"
@@ -907,15 +1038,18 @@ def test_worker_only_rejects_loose_missing_token_or_loopback_url(
         # Windows mode bits say nothing; the token inherits its directory's ACL.
         token.chmod(0o644)
         with pytest.raises(ValueError, match="owner-only"):
-            PREPARE_RUN.prepare_worker("bob", "o/r", run_dir,
-                                       "http://192.0.2.10:8420", token, "claude-code")
+            PREPARE_RUN.prepare_worker(
+                "bob", "o/r", run_dir, "http://192.0.2.10:8420", token, "claude-code"
+            )
     token.chmod(0o600)
     with pytest.raises(ValueError, match="cannot be loopback"):
-        PREPARE_RUN.prepare_worker("bob", "o/r", run_dir,
-                                   "http://127.0.0.1:8420", token, "claude-code")
+        PREPARE_RUN.prepare_worker(
+            "bob", "o/r", run_dir, "http://127.0.0.1:8420", token, "claude-code"
+        )
     with pytest.raises(ValueError, match="does not exist"):
-        PREPARE_RUN.prepare_worker("bob", "o/r", run_dir,
-                                   "http://192.0.2.10:8420", tmp_path / "missing", "claude-code")
+        PREPARE_RUN.prepare_worker(
+            "bob", "o/r", run_dir, "http://192.0.2.10:8420", tmp_path / "missing", "claude-code"
+        )
     assert not run_dir.exists()
 
 
@@ -924,21 +1058,39 @@ def test_worker_only_refuses_hub_flags(tmp_path: Path, monkeypatch: pytest.Monke
     token.write_text("secret\n")
     token.chmod(0o600)
     for extra in (["--issue", "42"], ["--roadmap", "2"], ["--hub-port", "8521"]):
-        monkeypatch.setattr(sys, "argv", ["prepare-run.py", "--repository", "o/r",
-                                      "--run-dir", str(tmp_path / "run"), "--worker-only",
-                                      "bob", "--token-file", str(token), *extra])
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prepare-run.py",
+                "--repository",
+                "o/r",
+                "--run-dir",
+                str(tmp_path / "run"),
+                "--worker-only",
+                "bob",
+                "--token-file",
+                str(token),
+                *extra,
+            ],
+        )
         with pytest.raises(SystemExit):
             PREPARE_RUN.main()
     assert not (tmp_path / "run").exists()
 
 
-@pytest.mark.parametrize("protocol,expected", [
-    ("https", "https://github.com/test-org/test-repo.git"),
-    ("ssh", "git@github.com:test-org/test-repo.git"),
-    ("", "https://github.com/test-org/test-repo.git"),
-])
+@pytest.mark.parametrize(
+    "protocol,expected",
+    [
+        ("https", "https://github.com/test-org/test-repo.git"),
+        ("ssh", "git@github.com:test-org/test-repo.git"),
+        ("", "https://github.com/test-org/test-repo.git"),
+    ],
+)
 def test_slug_clone_url_honors_gh_protocol(
-    monkeypatch: pytest.MonkeyPatch, protocol: str, expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    expected: str,
 ) -> None:
     monkeypatch.setattr(RUN_COMMON, "run", lambda *_: protocol)
     assert RUN_COMMON.slug_clone_url("test-org/test-repo") == expected
@@ -956,12 +1108,18 @@ def test_slug_clone_url_falls_back_without_gh(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_remote_worker_is_left_to_its_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     remote_url = "http://192.0.2.10:8420"
-    run_dir, manifest = prepare(tmp_path, monkeypatch, remote_worker="bob",
-                                test_hub_url=remote_url, bob_model="claude-opus-5-5")
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        remote_worker="bob",
+        test_hub_url=remote_url,
+        bob_model="claude-opus-5-5",
+    )
     assert not (run_dir / "bob").exists()
     assert not (run_dir / "configs/bob.mcp.json").exists()
     assert not (run_dir / "bob.prompt.md").exists()
@@ -978,12 +1136,18 @@ def test_remote_worker_is_left_to_its_host(
 
 
 def test_remote_worker_command_forwards_effort_and_auto_start(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run_dir, _ = prepare(tmp_path, monkeypatch, remote_worker="charlie",
-                         test_hub_url="http://192.0.2.10:8420", charlie_effort="high",
-                         auto_start=False)
+    run_dir, _ = prepare(
+        tmp_path,
+        monkeypatch,
+        remote_worker="charlie",
+        test_hub_url="http://192.0.2.10:8420",
+        charlie_effort="high",
+        auto_start=False,
+    )
     output = capsys.readouterr().out
     command = next(line for line in output.splitlines() if "--worker-only charlie" in line)
     assert "--charlie-effort 'high'" in command and command.endswith("--no-auto-start")
@@ -992,14 +1156,17 @@ def test_remote_worker_command_forwards_effort_and_auto_start(
 
 
 def test_rerun_is_idempotent_and_preserves_clone_token_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path)
     monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
-    monkeypatch.setattr(PREPARE_RUN, "probe_versions",
-                        lambda _: ({"claude": "2", "codex": "1"},
-                                   {"claude-code": "2", "codex": "1"}))
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
     monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "logged in")
     run_dir = tmp_path / "run"
     first = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
@@ -1018,7 +1185,8 @@ def test_rerun_is_idempotent_and_preserves_clone_token_identity(
 
 
 def test_bootstrap_failure_message_keeps_tail_without_traceback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stderr = (
         "Traceback (most recent call last):\n"
@@ -1039,12 +1207,22 @@ def test_bootstrap_failure_message_keeps_tail_without_traceback(
 
 
 def test_main_reports_actionable_error_without_traceback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "argv", [
-        "prepare-run.py", "--repository", "test-org/test-repo",
-        "--run-dir", str((tmp_path / "run").resolve()), "--bob", "nosuch",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare-run.py",
+            "--repository",
+            "test-org/test-repo",
+            "--run-dir",
+            str((tmp_path / "run").resolve()),
+            "--bob",
+            "nosuch",
+        ],
+    )
     with pytest.raises(SystemExit) as exc:
         PREPARE_RUN.main()
     assert "prepare-run: error:" in str(exc.value.code)
@@ -1052,12 +1230,14 @@ def test_main_reports_actionable_error_without_traceback(
 
 
 def test_fresh_run_produces_every_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     run_dir, manifest = prepare(tmp_path, monkeypatch, allow_no_ci="auto")
-    assert manifest["workspaces"]["bob"]["workspace_id"] != (
-        manifest["workspaces"]["charlie"]["workspace_id"]
+    assert (
+        manifest["workspaces"]["bob"]["workspace_id"]
+        != (manifest["workspaces"]["charlie"]["workspace_id"])
     )
     assert manifest["clone_repository"] == str(tmp_path / "origin")
     assert manifest["policy"]["allow_no_ci"] is True
@@ -1070,8 +1250,12 @@ def test_fresh_run_produces_every_file(
     assert bob_env["HUB_WORKSPACE"] == manifest["workspaces"]["bob"]["path"]
     codex = tomllib.loads((run_dir / "configs/codex/config.toml").read_text())
     assert set(codex["mcp_servers"]["robomate"]["enabled_tools"]) == {
-        "check_in", "get_role_guide", "await_assignment", "report_progress",
-        "ask_alice", "submit_result",
+        "check_in",
+        "get_role_guide",
+        "await_assignment",
+        "report_progress",
+        "ask_alice",
+        "submit_result",
     }
     for name in ("alice", "bob", "charlie"):
         assert (run_dir / f"{name}.prompt.md").exists()
@@ -1082,26 +1266,53 @@ def test_fresh_run_produces_every_file(
 
 
 def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     source = origin(tmp_path)
     target = running_hub(tmp_path, monkeypatch)
     run_dir = tmp_path / "run"
-    monkeypatch.setattr(sys, "argv", [
-        "prepare-run.py", "--repository", str(source), "--run-dir", str(run_dir),
-        "--hub-repo", str(target), "--issue", "42", "--alice-harness", "Claude",
-        "--alice-model", "sonnet", "--alice-effort", "high",
-        "--bob-harness", "CLAUDE", "--bob-model", "claude-opus-5-5",
-        "--bob-effort", "max", "--charlie-harness", "claude",
-        "--charlie-effort", "medium",
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare-run.py",
+            "--repository",
+            str(source),
+            "--run-dir",
+            str(run_dir),
+            "--hub-repo",
+            str(target),
+            "--issue",
+            "42",
+            "--alice-harness",
+            "Claude",
+            "--alice-model",
+            "sonnet",
+            "--alice-effort",
+            "high",
+            "--bob-harness",
+            "CLAUDE",
+            "--bob-model",
+            "claude-opus-5-5",
+            "--bob-effort",
+            "max",
+            "--charlie-harness",
+            "claude",
+            "--charlie-effort",
+            "medium",
+        ],
+    )
     PREPARE_RUN.main()
     report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
     manifest = json.loads((run_dir / "run.json").read_text())
     assert manifest["harnesses"] == {"bob": "claude-code", "charlie": "claude-code"}
-    expected = {"alice": ("sonnet", "high"), "bob": ("claude-opus-5-5", "max"),
-                "charlie": ("", "medium")}
+    expected = {
+        "alice": ("sonnet", "high"),
+        "bob": ("claude-opus-5-5", "max"),
+        "charlie": ("", "medium"),
+    }
     for name, (model, effort) in expected.items():
         script = run_dir / f"start-{name}.{SCRIPT_SUFFIX}"
         assert report["start_scripts"][name] == str(script)
@@ -1112,13 +1323,15 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
         assert "--permission-mode auto --strict-mcp-config" in command
         assert f"Read {run_dir / f'{name}.prompt.md'} and follow" in command
         assert f"`closeout-report-{name}.md`" in (run_dir / f"{name}.prompt.md").read_text()
-    bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())[
-        "mcpServers"]["robomate"]["env"]
+    bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())["mcpServers"]["robomate"][
+        "env"
+    ]
     assert bob_env["HUB_MODEL"] == "claude-opus-5-5"
 
 
 def test_rendered_prompts_forbid_ending_the_turn_to_wait(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A headless worker that ends its turn to wait for CI exits and loses its task (#115).
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="claude-code")
@@ -1149,7 +1362,8 @@ with open(os.environ["FAKE_TELEMETRY"], "a", encoding="utf-8") as telemetry:
 
 
 def test_a_claude_worker_start_script_runs_under_the_resuming_launcher(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # #115: the generated script, run by its own shell with a stand-in claude.
     run_dir, manifest = prepare(tmp_path, monkeypatch)
@@ -1171,8 +1385,15 @@ def test_a_claude_worker_start_script_runs_under_the_resuming_launcher(
         (bin_dir / "claude.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
         shell = shutil.which("pwsh") or shutil.which("powershell")
         assert shell is not None
-        command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                   "-File", str(script)]
+        command = [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+        ]
     else:
         claude = bin_dir / "claude"
         claude.write_text(f"#!{sys.executable}\n{RELEASING_CLAUDE}", encoding="utf-8")
@@ -1197,14 +1418,18 @@ def test_a_claude_worker_start_script_runs_under_the_resuming_launcher(
     session_id = argv[argv.index("--session-id") + 1]
     records = [json.loads(line) for line in sessions.read_text(encoding="utf-8").splitlines()]
     assert [(r["event"], r["session_id"]) for r in records] == [
-        ("start", session_id), ("exit", session_id),
+        ("start", session_id),
+        ("exit", session_id),
     ]
     assert records[-1]["released"] is True
 
 
 def test_remote_claude_worker_runs_the_launcher_from_git_bash() -> None:
     lines = PREPARE_RUN.worker_launch(
-        "bob", "claude-code", WINDOWS_RUN, WINDOWS_RUN / "bob",
+        "bob",
+        "claude-code",
+        WINDOWS_RUN,
+        WINDOWS_RUN / "bob",
         root=PureWindowsPath("C:/src/robomate"),
         python="C:\\src\\robomate\\.venv\\Scripts\\python.exe",
     )
@@ -1221,11 +1446,17 @@ def test_remote_claude_worker_runs_the_launcher_from_git_bash() -> None:
 
 
 def test_same_harness_pair_renders_both_claude_configs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_dir, manifest = prepare(tmp_path, monkeypatch, bob_harness="claude-code",
-                                charlie_harness="claude-code", bob_model="claude-sonnet-5",
-                                charlie_model="claude-sonnet-5")
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        bob_harness="claude-code",
+        charlie_harness="claude-code",
+        bob_model="claude-sonnet-5",
+        charlie_model="claude-sonnet-5",
+    )
     assert manifest["policy"]["role_policy"]["reviewer_harness_differs"] is False
     assert (run_dir / "configs/charlie.mcp.json").exists()
     charlie = json.loads((run_dir / "configs/charlie.mcp.json").read_text())
@@ -1233,7 +1464,8 @@ def test_same_harness_pair_renders_both_claude_configs(
 
 
 def test_bare_slug_expands_via_gh_protocol(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = running_hub(tmp_path, monkeypatch)
     seen: list[tuple[str, str]] = []
@@ -1243,11 +1475,17 @@ def test_bare_slug_expands_via_gh_protocol(
         return {"path": str(destination), "workspace_id": ("a" if agent == "bob" else "b") * 64}
 
     monkeypatch.setattr(PREPARE_RUN, "bootstrap_clone", fake_bootstrap)
-    for protocol, expected in (("https", "https://github.com/test-org/test-repo.git"),
-                               ("ssh", "git@github.com:test-org/test-repo.git")):
+    for protocol, expected in (
+        ("https", "https://github.com/test-org/test-repo.git"),
+        ("ssh", "git@github.com:test-org/test-repo.git"),
+    ):
         monkeypatch.setattr(RUN_COMMON, "run", lambda *_args, value=protocol: value)
-        manifest = PREPARE_RUN.prepare("test-org/test-repo", tmp_path / f"{protocol}-run",
-                                       hub_repo=target, skip_github_checks=True)
+        manifest = PREPARE_RUN.prepare(
+            "test-org/test-repo",
+            tmp_path / f"{protocol}-run",
+            hub_repo=target,
+            skip_github_checks=True,
+        )
         assert manifest["clone_repository"] == expected
         prompt = (tmp_path / f"{protocol}-run" / "alice.prompt.md").read_text(encoding="utf-8")
         assert "Forge: github (host: github.com, project: test-org/test-repo)." in prompt
@@ -1260,11 +1498,11 @@ def test_bare_slug_expands_via_gh_protocol(
 
 
 def test_both_codex_workers_report_each_login(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run_dir, _ = prepare(tmp_path, monkeypatch, bob_harness="codex",
-                         charlie_harness="codex")
+    run_dir, _ = prepare(tmp_path, monkeypatch, bob_harness="codex", charlie_harness="codex")
     report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
     assert set(report["checks"]["codex_auth"]) == {"bob", "charlie"}
     assert (run_dir / "configs/bob-codex/config.toml").exists()
@@ -1308,20 +1546,24 @@ def test_both_codex_workers_report_each_login(
     ],
 )
 def test_resolve_provider_records_model_maker_lineage(
-    harness: str, model: str, provider: str | None, expected: str,
+    harness: str,
+    model: str,
+    provider: str | None,
+    expected: str,
 ) -> None:
     assert RUN_COMMON.resolve_provider(harness, model, provider) == expected
 
 
 def test_agy_home_links_cli_auth_without_operator_dotdirs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_user_home = tmp_path / "user-home"
     cli_dir = fake_user_home / ".gemini" / "antigravity-cli"
     cli_dir.mkdir(parents=True)
-    (cli_dir / "antigravity-oauth-token").write_text("{\"access_token\":\"linux\"}\n")
+    (cli_dir / "antigravity-oauth-token").write_text('{"access_token":"linux"}\n')
     (cli_dir / "jetski_state.pbtxt").write_text("oauth_token: 'win'\n")
-    (cli_dir / "settings.json").write_text("{\"theme\":\"dark\"}\n")
+    (cli_dir / "settings.json").write_text('{"theme":"dark"}\n')
     (fake_user_home / ".gitconfig").write_text("[user]\n\tname = Tester\n")
     (fake_user_home / ".git-credentials").write_text("https://user:pass@github.com\n")
     for dirname in (".ssh", ".config", ".cache", ".local"):
@@ -1350,7 +1592,8 @@ def test_agy_home_links_cli_auth_without_operator_dotdirs(
 
 
 def test_link_credential_reports_cross_volume_failure_actionably(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "source-token"
     source.write_text("secret\n")
@@ -1367,14 +1610,16 @@ def test_link_credential_reports_cross_volume_failure_actionably(
 
 
 async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scripts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     from agent_hub.mcp import create_mcp
 
     fake_agy_home = tmp_path / "user-home"
     cli_dir = fake_agy_home / ".gemini" / "antigravity-cli"
     cli_dir.mkdir(parents=True)
-    (cli_dir / "antigravity-oauth-token").write_text("{\"access_token\":\"fake\"}\n")
+    (cli_dir / "antigravity-oauth-token").write_text('{"access_token":"fake"}\n')
     (fake_agy_home / ".ssh").mkdir()
     monkeypatch.setenv("AGY_HOME", str(fake_agy_home))
 
@@ -1402,9 +1647,9 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     alice_skill = Path("skills") / "alice-orchestrator" / "SKILL.md"
     assert (alice_home / ".gemini" / "config" / alice_skill).exists()
     assert (run_dir / "alice-runtime" / ".agents" / alice_skill).exists()
-    alice_mcp = json.loads(
-        RUN_COMMON.agy_mcp_path(alice_home).read_text(encoding="utf-8")
-    )["mcpServers"]["robomate"]
+    alice_mcp = json.loads(RUN_COMMON.agy_mcp_path(alice_home).read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]["robomate"]
     assert alice_mcp["args"][-3:] == ["mcp", "--role", "orchestrator"]
     assert alice_mcp["env"]["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8521"
     assert alice_mcp["env"]["ROBOMATE_TOKEN_FILE"] == str(tmp_path / "target/.robomate/token")
@@ -1420,9 +1665,7 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     assert bob_mcp["command"][-3:] == ["mcp", "--role", "worker"]
     assert bob_mcp["timeout"] == 330000
     assert bob_mcp["environment"]["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8521"
-    assert bob_mcp["environment"]["ROBOMATE_TOKEN_FILE"] == str(
-        tmp_path / "target/.robomate/token"
-    )
+    assert bob_mcp["environment"]["ROBOMATE_TOKEN_FILE"] == str(tmp_path / "target/.robomate/token")
     assert bob_mcp["environment"]["HUB_HARNESS"] == "opencode"
     assert bob_mcp["environment"]["HUB_HARNESS_VERSION"] == "1.18.32"
     assert bob_mcp["environment"]["HUB_PROVIDER"] == "anthropic"
@@ -1431,9 +1674,9 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     # AntiGravity Charlie has an isolated home and all 6 worker tools enabled on robomate.
     charlie_home = run_dir / "configs" / "charlie-agy"
     assert (charlie_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
-    charlie_mcp = json.loads(
-        RUN_COMMON.agy_mcp_path(charlie_home).read_text(encoding="utf-8")
-    )["mcpServers"]["robomate"]
+    charlie_mcp = json.loads(RUN_COMMON.agy_mcp_path(charlie_home).read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]["robomate"]
     assert charlie_mcp["args"][-3:] == ["mcp", "--role", "worker"]
     assert set(charlie_mcp["enabledTools"]) == set(RUN_COMMON.TOOLS)
     assert charlie_mcp["env"]["HUB_HARNESS"] == "antigravity"
@@ -1453,7 +1696,9 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
 
 
 def test_unknown_worker_provider_surfaces_in_preflight_checks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("AGY_HOME", str(tmp_path / "no-agy-login"))
     _, manifest = prepare(
@@ -1485,7 +1730,8 @@ def test_unknown_worker_provider_surfaces_in_preflight_checks(
 
 
 def test_opencode_effort_with_no_auto_start_is_rejected_before_run_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(ValueError, match="opencode only accepts --variant"):
         prepare(
@@ -1515,7 +1761,8 @@ def test_opencode_effort_with_no_auto_start_is_rejected_before_run_dir(
 
 
 def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = os.name
     # 1. Local start scripts: bash on POSIX, PowerShell on a Windows host
@@ -1592,9 +1839,7 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
         assert bob_tmp.stat().st_mode & 0o777 == 0o700
     script = (worker_run / "start-bob.sh").read_text()
     lines = [
-        line.strip()
-        for line in script.splitlines()
-        if line.strip() and not line.startswith("#")
+        line.strip() for line in script.splitlines() if line.strip() and not line.startswith("#")
     ]
     assert lines[0] == "set -e"
     assert lines[1].startswith("cd ")
@@ -1713,9 +1958,7 @@ def test_gitlab_rejects_origin_differing_from_hub(
 
 def test_gitlab_slug_parsing() -> None:
     assert (
-        RUN_COMMON.parse_github_slug(
-            "git@gitlab.com:group/subgroup/project.git", forge="gitlab"
-        )
+        RUN_COMMON.parse_github_slug("git@gitlab.com:group/subgroup/project.git", forge="gitlab")
         == "group/subgroup/project"
     )
     assert (
@@ -1774,9 +2017,7 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         return runner
 
     # 1. Auth failure
-    monkeypatch.setattr(
-        PREPARE_RUN, "run", make_runner(user_data={"message": "401 Unauthorized"})
-    )
+    monkeypatch.setattr(PREPARE_RUN, "run", make_runner(user_data={"message": "401 Unauthorized"}))
     with pytest.raises(ValueError, match="glab is not authenticated"):
         PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run1", hub_repo=target)
 
@@ -1810,9 +2051,7 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     }
     monkeypatch.setattr(PREPARE_RUN, "run", make_runner(project_data=incompatible))
     with pytest.raises(ValueError, match="does not allow the 'merge' merge method"):
-        PREPARE_RUN.prepare(
-            GL_ORIGIN, tmp_path / "run5", hub_repo=target, merge_method="merge"
-        )
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run5", hub_repo=target, merge_method="merge")
 
     # 6. CI presence - no CI file, auto_devops false -> allow_no_ci=True
     monkeypatch.setattr(

@@ -248,7 +248,13 @@ def read_database(path: Path) -> dict[str, Any]:
                 "schema_version": connection.execute("PRAGMA user_version").fetchone()[0],
             }
             for table in (
-                "workflow", "agent", "task", "message", "event", "decision", "call_log",
+                "workflow",
+                "agent",
+                "task",
+                "message",
+                "event",
+                "decision",
+                "call_log",
                 "gate_reading",
             ):
                 snapshot[table] = (
@@ -635,10 +641,15 @@ def stored_gate_readings(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, An
         reading["elapsed_s"] = row["elapsed_s"]
         reading["error_code"] = row["error_code"]
         checks = json.loads(row["checks_json"])
-        reading["checks"] = [
-            {"name": label(check.get("name")), "bucket": closed(check.get("bucket"))}
-            for check in checks if isinstance(check, dict)
-        ] if isinstance(checks, list) else []
+        reading["checks"] = (
+            [
+                {"name": label(check.get("name")), "bucket": closed(check.get("bucket"))}
+                for check in checks
+                if isinstance(check, dict)
+            ]
+            if isinstance(checks, list)
+            else []
+        )
         readings.append(reading)
     return readings
 
@@ -710,7 +721,9 @@ def workflow_figures(
         "merge_gate_readings": (
             stored_gate_readings(
                 r for r in snapshot["gate_reading"] if r["workflow_id"] in (None, row["id"])
-            ) if snapshot["schema_version"] >= 13 else gate_readings(decisions)
+            )
+            if snapshot["schema_version"] >= 13
+            else gate_readings(decisions)
         ),
         "merged": merged_sha(decisions),
         "decisions": [
@@ -987,12 +1000,9 @@ def workflow_lines(workflow: Mapping[str, Any] | None) -> list[str]:
         facts = ", ".join(f"{key}={show(reading[key])}" for key in fields)
         head = reading["current_head_sha"] or reading["expected_head_sha"]
         source = (
-            f"reading {reading['id']}" if "id" in reading
-            else f"decision {reading['decision_id']}"
+            f"reading {reading['id']}" if "id" in reading else f"decision {reading['decision_id']}"
         )
-        lines.append(
-            f"  - {source} {reading['ts']}: {facts}, head={show(head)}"
-        )
+        lines.append(f"  - {source} {reading['ts']}: {facts}, head={show(head)}")
         if "id" in reading:
             lines.append(
                 f"    pr={show(reading['pr_url'])}, base_ref={show(reading['base_ref'])}, "

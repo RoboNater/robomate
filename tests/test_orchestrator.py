@@ -45,10 +45,13 @@ async def test_recording_caps_check_names_without_changing_response(store: HubSt
     assert json.loads(checks) == [{"name": name[:MAX_CHECK_NAME_CHARS], "bucket": "pass"}]
 
 
-@pytest.mark.parametrize(("error", "code"), [(ValueError("bad URL"), -32602),
-                                           (RuntimeError("unexpected"), -32603)])
+@pytest.mark.parametrize(
+    ("error", "code"), [(ValueError("bad URL"), -32602), (RuntimeError("unexpected"), -32603)]
+)
 async def test_other_gate_errors_are_recorded(
-    store: HubStore, error: Exception, code: int,
+    store: HubStore,
+    error: Exception,
+    code: int,
 ) -> None:
     class BrokenGate(StubGate):
         async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
@@ -245,9 +248,7 @@ def test_the_parity_cases_cover_every_operation() -> None:
 
 
 @pytest.fixture
-def deterministic(
-    hub_store: HubStore, monkeypatch: pytest.MonkeyPatch
-) -> Callable[[], None]:
+def deterministic(hub_store: HubStore, monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
     """Fix the store's clock and ids; the returned callable restarts the ids."""
 
     counter = count(1)

@@ -293,9 +293,7 @@ def parse_harness_version(harness: str, output: str) -> str:
 def probe_harness_version(harness: str) -> tuple[str, str]:
     """Run the harness CLI's ``--version``; fail with an actionable message if missing."""
     if harness not in VERSION_COMMANDS:
-        raise ValueError(
-            f"unknown harness {harness!r}; expected one of {sorted(VERSION_COMMANDS)}"
-        )
+        raise ValueError(f"unknown harness {harness!r}; expected one of {sorted(VERSION_COMMANDS)}")
     command = VERSION_COMMANDS[harness]
     try:
         output = run(command, "--version")
@@ -343,8 +341,7 @@ def bootstrap_clone(agent: str, destination: Path, repository: str) -> dict[str,
         ]
         tail = "\n".join((substantive or nonempty)[-3:])
         raise ValueError(
-            f"bootstrap failed for {agent} at {destination}"
-            + (f": {tail}" if tail else "")
+            f"bootstrap failed for {agent} at {destination}" + (f": {tail}" if tail else "")
         ) from exc
     value = json.loads(raw)
     if not isinstance(value, dict):
@@ -361,8 +358,19 @@ def render_claude_mcp(env: dict[str, str], root: str | None = None) -> dict[str,
     template = json.loads((ROOT / "runtimes/claude-code.mcp.json").read_text(encoding="utf-8"))
     directory = str(ROOT) if root is None else root
     template["mcpServers"]["robomate"].update(
-        {"args": ["run", "--locked", "--project", directory, "robomate",
-                  "mcp", "--role", "worker"], "env": env}
+        {
+            "args": [
+                "run",
+                "--locked",
+                "--project",
+                directory,
+                "robomate",
+                "mcp",
+                "--role",
+                "worker",
+            ],
+            "env": env,
+        }
     )
     return template
 
@@ -371,9 +379,9 @@ def render_codex_config(env: dict[str, str], worker_args: list[str]) -> str:
     """Render a run-local Codex ``config.toml``; asserts template tool parity."""
     import tomllib
 
-    reference = tomllib.loads(
-        (ROOT / "runtimes/codex.config.toml").read_text(encoding="utf-8")
-    )["mcp_servers"]["robomate"]
+    reference = tomllib.loads((ROOT / "runtimes/codex.config.toml").read_text(encoding="utf-8"))[
+        "mcp_servers"
+    ]["robomate"]
     config = codex_sandbox() + codex_mcp("uv", worker_args, env, TOOLS, 330)
     if sorted(reference.get("tools", {})) != sorted(TOOLS):
         raise ValueError("runtimes/codex.config.toml tools drifted from the shared TOOLS list")
@@ -436,8 +444,8 @@ def render_antigravity_mcp(
 
 def render_worker_prompt(agent: str) -> str:
     """Render ``prompts/worker.md`` for one agent; refuse an unrendered placeholder."""
-    instruction = (ROOT / "prompts/worker.md").read_text(encoding="utf-8").replace(
-        "$AGENT_NAME", agent
+    instruction = (
+        (ROOT / "prompts/worker.md").read_text(encoding="utf-8").replace("$AGENT_NAME", agent)
     )
     if "$AGENT_NAME" in instruction:
         raise ValueError("worker prompt still contains $AGENT_NAME after rendering")

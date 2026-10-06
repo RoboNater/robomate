@@ -42,7 +42,10 @@ def _git(cwd: Path, *args: str) -> str:
     # child inheriting that pipe on Windows blocks until the next message (#65).
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=cwd, text=True, stdin=subprocess.DEVNULL,
+            ["git", *args],
+            cwd=cwd,
+            text=True,
+            stdin=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -69,9 +72,7 @@ def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     try:
         head = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     except DiscoveryError as exc:
-        raise DiscoveryError(
-            "origin/HEAD is unset; run git remote set-head origin --auto"
-        ) from exc
+        raise DiscoveryError("origin/HEAD is unset; run git remote set-head origin --auto") from exc
     if not head.startswith("origin/"):
         raise DiscoveryError(f"unexpected origin/HEAD: {head}")
     forge = detect_forge(origin, root, probe_cli=probe_cli)
@@ -104,7 +105,7 @@ def _match_yaml_host(content: str, host: str, *, under_hosts: bool = False) -> b
         hosts_match = re.search(r"^[ \t]*hosts:[ \t]*(?:#.*)?$", content, re.MULTILINE)
         if not hosts_match:
             return False
-        search_text = content[hosts_match.end():]
+        search_text = content[hosts_match.end() :]
     pattern = re.compile(rf"^[ \t]*{re.escape(host)}:[ \t]*(?:#.*)?$", re.MULTILINE)
     return bool(pattern.search(search_text))
 
@@ -280,9 +281,7 @@ def discover(cwd: Path, environ: Mapping[str, str] | None = None) -> HubEndpoint
     entries = live_entries(env)
     if len(entries) == 1:
         entry = entries[0]
-        token = (state_dir(Path(entry["repo_root"])) / "token").read_text(
-            encoding="utf-8"
-        ).strip()
+        token = (state_dir(Path(entry["repo_root"])) / "token").read_text(encoding="utf-8").strip()
         return HubEndpoint(entry["url"], token)
     choices = ", ".join(f"{item['repo_root']} ({item['url']})" for item in entries)
     raise DiscoveryError(

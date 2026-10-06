@@ -273,9 +273,7 @@ async def test_gitlab_hub_serves_gitlab_appendix_by_default(
         assert "# GitLab Appendix" in response.text
 
 
-async def test_a_missing_effective_appendix_is_a_404(
-    settings: HubSettings, guides: Path
-) -> None:
+async def test_a_missing_effective_appendix_is_a_404(settings: HubSettings, guides: Path) -> None:
     """No bare guide without its forge commands: a missing effective appendix 404s."""
     from agent_hub.app import create_app
 
@@ -294,9 +292,7 @@ async def test_a_missing_effective_appendix_is_a_404(
         assert response.status_code == 404
 
 
-async def test_two_instances_serve_identical_bytes(
-    settings: HubSettings, guides: Path
-) -> None:
+async def test_two_instances_serve_identical_bytes(settings: HubSettings, guides: Path) -> None:
     """A restart serves the same composed bytes (restart/idempotency, #21)."""
     from agent_hub.app import create_app
 

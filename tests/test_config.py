@@ -261,10 +261,12 @@ def test_a_model_named_unknown_has_no_source() -> None:
 
 
 def test_custom_event_lease_seconds(tmp_path: Path) -> None:
-    settings = HubSettings.from_env({
-        "XDG_STATE_HOME": str(tmp_path),
-        "HUB_EVENT_LEASE_S": "300",
-    })
+    settings = HubSettings.from_env(
+        {
+            "XDG_STATE_HOME": str(tmp_path),
+            "HUB_EVENT_LEASE_S": "300",
+        }
+    )
     assert settings.event_lease_s == 300.0
 
 

@@ -199,9 +199,7 @@ def test_verify_endurance_telemetry_rejects_stale_worker_evidence(tmp_path: Path
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="no await_assignment timeout"):
-        mock_alice.verify_endurance_telemetry(
-            path, "long-task", "current-worker", lost_after_s=180
-        )
+        mock_alice.verify_endurance_telemetry(path, "long-task", "current-worker", lost_after_s=180)
 
 
 def test_verify_endurance_telemetry_rejects_only_approximate_long_work(
@@ -259,9 +257,7 @@ def test_verify_endurance_telemetry_rejects_only_approximate_long_work(
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="no heartbeat-covered gap"):
-        mock_alice.verify_endurance_telemetry(
-            path, "long-task", "current-worker", lost_after_s=180
-        )
+        mock_alice.verify_endurance_telemetry(path, "long-task", "current-worker", lost_after_s=180)
 
 
 # Generous upper bound for one full task; a healthy run takes well under a second.
@@ -802,6 +798,4 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
     assert len(store.tasks()) == 1
     assert store.get_state()["workflow"]["status"] == WorkflowStatus.DONE.value
     with database(store.path) as connection:
-        assert connection.execute(
-            "SELECT MAX(delivery_attempts) FROM event"
-        ).fetchone()[0] >= 2
+        assert connection.execute("SELECT MAX(delivery_attempts) FROM event").fetchone()[0] >= 2

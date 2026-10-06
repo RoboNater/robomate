@@ -84,9 +84,7 @@ async def run_glab(args: Sequence[str]) -> GlabResult:
     except TimeoutError:
         process.kill()
         await process.wait()
-        raise GitLabGateError(
-            f"{_describe(args)} timed out after {GLAB_TIMEOUT_S:g} s"
-        ) from None
+        raise GitLabGateError(f"{_describe(args)} timed out after {GLAB_TIMEOUT_S:g} s") from None
     return GlabResult(
         returncode=process.returncode if process.returncode is not None else -1,
         stdout=stdout.decode("utf-8", errors="replace"),
@@ -163,9 +161,7 @@ class GitLabProject:
         segments = _project_segments(path)
         if not _HOST_RE.fullmatch(host) or segments is None:
             # Name the host only: an HTTPS origin's userinfo may hold a token.
-            raise GitLabGateError(
-                f"cannot read a GitLab project from the origin on host {host!r}"
-            )
+            raise GitLabGateError(f"cannot read a GitLab project from the origin on host {host!r}")
         return cls(host=host.lower(), segments=segments)
 
     def parse_mr_url(self, url: str) -> MergeRequestRef:
@@ -397,9 +393,7 @@ class GitLabGate:
             detailed_merge_status, has_conflicts
         )
 
-        branch_data = await self._json(
-            ref.api(f"repository/branches/{quote(base_ref, safe='')}")
-        )
+        branch_data = await self._json(ref.api(f"repository/branches/{quote(base_ref, safe='')}"))
         commit_data = branch_data.get("commit")
         if not isinstance(commit_data, dict) or "id" not in commit_data:
             raise GitLabGateError("glab api branch query did not return commit.id")
@@ -531,10 +525,7 @@ class GitLabGate:
 
         proj_args = ref.api("")
         proj_data = await self._json(proj_args)
-        return bool(
-            proj_data.get("ci_config_path")
-            or proj_data.get("auto_devops_enabled") is True
-        )
+        return bool(proj_data.get("ci_config_path") or proj_data.get("auto_devops_enabled") is True)
 
     async def _json(self, args: Sequence[str]) -> dict[str, Any]:
         result = await self.runner(args)
@@ -546,9 +537,7 @@ class GitLabGate:
             raise GitLabGateError(f"{_describe(args)} printed invalid JSON") from exc
         if not isinstance(data, dict):
             raise GitLabGateError(f"{_describe(args)} did not print a JSON object")
-        if "message" in data and any(
-            err in str(data["message"]) for err in ("404", "401", "403")
-        ):
+        if "message" in data and any(err in str(data["message"]) for err in ("404", "401", "403")):
             raise _failure(args, result)
         if "error" in data:
             raise _failure(args, result)

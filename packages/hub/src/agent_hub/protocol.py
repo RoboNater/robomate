@@ -494,11 +494,13 @@ class A2AProtocol:
             _require_schema_version(metadata)
             operation_id = _require_operation_id(metadata)
             note = _text(message)
-            payload_hash = _hash_payload({
-                "intent": "progress",
-                "task_id": task.id,
-                "note": note,
-            })
+            payload_hash = _hash_payload(
+                {
+                    "intent": "progress",
+                    "task_id": task.id,
+                    "note": note,
+                }
+            )
             resp_ack = _agent_message(
                 "noted",
                 context_id=agent.context_id,
@@ -532,19 +534,21 @@ class A2AProtocol:
         agent_name = name.strip()
         profile = _profile(metadata)
 
-        payload_hash = _hash_payload({
-            "intent": "check_in",
-            "agent": agent_name,
-            "worker_instance_id": worker_instance_id,
-            "capabilities": sorted(profile.capabilities),
-            "harness": profile.harness,
-            "harness_version": profile.harness_version,
-            "provider": profile.provider,
-            "model": profile.model,
-            "model_source": profile.model_source.value,
-            "declared_model": profile.declared_model,
-            "workspace_id": profile.workspace_id,
-        })
+        payload_hash = _hash_payload(
+            {
+                "intent": "check_in",
+                "agent": agent_name,
+                "worker_instance_id": worker_instance_id,
+                "capabilities": sorted(profile.capabilities),
+                "harness": profile.harness,
+                "harness_version": profile.harness_version,
+                "provider": profile.provider,
+                "model": profile.model,
+                "model_source": profile.model_source.value,
+                "declared_model": profile.declared_model,
+                "workspace_id": profile.workspace_id,
+            }
+        )
 
         resp_json, _ = self.store.check_in(
             agent_name,
@@ -647,11 +651,13 @@ class A2AProtocol:
         except ValueError as exc:
             raise ResultValidationError(str(exc)) from exc
 
-        payload_hash = _hash_payload({
-            "intent": "result",
-            "task_id": task.id,
-            "result": typed_result.model_dump(mode="json"),
-        })
+        payload_hash = _hash_payload(
+            {
+                "intent": "result",
+                "task_id": task.id,
+                "result": typed_result.model_dump(mode="json"),
+            }
+        )
 
         resp_json, _ = self.store.submit_result(
             task.id,
@@ -660,9 +666,7 @@ class A2AProtocol:
             operation_id=operation_id,
             payload_hash=payload_hash,
             response_builder=lambda finished: json.dumps(
-                _task_object(finished, agent.context_id).model_dump(
-                    mode="json", exclude_none=True
-                )
+                _task_object(finished, agent.context_id).model_dump(mode="json", exclude_none=True)
             ),
         )
         return Task.model_validate(json.loads(resp_json))

@@ -318,9 +318,7 @@ class WorkerHubClient:
             err = data["error"]
             code = err.get("code") if isinstance(err, dict) else None
             msg = (
-                err.get("message", "Unknown JSON-RPC error")
-                if isinstance(err, dict)
-                else str(err)
+                err.get("message", "Unknown JSON-RPC error") if isinstance(err, dict) else str(err)
             )
             raise WorkerProtocolError(code, msg)
         return data.get("result")
@@ -431,8 +429,8 @@ class WorkerHubClient:
                                 data = json.loads(raw)
                                 if not isinstance(data, dict):
                                     raise WorkerProtocolError(
-                                    None, "SSE chunk was not a JSON object"
-                                )
+                                        None, "SSE chunk was not a JSON object"
+                                    )
                                 if "error" in data:
                                     err = data["error"]
                                     code = err.get("code") if isinstance(err, dict) else None
@@ -562,9 +560,7 @@ class WorkerHubClient:
         """Fetch role guidance markdown from GET /guides/{role}.md (no local cache)."""
         clean_role = role.strip()
         if not ROLE_SLUG_RE.fullmatch(clean_role):
-            raise ValueError(
-                f"Role must be a slug matching [a-z][a-z0-9-]*, got {role!r}"
-            )
+            raise ValueError(f"Role must be a slug matching [a-z][a-z0-9-]*, got {role!r}")
         response = await self._request_with_retry("GET", f"/guides/{clean_role}.md")
         if response.status_code == 404:
             raise FileNotFoundError(f"Role guide for {clean_role!r} not found (404)")
@@ -710,9 +706,10 @@ class WorkerHubClient:
         state = status.get("state")
         status_msg = status.get("message") or {}
         msg_metadata = status_msg.get("metadata") or {}
-        overridden = (
-            msg_metadata.get(MetaKeys.KIND) == "state_override"
-            or state in ("canceled", "failed", "completed")
+        overridden = msg_metadata.get(MetaKeys.KIND) == "state_override" or state in (
+            "canceled",
+            "failed",
+            "completed",
         )
         if overridden:
             self._pending_questions.pop(task_id, None)

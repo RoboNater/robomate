@@ -69,13 +69,17 @@ def test_discovered_worker_keeps_profile_and_workspace_configuration(tmp_path: P
         agent_name="bob",
         harness="codex",
         environ={
-            "HUB_URL": "http://old.test", "HUB_TOKEN": "old-token",
+            "HUB_URL": "http://old.test",
+            "HUB_TOKEN": "old-token",
             "HUB_MODEL": "configured-model",
-            "HUB_HEARTBEAT_S": "7", "HUB_MAX_RETRIES": "2",
+            "HUB_HEARTBEAT_S": "7",
+            "HUB_MAX_RETRIES": "2",
         },
     )
     assert (settings.hub_url, settings.token, settings.agent_name) == (
-        "http://discovered.test", "discovered-token", "bob"
+        "http://discovered.test",
+        "discovered-token",
+        "bob",
     )
     assert settings.profile.harness == "codex"
     assert settings.profile.model == "configured-model"
@@ -83,7 +87,8 @@ def test_discovered_worker_keeps_profile_and_workspace_configuration(tmp_path: P
     # Discovery does not bypass the legacy full-clone identity check.
     with pytest.raises(ConfigurationError, match="HUB_WORKSPACE"):
         WorkerSettings.from_discovered(
-            HubEndpoint("http://discovered.test", "token"), agent_name="bob",
+            HubEndpoint("http://discovered.test", "token"),
+            agent_name="bob",
             environ={"HUB_WORKSPACE": str(tmp_path)},
         )
 
@@ -160,9 +165,7 @@ def test_worker_settings_rejects_invalid_env(env: dict[str, str], match: str) ->
 
 
 def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> None:
-    codex = tomllib.loads(
-        (ROOT / "runtimes" / "codex.config.toml").read_text(encoding="utf-8")
-    )
+    codex = tomllib.loads((ROOT / "runtimes" / "codex.config.toml").read_text(encoding="utf-8"))
     hub = codex["mcp_servers"]["robomate"]
     expected_tools = {
         "check_in",
@@ -176,7 +179,5 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
     assert {tool["approval_mode"] for tool in hub["tools"].values()} == {"approve"}
     assert "HUB_TELEMETRY_LOG" in hub["env"]
 
-    claude = json.loads(
-        (ROOT / "runtimes" / "claude-code.mcp.json").read_text(encoding="utf-8")
-    )
+    claude = json.loads((ROOT / "runtimes" / "claude-code.mcp.json").read_text(encoding="utf-8"))
     assert "HUB_TELEMETRY_LOG" in claude["mcpServers"]["robomate"]["env"]

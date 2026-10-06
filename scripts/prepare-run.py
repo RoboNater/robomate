@@ -200,9 +200,7 @@ def repo_has_workflows(slug: str) -> bool:
 
 def codex_login_status(home: Path) -> str:
     try:
-        stdout, stderr = run_output(
-            "codex", "login", "status", env={"CODEX_HOME": str(home)}
-        )
+        stdout, stderr = run_output("codex", "login", "status", env={"CODEX_HOME": str(home)})
     except (OSError, subprocess.CalledProcessError):
         return "not logged in (codex login status failed)"
     # Codex CLI prints its status line to stderr on some platforms (exit 0),
@@ -263,17 +261,13 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-def preflight_lines(
-    hub_url: str, public_url: str | None, hub_port: int | None = None
-) -> list[str]:
+def preflight_lines(hub_url: str, public_url: str | None, hub_port: int | None = None) -> list[str]:
     """Reachability checks to run on a worker host before launching it.
 
     ``public_url`` and ``hub_port`` are None under ``--worker-only``, which
     cannot know the hub run's ``--public-url`` or bind port.
     """
-    card = (
-        f"{public_url}/a2a" if public_url is not None else "the hub run's --public-url + /a2a"
-    )
+    card = f"{public_url}/a2a" if public_url is not None else "the hub run's --public-url + /a2a"
     dial_port = url_port(hub_url, "--hub-url")
     forward = (
         [
@@ -288,8 +282,7 @@ def preflight_lines(
         "PowerShell needs curl.exe, since curl is an alias there):",
         *forward,
         f"curl.exe -fsS {hub_url}/healthz",
-        f"curl.exe -fsS {hub_url}/.well-known/agent-card.json   "
-        f"# its url must be {card}",
+        f"curl.exe -fsS {hub_url}/.well-known/agent-card.json   # its url must be {card}",
         f"Warning: if {url_host(hub_url, '--hub-url')} is a WSL2 NAT address (eth0), it "
         "changes whenever WSL restarts and the LAN cannot reach it; re-read it with "
         "`ip -4 -o addr show eth0` and render the run again after a restart.",
@@ -324,10 +317,12 @@ def check_hub_workflow(
     manifest_path = run_dir / "run.json"
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if (previous.get("run_dir") == str(run_dir)
-                and previous.get("hub_repo") == str(hub_repo)
-                and previous.get("state_dir") == str(path.parent)
-                and previous.get("work", {}).get("goal") == goal == row[0]):
+        if (
+            previous.get("run_dir") == str(run_dir)
+            and previous.get("hub_repo") == str(hub_repo)
+            and previous.get("state_dir") == str(path.parent)
+            and previous.get("work", {}).get("goal") == goal == row[0]
+        ):
             if policy is not None and json.loads(row[2]) != policy:
                 raise ValueError(
                     f"hub in {hub_repo} already has workflow status={row[1]!r}, "
@@ -973,9 +968,7 @@ def write_worker_config(
     """Write ``name``'s worker MCP config under ``configs`` and return its path."""
     if harness == "codex":
         home = codex_home(configs, codex_home_name(name))
-        worker_args = [
-            "run", "--locked", "--project", root, "robomate", "mcp", "--role", "worker"
-        ]
+        worker_args = ["run", "--locked", "--project", root, "robomate", "mcp", "--role", "worker"]
         text = render_codex_config(env, worker_args)
         target = home / "config.toml"
         if secret:
@@ -1045,16 +1038,12 @@ def render_worker_bundle(
         (run_dir / f"{name}-telemetry.jsonl").as_posix(),
         hub_url,
     )
-    written = write_worker_config(
-        name, harness, env, model, root.as_posix(), configs, secret=True
-    )
+    written = write_worker_config(name, harness, env, model, root.as_posix(), configs, secret=True)
     config = run_dir / written.relative_to(out_dir)
     (out_dir / f"{name}.prompt.md").write_text(
         render_worker_prompt(name) + prompt_sections(name, harness), encoding="utf-8"
     )
-    launch = worker_launch(
-        name, harness, run_dir, workspace, model, effort, auto_start, root=root
-    )
+    launch = worker_launch(name, harness, run_dir, workspace, model, effort, auto_start, root=root)
     write_script(out_dir / f"start-{name}.sh", start_script(launch))
     bundle = {
         "config": config.as_posix(),
@@ -1200,8 +1189,10 @@ def prepare(
     if hub_repo is None:
         raise ValueError("--hub-repo is required; start robomate up in that repository first")
     if hub_host != DEFAULT_HUB_HOST:
-        raise ValueError("--hub-host belongs to robomate up --bind; start the hub with "
-                         "--bind and --public-url before preparing the run")
+        raise ValueError(
+            "--hub-host belongs to robomate up --bind; start the hub with "
+            "--bind and --public-url before preparing the run"
+        )
     if not hub_repo.is_absolute() or hub_repo != hub_repo.resolve():
         raise ValueError("--hub-repo must be absolute and canonical")
     hub_info = read_hub_json(hub_repo)
@@ -1222,8 +1213,10 @@ def prepare(
         raise ValueError("--hub-port differs from the running hub; configure robomate up")
     network = {"hub_port": live_port, "hub_url": live_url, "public_url": live_url}
     if remote_worker is not None and is_loopback(url_host(live_url, "--hub-repo")):
-        raise ValueError("a remote worker cannot dial a loopback hub; restart robomate up "
-                         "with --bind and --public-url")
+        raise ValueError(
+            "a remote worker cannot dial a loopback hub; restart robomate up "
+            "with --bind and --public-url"
+        )
     networked = remote_worker is not None or network != {
         "hub_port": DEFAULT_HUB_PORT,
         "hub_url": DEFAULT_HUB_URL,
@@ -1391,8 +1384,7 @@ def prepare(
                 ) from exc
             if not has_ci:
                 has_ci = bool(
-                    proj_data.get("ci_config_path")
-                    or proj_data.get("auto_devops_enabled") is True
+                    proj_data.get("ci_config_path") or proj_data.get("auto_devops_enabled") is True
                 )
 
             ci_note = (
@@ -1454,9 +1446,7 @@ def prepare(
             # Baseline from prompts/alice.md; Alice still observes any real
             # provider difference at pairing time via check-in profiles.
             "reviewer_provider_differs": False,
-            "implementer_capabilities": bob_capabilities.split(",")
-            if bob_capabilities
-            else [],
+            "implementer_capabilities": bob_capabilities.split(",") if bob_capabilities else [],
             "reviewer_capabilities": charlie_capabilities.split(",")
             if charlie_capabilities
             else [],
@@ -1518,10 +1508,21 @@ def prepare(
             write_worker_config(name, harness, env, models[name], str(ROOT), configs)
         )
 
-    hub_env = {"ROBOMATE_HUB_URL": live_url,
-               "ROBOMATE_TOKEN_FILE": str(resolved_state / "token"), "PYTHONUTF8": "1"}
-    hub_args = ["run", "--locked", "--project", str(ROOT),
-                "robomate", "mcp", "--role", "orchestrator"]
+    hub_env = {
+        "ROBOMATE_HUB_URL": live_url,
+        "ROBOMATE_TOKEN_FILE": str(resolved_state / "token"),
+        "PYTHONUTF8": "1",
+    }
+    hub_args = [
+        "run",
+        "--locked",
+        "--project",
+        str(ROOT),
+        "robomate",
+        "mcp",
+        "--role",
+        "orchestrator",
+    ]
     if alice_harness == "codex":
         alice_home = codex_home(configs, codex_home_name("alice"))
         (alice_home / "skills").mkdir(exist_ok=True)
@@ -1583,11 +1584,7 @@ def prepare(
         if forge == "gitlab" and gl_project is not None
         else ("github.com" if slug else None)
     )
-    alice_project = (
-        gl_project.path
-        if forge == "gitlab" and gl_project is not None
-        else slug
-    )
+    alice_project = gl_project.path if forge == "gitlab" and gl_project is not None else slug
     (run_dir / "alice.prompt.md").write_text(
         render_alice_prompt(
             goal, account, policy, forge=forge, host=alice_host, project=alice_project
@@ -1669,9 +1666,7 @@ def prepare(
     for name in local:
         if supervised(launch[name][0], auto_start):
             # scripts/claude-worker.py logs each conversation ID here (#115).
-            manifest["launch"]["agents"][name]["sessions"] = str(
-                run_dir / f"{name}-sessions.jsonl"
-            )
+            manifest["launch"]["agents"][name]["sessions"] = str(run_dir / f"{name}-sessions.jsonl")
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
@@ -1711,9 +1706,7 @@ def prepare(
         "issue": issue,
         "workspaces": {name: workspaces[name]["path"] for name in local},
         "configs": {"alice": str(alice_config), **rendered_configs},
-        "prompts": {
-            name: str(run_dir / f"{name}.prompt.md") for name in ("alice", *local)
-        },
+        "prompts": {name: str(run_dir / f"{name}.prompt.md") for name in ("alice", *local)},
         "start_scripts": scripts,
         "checks": checks,
     }
@@ -1751,9 +1744,7 @@ def prepare(
         )
     if not is_loopback(url_host(network["hub_url"], "--hub-url")):
         print()
-        for line in preflight_lines(
-            network["hub_url"], network["public_url"], network["hub_port"]
-        ):
+        for line in preflight_lines(network["hub_url"], network["public_url"], network["hub_port"]):
             print(line)
     print(f"\nAlice kickoff prompt: {run_dir / 'alice.prompt.md'}")
     if (issue is None and work_text is None) or account is None:
@@ -1893,8 +1884,7 @@ def prepare_worker(
     print(bundle["script"])
     if not auto_start:
         print(
-            f"Auto-start is off: once {name} is up, tell it to read and follow "
-            f"{bundle['prompt']}."
+            f"Auto-start is off: once {name} is up, tell it to read and follow {bundle['prompt']}."
         )
     return manifest
 
@@ -1957,8 +1947,12 @@ def main() -> None:
     parser.add_argument("--bob-dir", type=Path, default=None)
     parser.add_argument("--charlie-dir", type=Path, default=None)
     parser.add_argument("--state-dir", type=Path, default=None)
-    parser.add_argument("--hub-repo", type=Path, default=None,
-                        help="absolute repository path with a running robomate up hub")
+    parser.add_argument(
+        "--hub-repo",
+        type=Path,
+        default=None,
+        help="absolute repository path with a running robomate up hub",
+    )
     parser.add_argument("--merge-method", default="squash")
     parser.add_argument("--allow-no-ci", default="auto")
     parser.add_argument("--skip-github-checks", action="store_true")

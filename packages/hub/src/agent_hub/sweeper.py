@@ -32,14 +32,10 @@ async def run_sweeper(store: HubStore, interval_s: float, lost_after_s: float) -
             logger.info("Sweeper queued %s: %s", event.kind.value, event.payload)
 
 
-def start_sweeper(
-    store: HubStore, interval_s: float, lost_after_s: float
-) -> asyncio.Task[None]:
+def start_sweeper(store: HubStore, interval_s: float, lost_after_s: float) -> asyncio.Task[None]:
     """Start the sweep loop as a background task."""
 
-    return asyncio.create_task(
-        run_sweeper(store, interval_s, lost_after_s), name="hub-sweeper"
-    )
+    return asyncio.create_task(run_sweeper(store, interval_s, lost_after_s), name="hub-sweeper")
 
 
 async def stop_sweeper(task: asyncio.Task[None]) -> None:

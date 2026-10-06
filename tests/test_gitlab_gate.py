@@ -36,7 +36,8 @@ SANDBOX_MAIN_SHA = "08726cbdadc5ff198a13d7a346b24c678967e3ee"
 
 async def test_orchestrator_records_gitlab_reading(store: HubStore) -> None:
     runner = routes(
-        mr(pipeline(10, "success")), [pipeline(10, "success")],
+        mr(pipeline(10, "success")),
+        [pipeline(10, "success")],
         [job("test", "success", 10)],
     )
     gate, _ = make_gate(runner)
@@ -181,14 +182,26 @@ def routes(
     ("origin", "host", "path"),
     [
         (ORIGIN, "gitlab-box.local", "RoboNater/robomate-glab-sandbox"),
-        ("gitlab-box.local:RoboNater/robomate-glab-sandbox", "gitlab-box.local",
-         "RoboNater/robomate-glab-sandbox"),
-        ("ssh://git@gitlab-box.local:2222/RoboNater/robomate-glab-sandbox.git",
-         "gitlab-box.local", "RoboNater/robomate-glab-sandbox"),
-        ("https://GitLab-Box.local/RoboNater/robomate-glab-sandbox.git", "gitlab-box.local",
-         "RoboNater/robomate-glab-sandbox"),
-        ("https://oauth2:secret@gitlab-box.local:443/group/sub/project/", "gitlab-box.local",
-         "group/sub/project"),
+        (
+            "gitlab-box.local:RoboNater/robomate-glab-sandbox",
+            "gitlab-box.local",
+            "RoboNater/robomate-glab-sandbox",
+        ),
+        (
+            "ssh://git@gitlab-box.local:2222/RoboNater/robomate-glab-sandbox.git",
+            "gitlab-box.local",
+            "RoboNater/robomate-glab-sandbox",
+        ),
+        (
+            "https://GitLab-Box.local/RoboNater/robomate-glab-sandbox.git",
+            "gitlab-box.local",
+            "RoboNater/robomate-glab-sandbox",
+        ),
+        (
+            "https://oauth2:secret@gitlab-box.local:443/group/sub/project/",
+            "gitlab-box.local",
+            "group/sub/project",
+        ),
     ],
 )
 def test_origin_binds_host_and_project(origin: str, host: str, path: str) -> None:
@@ -459,7 +472,10 @@ async def test_branch_and_mr_pipelines_for_one_sha_both_green_pass() -> None:
 
     assert report.ci == CiStatus.PASS
     assert {c.name for c in report.checks} == {
-        "pipeline:11", "pipeline:12", "pipeline:11/test", "pipeline:12/test"
+        "pipeline:11",
+        "pipeline:12",
+        "pipeline:11/test",
+        "pipeline:12/test",
     }
 
 
@@ -772,7 +788,9 @@ async def test_paginate_concatenated_json_arrays() -> None:
 
     assert report.ci == CiStatus.PASS
     assert [c.name for c in report.checks] == [
-        "pipeline:10", "pipeline:10/job1", "pipeline:10/job2"
+        "pipeline:10",
+        "pipeline:10/job1",
+        "pipeline:10/job2",
     ]
 
 

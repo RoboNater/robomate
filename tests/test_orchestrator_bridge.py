@@ -33,9 +33,16 @@ from worker_mcp.tools import create_worker_mcp
 
 def _mcp_row() -> CallRecord:
     return CallRecord(
-        boundary="mcp", actor="alice", tool="get_state", outcome="ok",
-        bytes_in=10, bytes_out=20, started="2026-01-01T00:00:00Z",
-        finished="2026-01-01T00:00:01Z", content_bytes=5, repeat_bytes=0,
+        boundary="mcp",
+        actor="alice",
+        tool="get_state",
+        outcome="ok",
+        bytes_in=10,
+        bytes_out=20,
+        started="2026-01-01T00:00:00Z",
+        finished="2026-01-01T00:00:01Z",
+        content_bytes=5,
+        repeat_bytes=0,
     )
 
 
@@ -47,14 +54,22 @@ async def test_disabled_hub_stops_bridge_accounting_without_drop_warning(
     def disabled(_request: httpx.Request) -> httpx.Response:
         nonlocal requests
         requests += 1
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": "x", "result": {
-            "recorded": 0, "rejected": 0, "disabled": True,
-        }})
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": "x",
+                "result": {
+                    "recorded": 0,
+                    "rejected": 0,
+                    "disabled": True,
+                },
+            },
+        )
 
     bridge = OrchestratorBridge()
     bridge._endpoint = cast(Any, object())
-    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(disabled),
-                                       base_url=BASE_URL)
+    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(disabled), base_url=BASE_URL)
     bridge.record_call(_mcp_row())
     await bridge.flush_accounting()
     bridge.record_call(_mcp_row())
@@ -125,9 +140,7 @@ async def test_log_decision_retries_only_with_an_idempotency_key(
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": "x", "result": {"id": 1}})
 
     bridge = OrchestratorBridge()
-    bridge._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(respond), base_url=BASE_URL
-    )
+    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url=BASE_URL)
     try:
         if retries:
             assert await bridge.call(
@@ -143,7 +156,7 @@ async def test_log_decision_retries_only_with_an_idempotency_key(
 
 
 async def test_superseded_heartbeat_stops_without_repeating_error_logs(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge = OrchestratorBridge()
     requests = 0
@@ -151,14 +164,16 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
     def respond(_request: httpx.Request) -> httpx.Response:
         nonlocal requests
         requests += 1
-        return httpx.Response(200, json={
-            "jsonrpc": "2.0", "id": "x",
-            "error": {"code": -32002, "message": "superseded by a newer orchestrator session"},
-        })
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": "x",
+                "error": {"code": -32002, "message": "superseded by a newer orchestrator session"},
+            },
+        )
 
-    bridge._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(respond), base_url=BASE_URL
-    )
+    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url=BASE_URL)
     monkeypatch.setattr("worker_mcp.orchestrator.asyncio.sleep", AsyncMock())
     try:
         await bridge._heartbeat_loop()
@@ -171,10 +186,12 @@ async def test_worker_task_survives_orchestrator_session_restart(
     app: FastAPI, hub_store: HubStore
 ) -> None:
     async with app.router.lifespan_context(app):
+
         async def orchestrator() -> tuple[OrchestratorBridge, Any]:
             bridge = OrchestratorBridge()
             bridge._client = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url=BASE_URL,
+                transport=httpx.ASGITransport(app=app),
+                base_url=BASE_URL,
                 headers={
                     "Authorization": f"Bearer {TOKEN}",
                     "X-Robomate-Actor": "alice",
@@ -185,7 +202,8 @@ async def test_worker_task_survives_orchestrator_session_restart(
 
         old_bridge, old = await orchestrator()
         worker_http = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url=BASE_URL,
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         worker_client = WorkerHubClient(
@@ -199,20 +217,30 @@ async def test_worker_task_survives_orchestrator_session_restart(
                 checked_in = (await _call(old, "wait_for_event", timeout_s=0))["event"]
                 assert checked_in["kind"] == "agent_checked_in"
                 task = await _call(
-                    old, "assign_task", agent="bob", role="implementer", title="Fix",
-                    instructions="Do it", event_id=checked_in["id"],
+                    old,
+                    "assign_task",
+                    agent="bob",
+                    role="implementer",
+                    title="Fix",
+                    instructions="Do it",
+                    event_id=checked_in["id"],
                 )
                 assigned = await _call(worker, "await_assignment", timeout_s=0)
                 assert assigned["task_id"] == task["id"]
                 assert await worker_client.heartbeat()
                 pending = asyncio.create_task(
-                    _call(worker, "ask_alice", task_id=task["id"], question="Which?",
-                          timeout_s=0.05)
+                    _call(
+                        worker, "ask_alice", task_id=task["id"], question="Which?", timeout_s=0.05
+                    )
                 )
-                question = (await _call(
-                    old, "wait_for_event", timeout_s=2,
-                    ack=checked_in["delivery_id"],
-                ))["event"]
+                question = (
+                    await _call(
+                        old,
+                        "wait_for_event",
+                        timeout_s=2,
+                        ack=checked_in["delivery_id"],
+                    )
+                )["event"]
                 assert question["kind"] == "worker_question"
                 before = hub_store.get_task(task["id"])
                 assert before is not None
@@ -233,11 +261,15 @@ async def test_worker_task_survives_orchestrator_session_restart(
                     # Retrying the same question keeps its original message ID.
                     assert (await pending) == {"timeout": True}
                     pending = asyncio.create_task(
-                        _call(worker, "ask_alice", task_id=task["id"],
-                              question="Which?", timeout_s=5)
+                        _call(
+                            worker, "ask_alice", task_id=task["id"], question="Which?", timeout_s=5
+                        )
                     )
                     await _call(
-                        new, "reply", task_id=task["id"], text="This one",
+                        new,
+                        "reply",
+                        task_id=task["id"],
+                        text="This one",
                         message_id=question["payload"]["message_id"],
                     )
                     assert (await pending)["reply"] == "This one"
@@ -256,17 +288,23 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
-        cwd=repo, check=True,
+        cwd=repo,
+        check=True,
     )
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
-        cwd=repo, check=True,
+        cwd=repo,
+        check=True,
     )
     command = str(Path(sys.executable).with_name("robomate"))
     env = {**os.environ, "XDG_STATE_HOME": str(tmp_path / "xdg")}
     hub = subprocess.Popen(
-        [command, "up"], cwd=repo, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        [command, "up"],
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     try:
         deadline = time.monotonic() + 10
@@ -286,10 +324,13 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             "ROBOMATE_TOKEN_FILE": str(repo / ".robomate/token"),
         }
         orchestrator = StdioServerParameters(
-            command=command, args=["mcp", "--role", "orchestrator"], env=bridge_env,
+            command=command,
+            args=["mcp", "--role", "orchestrator"],
+            env=bridge_env,
         )
         worker = StdioServerParameters(
-            command=command, args=["mcp", "--role", "worker", "--name", "bob"],
+            command=command,
+            args=["mcp", "--role", "worker", "--name", "bob"],
             env=bridge_env,
         )
         async with (
@@ -309,21 +350,37 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             event = await alice.call_tool("wait_for_event", {"timeout_s": 0})
             assert event.structuredContent is not None
             checkin = event.structuredContent["event"]
-            assigned = await alice.call_tool("assign_task", {
-                "agent": "bob", "role": "implementer", "title": "Fix",
-                "instructions": "Do it", "event_id": checkin["id"],
-            })
+            assigned = await alice.call_tool(
+                "assign_task",
+                {
+                    "agent": "bob",
+                    "role": "implementer",
+                    "title": "Fix",
+                    "instructions": "Do it",
+                    "event_id": checkin["id"],
+                },
+            )
             assert assigned.structuredContent is not None
             received = await bob.call_tool("await_assignment", {"timeout_s": 0})
             assert received.structuredContent is not None
             assert received.structuredContent["task_id"] == assigned.structuredContent["id"]
-            pending = asyncio.create_task(bob.call_tool("ask_alice", {
-                "task_id": assigned.structuredContent["id"], "question": "Which?",
-                "timeout_s": 5,
-            }))
-            question = await alice.call_tool("wait_for_event", {
-                "timeout_s": 2, "ack": checkin["delivery_id"],
-            })
+            pending = asyncio.create_task(
+                bob.call_tool(
+                    "ask_alice",
+                    {
+                        "task_id": assigned.structuredContent["id"],
+                        "question": "Which?",
+                        "timeout_s": 5,
+                    },
+                )
+            )
+            question = await alice.call_tool(
+                "wait_for_event",
+                {
+                    "timeout_s": 2,
+                    "ack": checkin["delivery_id"],
+                },
+            )
             assert question.structuredContent is not None
             first_delivery = question.structuredContent["event"]
             assert first_delivery["kind"] == "worker_question"
@@ -339,10 +396,14 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 assert second_delivery["id"] == first_delivery["id"]
                 assert second_delivery["delivery_attempts"] == 2
                 assert (await alice.call_tool("get_state")).isError
-                answered = await resumed.call_tool("reply", {
-                    "task_id": assigned.structuredContent["id"], "text": "This one",
-                    "message_id": first_delivery["payload"]["message_id"],
-                })
+                answered = await resumed.call_tool(
+                    "reply",
+                    {
+                        "task_id": assigned.structuredContent["id"],
+                        "text": "This one",
+                        "message_id": first_delivery["payload"]["message_id"],
+                    },
+                )
                 assert not answered.isError
             reply = await pending
             assert reply.structuredContent is not None
@@ -353,13 +414,18 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 "WHERE boundary = 'mcp' AND actor = 'alice'"
             ).fetchall()
         assert rows
-        assert any(tool == "initialize_workflow" and content_bytes > 0
-                   for tool, content_bytes in rows)
+        assert any(
+            tool == "initialize_workflow" and content_bytes > 0 for tool, content_bytes in rows
+        )
     finally:
         if hub.poll() is None:
             stopped = subprocess.run(
-                [command, "down"], cwd=repo, env=env, text=True,
-                capture_output=True, timeout=10,
+                [command, "down"],
+                cwd=repo,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=10,
             )
             assert stopped.returncode == 0, stopped.stderr
             hub.wait(timeout=10)

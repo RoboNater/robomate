@@ -117,8 +117,10 @@ def test_a_gitlab_hub_binds_its_gate_to_the_origin_project_on_every_start(
     first, restarted = (gate_of(create_app(settings, hub_info=info)) for _ in range(2))
 
     assert isinstance(first, GitLabGate) and isinstance(restarted, GitLabGate)
-    assert first.project == restarted.project == GitLabProject(
-        "gitlab-box.local", ("RoboNater", "robomate-glab-sandbox")
+    assert (
+        first.project
+        == restarted.project
+        == GitLabProject("gitlab-box.local", ("RoboNater", "robomate-glab-sandbox"))
     )
 
 

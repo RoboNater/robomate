@@ -53,9 +53,7 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
         "agent": "bob",
         "context_id": "c1",
     }
-    assert (await call("get_role_guide", role="implementer")) == {
-        "result": "# Guide\nContent"
-    }
+    assert (await call("get_role_guide", role="implementer")) == {"result": "# Guide\nContent"}
     assert (await call("await_assignment", timeout_s=60.0)) == {
         "task_id": "t1",
         "role": "implementer",
@@ -97,9 +95,7 @@ async def test_worker_mcp_tool_boundary_writes_telemetry(tmp_path: Path) -> None
     result = await server.call_tool("await_assignment", {"timeout_s": 0.1})
 
     assert isinstance(result, tuple)
-    records = [
-        json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()
-    ]
+    records = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
     calls = [record for record in records if record.get("event") == "tool_call"]
     assert [(record["phase"], record.get("outcome")) for record in calls] == [
         ("start", None),
@@ -183,9 +179,7 @@ async def test_submit_result_telemetry_identifies_task_on_error(tmp_path: Path) 
             },
         )
 
-    records = [
-        json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()
-    ]
+    records = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
     calls = [record for record in records if record.get("event") == "tool_call"]
     assert [(record["phase"], record["task_id"]) for record in calls] == [
         ("start", "wrong-task-id"),

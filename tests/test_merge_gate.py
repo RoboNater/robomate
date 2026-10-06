@@ -486,8 +486,15 @@ def test_a_pr_ref_names_its_repository() -> None:
         FakeGh(checks=NO_CHECKS, workflows=GhResult(1, "", "HTTP 404: Not Found\n")),
         FakeGh(compare=GhResult(0, json.dumps({"base_commit": MAIN}), "")),
     ],
-    ids=["view-fails", "view-not-json", "view-missing-fields", "view-head-not-a-sha",
-         "checks-fail", "workflows-fail", "compare-missing-behind"],
+    ids=[
+        "view-fails",
+        "view-not-json",
+        "view-missing-fields",
+        "view-head-not-a-sha",
+        "checks-fail",
+        "workflows-fail",
+        "compare-missing-behind",
+    ],
 )
 async def test_a_gate_that_cannot_be_read_raises_rather_than_reporting(fake: FakeGh) -> None:
     merge_gate, _ = gate(fake)
@@ -559,6 +566,8 @@ async def test_the_mcp_tool_reports_the_gate_as_plain_json(tmp_path: Path) -> No
     assert report["mergeable"] == "clean"
     assert report["base_behind_main"] is True
     assert report["pr_state"] == "open"
-    assert report["checks"] == [{"name": "check-0", "bucket": "pass", "link": "https://ci.example/0"}]
+    assert report["checks"] == [
+        {"name": "check-0", "bucket": "pass", "link": "https://ci.example/0"}
+    ]
     with pytest.raises(Exception, match="validation error"):
         await server.call_tool("check_merge_gate", {"pr_url": PR, "expected_head_sha": "abc"})

@@ -143,7 +143,8 @@ def live_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any
     with _locked(path):
         entries = _read(path)
         live = [
-            item for item in entries
+            item
+            for item in entries
             if process_alive(int(item.get("pid") or 0))
             and hub_healthy(str(item.get("url") or ""), str(item.get("hub_id") or ""))
         ]
@@ -168,7 +169,8 @@ def deregister(
     with _locked(path):
         entries = _read(path)
         remaining = [
-            item for item in entries
+            item
+            for item in entries
             if item.get("hub_id") != hub_id or (pid is not None and item.get("pid") != pid)
         ]
         if remaining != entries:
