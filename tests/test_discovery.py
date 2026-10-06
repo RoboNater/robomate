@@ -1,6 +1,7 @@
 """Repository discovery and atomic local metadata."""
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -172,3 +173,56 @@ def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> N
         assert read_hub_json(repository) == {"port": 8420}
     finally:
         timer.join()
+
+
+@pytest.mark.parametrize("denials", [2, 3])
+def test_hub_json_write_retries_transient_permission_error(
+    repository: Path, monkeypatch: pytest.MonkeyPatch, denials: int
+) -> None:
+    # Two retries are allowed: two denials recover, a third is reported (#114).
+    write_hub_json(repository, {"port": 8420})
+    monkeypatch.setattr("agent_hub_common.discovery._WRITE_RETRY_DELAYS_S", (0.0, 0.0))
+    real_replace = os.replace
+    attempts = 0
+
+    def flaky_replace(src: Any, dst: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= denials:
+            raise PermissionError(13, "Permission denied", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("agent_hub_common.discovery.os.replace", flaky_replace)
+    if denials < 3:
+        write_hub_json(repository, {"port": 8421})
+        assert read_hub_json(repository) == {"port": 8421}
+    else:
+        with pytest.raises(PermissionError, match="Permission denied"):
+            write_hub_json(repository, {"port": 8421})
+        assert read_hub_json(repository) == {"port": 8420}
+    assert attempts == min(denials + 1, 3)
+
+
+def test_hub_json_write_survives_windows_sharing_violation(repository: Path) -> None:
+    # Reproduces #114: a concurrent reader holding hub.json open with plain
+    # open() (no FILE_SHARE_DELETE) makes os.replace fail with a transient
+    # sharing violation until that handle closes.
+    if sys.platform != "win32":  # in the body, so mypy skips the rest off Windows
+        pytest.skip("Windows share-mode semantics")
+    write_hub_json(repository, {"port": 8420})
+    path = repository / ".robomate/hub.json"
+    holder = path.open(encoding="utf-8")
+    try:
+        timer = threading.Timer(0.05, holder.close)
+        timer.start()
+        try:
+            write_hub_json(repository, {"port": 8421})
+        finally:
+            timer.join()
+            if not holder.closed:
+                holder.close()
+    except BaseException:
+        if not holder.closed:
+            holder.close()
+        raise
+    assert read_hub_json(repository) == {"port": 8421}

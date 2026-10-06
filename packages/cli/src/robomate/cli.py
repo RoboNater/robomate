@@ -196,16 +196,22 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         try:
             await serve_http(settings, [sock], info, started)
         finally:
-            current = read_hub_json(repo.root)
-            if (
-                current
-                and current.get("hub_id") == info["hub_id"]
-                and current.get("pid") == os.getpid()
-            ):
-                current["pid"] = None
-                current["started_at"] = None
-                write_hub_json(repo.root, current)
-            deregister(str(info["hub_id"]), pid=os.getpid())
+            # The shutdown write can hit a transient Windows sharing
+            # violation while a reader holds hub.json (#114). It must never
+            # skip deregister, so the registry cleanup runs even if the
+            # read or write still fails after retries.
+            try:
+                current = read_hub_json(repo.root)
+                if (
+                    current
+                    and current.get("hub_id") == info["hub_id"]
+                    and current.get("pid") == os.getpid()
+                ):
+                    current["pid"] = None
+                    current["started_at"] = None
+                    write_hub_json(repo.root, current)
+            finally:
+                deregister(str(info["hub_id"]), pid=os.getpid())
     finally:
         sock.close()
 
