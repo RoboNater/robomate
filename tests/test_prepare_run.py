@@ -1348,6 +1348,16 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
     assert claude_rule in bob and claude_rule not in charlie
     assert "do not use `run_in_background` for a wait" in bob
     assert "Do not end your turn until the workflow is `done` or `escalated`." in alice
+    # #122: the guide's detached-run recipe reaches every worker, in both shells, and
+    # the Claude note points a Claude worker at it.
+    for recipe in (
+        'echo \\$? > $D/rc" >/dev/null 2>&1 &)',
+        "`$LASTEXITCODE > '$D/rc'\"",
+        'for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done',
+    ):
+        assert recipe in bob and recipe in charlie
+    pointer = "use the detached-run recipe in the Waiting section above"
+    assert pointer in bob and pointer not in charlie and pointer not in alice
 
 
 RELEASING_CLAUDE = """\

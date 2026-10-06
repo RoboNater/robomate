@@ -42,6 +42,29 @@ and never end it promising to continue once a background job finishes. Wait in
 the foreground instead: a foreground CI watch or bounded polling of the checks,
 with each call kept under 120 s on Claude Code.
 
+<!-- Long local command: #122. -->
+
+A local command can outlast one tool call too: the full test suite takes
+minutes. Start it detached with its exit code written to a file, then poll for
+that file in separate foreground calls, each under your harness's tool limit
+(120 s on Claude Code). Print the directory and spell it out in each poll,
+because shell variables may not survive between calls:
+
+```sh
+D=$(mktemp -d) && echo "$D" && (nohup sh -c "uv run --locked pytest > $D/out.log 2>&1; echo \$? > $D/rc" >/dev/null 2>&1 &)
+D=<dir>; for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done; cat "$D/rc" 2>/dev/null || echo running; tail -3 "$D/out.log"
+```
+
+On native Windows, run that in Git Bash, or this in PowerShell:
+
+```powershell
+$D = New-Item -ItemType Directory (Join-Path ([IO.Path]::GetTempPath()) (New-Guid)); "$D"; Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "uv run --locked pytest *> '$D/out.log'; `$LASTEXITCODE > '$D/rc'"
+$D = '<dir>'; foreach ($i in 1..18) { if (Test-Path "$D/rc") { break }; Start-Sleep 5 }; if (Test-Path "$D/rc") { Get-Content "$D/rc" } else { 'running' }; Get-Content "$D/out.log" -Tail 3
+```
+
+The command has finished only once `rc` exists, and passed only if it holds
+`0`; read the log for any failures.
+
 ## Questions and blockers
 
 <!-- Question correlation: spec §4.1, §4.3; Alice reply discipline: #51. -->
