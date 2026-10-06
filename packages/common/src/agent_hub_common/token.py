@@ -15,6 +15,10 @@ class TokenError(RuntimeError):
     """Raised when a bearer token cannot be loaded safely."""
 
 
+class _EmptyTokenFileError(TokenError):
+    """The token file exists but holds nothing yet, or never will."""
+
+
 def _read_token(path: Path, label: str = "bearer token") -> str:
     try:
         permissions = stat.S_IMODE(path.stat().st_mode)
@@ -31,7 +35,7 @@ def _read_token(path: Path, label: str = "bearer token") -> str:
     except OSError as exc:
         raise TokenError(f"cannot read {label} file: {path}") from exc
     if not token:
-        raise TokenError(f"{label} file is empty: {path}")
+        raise _EmptyTokenFileError(f"{label} file is empty: {path}")
     return token
 
 
@@ -56,8 +60,11 @@ def _read_created_token(path: Path, label: str) -> str:
     while True:
         try:
             return _read_token(path, label)
-        except TokenError:
-            if time.monotonic() >= deadline or not path.exists() or path.stat().st_size:
+        except _EmptyTokenFileError:
+            # Only emptiness can mean a creator mid-write, and it may finish
+            # at any moment after the read: re-read rather than inspect the
+            # file again. Any other TokenError is final at once.
+            if time.monotonic() >= deadline:
                 raise
         time.sleep(0.02)
 

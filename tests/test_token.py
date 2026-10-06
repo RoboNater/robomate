@@ -1,7 +1,9 @@
 import os
 import sys
 import threading
+import time
 from pathlib import Path
+from typing import Any
 
 import agent_hub_common.token as token_module
 import pytest
@@ -79,3 +81,36 @@ def test_a_token_being_written_by_another_process_is_waited_for(
     monkeypatch.setattr(token_module, "CREATION_GRACE_S", 0.05)
     with pytest.raises(TokenError, match="empty"):
         load_or_create_token(None, abandoned)
+
+
+def test_a_creator_finishing_right_after_an_empty_read_is_not_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-2 on #135: the write lands between the empty read and any recheck."""
+
+    path = tmp_path / "operator-token"
+    path.touch(mode=0o600)
+    original = Path.read_text
+
+    def interleaved(self: Path, *args: Any, **kwargs: Any) -> str:
+        result = original(self, *args, **kwargs)
+        if self == path and not result:
+            self.write_text("written-between\n")
+        return result
+
+    monkeypatch.setattr(Path, "read_text", interleaved)
+    assert load_or_create_token(None, path) == "written-between"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are not checked on Windows")
+def test_a_loose_token_file_is_refused_without_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "operator-token"
+    path.write_text("")
+    path.chmod(0o644)
+    monkeypatch.setattr(token_module, "CREATION_GRACE_S", 60.0)
+    started = time.monotonic()
+    with pytest.raises(TokenError, match="group or others"):
+        load_or_create_token(None, path)
+    assert time.monotonic() - started < 1
