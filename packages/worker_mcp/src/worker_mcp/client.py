@@ -96,6 +96,7 @@ class WorkerHubClient:
 
     async def close(self) -> None:
         await self.stop_heartbeat()
+        await self.detach()
         if self._external_client is None and self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -145,8 +146,28 @@ class WorkerHubClient:
                 )
                 logger.exception("Background heartbeat failed")
 
-    async def heartbeat(self) -> bool:
-        """Send one timer heartbeat; stale instances receive an ignored ack."""
+    async def detach(self) -> None:
+        """Tell the hub this instance is stopping, so a successor can check in at once.
+
+        Best effort: the hub keeps the agent's status and task, and still
+        declares it lost if no successor checks in within its lost window (#115).
+        """
+
+        if self.context_id is None:
+            return
+        try:
+            accepted = await self.heartbeat(detach=True)
+        except Exception as exc:
+            self.telemetry.emit("detach", phase="error", error_type=type(exc).__name__)
+            logger.warning("Could not detach from the hub: %s", exc)
+            return
+        self.telemetry.emit("detach", phase="success", accepted=accepted)
+
+    async def heartbeat(self, *, detach: bool = False) -> bool:
+        """Send one timer heartbeat; stale instances receive an ignored ack.
+
+        With ``detach`` it is this instance's last message instead (#115).
+        """
 
         if self.context_id is None:
             raise RuntimeError("Worker has not checked in yet; call check_in first")
@@ -156,6 +177,8 @@ class WorkerHubClient:
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
             MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
         }
+        if detach:
+            metadata[MetaKeys.DETACH] = True
         if self.current_task_id is not None:
             metadata[MetaKeys.CURRENT_TASK_ID] = self.current_task_id
         result = await self._post_rpc(

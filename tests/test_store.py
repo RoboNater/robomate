@@ -710,6 +710,59 @@ def test_stopped_worker_is_lost_once_and_restart_supersedes_the_instance(
     ]
 
 
+def test_a_detached_instance_lets_its_successor_keep_the_open_task(
+    store: HubStore,
+) -> None:
+    # A headless worker whose harness exits mid-task is resumed in seconds; its
+    # new worker-mcp must be able to check in before the task is failed (#115).
+    clock = FakeClock()
+    store.clock = clock
+    first = store.check_in("bob", worker_instance_id="bob-1")
+    task_id = assign(store)
+
+    assert store.detach("bob", "bob-1")
+    clock.advance(seconds=30)
+    restarted = store.check_in("bob", worker_instance_id="bob-2")
+
+    assert restarted.context_id == first.context_id
+    assert restarted.status is AgentStatus.BUSY
+    assert restarted.current_task_id == task_id
+    assert store.sweep(lost_after_s=180) == []
+    store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
+    task = store.get_task(task_id)
+    assert task is not None and task.state is TaskState.COMPLETED
+
+
+def test_a_detached_worker_that_never_returns_is_still_lost(store: HubStore) -> None:
+    clock = FakeClock()
+    store.clock = clock
+    store.check_in("bob", worker_instance_id="bob-1")
+    task_id = assign(store)
+    assert store.detach("bob", "bob-1")
+
+    # Detaching neither refreshes liveness nor stops the lost-window clock.
+    clock.advance(seconds=181)
+    assert [event.kind for event in store.sweep(lost_after_s=180)] == [EventKind.AGENT_LOST]
+    task = store.get_task(task_id)
+    assert task is not None and task.state is TaskState.FAILED
+
+
+def test_only_the_live_instance_can_detach(store: HubStore) -> None:
+    store.check_in("bob", worker_instance_id="bob-1")
+    task_id = assign(store)
+
+    # A stale or foreign instance cannot free the slot of a running worker.
+    assert not store.detach("bob", "bob-0")
+    with pytest.raises(DuplicateAgentError, match="live worker instance"):
+        store.check_in("bob", worker_instance_id="bob-2")
+
+    store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
+    store.release_agent("bob")
+    assert not store.detach("bob", "bob-1")
+    released = store.agent_by_name("bob")
+    assert released is not None and released.worker_instance_id == "bob-1"
+
+
 def test_superseded_heartbeat_does_not_renew_or_revive(store: HubStore) -> None:
     clock = FakeClock()
     store.clock = clock

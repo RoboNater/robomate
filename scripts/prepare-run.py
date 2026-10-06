@@ -476,7 +476,10 @@ def prompt_sections(name: str, harness: str) -> str:
     """Harness notes and the post-release close-out appended to a rendered prompt (#30).
 
     Claude Code backgrounds any tool call still running at 120 s, so a Claude
-    agent is told to keep every hub wait at 100 s.
+    agent is told to keep every hub wait at 100 s. In ``claude -p`` the process
+    exits when the turn ends, and a background job can wake the agent only
+    while its turn is still running, so it is told never to end its turn to
+    wait (#115).
     """
     sections = []
     if harness == "claude-code":
@@ -484,6 +487,20 @@ def prompt_sections(name: str, harness: str) -> str:
         sections.append(
             f"Use a 100 second wait time for all hub waits including {waits}. This "
             "prevents the wait from being shifted to a background task by the harness."
+        )
+        last = (
+            "the workflow is `done` or `escalated`"
+            if name == "alice"
+            else "`await_assignment` returns `release: true`"
+        )
+        sections.append(
+            f"Do not end your turn until {last}. In print mode (`claude -p`) the "
+            "process exits when your turn ends, and a background job can wake you only "
+            "while your turn is still running. Never end your turn to wait for CI, a "
+            "background command, or a long test run, and do not use `run_in_background` "
+            "for a wait. Wait in the foreground with calls kept under 120 s: for example, "
+            "re-run a bounded check such as `gh pr checks <pr>` (GitHub) or "
+            "`glab ci status` (GitLab) after a short `sleep`."
         )
     elif name == "alice":
         skill = ROOT / "skills/alice-orchestrator/SKILL.md"
@@ -561,10 +578,14 @@ def claude_launch(
     flags: list[str],
     auto_start: bool,
     powershell: bool = False,
+    launcher: list[str] | None = None,
 ) -> list[str]:
     """A ``claude`` launch; auto-start runs it in print mode on its prompt file.
 
     ``--add-dir`` lets Claude read the prompt when it is outside the clone.
+    With a ``launcher`` (an auto-started worker), ``scripts/claude-worker.py``
+    runs ``claude`` and supplies ``-p`` itself, resuming the conversation if it
+    exits before release (#115).
     """
     words = ["claude", *flags]
     if auto_start:
@@ -576,9 +597,44 @@ def claude_launch(
         "--add-dir",
         shell_word(prompt_dir, powershell),
     ]
-    if auto_start:
+    if auto_start and launcher is not None:
+        words = [*launcher, "--prompt", auto_start_instruction(prompt, powershell), *words]
+    elif auto_start:
         words += ["-p", auto_start_instruction(prompt, powershell)]
     return [" ".join(words)]
+
+
+def supervised(harness: str, auto_start: bool) -> bool:
+    """Whether a worker's start script runs it under ``scripts/claude-worker.py`` (#115)."""
+    return harness == "claude-code" and auto_start
+
+
+def claude_worker_launcher(
+    name: str,
+    python: str,
+    script: str,
+    telemetry: str,
+    sessions: str,
+    powershell: bool = False,
+) -> list[str]:
+    """The words running ``scripts/claude-worker.py`` ahead of a worker's ``claude``.
+
+    The run's own interpreter runs it directly rather than ``uv run``, which
+    would put a virtualenv on the PATH the worker's shell inherits.
+    """
+    words = [shell_word(python, powershell), shell_word(script, powershell)]
+    if powershell:
+        # PowerShell reads a quoted command name as a string until `&` calls it.
+        words[0] = "& " + words[0]
+    return [
+        *words,
+        "--agent",
+        shell_word(name, powershell),
+        "--telemetry",
+        shell_word(telemetry, powershell),
+        "--sessions",
+        shell_word(sessions, powershell),
+    ]
 
 
 def codex_launch(
@@ -707,15 +763,16 @@ def harness_launch(
     flags: list[str],
     auto_start: bool,
     powershell: bool = False,
+    launcher: list[str] | None = None,
 ) -> list[str]:
-    """Dispatch to the harness's launch-line builder."""
+    """Dispatch to the harness's launch-line builder; only Claude Code takes a launcher."""
     if harness == "codex":
         return codex_launch(config, git_dir, prompt, flags, auto_start, powershell)
     if harness == "opencode":
         return opencode_launch(config, prompt, flags, auto_start, powershell)
     if harness == "antigravity":
         return antigravity_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
-    return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
+    return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell, launcher)
 
 
 def launch_lines(
@@ -728,14 +785,28 @@ def launch_lines(
     effort: str = "",
     auto_start: bool = True,
     tmp_dir: Path | None = None,
+    worker: str | None = None,
 ) -> list[str]:
     """One local agent's start lines for this platform; paths are shell-quoted.
 
     ``config`` is the MCP config for Claude Code, ``OPENCODE_CONFIG`` for
     OpenCode, ``CODEX_HOME`` for Codex, and the isolated home for AntiGravity.
+    ``worker`` names a worker agent, whose prompt sits in the run directory
+    beside its telemetry and session log; an auto-started Claude Code worker
+    runs under ``scripts/claude-worker.py``.
     """
     powershell = os.name == "nt"
     flags = model_flags(harness, model, effort, powershell, auto_start)
+    launcher = None
+    if worker is not None and supervised(harness, auto_start):
+        launcher = claude_worker_launcher(
+            worker,
+            sys.executable,
+            str(ROOT / "scripts" / "claude-worker.py"),
+            str(prompt.parent / f"{worker}-telemetry.jsonl"),
+            str(prompt.parent / f"{worker}-sessions.jsonl"),
+            powershell,
+        )
     lines = harness_launch(
         harness,
         str(config),
@@ -745,6 +816,7 @@ def launch_lines(
         flags,
         auto_start,
         powershell,
+        launcher,
     )
     temp_lines = []
     if tmp_dir is not None:
@@ -812,17 +884,31 @@ def worker_launch(
     effort: str = "",
     auto_start: bool = True,
     tmp_dir: PurePath | None = None,
+    root: PurePath = ROOT,
+    python: str = sys.executable,
 ) -> list[str]:
     """A remote worker's launch lines, spelled for its host.
 
     On a Windows host the lines are for Git Bash: the shell's own ``cd`` and
-    ``<`` take Git Bash spellings, while arguments and variables handed to
-    native programs (claude, codex, opencode, agy) keep forward-slash Windows paths (#75).
+    ``<`` and the command it runs take Git Bash spellings, while arguments and
+    variables handed to native programs (claude, codex, opencode, agy, python)
+    keep forward-slash Windows paths (#75). ``root`` and ``python`` are the
+    robomate checkout and interpreter on that host, for ``scripts/claude-worker.py``.
     """
     if tmp_dir is None:
         tmp_dir = run_dir / "tmp" / name
+    is_windows = bool(run_dir.drive) or os.name == "nt"
     prompt = run_dir / f"{name}.prompt.md"
     flags = model_flags(harness, model, effort, auto_start=auto_start)
+    launcher = None
+    if supervised(harness, auto_start):
+        launcher = claude_worker_launcher(
+            name,
+            git_bash_path(PureWindowsPath(python)) if is_windows else python,
+            (root / "scripts" / "claude-worker.py").as_posix(),
+            (run_dir / f"{name}-telemetry.jsonl").as_posix(),
+            (run_dir / f"{name}-sessions.jsonl").as_posix(),
+        )
     lines = harness_launch(
         harness,
         launch_config_path(harness, run_dir / "configs", name).as_posix(),
@@ -831,8 +917,8 @@ def worker_launch(
         run_dir.as_posix(),
         flags,
         auto_start,
+        launcher=launcher,
     )
-    is_windows = bool(run_dir.drive) or os.name == "nt"
     if is_windows:
         temp_lines = [
             f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
@@ -966,14 +1052,19 @@ def render_worker_bundle(
     (out_dir / f"{name}.prompt.md").write_text(
         render_worker_prompt(name) + prompt_sections(name, harness), encoding="utf-8"
     )
-    launch = worker_launch(name, harness, run_dir, workspace, model, effort, auto_start)
+    launch = worker_launch(
+        name, harness, run_dir, workspace, model, effort, auto_start, root=root
+    )
     write_script(out_dir / f"start-{name}.sh", start_script(launch))
-    return {
+    bundle = {
         "config": config.as_posix(),
         "prompt": (run_dir / f"{name}.prompt.md").as_posix(),
         "launch": launch,
         "script": (run_dir / f"start-{name}.sh").as_posix(),
     }
+    if supervised(harness, auto_start):
+        bundle["sessions"] = (run_dir / f"{name}-sessions.jsonl").as_posix()
+    return bundle
 
 
 def read_hub_token(token_file: Path) -> str:
@@ -1558,6 +1649,7 @@ def prepare(
             effort,
             auto_start,
             tmp_dir=run_dir / "tmp" / name,
+            worker=None if name == "alice" else name,
         )
         script = run_dir / f"start-{name}.{suffix}"
         write_script(script, start_script(lines, os.name == "nt"))
@@ -1574,6 +1666,12 @@ def prepare(
             for name in scripts
         },
     }
+    for name in local:
+        if supervised(launch[name][0], auto_start):
+            # scripts/claude-worker.py logs each conversation ID here (#115).
+            manifest["launch"]["agents"][name]["sessions"] = str(
+                run_dir / f"{name}-sessions.jsonl"
+            )
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
@@ -1752,6 +1850,7 @@ def prepare_worker(
                     "effort": effort,
                     "script": bundle["script"],
                 }
+                | ({"sessions": bundle["sessions"]} if "sessions" in bundle else {})
             },
         },
     }

@@ -41,3 +41,4 @@ class MetaKeys(StrEnum):
     WORKER_INSTANCE_ID = "hub.worker_instance_id"
     CURRENT_TASK_ID = "hub.current_task_id"
     ACCEPTED = "hub.accepted"
+    DETACH = "hub.detach"

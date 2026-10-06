@@ -30,6 +30,18 @@ The loop is:
 await_assignment -> get_role_guide -> do work -> submit_result -> repeat
 ```
 
+## Waiting
+
+<!-- Headless turn end: #115. -->
+
+Your turn ends only after `await_assignment` returns `release: true`. A
+headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits
+when your turn ends; the hub then declares you lost and fails your task. Never
+end your turn to wait for CI, a background command, a long test run, or Alice,
+and never end it promising to continue once a background job finishes. Wait in
+the foreground instead: a foreground CI watch or bounded polling of the checks,
+with each call kept under 120 s on Claude Code.
+
 ## Questions and blockers
 
 <!-- Question correlation: spec §4.1, §4.3; Alice reply discipline: #51. -->

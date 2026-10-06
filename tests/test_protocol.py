@@ -121,6 +121,36 @@ async def test_heartbeat_is_an_immediate_message_send_intent(
     assert after is not None and after.last_heartbeat >= before.last_heartbeat
 
 
+async def test_a_detach_heartbeat_frees_the_instance_for_an_immediate_check_in(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    context_id = await check_in(client, "bob", worker_instance_id="bob-1")
+    before = hub_store.agent_by_name("bob")
+    assert before is not None
+
+    body = await post(
+        client,
+        "message/send",
+        message(
+            "HEARTBEAT",
+            context_id=context_id,
+            metadata={
+                MetaKeys.KIND: "heartbeat",
+                MetaKeys.AGENT: "bob",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.WORKER_INSTANCE_ID: "bob-1",
+                MetaKeys.DETACH: True,
+            },
+        ),
+    )
+
+    assert body["result"]["metadata"][MetaKeys.ACCEPTED] is True
+    detached = hub_store.agent_by_name("bob")
+    # A detach is not a liveness signal.
+    assert detached is not None and detached.last_heartbeat == before.last_heartbeat
+    assert await check_in(client, "bob", worker_instance_id="bob-2") == context_id
+
+
 @asynccontextmanager
 async def peer(app: FastAPI, host: str) -> AsyncIterator[httpx.AsyncClient]:
     """A client whose connection the app sees arriving from `host`.

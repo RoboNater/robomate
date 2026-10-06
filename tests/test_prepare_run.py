@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -778,6 +779,8 @@ def test_default_rendering_matches_the_golden_files(
     manifest = PREPARE_RUN.prepare(str(source), run_dir, issue=42,
                                    account="testuser", hub_repo=target)
     masks = {
+        # The interpreter running the tests, often under $ROOT: mask it first.
+        sys.executable: "$PYTHON",
         str(run_dir): "$RUN_DIR", str(source): "$ORIGIN",
         str(target): "$HUB_REPO", str(ROOT): "$ROOT",
         manifest["workspaces"]["bob"]["workspace_id"]: "$BOB_ID",
@@ -1112,6 +1115,109 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
     bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())[
         "mcpServers"]["robomate"]["env"]
     assert bob_env["HUB_MODEL"] == "claude-opus-5-5"
+
+
+def test_rendered_prompts_forbid_ending_the_turn_to_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A headless worker that ends its turn to wait for CI exits and loses its task (#115).
+    run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="claude-code")
+    bob = " ".join((run_dir / "bob.prompt.md").read_text(encoding="utf-8").split())
+    charlie = " ".join((run_dir / "charlie.prompt.md").read_text(encoding="utf-8").split())
+    alice = " ".join((run_dir / "alice.prompt.md").read_text(encoding="utf-8").split())
+    guide_rule = (
+        "Your turn ends only after `await_assignment` returns `release: true`. "
+        "A headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits"
+    )
+    # The worker guide's rule reaches every harness; the Claude note only claude-code.
+    assert guide_rule in bob and guide_rule in charlie
+    claude_rule = "Do not end your turn until `await_assignment` returns `release: true`."
+    assert claude_rule in bob and claude_rule not in charlie
+    assert "do not use `run_in_background` for a wait" in bob
+    assert "Do not end your turn until the workflow is `done` or `escalated`." in alice
+
+
+RELEASING_CLAUDE = """\
+import json, os, sys
+with open(os.environ["FAKE_ARGV_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+release = {"event": "tool_call", "phase": "success", "tool": "await_assignment",
+           "outcome": "release"}
+with open(os.environ["FAKE_TELEMETRY"], "a", encoding="utf-8") as telemetry:
+    telemetry.write(json.dumps(release) + "\\n")
+"""
+
+
+def test_a_claude_worker_start_script_runs_under_the_resuming_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #115: the generated script, run by its own shell with a stand-in claude.
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    sessions = run_dir / "bob-sessions.jsonl"
+    agents = manifest["launch"]["agents"]
+    assert agents["bob"]["sessions"] == str(sessions)
+    assert "sessions" not in agents["alice"] and "sessions" not in agents["charlie"]
+    script = run_dir / f"start-bob.{SCRIPT_SUFFIX}"
+    assert "claude-worker.py" in script.read_text(encoding="utf-8")
+    assert "claude-worker.py" not in (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text(
+        encoding="utf-8"
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "fake_claude.py"
+    fake.write_text(RELEASING_CLAUDE, encoding="utf-8")
+    if os.name == "nt":
+        (bin_dir / "claude.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        assert shell is not None
+        command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                   "-File", str(script)]
+    else:
+        claude = bin_dir / "claude"
+        claude.write_text(f"#!{sys.executable}\n{RELEASING_CLAUDE}", encoding="utf-8")
+        claude.chmod(0o755)
+        command = ["bash", str(script)]
+    argv_log = tmp_path / "argv.jsonl"
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_ARGV_LOG": str(argv_log),
+        "FAKE_TELEMETRY": str(run_dir / "bob-telemetry.jsonl"),
+    }
+
+    completed = subprocess.run(
+        command, env=env, capture_output=True, text=True, timeout=120, check=False
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    [argv] = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
+    prompt = run_dir / "bob.prompt.md"
+    assert argv[-2:] == ["-p", f"Read {prompt} and follow the instructions in it"]
+    assert argv[argv.index("--mcp-config") + 1] == str(run_dir / "configs" / "bob.mcp.json")
+    session_id = argv[argv.index("--session-id") + 1]
+    records = [json.loads(line) for line in sessions.read_text(encoding="utf-8").splitlines()]
+    assert [(r["event"], r["session_id"]) for r in records] == [
+        ("start", session_id), ("exit", session_id),
+    ]
+    assert records[-1]["released"] is True
+
+
+def test_remote_claude_worker_runs_the_launcher_from_git_bash() -> None:
+    lines = PREPARE_RUN.worker_launch(
+        "bob", "claude-code", WINDOWS_RUN, WINDOWS_RUN / "bob",
+        root=PureWindowsPath("C:/src/robomate"),
+        python="C:\\src\\robomate\\.venv\\Scripts\\python.exe",
+    )
+    # Git Bash runs the interpreter; python and claude read Windows paths.
+    assert lines[-1] == (
+        "/c/src/robomate/.venv/Scripts/python.exe C:/src/robomate/scripts/claude-worker.py "
+        "--agent bob --telemetry C:/Users/Bob/runs/step7/bob-telemetry.jsonl "
+        "--sessions C:/Users/Bob/runs/step7/bob-sessions.jsonl "
+        "--prompt 'Read C:/Users/Bob/runs/step7/bob.prompt.md and follow the instructions in it' "
+        "claude --permission-mode auto --strict-mcp-config "
+        "--mcp-config C:/Users/Bob/runs/step7/configs/bob.mcp.json "
+        "--add-dir C:/Users/Bob/runs/step7"
+    )
 
 
 def test_same_harness_pair_renders_both_claude_configs(

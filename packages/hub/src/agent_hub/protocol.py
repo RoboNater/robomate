@@ -585,12 +585,16 @@ class A2AProtocol:
                 f"metadata.{MetaKeys.CURRENT_TASK_ID} must be a non-empty string when present"
             )
         agent_name = name.strip()
-        accepted = self.store.heartbeat(
-            agent_name,
-            instance_id,
-            None if current_task_id is None else current_task_id.strip(),
-            remote_addr=remote_addr,
-        )
+        if metadata.get(MetaKeys.DETACH) is True:
+            # The instance's last word as it shuts down (#115).
+            accepted = self.store.detach(agent_name, instance_id)
+        else:
+            accepted = self.store.heartbeat(
+                agent_name,
+                instance_id,
+                None if current_task_id is None else current_task_id.strip(),
+                remote_addr=remote_addr,
+            )
         agent = self.store.agent_by_name(agent_name)
         if agent is not None:
             note_a2a(actor=agent.name)
