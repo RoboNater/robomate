@@ -1,15 +1,17 @@
-"""Start and stop the per-repository hub."""
+"""Start and stop the per-repository hub, and answer its operator questions."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import errno
+import io
 import json
 import logging
 import os
 import socket
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -71,19 +73,31 @@ def _bind(host: str, port: int | None) -> tuple[socket.socket, int]:
     raise RuntimeError("no free port from 8420 upward")
 
 
-def _rpc(url: str, token: str, method: str, *, operator_token: str | None = None) -> dict[str, Any]:
+def _rpc(
+    url: str,
+    token: str,
+    method: str,
+    *,
+    operator_token: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if operator_token is not None:
         headers["X-Robomate-Operator"] = operator_token
     request = urllib.request.Request(
         f"{url.rstrip('/')}/rpc",
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}).encode(),
+        data=json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+        ).encode(),
         headers=headers,
     )
     with urllib.request.urlopen(request, timeout=2) as response:
         result: dict[str, Any] = json.load(response)
     if "error" in result:
-        raise RuntimeError(str(result["error"]))
+        error = result["error"]
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            raise RuntimeError(f"hub refused {method}: {error['message']} ({error.get('code')})")
+        raise RuntimeError(str(error))
     value = result["result"]
     if not isinstance(value, dict):
         raise RuntimeError("invalid hub RPC response")
@@ -374,6 +388,106 @@ def _status(as_json: bool) -> None:
             f"  PR {task['pr_url'] or '-'}  head {task['head_sha'] or '-'}"
         )
     print(f"Pending questions: {status['pending_questions']}")
+    # Absent from a hub older than #130, which may still be running.
+    operator_questions = status.get("operator_questions")
+    if operator_questions is not None:
+        hint = "  (see robomate inbox)" if operator_questions else ""
+        print(f"Operator questions: {operator_questions}{hint}")
+
+
+def _printable(text: str) -> str:
+    """Escape control characters in agent-written text before it reaches a terminal.
+
+    Questions and options are untrusted (§5 rails); an escape sequence in one
+    must not be able to rewrite what the operator sees.
+    """
+
+    return "".join(
+        char
+        if char in "\n\t" or not unicodedata.category(char).startswith("C")
+        else char.encode("unicode_escape").decode("ascii")
+        for char in text
+    )
+
+
+def _escape_unencodable_output() -> None:
+    # Agent text can hold characters a Windows code page cannot encode once
+    # stdout is redirected; escape them rather than fail mid-listing.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(errors="backslashreplace")
+
+
+def _open_questions(url: str, token: str) -> list[dict[str, Any]]:
+    questions = _rpc(url, token, "hub.questions").get("questions")
+    if not isinstance(questions, list):
+        raise RuntimeError("invalid hub.questions response")
+    return questions
+
+
+def _inbox(as_json: bool) -> None:
+    """List the questions the orchestrator is waiting on the operator to answer."""
+
+    _escape_unencodable_output()
+    endpoint = discover(Path.cwd())
+    questions = _open_questions(endpoint.url, endpoint.token)
+    if as_json:
+        print(json.dumps(questions))
+        return
+    if not questions:
+        print("No open questions.")
+        return
+    now = datetime.now(UTC)
+    for question in questions:
+        asked = datetime.fromisoformat(question["asked"])
+        print(
+            f"[{question['question_id']}] asked {question['asked']}"
+            f" ({_age(now - asked)} ago) by {_printable(question['actor'])}"
+        )
+        for line in _printable(question["question"]).splitlines() or [""]:
+            print(f"    {line}")
+        for number, option in enumerate(question["options"] or [], start=1):
+            print(f"    --option {number}: {_printable(option)}")
+    print('Answer with: robomate answer <id> "<text>"  or  robomate answer <id> --option N')
+
+
+def _answer(question_id: int, text: str | None, option: int | None) -> None:
+    """Answer one open question with the operator credential (#130)."""
+
+    if (text is None) == (option is None):
+        raise ValueError("give either an answer text or --option N, exactly one")
+    _escape_unencodable_output()
+    endpoint = discover(Path.cwd())
+    operator_token = read_token_file(operator_token_path(), "operator token")
+    if option is not None:
+        question = next(
+            (
+                q
+                for q in _open_questions(endpoint.url, endpoint.token)
+                if q["question_id"] == question_id
+            ),
+            None,
+        )
+        if question is None:
+            raise RuntimeError(f"question {question_id} is not open; see robomate inbox")
+        options = question["options"] or []
+        if not 1 <= option <= len(options):
+            raise ValueError(
+                f"question {question_id} has no option {option}"
+                + (f"; choose 1 to {len(options)}" if options else "; answer with text")
+            )
+        text = options[option - 1]
+    assert text is not None
+    try:
+        _rpc(
+            endpoint.url,
+            endpoint.token,
+            "hub.answer",
+            operator_token=operator_token,
+            params={"question_id": question_id, "answer": text},
+        )
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"hub at {endpoint.url} rejected the answer (HTTP {exc.code})") from exc
+    print(f"Answered question {question_id}: {_printable(text)}")
 
 
 def _ls(as_json: bool) -> None:
@@ -435,6 +549,12 @@ def main() -> None:
     commands.add_parser("down", help="stop the discovered hub")
     status = commands.add_parser("status", help="show this repository's hub state")
     status.add_argument("--json", action="store_true")
+    inbox = commands.add_parser("inbox", help="list the questions waiting for you")
+    inbox.add_argument("--json", action="store_true")
+    answer = commands.add_parser("answer", help="answer a question from robomate inbox")
+    answer.add_argument("question_id", type=int, metavar="id")
+    answer.add_argument("text", nargs="?", help="the answer; quote it")
+    answer.add_argument("--option", type=int, metavar="N", help="answer with option N")
     listing = commands.add_parser("ls", help="list live hubs on this machine")
     listing.add_argument("--json", action="store_true")
     mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
@@ -449,6 +569,10 @@ def main() -> None:
             _down()
         elif args.command == "status":
             _status(args.json)
+        elif args.command == "inbox":
+            _inbox(args.json)
+        elif args.command == "answer":
+            _answer(args.question_id, args.text, args.option)
         elif args.command == "ls":
             _ls(args.json)
         else:

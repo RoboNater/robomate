@@ -548,6 +548,11 @@ class HubStore:
             pending_questions = sum(
                 task["state"] == TaskState.INPUT_REQUIRED.value for task in tasks
             )
+            operator_questions = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS n FROM operator_question WHERE answered IS NULL"
+                ).fetchone()["n"]
+            )
         return {
             "workflow": None
             if workflow is None
@@ -561,6 +566,8 @@ class HubStore:
             "agents": agents,
             "tasks": tasks,
             "pending_questions": pending_questions,
+            # Open `ask_user` questions, which `robomate inbox` lists (#130).
+            "operator_questions": operator_questions,
         }
 
     def set_workflow_status(
@@ -706,6 +713,45 @@ class HubStore:
             "answer": row["answer"],
             "answered": row["answered"],
         }
+
+    def answer_operator_question(self, question_id: int, answer: str) -> dict[str, Any]:
+        """Record the operator's answer and queue `user_answered` for the orchestrator (#130).
+
+        The answer, its time and actor, and the event commit together, so the
+        orchestrator hears of exactly the answer the hub kept. A question is
+        answered once: a second answer is refused rather than replacing a
+        decision the orchestrator may already have acted on.
+        """
+
+        if not answer.strip():
+            raise ValueError("answer must not be empty")
+        size = _json_size_bytes(answer)
+        if size > MAX_MESSAGE_PART_BYTES:
+            raise PayloadTooLargeError(
+                f"answer is {size} bytes; maximum is {MAX_MESSAGE_PART_BYTES} bytes."
+            )
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT answered FROM operator_question WHERE id = ?", (question_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"unknown operator question: {question_id}")
+            if row["answered"] is not None:
+                raise ConflictError(f"operator question {question_id} is already answered")
+            now = self._now_iso()
+            connection.execute(
+                "UPDATE operator_question SET answer = ?, answered = ?, answered_by = ?"
+                " WHERE id = ?",
+                (answer, now, "operator", question_id),
+            )
+            self._add_event(
+                connection,
+                EventKind.USER_ANSWERED,
+                {"question_id": question_id, "answer": answer},
+            )
+        self.signals.notify(EVENT_KEY)
+        return {"question_id": question_id, "answered": now}
 
     def record_rpc_audit(
         self, actor: str | None, session: str | None, method: str, outcome: str

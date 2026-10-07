@@ -259,6 +259,36 @@ The manual route uses [`prompts/alice.md`](../prompts/alice.md) for Alice and [`
 
 The bridge discovers a hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, from the current repository's `.robomate/`, or from the single live hub in the machine registry. For remote workers and multiple hubs, set the explicit values.
 
+## Answering escalations
+
+When Alice needs a decision only you can make, she calls `ask_user`. The hub
+keeps the question and sets the workflow to `escalated`, and `robomate status`
+shows the count as `Operator questions: N  (see robomate inbox)`. Run these
+from the run's `hub-target` clone, or anywhere `robomate status` finds the hub:
+
+```sh
+uv run --project /absolute/path/to/robomate robomate inbox
+uv run --project /absolute/path/to/robomate robomate answer 3 "yes, file it"
+uv run --project /absolute/path/to/robomate robomate answer 4 --option 2
+```
+
+`inbox` lists each open question with its id, when it was asked, the asking
+actor, the question, and any numbered options (`--json` prints the same list as
+JSON). `answer` takes either the answer text, quoted, or `--option N` to send
+option N's text, and prints `Answered question <id>: <answer>`. The commands are
+the same in PowerShell; quote the answer with `"..."` or `'...'`.
+
+A question takes one answer: a second `answer` to it is refused, because Alice
+may already have acted on the first. Answering sends `hub.answer` with the operator token `robomate
+up` created beside the machine's hub registry, which agents never hold. The hub
+records the answer, its time, and actor `operator`, and Alice receives it as a
+`user_answered` event. Workers can read the answer with
+`get_operator_answer(question_id)`. Agent text in the inbox is shown with
+control characters escaped.
+
+Asking or answering in Alice's chat is not an escalation path: only an answer
+given with `robomate answer` counts as an operator decision.
+
 ## Status, shutdown, and report
 
 When the workflow is finished, Alice releases the workers. In that run's
