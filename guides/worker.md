@@ -100,8 +100,7 @@ needs one of them is `blocked`; name the action as the blocker.
 
 - Call the hub's `/rpc` route.
 - Read `.robomate/`.
-- Start or stop hubs or agents, other than a throwaway hub that you start and
-  stop yourself to test your change.
+- Start or stop hubs or agents.
 - Change workflow status.
 - Post anything that speaks for the operator.
 

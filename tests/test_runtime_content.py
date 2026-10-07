@@ -377,8 +377,8 @@ def test_operator_only_work_never_goes_to_a_worker() -> None:
             "A task that needs one of them is `blocked`",
             "Call the hub's `/rpc` route.",
             "Read `.robomate/`.",
-            "Start or stop hubs or agents",
-            "Change workflow status.",
+            # Unqualified: no exception follows the rule (#132 r1-2).
+            "- Start or stop hubs or agents. - Change workflow status.",
             "Post anything that speaks for the operator.",
         ),
     )
