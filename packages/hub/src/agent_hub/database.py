@@ -19,7 +19,8 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
-# v15 is #129's `operator_question` table and the `user_answered` event kind.
+# v16 is #132's `operator_question.resumed_by`, the decision that ended a
+# question's escalation. v15 is #129's `operator_question` table and the `user_answered` event kind.
 # v14 is #128's caller attribution: `decision.actor`/`session` and the
 # `rpc_audit` table. v13 is #105's durable gate readings. v12 is #126's
 # observed peer addresses on `agent`, after #77's v11
@@ -29,7 +30,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 class DatabaseVersionError(RuntimeError):
@@ -218,6 +219,7 @@ CREATE TABLE IF NOT EXISTS operator_question (
     answer TEXT,
     answered TEXT,
     answered_by TEXT,
+    resumed_by INTEGER,
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
@@ -241,7 +243,7 @@ CREATE INDEX IF NOT EXISTS idx_call_log_actor ON call_log(actor, tool);
 # at all, so a migrated database reaches the current version with its columns in
 # arrival order rather than the order `SCHEMA` declares. These are the tables
 # that drift (#59); v8 rebuilds them into the declared shape.
-REBUILT_TABLES = ("agent", "task", "event", "decision")
+REBUILT_TABLES = ("agent", "task", "event", "decision", "operator_question")
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\(", re.IGNORECASE)
 
@@ -306,7 +308,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v14 -> v15).
+        # (any of v1-v15 -> v16).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -320,6 +322,7 @@ def initialize_database(path: Path) -> None:
         _migrate_gate_reading(connection)
         _migrate_caller_attribution(connection)
         _migrate_operator_question(connection)
+        _migrate_question_resumed_by(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -539,6 +542,24 @@ def _migrate_operator_question(connection: sqlite3.Connection) -> None:
     """
 
     connection.execute(_canonical_tables()["operator_question"])
+
+
+def _migrate_question_resumed_by(connection: sqlite3.Connection) -> None:
+    """Add the decision that ended each question's escalation (#132, v16).
+
+    Before v16 nothing ended an escalation on the record, so an answered
+    question in a workflow that is no longer escalated is stamped 0: it was
+    resumed, by no decision the hub can name, and is never listed again.
+    """
+
+    if "resumed_by" in _columns(connection, "operator_question"):
+        return
+    connection.execute("ALTER TABLE operator_question ADD COLUMN resumed_by INTEGER")
+    connection.execute(
+        "UPDATE operator_question SET resumed_by = 0 WHERE answered IS NOT NULL"
+        " AND workflow_id IN (SELECT id FROM workflow WHERE status != ?)",
+        (WorkflowStatus.ESCALATED.value,),
+    )
 
 
 def _rebuild_drifted_tables(path: Path) -> None:

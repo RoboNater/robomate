@@ -876,11 +876,45 @@ def test_migration_from_v14_admits_user_answered_and_holds_questions(tmp_path: P
         EventKind.USER_ANSWERED, {"question_id": question_id, "answer": "yes"}
     )
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 15
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         kinds = connection.execute("SELECT id, kind FROM event ORDER BY id").fetchall()
     assert [tuple(row) for row in kinds] == [(1, "agent_checked_in"), (2, "user_answered")]
     assert event.id == 2
     assert store.get_state()["workflow"]["status"] == "escalated"
+
+
+def test_migration_from_v15_marks_answered_questions_of_resumed_workflows(
+    tmp_path: Path,
+) -> None:
+    """#132's v16: a question answered before a resume is never listed again."""
+
+    path = tmp_path / "v15.db"
+    _legacy_database(path, 15)
+    with sqlite3.connect(path) as connection:
+        for workflow_id, status in (("wf-1", "active"), ("wf-2", "escalated")):
+            connection.execute(
+                "INSERT INTO workflow (id, goal, status, policy_json, created)"
+                " VALUES (?, 'Goal', ?, '{}', '2026-10-01T00:00:00Z')",
+                (workflow_id, status),
+            )
+        connection.executemany(
+            "INSERT INTO operator_question (workflow_id, asked, actor, question, answered)"
+            " VALUES (?, '2026-10-01T00:00:00Z', 'alice', 'Q?', ?)",
+            [
+                ("wf-1", "2026-10-01T00:01:00Z"),
+                ("wf-1", None),
+                ("wf-2", "2026-10-01T00:01:00Z"),
+                ("wf-2", None),
+            ],
+        )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 16
+        rows = connection.execute("SELECT id, resumed_by FROM operator_question ORDER BY id")
+        assert [tuple(row) for row in rows] == [(1, 0), (2, None), (3, None), (4, None)]
 
 
 def test_a_null_declared_model_reads_as_unknown(tmp_path: Path) -> None:

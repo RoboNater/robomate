@@ -1037,3 +1037,98 @@ async def test_wait_for_event_delivers_user_answered(
     event = (await call(client, "wait_for_event", timeout_s=1))["result"]["event"]
     assert event["kind"] == "user_answered"
     assert event["payload"] == {"question_id": 1, "answer": "merge"}
+
+
+async def test_escalation_is_left_only_once_the_operator_has_answered(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#132: only ask_user escalates, and the operator's answers end it."""
+
+    cast(RpcDispatcher, app.state.rpc).operator_token = OPERATOR_TOKEN
+    hub_store.check_in("bob", AgentProfile())
+    assign: dict[str, Any] = {
+        "agent": "bob",
+        "role": "implementer",
+        "title": "Build",
+        "instructions": "Do it",
+        "event_id": 1,
+    }
+    gate = {"pr_url": PR, "expected_head_sha": HEAD}
+
+    body = await call(client, "set_workflow_status", status="escalated", summary="Help")
+    code, text = error_of(body)
+    assert code == INVALID_PARAMS and "ask_user" in text
+    assert hub_store.get_state()["workflow"]["status"] == "active"
+
+    await call(client, "ask_user", question="Merge?")
+    await call(client, "ask_user", question="And then?")
+    for status in ("active", "done"):
+        body = await call(client, "set_workflow_status", status=status, summary="Go on")
+        assert error_of(body) == (
+            CONFLICT,
+            "workflow is escalated with open operator questions 1, 2; "
+            "wait for their user_answered events before changing its status",
+        )
+    for method, params in (("assign_task", assign), ("check_merge_gate", gate)):
+        assert error_of(await call(client, method, **params)) == (
+            CONFLICT,
+            f"{method} is refused while the workflow is escalated: "
+            "operator questions 1, 2 are open",
+        )
+    assert hub_store.tasks() == []
+
+    await bare_call(app, "hub.answer", OPERATOR, question_id=1, answer="yes")
+    body = await call(client, "set_workflow_status", status="active", summary="Go on")
+    assert error_of(body)[0] == CONFLICT and "questions 2;" in error_of(body)[1]
+    await bare_call(app, "hub.answer", OPERATOR, question_id=2, answer="ship it")
+    assert (await call(client, "set_workflow_status", status="active", summary="Go on"))[
+        "result"
+    ] == {"ok": True}
+    assert "result" in await call(client, "assign_task", **assign)
+
+    # A later escalation names only its own questions.
+    await call(client, "ask_user", question="Again?")
+    await bare_call(app, "hub.answer", OPERATOR, question_id=3, answer="no")
+    await call(client, "set_workflow_status", status="paused", summary="Hold")
+    with database(hub_store.path) as connection:
+        rows = connection.execute(
+            "SELECT summary, rationale, actor, session FROM decision"
+            " WHERE rationale LIKE 'Workflow status set to %' ORDER BY id"
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("Asked the operator question 1", "Workflow status set to escalated", "alice", SESSION),
+        (
+            "Go on",
+            "Workflow status set to active; operator answered questions 1, 2",
+            "alice",
+            SESSION,
+        ),
+        ("Asked the operator question 3", "Workflow status set to escalated", "alice", SESSION),
+        (
+            "Hold",
+            "Workflow status set to paused; operator answered questions 3",
+            "alice",
+            SESSION,
+        ),
+    ]
+
+
+async def test_a_legacy_escalation_without_questions_can_be_resumed(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#132: a workflow escalated by set_workflow_status before the guard is not stuck."""
+
+    with database(hub_store.path) as connection:
+        connection.execute("UPDATE workflow SET status = 'escalated'")
+    body = await call(client, "check_merge_gate", pr_url=PR, expected_head_sha=HEAD)
+    assert error_of(body) == (
+        CONFLICT,
+        "check_merge_gate is refused while the workflow is escalated: "
+        "no operator question is open; resume with set_workflow_status(active)",
+    )
+
+    await call(client, "set_workflow_status", status="active", summary="Resume")
+    assert hub_store.get_state()["workflow"]["status"] == "active"
+    with database(hub_store.path) as connection:
+        row = connection.execute("SELECT summary, rationale, actor FROM decision").fetchone()
+    assert tuple(row) == ("Resume", "Workflow status set to active", "alice")

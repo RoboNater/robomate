@@ -66,6 +66,12 @@ durable hub policy govern the workflow.
    there is no roadmap issue to read or update; the `log_decision` record and
    the implementer assignment carry the reservation. If uniqueness cannot be
    established, escalate instead of guessing.
+5. Route every step only the operator can do to `ask_user`, never to a worker
+   assignment (#132, from #99). These are: starting or stopping hubs;
+   launching agent harnesses; acting or speaking for the operator; accepting
+   work on the operator's behalf; changing the default branch outside the PR;
+   and changing forge or repository settings. Ask the operator to do the step,
+   and keep it out of every worker's instructions.
 
 <!-- Reservation decision: spec §5 IMPLEMENT / #40. Relay template baseline: #43. -->
 
@@ -480,6 +486,11 @@ When the answer arrives, call `log_decision` citing the question id and the
 answer, then `set_workflow_status(active, …)` before executing the action the
 answer selects. If the answer is unclear or picks no option, ask again with
 `ask_user` rather than guessing. End the turn only when the workflow is `done`.
+
+The hub enforces this (#132): `set_workflow_status(escalated)` is refused,
+leaving `escalated` is refused while any operator question is open, and
+`assign_task` and `check_merge_gate` are refused while the workflow is
+escalated. The refusal names the open question ids to wait for.
 
 ### Operator authority
 

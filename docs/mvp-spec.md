@@ -402,10 +402,10 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
-| `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role |
+| `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role; refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
-| `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed |
-| `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape |
+| `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed; `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row names the questions answered, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
+| `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `ask_user(question, options?)` | orchestrator | **new** (#129): holds the question, sets `escalated` with an attributed decision row, returns `question_id`; asking again while escalated adds a question |
 | `robomate inbox [--json]` | operator (CLI, not MCP) | **new** (#130): lists open questions (id, time, asking actor, question, options) from `hub.questions` |
 | `robomate answer <id> <text>` / `--option N` | operator (CLI, not MCP) | **new** (#130): answers one question through `hub.answer` with the operator credential and prints a confirmation; `robomate status` shows the open-question count |
@@ -610,6 +610,10 @@ itself.
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
 **Order:** M1, M5, M2, M3, M4, M6. The names stay M1–M6; only the order changed (#68).
+
+**Landed early from M4:** the `ask_user` inbox with `robomate inbox` and `robomate answer`
+(#129, #130), and the hub's escalation guard (#132), all after #99, in which a run was
+escalated and resumed without an operator answer.
 
 **Parallelism:** M5 goes first after M1. GitLab is an MVP goal (§1), its gate and forge
 detection need neither `join` nor worktrees, and #50 already prototyped both. It runs on the

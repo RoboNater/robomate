@@ -178,6 +178,10 @@ def _json_object(raw: str | None) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _ids(ids: Sequence[int]) -> str:
+    return ", ".join(str(i) for i in ids)
+
+
 def _json_size_bytes(value: Any) -> int:
     """Return the compact UTF-8 JSON size used by the wire payload caps."""
 
@@ -576,29 +580,87 @@ class HubStore:
         """Persist status and its explanation atomically in the audit log.
 
         actor and session name the caller (#128): the orchestrator's, or
-        `operator` with no session.
+        `operator` with no session. Only `ask_user` escalates, and the
+        workflow leaves escalation only once no operator question is open
+        (#132); the decision row then names the questions answered.
         """
+        if status == WorkflowStatus.ESCALATED:
+            raise ValueError(
+                "set_workflow_status cannot escalate; call ask_user, which escalates "
+                "with the question the operator answers"
+            )
         with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             workflow_id = self._require_workflow(connection, "set_workflow_status")
             row = connection.execute(
                 "SELECT status FROM workflow WHERE id = ?", (workflow_id,)
             ).fetchone()
             if row is not None and row["status"] == status.value:
                 return
+            rationale = f"Workflow status set to {status.value}"
+            resumed: list[int] = []
+            if row is not None and row["status"] == WorkflowStatus.ESCALATED.value:
+                open_ids = self._open_question_ids(connection, workflow_id)
+                if open_ids:
+                    raise ConflictError(
+                        f"workflow is escalated with open operator questions {_ids(open_ids)}; "
+                        "wait for their user_answered events before changing its status"
+                    )
+                # Every question is answered, so those this decision has not
+                # yet ended are the ones this escalation asked.
+                resumed = [
+                    int(r["id"])
+                    for r in connection.execute(
+                        "SELECT id FROM operator_question"
+                        " WHERE workflow_id = ? AND resumed_by IS NULL ORDER BY id",
+                        (workflow_id,),
+                    )
+                ]
+                if resumed:
+                    rationale += f"; operator answered questions {_ids(resumed)}"
             connection.execute(
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO decision (ts, summary, rationale, actor, session)"
                 " VALUES (?, ?, ?, ?, ?)",
-                (
-                    self._now_iso(),
-                    summary,
-                    f"Workflow status set to {status.value}",
-                    actor,
-                    session,
-                ),
+                (self._now_iso(), summary, rationale, actor, session),
             )
+            connection.executemany(
+                "UPDATE operator_question SET resumed_by = ? WHERE id = ?",
+                [(cursor.lastrowid, question_id) for question_id in resumed],
+            )
+
+    def refuse_while_escalated(self, operation: str) -> None:
+        """Refuse an operation that must wait for the operator (#132)."""
+
+        with database(self.path) as connection:
+            row = connection.execute("SELECT id FROM workflow ORDER BY created LIMIT 1").fetchone()
+            if row is not None:
+                self._refuse_while_escalated(connection, row["id"], operation)
+
+    def _refuse_while_escalated(
+        self, connection: Connection, workflow_id: str, operation: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT status FROM workflow WHERE id = ?", (workflow_id,)
+        ).fetchone()
+        if row is None or row["status"] != WorkflowStatus.ESCALATED.value:
+            return
+        open_ids = self._open_question_ids(connection, workflow_id)
+        if open_ids:
+            waiting = f"operator questions {_ids(open_ids)} are open"
+        else:
+            waiting = "no operator question is open; resume with set_workflow_status(active)"
+        raise ConflictError(f"{operation} is refused while the workflow is escalated: {waiting}")
+
+    def _open_question_ids(self, connection: Connection, workflow_id: str) -> list[int]:
+        rows = connection.execute(
+            "SELECT id FROM operator_question WHERE workflow_id = ? AND answered IS NULL"
+            " ORDER BY id",
+            (workflow_id,),
+        )
+        return [int(row["id"]) for row in rows]
 
     def log_decision(
         self,
@@ -1218,6 +1280,7 @@ class HubStore:
                         f"source event {source_event_id} already assigned task {task.id} "
                         "with a different payload"
                     )
+            self._refuse_while_escalated(connection, workflow_id, "assign_task")
             record = self._require_agent(connection, agent)
             if record.status is not AgentStatus.IDLE:
                 held = self._open_task_id(connection, record.current_task_id)
