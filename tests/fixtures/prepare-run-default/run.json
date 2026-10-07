@@ -18,12 +18,16 @@
         "effort": "",
         "harness": "claude-code",
         "model": "",
+        "resume_prompt": "$RUN_DIR/resume-alice.prompt.md",
+        "resume_script": "$RUN_DIR/resume-alice.sh",
         "script": "$RUN_DIR/start-alice.sh"
       },
       "bob": {
         "effort": "",
         "harness": "claude-code",
         "model": "",
+        "resume_prompt": "$RUN_DIR/resume-bob.prompt.md",
+        "resume_script": "$RUN_DIR/resume-bob.sh",
         "script": "$RUN_DIR/start-bob.sh",
         "sessions": "$RUN_DIR/bob-sessions.jsonl"
       },
@@ -31,6 +35,8 @@
         "effort": "",
         "harness": "codex",
         "model": "",
+        "resume_prompt": "$RUN_DIR/resume-charlie.prompt.md",
+        "resume_script": "$RUN_DIR/resume-charlie.sh",
         "script": "$RUN_DIR/start-charlie.sh"
       }
     },

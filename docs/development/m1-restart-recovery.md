@@ -147,17 +147,50 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    'model_reasoning_effort="EFFORT"' CODEX_CONVERSATION_ID`, then submit the
    same prompt text. `--include-non-interactive` is needed only for a picker
    or `--last`; an explicit UUID is required here. The `codex exec resume` and
-   `codex resume` forms are
-   supported by [OpenAI's noninteractive guide](https://learn.chatgpt.com/docs/non-interactive-mode)
-   and [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
-   If this CLI/configuration cannot resume its exact conversation, stop the
-   attempt and record that limitation; a fresh conversation needs an explicit
-   reconciliation decision. Never use `--last` when several conversations
-   could match. Only CLI syntax/help was checked for these forms; the live
-   #44 attempt must confirm the exact command, approval behavior, and saved
-   conversation actually used.
+    `codex resume` forms are
+    supported by [OpenAI's noninteractive guide](https://learn.chatgpt.com/docs/non-interactive-mode)
+    and [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+    If this CLI/configuration cannot resume its exact conversation, stop the
+    attempt and record that limitation; a fresh conversation needs an explicit
+    reconciliation decision. Never use `--last` when several conversations
+    could match. Only CLI syntax/help was checked for these forms; the live
+    #44 attempt must confirm the exact command, approval behavior, and saved
+    conversation actually used.
 
-   Write `resume-alice.prompt.md` privately under `RUN_DIR`, for example:
+    For an OpenCode Alice, the same checkpoint discipline applies with the
+    harness's resume form (#94). `prepare-run.py` generates
+    `RUN_DIR/resume-alice.sh` (`.ps1` on Windows) with its matching
+    `resume-alice.prompt.md`; prefer it over a hand-built command. It takes the
+    saved `ses_...` session ID as its only argument:
+
+    ```sh
+    ./resume-alice.sh SES_ID        # or resume-alice.ps1 on Windows
+    ```
+
+    Find `SES_ID` by the stable session title `prepare-run.py` passed at
+    launch (`--title "alice <run-slug>"`, recorded in `run.json`
+    `launch.agents.alice.title`): run `opencode session list --format json`
+    from `RUN_DIR/alice-runtime` and match the title, then confirm with
+    `opencode export SES_ID`. Never use `opencode --continue`: it resumes the
+    most recent session, which may be another agent's. The equivalent manual
+    form, from `RUN_DIR/alice-runtime` with the start script's
+    `OPENCODE_CONFIG`, `TMPDIR`, model, and `--variant` values, is:
+
+    ```sh
+    cd "$RUN_DIR/alice-runtime"
+    OPENCODE_CONFIG="$RUN_DIR/configs/alice.opencode.json" TMPDIR="$RUN_DIR/tmp/alice" \
+      opencode run --auto --model MODEL --variant EFFORT --title "alice <run-slug>" \
+        --session SES_ID \
+      "Read $RUN_DIR/resume-alice.prompt.md and follow it"
+    ```
+
+    A resumed `opencode run` may idle after Alice's final message instead of
+    exiting; once the workflow is `done`, stop it as described in the
+    [agent recovery guide](agent-recovery.md#stopping-a-resumed-opencode-run).
+
+    Write `resume-alice.prompt.md` privately under `RUN_DIR`, for example:
+    (`prepare-run.py` now generates a starting template there with `<...>`
+    placeholders; fill those in rather than starting from a blank file.)
 
    > Resume the existing #44 workflow. Operator decision: continue the
    > documented Step 7 checkpoint. Before event ID N, delivery ID D, attempt

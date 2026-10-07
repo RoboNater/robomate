@@ -678,20 +678,35 @@ def codex_launch(
     return [f"{command} - < {prompt_word}" if auto_start else command]
 
 
+def opencode_title(name: str, run_dir: PurePath | Path) -> str:
+    """The stable OpenCode session title for ``name`` in this run (#94).
+
+    Passed as ``opencode run --title`` so the right ``ses_...`` session is
+    findable in ``opencode session list`` after a harness crash. It depends
+    only on the run directory name, so reruns keep the same title.
+    """
+    return f"{name} {run_dir.name}"
+
+
 def opencode_launch(
     config: str,
     prompt: str,
     flags: list[str],
     auto_start: bool,
+    title: str | None = None,
     powershell: bool = False,
 ) -> list[str]:
     """An ``opencode`` launch; auto-start runs ``opencode run`` on its prompt file.
 
     Passing a single-line instruction pointing at ``prompt`` (with
     ``external_directory`` allowed in the rendered config) avoids the Windows
-    npm ``.cmd`` shim mangling multi-line prompts in ``argv``.
+    npm ``.cmd`` shim mangling multi-line prompts in ``argv``. ``title`` sets
+    ``opencode run --title`` so the session is findable after a crash (#94);
+    it is omitted for interactive launches, which take no title.
     """
     words = ["opencode", "run", "--auto", *flags] if auto_start else ["opencode", "--auto", *flags]
+    if auto_start and title:
+        words += ["--title", shell_word(title, powershell)]
     if auto_start:
         words.append(auto_start_instruction(prompt, powershell))
     command = " ".join(words)
@@ -768,12 +783,13 @@ def harness_launch(
     auto_start: bool,
     powershell: bool = False,
     launcher: list[str] | None = None,
+    title: str | None = None,
 ) -> list[str]:
     """Dispatch to the harness's launch-line builder; only Claude Code takes a launcher."""
     if harness == "codex":
         return codex_launch(config, git_dir, prompt, flags, auto_start, powershell)
     if harness == "opencode":
-        return opencode_launch(config, prompt, flags, auto_start, powershell)
+        return opencode_launch(config, prompt, flags, auto_start, title, powershell)
     if harness == "antigravity":
         return antigravity_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
     return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell, launcher)
@@ -790,6 +806,7 @@ def launch_lines(
     auto_start: bool = True,
     tmp_dir: Path | None = None,
     worker: str | None = None,
+    title: str | None = None,
 ) -> list[str]:
     """One local agent's start lines for this platform; paths are shell-quoted.
 
@@ -797,7 +814,8 @@ def launch_lines(
     OpenCode, ``CODEX_HOME`` for Codex, and the isolated home for AntiGravity.
     ``worker`` names a worker agent, whose prompt sits in the run directory
     beside its telemetry and session log; an auto-started Claude Code worker
-    runs under ``scripts/claude-worker.py``.
+    runs under ``scripts/claude-worker.py``. ``title`` is the OpenCode session
+    title; other harnesses ignore it.
     """
     powershell = os.name == "nt"
     flags = model_flags(harness, model, effort, powershell, auto_start)
@@ -821,6 +839,7 @@ def launch_lines(
         auto_start,
         powershell,
         launcher,
+        title,
     )
     temp_lines = []
     if tmp_dir is not None:
@@ -846,6 +865,317 @@ def start_script(lines: list[str], powershell: bool = False) -> str:
 def write_script(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
     path.chmod(0o700)
+
+
+#: Reconciliation checklist shared by every generated resume prompt (#94).
+RESUME_PROMPT_SHARED = """\
+Do NOT call `initialize_workflow` and do NOT rerun your start script: the start
+script sends the original kickoff prompt, which would try to initialize a
+second workflow in this state directory. Your hub tools run in a new harness
+process. Reconcile before any new action:
+
+- Read the run manifest (`RUN_DIR/run.json`) and your durable state (Alice:
+  `get_state`; workers: your open task and assignment); verify the hub ID and
+  workflow ID match the operator's before-snapshot below.
+- Reconcile worker tasks, PR heads, and CI checks against the forge. Never
+  resubmit a result the durable state already holds, and never infer a merge
+  from a harness process exit.
+- A result submitted before the crash stands: read it from durable state and
+  the PR; assign fresh work only where the state shows work still open.
+"""
+
+ALICE_RESUME_PROMPT = (
+    """\
+# Resume Alice after a harness crash
+
+The operator stopped your previous harness process at <UTC TIME> and verified
+it exited; the hub and workers kept running. You are resuming the saved
+harness conversation for the existing workflow in RUN_DIR. Resume with
+`resume-alice.sh` (`resume-alice.ps1` on Windows), passing the saved session
+ID; never rerun `start-alice.sh` (`start-alice.ps1` on Windows).
+
+The orchestrator bridge has no `check_in`: make `get_state` your first hub
+call, then reconcile.
+
+"""
+    + RESUME_PROMPT_SHARED
+    + """\
+- If an event was delivered but never acknowledged, call `wait_for_event`
+  WITHOUT an `ack` argument first and expect the interrupted delivery back at
+  attempt 2 with a new delivery ID, before the old `delivery_expires`. Only
+  then acknowledge it and continue. There is no redelivery proof to claim
+  without that second attempt.
+- A canceled/failed/completed task response to a retried worker question is
+  terminal, not an answer.
+
+Operator before-snapshot (fill in before resuming): hub ID, workflow ID, Alice
+RPC session, active task IDs and owners, delivered event ID / delivery ID /
+attempt / `delivered_at` / `delivery_expires`, old process stop time.
+"""
+)
+
+WORKER_RESUME_PROMPT = (
+    """\
+# Resume {name} after a harness crash
+
+The operator stopped your previous harness process at <UTC TIME> and verified
+it exited; the hub kept running. You are resuming the saved harness
+conversation for your open work in RUN_DIR. Resume with
+`resume-{name}.sh` (`resume-{name}.ps1` on Windows), passing the saved session
+ID; never rerun `start-{name}.sh` (`start-{name}.ps1` on Windows).
+
+Your hub tools run in a new `worker-mcp` process, so first call `check_in`
+once, then reconcile.
+
+"""
+    + RESUME_PROMPT_SHARED
+    + """\
+- If you still hold task <TASK ID>, finish it and submit its result; if the
+  hub says the task was failed or canceled, drop it and call
+  `await_assignment` again.
+- If you had asked Alice a question, retry the SAME text on the SAME task;
+  message correlation reuses the original question.
+
+Operator before-snapshot (fill in before resuming): hub ID, workflow ID, task
+ID and role, PR head SHA, pending question/result, old process stop time.
+"""
+)
+
+
+def render_resume_prompt(name: str) -> str:
+    """The generated ``resume-<name>.prompt.md`` body for Alice or a worker (#94)."""
+    if name == "alice":
+        return ALICE_RESUME_PROMPT
+    return WORKER_RESUME_PROMPT.format(name=name)
+
+
+def claude_resume(
+    config: str,
+    prompt_dir: str,
+    resume_prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    session_var: str,
+    powershell: bool = False,
+) -> list[str]:
+    """A manual ``claude --resume`` one-liner for a crashed session (#94).
+
+    Auto-started workers normally resume by themselves under
+    ``scripts/claude-worker.py``; this is the hand resume once its resumes are
+    spent. The original kickoff prompt is never reused.
+    """
+    words = ["claude", *flags]
+    if auto_start:
+        words += ["--permission-mode", "auto"]
+    words += [
+        "--strict-mcp-config",
+        "--mcp-config",
+        shell_word(config, powershell),
+        "--add-dir",
+        shell_word(prompt_dir, powershell),
+        "--resume",
+        session_var,
+    ]
+    if auto_start:
+        words += ["-p", auto_start_instruction(resume_prompt, powershell)]
+    return [" ".join(words)]
+
+
+def codex_resume(
+    home: str,
+    git_dir: str | None,
+    resume_prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    session_var: str,
+    powershell: bool = False,
+) -> list[str]:
+    """A manual Codex conversation resume; auto-start pipes the resume prompt (#94)."""
+    home_word = shell_word(home, powershell)
+    prompt_word = shell_word(resume_prompt, powershell)
+    if auto_start:
+        words = ["codex", "exec", "-C", "."]
+        if git_dir is not None:
+            words += ["--add-dir", shell_word(git_dir, powershell)]
+        else:
+            words += ["--skip-git-repo-check"]
+        words += ["--approve-for-me", *flags, "resume", session_var, "-"]
+        command = " ".join(words)
+        if powershell:
+            return [
+                f"$env:CODEX_HOME = {home_word}",
+                f"Get-Content -Raw {prompt_word} | {command}",
+            ]
+        return [f"CODEX_HOME={home_word} {command} < {prompt_word}"]
+    words = ["codex", "resume", "--approve-for-me", *flags, session_var]
+    command = " ".join(words)
+    if powershell:
+        return [f"$env:CODEX_HOME = {home_word}", command]
+    return [f"CODEX_HOME={home_word} {command}"]
+
+
+def opencode_resume(
+    config: str,
+    resume_prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    session_var: str,
+    title: str | None = None,
+    powershell: bool = False,
+) -> list[str]:
+    """A manual OpenCode session resume by ``ses_...`` ID; never ``--continue`` (#94)."""
+    if auto_start:
+        words = ["opencode", "run", "--auto", *flags]
+        if title:
+            words += ["--title", shell_word(title, powershell)]
+        words += ["--session", session_var, auto_start_instruction(resume_prompt, powershell)]
+        command = " ".join(words)
+    else:
+        words = ["opencode", "--auto", *flags, "--session", session_var]
+        command = " ".join(words)
+    config_word = shell_word(config, powershell)
+    if powershell:
+        return [f"$env:OPENCODE_CONFIG = {config_word}", command]
+    return [f"OPENCODE_CONFIG={config_word} {command}"]
+
+
+def antigravity_resume(
+    home: str,
+    prompt_dir: str,
+    resume_prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    session_var: str,
+    powershell: bool = False,
+) -> list[str]:
+    """A manual AntiGravity conversation resume by conversation ID (#94)."""
+    words = [
+        "agy",
+        *flags,
+        "--dangerously-skip-permissions",
+        "--add-dir",
+        shell_word(prompt_dir, powershell),
+        "--conversation",
+        session_var,
+    ]
+    if auto_start:
+        words += ["-p", auto_start_instruction(resume_prompt, powershell)]
+    command = " ".join(words)
+    home_word = shell_word(home, powershell)
+    if powershell:
+        return [
+            "$oldHome = $env:HOME; $oldProfile = $env:USERPROFILE; "
+            "$oldGitConfig = $env:GIT_CONFIG_GLOBAL",
+            "try { "
+            "if (-not $env:GIT_CONFIG_GLOBAL) { $env:GIT_CONFIG_GLOBAL = "
+            'if ($oldHome) { "$oldHome\\.gitconfig" } '
+            'else { "$env:USERPROFILE\\.gitconfig" } }; '
+            f"$env:HOME = {home_word}; $env:USERPROFILE = {home_word}; {command} "
+            "} finally { "
+            "$env:HOME = $oldHome; $env:USERPROFILE = $oldProfile; "
+            "$env:GIT_CONFIG_GLOBAL = $oldGitConfig }",
+        ]
+    git_config = 'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}"'
+    if os.name == "nt" or PureWindowsPath(home).drive:
+        env_prefix = f"{git_config} HOME={home_word} USERPROFILE={home_word}"
+    else:
+        env_prefix = (
+            f"{git_config} "
+            'XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" '
+            'XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" '
+            'XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}" '
+            f"HOME={home_word} USERPROFILE={home_word}"
+        )
+    return [f"{env_prefix} {command}"]
+
+
+def resume_lines(
+    name: str,
+    harness: str,
+    workdir: Path,
+    config: Path,
+    resume_prompt: Path,
+    git_dir: Path | None,
+    model: str = "",
+    effort: str = "",
+    auto_start: bool = True,
+    tmp_dir: Path | None = None,
+    title: str | None = None,
+) -> list[str]:
+    """One agent's resume lines for this platform; the session ID is the first argument (#94).
+
+    Mirrors ``launch_lines`` but resumes the saved harness conversation instead
+    of starting a new one: the operator passes the conversation/session ID
+    (``ses_...`` on OpenCode) found via the recovery guide, and the agent gets
+    the generated ``resume-<name>.prompt.md`` rather than the kickoff prompt.
+    ``title`` is the OpenCode session title; other harnesses ignore it.
+    """
+    powershell = os.name == "nt"
+    flags = model_flags(harness, model, effort, powershell, auto_start)
+    session_var = "$SessionId" if powershell else '"$SESSION_ID"'
+    if harness == "codex":
+        lines = codex_resume(
+            str(config),
+            None if git_dir is None else str(git_dir),
+            str(resume_prompt),
+            flags,
+            auto_start,
+            session_var,
+            powershell,
+        )
+    elif harness == "opencode":
+        lines = opencode_resume(
+            str(config), str(resume_prompt), flags, auto_start, session_var, title, powershell
+        )
+    elif harness == "antigravity":
+        lines = antigravity_resume(
+            str(config),
+            str(resume_prompt.parent),
+            str(resume_prompt),
+            flags,
+            auto_start,
+            session_var,
+            powershell,
+        )
+    else:
+        lines = claude_resume(
+            str(config),
+            str(resume_prompt.parent),
+            str(resume_prompt),
+            flags,
+            auto_start,
+            session_var,
+            powershell,
+        )
+    temp_lines = []
+    if tmp_dir is not None:
+        if powershell:
+            temp_lines = [
+                f"$env:TEMP = {shell_word(str(tmp_dir), powershell)}",
+                f"$env:TMP = {shell_word(str(tmp_dir), powershell)}",
+            ]
+        else:
+            temp_lines = [f"export TMPDIR={shell_word(str(tmp_dir), powershell)}"]
+    if powershell:
+        usage = (
+            f"if (-not $args[0]) {{ throw 'usage: resume-{name}.ps1 <session-id>' }}; "
+            "$SessionId = $args[0]"
+        )
+    else:
+        usage = (
+            f'if [ $# -ne 1 ]; then echo "usage: resume-{name}.sh <session-id>" >&2; '
+            'exit 1; fi && SESSION_ID="$1"'
+        )
+    return [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, usage, *lines]
+
+
+def resume_script(lines: list[str], powershell: bool = False) -> str:
+    """A resume script running ``lines``; the session ID is its first argument (#94)."""
+    if powershell:
+        header = ["# Generated by scripts/prepare-run.py", '$ErrorActionPreference = "Stop"']
+    else:
+        header = ["#!/usr/bin/env bash", "# Generated by scripts/prepare-run.py", "set -e"]
+    return "\n".join([*header, *lines]) + "\n"
 
 
 def remote_note(name: str) -> str:
@@ -890,6 +1220,7 @@ def worker_launch(
     tmp_dir: PurePath | None = None,
     root: PurePath = ROOT,
     python: str = sys.executable,
+    title: str | None = None,
 ) -> list[str]:
     """A remote worker's launch lines, spelled for its host.
 
@@ -898,6 +1229,7 @@ def worker_launch(
     variables handed to native programs (claude, codex, opencode, agy, python)
     keep forward-slash Windows paths (#75). ``root`` and ``python`` are the
     robomate checkout and interpreter on that host, for ``scripts/claude-worker.py``.
+    ``title`` is the OpenCode session title; other harnesses ignore it.
     """
     if tmp_dir is None:
         tmp_dir = run_dir / "tmp" / name
@@ -922,6 +1254,7 @@ def worker_launch(
         flags,
         auto_start,
         launcher=launcher,
+        title=title,
     )
     if is_windows:
         temp_lines = [
@@ -932,6 +1265,60 @@ def worker_launch(
     else:
         temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
     return [f"cd {shell_word(git_bash_path(workspace))}", *temp_lines, *lines]
+
+
+def worker_resume(
+    name: str,
+    harness: str,
+    run_dir: PurePath,
+    workspace: PurePath,
+    model: str = "",
+    effort: str = "",
+    auto_start: bool = True,
+    tmp_dir: PurePath | None = None,
+    title: str | None = None,
+) -> list[str]:
+    """A remote worker's resume lines, spelled for its host's bash (#94).
+
+    Like ``worker_launch`` but resumes the saved harness conversation: the
+    session/conversation ID is the script's first argument, and the agent gets
+    ``resume-<name>.prompt.md`` rather than the kickoff prompt.
+    """
+    if tmp_dir is None:
+        tmp_dir = run_dir / "tmp" / name
+    is_windows = bool(run_dir.drive) or os.name == "nt"
+    prompt = run_dir / f"resume-{name}.prompt.md"
+    prompt_arg = git_bash_path(prompt) if harness == "codex" else prompt.as_posix()
+    flags = model_flags(harness, model, effort, auto_start=auto_start)
+    session_var = '"$SESSION_ID"'
+    config = launch_config_path(harness, run_dir / "configs", name).as_posix()
+    if harness == "codex":
+        lines = codex_resume(
+            config, (workspace / ".git").as_posix(), prompt_arg, flags, auto_start, session_var
+        )
+    elif harness == "opencode":
+        lines = opencode_resume(config, prompt_arg, flags, auto_start, session_var, title)
+    elif harness == "antigravity":
+        lines = antigravity_resume(
+            config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var
+        )
+    else:
+        lines = claude_resume(
+            config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var
+        )
+    if is_windows:
+        temp_lines = [
+            f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
+            f"export TEMP={shell_word(tmp_dir.as_posix())}",
+            f"export TMP={shell_word(tmp_dir.as_posix())}",
+        ]
+    else:
+        temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
+    usage = (
+        f'if [ $# -ne 1 ]; then echo "usage: resume-{name}.sh <session-id>" >&2; '
+        'exit 1; fi && SESSION_ID="$1"'
+    )
+    return [f"cd {shell_word(git_bash_path(workspace))}", *temp_lines, usage, *lines]
 
 
 def require_owner_only(path: Path) -> None:
@@ -1052,14 +1439,27 @@ def render_worker_bundle(
     (out_dir / f"{name}.prompt.md").write_text(
         render_worker_prompt(name) + prompt_sections(name, harness), encoding="utf-8"
     )
-    launch = worker_launch(name, harness, run_dir, workspace, model, effort, auto_start, root=root)
+    title = opencode_title(name, run_dir) if harness == "opencode" else None
+    launch = worker_launch(
+        name, harness, run_dir, workspace, model, effort, auto_start, root=root, title=title
+    )
     write_script(out_dir / f"start-{name}.sh", start_script(launch))
+    (out_dir / f"resume-{name}.prompt.md").write_text(render_resume_prompt(name), encoding="utf-8")
+    resume = worker_resume(
+        name, harness, run_dir, workspace, model, effort, auto_start, title=title
+    )
+    write_script(out_dir / f"resume-{name}.sh", start_script(resume))
     bundle = {
         "config": config.as_posix(),
         "prompt": (run_dir / f"{name}.prompt.md").as_posix(),
         "launch": launch,
         "script": (run_dir / f"start-{name}.sh").as_posix(),
+        "resume_prompt": (run_dir / f"resume-{name}.prompt.md").as_posix(),
+        "resume_launch": resume,
+        "resume_script": (run_dir / f"resume-{name}.sh").as_posix(),
     }
+    if title is not None:
+        bundle["title"] = title
     if supervised(harness, auto_start):
         bundle["sessions"] = (run_dir / f"{name}-sessions.jsonl").as_posix()
     return bundle
@@ -1633,7 +2033,8 @@ def prepare(
     if networked:
         manifest["network"] = {**network, "remote_worker": remote_worker}
 
-    # One start script per local agent; a remote worker's is rendered on its host.
+    # One start script and one resume script per local agent; a remote
+    # worker's are rendered on its host.
     launch = {
         "alice": (alice_harness, alice_model, alice_effort),
         "bob": (bob_harness, bob_model, bob_effort),
@@ -1642,9 +2043,15 @@ def prepare(
     workdirs = {"alice": alice_runtime, **{name: Path(workspaces[name]["path"]) for name in local}}
     suffix = "ps1" if os.name == "nt" else "sh"
     scripts: dict[str, str] = {}
+    resume_scripts: dict[str, str] = {}
+    resume_prompts: dict[str, str] = {}
+    titles: dict[str, str] = {}
     for name in ("alice", *local):
         harness, model, effort = launch[name]
         config = Path(launch_config_path(harness, configs, name))
+        title = opencode_title(name, run_dir) if harness == "opencode" else None
+        if title is not None:
+            titles[name] = title
         lines = launch_lines(
             harness,
             workdirs[name],
@@ -1656,10 +2063,30 @@ def prepare(
             auto_start,
             tmp_dir=run_dir / "tmp" / name,
             worker=None if name == "alice" else name,
+            title=title,
         )
         script = run_dir / f"start-{name}.{suffix}"
         write_script(script, start_script(lines, os.name == "nt"))
         scripts[name] = str(script)
+        resume_prompt = run_dir / f"resume-{name}.prompt.md"
+        resume_prompt.write_text(render_resume_prompt(name), encoding="utf-8")
+        resume_prompts[name] = str(resume_prompt)
+        resume = resume_lines(
+            name,
+            harness,
+            workdirs[name],
+            config,
+            resume_prompt,
+            None if name == "alice" else workdirs[name] / ".git",
+            model,
+            effort,
+            auto_start,
+            tmp_dir=run_dir / "tmp" / name,
+            title=title,
+        )
+        resume_path = run_dir / f"resume-{name}.{suffix}"
+        write_script(resume_path, resume_script(resume, os.name == "nt"))
+        resume_scripts[name] = str(resume_path)
     manifest["launch"] = {
         "auto_start": auto_start,
         "agents": {
@@ -1668,7 +2095,10 @@ def prepare(
                 "model": launch[name][1],
                 "effort": launch[name][2],
                 "script": scripts[name],
+                "resume_script": resume_scripts[name],
+                "resume_prompt": resume_prompts[name],
             }
+            | ({"title": titles[name]} if name in titles else {})
             for name in scripts
         },
     }
@@ -1717,6 +2147,8 @@ def prepare(
         "configs": {"alice": str(alice_config), **rendered_configs},
         "prompts": {name: str(run_dir / f"{name}.prompt.md") for name in ("alice", *local)},
         "start_scripts": scripts,
+        "resume_scripts": resume_scripts,
+        "resume_prompts": resume_prompts,
         "checks": checks,
     }
     if networked:
@@ -1724,6 +2156,9 @@ def prepare(
     print(json.dumps(report, indent=2, sort_keys=True))
     print("\nStart scripts (run each in its own terminal, alice first):")
     for script in scripts.values():
+        print(script)
+    print("\nResume scripts (after a harness crash, with the saved session ID):")
+    for script in resume_scripts.values():
         print(script)
     if remote_worker is not None:
         print(remote_note(remote_worker))
@@ -1849,7 +2284,10 @@ def prepare_worker(
                     "model": model,
                     "effort": effort,
                     "script": bundle["script"],
+                    "resume_script": bundle["resume_script"],
+                    "resume_prompt": bundle["resume_prompt"],
                 }
+                | ({"title": bundle["title"]} if "title" in bundle else {})
                 | ({"sessions": bundle["sessions"]} if "sessions" in bundle else {})
             },
         },

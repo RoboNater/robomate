@@ -85,7 +85,7 @@ worker runs a new `worker-mcp`, so the prompt should tell it to call
 | --- | --- |
 | Claude Code | A UUID. For a worker under `scripts/claude-worker.py`, take `session_id` from `RUN_DIR/<worker>-sessions.jsonl`. Otherwise it is the file name of `~/.claude/projects/<dir>/<uuid>.jsonl`, where `<dir>` is the working directory with every character other than a letter or digit replaced by `-`; pick by modification time. |
 | Codex | A UUID from the saved session or the CLI output; the exact `codex exec resume` form is in [M1 restart and recovery](m1-restart-recovery.md). |
-| OpenCode | A `ses_...` ID. `opencode session list`, run from the working directory, lists them; every title reads `New session - <ISO time>`, so match by time, and `opencode export <id>` prints a transcript to confirm (#94). |
+| OpenCode | A `ses_...` ID. `prepare-run.py` starts every OpenCode agent with `--title "<agent> <run-slug>"` and records that title in `run.json` `launch.agents.<agent>.title`, so run `opencode session list --format json` from the working directory and match the title; `opencode export <id>` prints a transcript to confirm. Runs prepared before the title change all read `New session - <ISO time>`, so match by time instead (#94). |
 
 Claude Code takes the flags from the start script's `claude` command, with
 `--resume` in place of `--session-id` and a new `-p`:
@@ -103,14 +103,48 @@ OpenCode, shown for Alice (#94):
 ```sh
 cd "$RUN_DIR/alice-runtime"
 OPENCODE_CONFIG="$RUN_DIR/configs/alice.opencode.json" TMPDIR="$RUN_DIR/tmp/alice" \
-  opencode run --auto --model MODEL --variant EFFORT --session SES_ID \
+  opencode run --auto --model MODEL --variant EFFORT --title "alice <run-slug>" \
+    --session SES_ID \
   "Read $RUN_DIR/resume-alice.prompt.md and follow it"
 ```
 
+`prepare-run.py` generates that resume as `RUN_DIR/resume-<agent>.sh` (`.ps1`
+on Windows) with its matching `resume-<agent>.prompt.md`, for every agent on
+its configured harness; the generated resume prompt carries the same
+reconciliation checklist, with `<...>` placeholders for the operator's
+before-snapshot. Prefer the generated script over a hand-built command: it
+repeats the start script's directory, environment, and model/effort flags, but
+resumes the saved conversation instead of sending the kickoff prompt. It takes
+the conversation/session ID as its only argument:
+
+```sh
+./resume-alice.sh SES_ID        # or resume-alice.ps1 on Windows
+```
+
+Fill the `<...>` placeholders in the resume prompt first (hub ID, workflow ID,
+task IDs and owners, delivered event/delivery IDs for Alice), and verify the
+old harness process is gone before resuming.
+
 Never use `claude --continue` or `opencode --continue`: each picks the most
-recent conversation, which may be another agent's. A resumed `opencode run`
-can idle after Alice's final message with its bridge still connected; stop it
-once the workflow is `done` (#94).
+recent conversation, which may be another agent's.
+
+### Stopping a resumed OpenCode run
+
+A resumed `opencode run` may never exit on its own after the agent's final
+message, even with the workflow `done` and no pending tool call: the process
+idles indefinitely while still holding its MCP bridge, whose heartbeat keeps
+`robomate status` showing a live orchestrator. The suspected cause is an
+upstream `opencode run` lifecycle bug (the session loop failing to treat the
+final response as terminal, as in publicly reported `opencode run` hangs after
+the last tool call) — that mechanism is unconfirmed. What is established is
+only that the workflow state in the database is already final, so on current
+evidence this is an idle harness process, not a hub defect. Once `get_state`
+(or `robomate status --json`) shows the workflow `done` and the agent was
+released, stop the leftover `opencode run` with Ctrl-C or a targeted signal
+and confirm the process exits.
+If it recurs, record the `opencode --version`, model/provider, and a
+`--print-logs --log-level DEBUG` capture for an upstream report; do not leave
+the idle process running as if the workflow were still active (#94).
 
 The disposable CLI up/down test covers hub identity and port reuse;
 `tests/test_orchestrator_bridge.py::test_worker_task_survives_orchestrator_session_restart`
