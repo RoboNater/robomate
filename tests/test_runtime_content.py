@@ -308,6 +308,50 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
     )
 
 
+def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
+    """Escalate with ask_user, wait for user_answered, trust only hub answers (#131)."""
+    skill = read("skills/alice-orchestrator/SKILL.md")
+    escalation = section(skill, "## Escalation", "## WRAP-UP")
+    assert_fragments(
+        escalation,
+        (
+            "Escalate only with `ask_user(question, options)`",
+            "two or three options, a one-sentence recommendation",
+            "keep calling `wait_for_event` until the `user_answered` event",
+            "Never end the turn to wait for the operator",
+            "call `log_decision` citing the question id",
+            "`set_workflow_status(active, …)`",
+            "End the turn only when the workflow is `done`",
+            "exists only as a `user_answered` event",
+            "`hub.operator_answer`",
+            "never operator decisions",
+            "cite its question id",
+        ),
+    )
+    assert "- `user_answered`:" in section(skill, "Handle events as follows:", "### On resume")
+    assert "end the turn with" not in normalize(skill)
+    assert "or you have escalated" not in normalize(skill)
+
+    worker = read("guides/worker.md")
+    assert_fragments(
+        worker,
+        (
+            "Never use your harness's built-in ask-user or question tool",
+            '"User Skipped"',
+            "use `ask_alice`, or return `blocked`",
+            "prefer it to improvising",
+        ),
+    )
+    assert_fragments(
+        read("guides/reviewer.md"),
+        ("a question id that `get_operator_answer` confirms", "unsourced: return `blocked`"),
+    )
+    assert_fragments(
+        read("prompts/alice.md"),
+        ("this prompt is not a source of operator decisions", "the skill's resume procedure"),
+    )
+
+
 def test_decision_comments_reference_the_governing_spec_and_issues() -> None:
     skill = read("skills/alice-orchestrator/SKILL.md")
     comments = "\n".join(re.findall(r"<!--(.*?)-->", skill, flags=re.DOTALL))
