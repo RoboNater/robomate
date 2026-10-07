@@ -598,6 +598,7 @@ class HubStore:
             if row is not None and row["status"] == status.value:
                 return
             rationale = f"Workflow status set to {status.value}"
+            resumed: list[int] = []
             if row is not None and row["status"] == WorkflowStatus.ESCALATED.value:
                 open_ids = self._open_question_ids(connection, workflow_id)
                 if open_ids:
@@ -605,16 +606,29 @@ class HubStore:
                         f"workflow is escalated with open operator questions {_ids(open_ids)}; "
                         "wait for their user_answered events before changing its status"
                     )
-                answered = self._escalation_question_ids(connection, workflow_id)
-                if answered:
-                    rationale += f"; operator answered questions {_ids(answered)}"
+                # Every question is answered, so those this decision has not
+                # yet ended are the ones this escalation asked.
+                resumed = [
+                    int(r["id"])
+                    for r in connection.execute(
+                        "SELECT id FROM operator_question"
+                        " WHERE workflow_id = ? AND resumed_by IS NULL ORDER BY id",
+                        (workflow_id,),
+                    )
+                ]
+                if resumed:
+                    rationale += f"; operator answered questions {_ids(resumed)}"
             connection.execute(
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO decision (ts, summary, rationale, actor, session)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (self._now_iso(), summary, rationale, actor, session),
+            )
+            connection.executemany(
+                "UPDATE operator_question SET resumed_by = ? WHERE id = ?",
+                [(cursor.lastrowid, question_id) for question_id in resumed],
             )
 
     def refuse_while_escalated(self, operation: str) -> None:
@@ -645,19 +659,6 @@ class HubStore:
             "SELECT id FROM operator_question WHERE workflow_id = ? AND answered IS NULL"
             " ORDER BY id",
             (workflow_id,),
-        )
-        return [int(row["id"]) for row in rows]
-
-    def _escalation_question_ids(self, connection: Connection, workflow_id: str) -> list[int]:
-        """The questions asked since the workflow last became escalated."""
-
-        start = connection.execute(
-            "SELECT ts FROM decision WHERE rationale = ? ORDER BY id DESC LIMIT 1",
-            (f"Workflow status set to {WorkflowStatus.ESCALATED.value}",),
-        ).fetchone()
-        rows = connection.execute(
-            "SELECT id FROM operator_question WHERE workflow_id = ? AND asked >= ? ORDER BY id",
-            (workflow_id, "" if start is None else start["ts"]),
         )
         return [int(row["id"]) for row in rows]
 

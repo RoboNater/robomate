@@ -949,3 +949,42 @@ def test_assignment_and_status_require_explicit_workflow_initialization(
 def test_timestamps_stay_comparable_against_stored_leases(store: HubStore) -> None:
     # Leases are compared lexically in SQL, so both sides must share a format.
     assert to_iso(utcnow()) < iso_after(60)
+
+
+def _resume(store: HubStore, summary: str) -> str:
+    """Answer every open question, leave escalation, and return the rationale."""
+
+    for question in store.open_operator_questions():
+        store.answer_operator_question(question["question_id"], "yes")
+    store.set_workflow_status(WorkflowStatus.ACTIVE, summary, actor="alice", session=None)
+    with database(store.path) as connection:
+        row = connection.execute("SELECT rationale FROM decision ORDER BY id DESC").fetchone()
+    return str(row["rationale"])
+
+
+def test_a_resume_names_its_own_questions_whatever_the_clock_does(store: HubStore) -> None:
+    """#132 r1-1: questions are tied to the resume that ends them, not to timestamps."""
+
+    clock = FakeClock()
+    store.clock = clock
+    # Two whole cycles within one millisecond.
+    store.ask_user("First?", None, actor="alice", session=None)
+    assert _resume(store, "One") == "Workflow status set to active; operator answered questions 1"
+    store.ask_user("Second?", None, actor="alice", session=None)
+    assert _resume(store, "Two") == "Workflow status set to active; operator answered questions 2"
+
+    # The clock steps back between two questions of one escalation.
+    store.ask_user("Third?", None, actor="alice", session=None)
+    clock.advance(seconds=-2)
+    store.ask_user("Fourth?", None, actor="alice", session=None)
+    assert _resume(store, "Three") == (
+        "Workflow status set to active; operator answered questions 3, 4"
+    )
+
+
+def test_decision_text_cannot_move_which_questions_a_resume_names(store: HubStore) -> None:
+    """#132 r1-1: a logged decision that reads like an escalation changes nothing."""
+
+    store.ask_user("Merge?", None, actor="alice", session=None)
+    store.log_decision("Spoof", "Workflow status set to escalated", actor="alice", session=None)
+    assert _resume(store, "Go") == "Workflow status set to active; operator answered questions 1"
