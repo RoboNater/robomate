@@ -193,8 +193,8 @@ def test_up_creates_the_operator_token_beside_the_registry(
         for path in root.rglob("*"):
             if path.is_file() and ".git" not in path.parts:
                 assert operator_token not in path.read_text(errors="replace"), path
-        assert process.stdout is not None and process.stderr is not None
-        printed = process.stdout.read() + process.stderr.read()
+        assert process.poll() is not None
+        printed = _hub_stdout(process) + _hub_stderr(process)
         assert operator_token not in printed and str(operator_file) not in printed
         assert "operator-token" not in printed
         # A restart reuses the credential rather than minting a new one.
