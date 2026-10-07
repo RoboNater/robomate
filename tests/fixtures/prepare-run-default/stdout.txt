@@ -23,6 +23,16 @@
     "charlie": "$RUN_DIR/charlie.prompt.md"
   },
   "repository": "$ORIGIN",
+  "resume_prompts": {
+    "alice": "$RUN_DIR/resume-alice.prompt.md",
+    "bob": "$RUN_DIR/resume-bob.prompt.md",
+    "charlie": "$RUN_DIR/resume-charlie.prompt.md"
+  },
+  "resume_scripts": {
+    "alice": "$RUN_DIR/resume-alice.sh",
+    "bob": "$RUN_DIR/resume-bob.sh",
+    "charlie": "$RUN_DIR/resume-charlie.sh"
+  },
   "run_dir": "$RUN_DIR",
   "slug": null,
   "start_scripts": {
@@ -40,5 +50,10 @@ Start scripts (run each in its own terminal, alice first):
 $RUN_DIR/start-alice.sh
 $RUN_DIR/start-bob.sh
 $RUN_DIR/start-charlie.sh
+
+Resume scripts (after a harness crash, with the saved session ID):
+$RUN_DIR/resume-alice.sh
+$RUN_DIR/resume-bob.sh
+$RUN_DIR/resume-charlie.sh
 
 Alice kickoff prompt: $RUN_DIR/alice.prompt.md

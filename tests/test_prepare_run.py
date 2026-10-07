@@ -2139,3 +2139,131 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     assert "Forge comment identity account: `testuser`." in alice_prompt
     assert "merge its merge request" in alice_prompt
+
+
+def test_opencode_title_is_stable_and_names_the_agent() -> None:
+    """The OpenCode session title depends only on the agent and run directory (#94)."""
+    assert PREPARE_RUN.opencode_title("alice", PurePosixPath("/srv/runs/step7")) == "alice step7"
+    assert PREPARE_RUN.opencode_title("bob", PureWindowsPath("C:/runs/step7")) == "bob step7"
+
+
+@pytest.mark.parametrize("powershell", [False, True])
+def test_opencode_launch_sets_title_only_with_auto_start(powershell: bool) -> None:
+    command = " ".join(
+        PREPARE_RUN.opencode_launch(
+            "cfg", "prompt", ["--model", "m"], True, "alice my-run", powershell
+        )
+    )
+    assert "--title" in command and "alice my-run" in command
+    untitled = " ".join(
+        PREPARE_RUN.opencode_launch("cfg", "prompt", ["--model", "m"], True, None, powershell)
+    )
+    assert "--title" not in untitled
+    manual = " ".join(
+        PREPARE_RUN.opencode_launch("cfg", "prompt", [], False, "alice my-run", powershell)
+    )
+    assert "--title" not in manual and "--session" not in manual
+
+
+@pytest.mark.parametrize(
+    "harness,marker",
+    [
+        ("claude-code", "--resume"),
+        ("codex", "resume"),
+        ("opencode", "--session"),
+        ("antigravity", "--conversation"),
+    ],
+)
+def test_resume_lines_resume_each_harness_by_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, marker: str
+) -> None:
+    """Every harness's resume script takes the saved ID and never reuses the kickoff (#94)."""
+    monkeypatch.setattr(os, "name", "posix")
+    run_dir = (tmp_path / "my run").resolve()
+    lines = PREPARE_RUN.resume_lines(
+        "bob",
+        harness,
+        run_dir / "bob",
+        run_dir / "configs" / "bob",
+        run_dir / "resume-bob.prompt.md",
+        run_dir / "bob" / ".git",
+        "model-x",
+        "high",
+        True,
+        tmp_dir=run_dir / "tmp" / "bob",
+        title="bob my run",
+    )
+    text = "\n".join(lines)
+    assert marker in text and '"$SESSION_ID"' in text
+    assert "usage: resume-bob.sh <session-id>" in text
+    assert "bob.prompt.md" not in text.replace("resume-bob.prompt.md", "")
+    if harness == "opencode":
+        assert "--title" in text and "bob my run" in text
+    else:
+        assert "--title" not in text
+
+
+def test_resume_lines_windows_powershell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "name", "nt")
+    run_dir = (tmp_path / "run").resolve()
+    lines = PREPARE_RUN.resume_lines(
+        "alice",
+        "opencode",
+        run_dir / "alice-runtime",
+        run_dir / "configs" / "alice.opencode.json",
+        run_dir / "resume-alice.prompt.md",
+        None,
+        "opencode/gemini-3.8-flash",
+        "high",
+        True,
+        tmp_dir=run_dir / "tmp" / "alice",
+        title="alice run",
+    )
+    text = "\n".join(lines)
+    assert "$env:OPENCODE_CONFIG =" in text
+    assert "--session $SessionId" in text
+    assert "--title 'alice run'" in text
+    assert "resume-alice.ps1 <session-id>" in text
+    assert "alice.prompt.md" not in text.replace("resume-alice.prompt.md", "")
+
+
+def test_worker_resume_uses_git_bash_spellings() -> None:
+    run = PureWindowsPath("C:/Users/Bob/runs/step7")
+    lines = PREPARE_RUN.worker_resume(
+        "bob", "opencode", run, run / "bob", "m", "high", title="bob step7"
+    )
+    assert lines[0] == "cd /c/Users/Bob/runs/step7/bob"
+    assert any('--session "$SESSION_ID"' in line and "--title" in line for line in lines)
+    assert any("resume-bob.prompt.md" in line for line in lines)
+
+
+def test_opencode_run_records_title_and_resume_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run.json records the OpenCode title and resume files, and scripts use them (#94)."""
+    run_dir, manifest = prepare(
+        tmp_path, monkeypatch, alice_harness="opencode", bob_harness="opencode"
+    )
+    slug = run_dir.name
+    for name in ("alice", "bob"):
+        agent = manifest["launch"]["agents"][name]
+        assert agent["title"] == f"{name} {slug}"
+        assert agent["resume_script"] == str(run_dir / f"resume-{name}.{SCRIPT_SUFFIX}")
+        assert agent["resume_prompt"] == str(run_dir / f"resume-{name}.prompt.md")
+        assert (run_dir / f"resume-{name}.{SCRIPT_SUFFIX}").exists()
+        assert (run_dir / f"resume-{name}.prompt.md").exists()
+        start = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
+        assert "--title" in start and f"{name} {slug}" in start
+        resume = (run_dir / f"resume-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
+        assert "--session" in resume
+        assert f"resume-{name}.prompt.md" in resume
+        kickoff = f"Read {run_dir / f'{name}.prompt.md'} and follow the instructions in it"
+        assert kickoff not in resume
+    charlie = manifest["launch"]["agents"]["charlie"]
+    assert "title" not in charlie
+    assert (run_dir / f"resume-charlie.{SCRIPT_SUFFIX}").exists()
+    alice_resume = (run_dir / "resume-alice.prompt.md").read_text(encoding="utf-8")
+    assert "initialize_workflow" in alice_resume and "start-alice.sh" in alice_resume
+    bob_resume = (run_dir / "resume-bob.prompt.md").read_text(encoding="utf-8")
+    assert "check_in" in bob_resume and "start-bob.sh" in bob_resume
