@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
-from agent_hub_common import HubSettings, load_or_create_token
+from agent_hub_common import HubSettings, load_or_create_token, read_token_file
 from agent_hub_common.clock import utcnow_iso
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -91,6 +91,15 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         initialize_database(resolved.database_path)
         app.state.bearer_token = load_or_create_token(resolved.token, resolved.token_file)
+        # `robomate up` creates the operator token; the hub only reads it, so a
+        # hub started some other way has no operator methods until it exists.
+        operator_file = resolved.operator_token_file
+        if operator_file is not None and operator_file.exists():
+            dispatcher.operator_token = read_token_file(operator_file, "operator token")
+            logger.info("Operator credential loaded")
+        else:
+            dispatcher.operator_token = None
+            logger.info("No operator credential; operator-only methods are refused")
         # Log the resolved absolute path so a hub started against the wrong state
         # directory is visible at once, rather than as lost state later.
         logger.info("SQLite database ready at %s", resolved.database_path)

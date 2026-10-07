@@ -563,8 +563,14 @@ class HubStore:
             "pending_questions": pending_questions,
         }
 
-    def set_workflow_status(self, status: WorkflowStatus, summary: str) -> None:
-        """Persist status and its explanation atomically in the audit log."""
+    def set_workflow_status(
+        self, status: WorkflowStatus, summary: str, *, actor: str, session: str | None
+    ) -> None:
+        """Persist status and its explanation atomically in the audit log.
+
+        actor and session name the caller (#128): the orchestrator's, or
+        `operator` with no session.
+        """
         with database(self.path) as connection:
             workflow_id = self._require_workflow(connection, "set_workflow_status")
             row = connection.execute(
@@ -576,21 +582,52 @@ class HubStore:
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
             connection.execute(
-                "INSERT INTO decision (ts, summary, rationale) VALUES (?, ?, ?)",
-                (self._now_iso(), summary, f"Workflow status set to {status.value}"),
+                "INSERT INTO decision (ts, summary, rationale, actor, session)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    self._now_iso(),
+                    summary,
+                    f"Workflow status set to {status.value}",
+                    actor,
+                    session,
+                ),
             )
 
-    def log_decision(self, summary: str, rationale: str, key: str | None = None) -> int:
+    def log_decision(
+        self,
+        summary: str,
+        rationale: str,
+        key: str | None = None,
+        *,
+        actor: str,
+        session: str | None,
+    ) -> int:
         with database(self.path) as connection:
             if key is not None:
                 row = connection.execute("SELECT id FROM decision WHERE key = ?", (key,)).fetchone()
                 if row is not None:
                     return int(row["id"])
             cursor = connection.execute(
-                "INSERT INTO decision (ts, summary, rationale, key) VALUES (?, ?, ?, ?)",
-                (self._now_iso(), summary, rationale, key),
+                "INSERT INTO decision (ts, summary, rationale, key, actor, session)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (self._now_iso(), summary, rationale, key, actor, session),
             )
             return int(cursor.lastrowid or 0)
+
+    def record_rpc_audit(
+        self, actor: str | None, session: str | None, method: str, outcome: str
+    ) -> None:
+        """Append one `/rpc` audit row (#128): who called what, and how it ended.
+
+        Never params or payload text, as with call accounting. actor and
+        session are None when the caller did not identify itself.
+        """
+        with database(self.path) as connection:
+            connection.execute(
+                "INSERT INTO rpc_audit (ts, actor, session, method, outcome)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (self._now_iso(), actor, session, method[:128], outcome),
+            )
 
     def record_gate_reading(
         self,

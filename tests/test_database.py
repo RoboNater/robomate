@@ -448,8 +448,8 @@ def test_migration_from_v5_to_v6_durable_event_delivery(tmp_path: Path) -> None:
 
     # Test store can log deduped decision and lease the queued event
     store = HubStore(path)
-    d1 = store.log_decision("Step", "Reason", key="chk-1")
-    d2 = store.log_decision("Step", "Reason", key="chk-1")
+    d1 = store.log_decision("Step", "Reason", key="chk-1", actor="alice", session=None)
+    d2 = store.log_decision("Step", "Reason", key="chk-1", actor="alice", session=None)
     assert d1 == d2
 
     leased = store.lease_next_event()
@@ -552,7 +552,9 @@ def test_autoincrement_keeps_counting_after_the_rebuild(tmp_path: Path, version:
     store = HubStore(path)
     appended = store.append_event(EventKind.AGENT_CHECKED_IN, {"agent": "bob"})
     assert appended.id > 11
-    logged = store.log_decision("Later", "After the rebuild", key="k-1")
+    logged = store.log_decision(
+        "Later", "After the rebuild", key="k-1", actor="alice", session=None
+    )
     assert logged > 3
 
 
@@ -684,7 +686,7 @@ def test_the_rebuild_keeps_the_autoincrement_high_water_mark(tmp_path: Path, ver
 
     store = HubStore(path)
     assert store.append_event(EventKind.AGENT_CHECKED_IN, {"agent": "bob"}).id == 101
-    assert store.log_decision("After", "the rebuild", key="k-1") == 101
+    assert store.log_decision("After", "the rebuild", key="k-1", actor="alice", session=None) == 101
 
 
 def test_migration_from_v9_adds_an_empty_call_log_and_keeps_existing_rows(
@@ -802,7 +804,7 @@ def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: 
     initialize_database(path)
 
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 13
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert connection.execute("SELECT * FROM gate_reading").fetchall() == []
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     assert store.get_state()["workflow"]["id"] == workflow_id
@@ -815,6 +817,34 @@ def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: 
     with database(path) as connection:
         [row] = connection.execute("SELECT * FROM gate_reading").fetchall()
     assert row["workflow_id"] == workflow_id
+
+
+def test_migration_from_v13_attributes_new_decisions_and_adds_an_empty_audit(
+    tmp_path: Path,
+) -> None:
+    """#128's v14: decisions logged before it name no caller, since none was kept."""
+
+    path = tmp_path / "v13.db"
+    _legacy_database(path, 13)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO decision (ts, summary, rationale, key)"
+            " VALUES ('2026-10-01T00:00:00Z', 'Before', 'v13', 'k-0')"
+        )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    store = HubStore(path)
+    store.log_decision("After", "v14", key="k-1", actor="alice", session="s-1")
+    store.record_rpc_audit("alice", "s-1", "log_decision", "ok")
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 14
+        rows = connection.execute("SELECT key, actor, session FROM decision ORDER BY id").fetchall()
+        audit = connection.execute("SELECT actor, session, method, outcome FROM rpc_audit")
+        assert [tuple(row) for row in audit.fetchall()] == [("alice", "s-1", "log_decision", "ok")]
+    assert [tuple(row) for row in rows] == [("k-0", None, None), ("k-1", "alice", "s-1")]
+    assert store.log_decision("Again", "dedup", key="k-0", actor="bob", session=None) == 1
 
 
 def test_a_null_declared_model_reads_as_unknown(tmp_path: Path) -> None:

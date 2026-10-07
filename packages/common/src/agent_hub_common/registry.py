@@ -29,6 +29,25 @@ def registry_path(environ: Mapping[str, str] | None = None) -> Path:
     return base / "robomate" / "hubs.json"
 
 
+# Overrides the operator credential's location, for tests (#128).
+OPERATOR_TOKEN_FILE_ENV = "ROBOMATE_OPERATOR_TOKEN_FILE"
+
+
+def operator_token_path(environ: Mapping[str, str] | None = None) -> Path:
+    """Where the operator credential lives: beside `hubs.json`, never in a repository.
+
+    Agents work inside repositories and read `.robomate/` through discovery, so
+    the one credential they must not hold is kept in the machine's registry
+    directory instead (#128).
+    """
+
+    env = os.environ if environ is None else environ
+    configured = env.get(OPERATOR_TOKEN_FILE_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return registry_path(env).with_name("operator-token")
+
+
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

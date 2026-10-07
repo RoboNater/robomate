@@ -6,7 +6,8 @@ tool's name, argument schema and description, so edits here change what Alice
 sees and what her tool list costs (tests/fixtures/orchestrator-tools.json).
 """
 
-from dataclasses import asdict
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass
 from time import monotonic
 from typing import Annotated, Any, Literal
 
@@ -36,12 +37,39 @@ OPERATIONS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class Caller:
+    """Who an operation runs for, as recorded on the rows it writes (#128)."""
+
+    actor: str
+    session: str | None
+
+
+# The operator acts through the operator channel, never in a session.
+OPERATOR = Caller("operator", None)
+
+# Set by the transport around each call. A context variable rather than an
+# argument, because each method's signature is its tool's schema.
+CALLER: ContextVar[Caller | None] = ContextVar("robomate_caller", default=None)
+
+
 class OrchestratorOps:
     """The ten orchestrator operations over one store and merge gate."""
 
-    def __init__(self, store: HubStore, gate: ForgeGate | None = None) -> None:
+    def __init__(
+        self, store: HubStore, gate: ForgeGate | None = None, *, caller: Caller | None = None
+    ) -> None:
         self.store = store
         self.gate: ForgeGate = gate if gate is not None else MergeGate()
+        # Used only when the transport sets no CALLER: the in-process server,
+        # which has a single caller.
+        self.caller = caller
+
+    def _caller(self) -> Caller:
+        caller = CALLER.get() or self.caller
+        if caller is None:
+            raise RuntimeError("no caller to attribute this operation to")
+        return caller
 
     async def get_state(self) -> dict[str, Any]:
         """Read the workflow, agents and compact task summaries."""
@@ -144,11 +172,17 @@ class OrchestratorOps:
 
     async def set_workflow_status(self, status: WorkflowStatus, summary: str) -> dict[str, bool]:
         """Set active/paused/done/escalated and save the summary in the audit log."""
-        self.store.set_workflow_status(status, summary)
+        caller = self._caller()
+        self.store.set_workflow_status(status, summary, actor=caller.actor, session=caller.session)
         return {"ok": True}
 
     async def log_decision(
         self, summary: str, rationale: str, key: str | None = None
     ) -> dict[str, int]:
         """Append a durable audit entry explaining Alice's decision."""
-        return {"id": self.store.log_decision(summary, rationale, key=key)}
+        caller = self._caller()
+        return {
+            "id": self.store.log_decision(
+                summary, rationale, key=key, actor=caller.actor, session=caller.session
+            )
+        }

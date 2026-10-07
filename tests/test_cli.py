@@ -128,6 +128,88 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
             first.wait(timeout=10)
 
 
+def _shutdown_with_bearer_only(url: str, token: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{url}/rpc",
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "hub.shutdown"}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body: dict[str, Any] = json.load(response)
+    return body
+
+
+def test_up_creates_the_operator_token_beside_the_registry(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#128: agents hold the bearer token; only the operator holds this one."""
+
+    root, env = repository
+    operator_file = registry_path(env).with_name("operator-token")
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        operator_token = operator_file.read_text(encoding="utf-8").strip()
+        assert len(operator_token) >= 32
+        if sys.platform != "win32":
+            assert operator_file.stat().st_mode & 0o777 == 0o600
+        bearer = (root / ".robomate/token").read_text(encoding="utf-8").strip()
+        refused = _shutdown_with_bearer_only(str(info["url"]), bearer)
+        assert refused["error"]["code"] == -32005
+        assert process.poll() is None
+        stop(root, env, process)
+        # Once stopped: on Windows a running hub holds up.lock unreadable.
+        for path in root.rglob("*"):
+            if path.is_file() and ".git" not in path.parts:
+                assert operator_token not in path.read_text(errors="replace"), path
+        assert process.stdout is not None and process.stderr is not None
+        printed = process.stdout.read() + process.stderr.read()
+        assert operator_token not in printed and str(operator_file) not in printed
+        assert "operator-token" not in printed
+        # A restart reuses the credential rather than minting a new one.
+        restarted = start(root, env)
+        try:
+            await_hub(root, restarted)
+            assert operator_file.read_text(encoding="utf-8").strip() == operator_token
+        finally:
+            stop(root, env, restarted)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+
+
+def test_operator_token_file_override_is_honoured_but_never_in_the_repository(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    root, env = repository
+    elsewhere = tmp_path / "elsewhere" / "operator-token"
+    moved = {**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(elsewhere)}
+    process = start(root, moved)
+    try:
+        await_hub(root, process)
+        assert elsewhere.exists()
+        assert not registry_path(env).with_name("operator-token").exists()
+        stop(root, moved, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+
+    for inside in (root / ".robomate" / "operator-token", root / "operator-token"):
+        result = subprocess.run(
+            [CLI, "up"],
+            cwd=root,
+            env={**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(inside)},
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert result.returncode == 1
+        assert "must not be inside the repository" in result.stderr
+        assert not inside.exists()
+
+
 def test_recorded_busy_port_is_refused(repository: tuple[Path, dict[str, str]]) -> None:
     root, env = repository
     with socket.socket() as occupied:

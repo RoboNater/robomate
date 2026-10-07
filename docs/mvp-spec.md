@@ -151,7 +151,9 @@ operator methods.
 
 **Machine registry** — `$XDG_STATE_HOME/robomate/hubs.json` (Windows:
 `%LOCALAPPDATA%\robomate\hubs.json`): one entry per running hub; stale entries pruned by
-pid and `/healthz`. `robomate ls` lists them: repo, URL, agents joined, phase.
+pid and `/healthz`. `robomate ls` lists them: repo, URL, agents joined, phase. The operator
+credential, `operator-token` (mode 0600), lives in the same directory and never in a repository
+(#128).
 
 **Port** — first free port from 8420 upward on first `robomate up`, then reused on restart so
 remote agents keep working; `--port` pins it.
@@ -411,7 +413,13 @@ From M1 Step 3 it also serves the orchestrator operations, named after today's t
 the tool arguments as `params` (an object) and the tool's dict as `result`. Errors carry a
 stable `code` and the original message: -32602 invalid params (including argument
 validation), -32001 not found, -32002 conflict, -32003 payload too large, -32004 merge gate
-unavailable, -32603 anything else.
+unavailable, -32005 operator credential required, -32603 anything else.
+Every orchestrator operation carries `X-Robomate-Actor` and `X-Robomate-Session` and is refused
+without them; `hub.info` and `hub.status` need only the bearer token. Operator-only methods,
+`hub.shutdown` first, also need `X-Robomate-Operator` with the operator token that `robomate up`
+creates beside the machine registry (#128). Each call other than `get_state`, `wait_for_event`,
+`hub.info`, `hub.status`, `hub.heartbeat` and `hub.record_calls` leaves an `rpc_audit` row (actor,
+session, method, outcome; never params), as does each orchestrator session takeover.
 
 ---
 
@@ -563,8 +571,11 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
 ## 12. Security (MVP threat model)
 
 Single operator. Loopback bind by default. One bearer token per hub in `.robomate/token`,
-read by `robomate mcp` through discovery, never written into harness configs. All token holders are
-trusted not to impersonate each other; identity and model metadata are self-declared (PoC §1).
+read by `robomate mcp` through discovery, never written into harness configs. Agents are
+untrusted as to role and authority. The hub enforces roles, attributes every action, and accepts
+operator authority only through the operator channel. Keeping the operator credential away from
+agents depends on the harness sandbox; a harness run without one can read it, so such runs are
+trusted-only. Identity and model metadata are self-declared (PoC §1).
 Agents share the operator's forge identity; the hub's typed reviewer verdict remains the
 approval record (PoC #37). The merge gate runs the forge CLI with that identity, so it reads
 only the hub's own repository: a change-request URL, which arrives in untrusted worker

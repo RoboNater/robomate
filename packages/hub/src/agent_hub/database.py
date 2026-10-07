@@ -19,15 +19,16 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
-# v13 is #105's durable gate readings. v12 is #126's observed peer addresses
-# on `agent`, after #77's v11
+# v14 is #128's caller attribution: `decision.actor`/`session` and the
+# `rpc_audit` table. v13 is #105's durable gate readings. v12 is #126's
+# observed peer addresses on `agent`, after #77's v11
 # `agent.declared_model`, #78's v10 `call_log` byte accounting and #51's v9
 # durable binding from an assignment to its triggering event.
 # Bumping this means first dumping the version it replaces:
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 class DatabaseVersionError(RuntimeError):
@@ -143,7 +144,9 @@ CREATE TABLE IF NOT EXISTS decision (
     ts TEXT NOT NULL,
     summary TEXT NOT NULL,
     rationale TEXT NOT NULL,
-    key TEXT
+    key TEXT,
+    actor TEXT,
+    session TEXT
 );
 
 CREATE TABLE IF NOT EXISTS operation (
@@ -192,6 +195,15 @@ CREATE TABLE IF NOT EXISTS gate_reading (
     checks_json TEXT NOT NULL DEFAULT '[]',
     error_code INTEGER,
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS rpc_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    actor TEXT,
+    session TEXT,
+    method TEXT NOT NULL,
+    outcome TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_workflow_state ON task(workflow_id, state);
@@ -279,7 +291,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v12 -> v13).
+        # (any of v1-v13 -> v14).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -291,6 +303,7 @@ def initialize_database(path: Path) -> None:
         _migrate_declared_model(connection)
         _migrate_peer_addresses(connection)
         _migrate_gate_reading(connection)
+        _migrate_caller_attribution(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -484,6 +497,21 @@ def _migrate_gate_reading(connection: sqlite3.Connection) -> None:
     Earlier readings were never stored by the hub, so the table starts empty.
     """
     connection.execute(_canonical_tables()["gate_reading"])
+
+
+def _migrate_caller_attribution(connection: sqlite3.Connection) -> None:
+    """Record who made each orchestrator and operator call (#128, v14).
+
+    Decisions logged before v14 were never attributed, and the caller cannot be
+    recovered afterwards, so their `actor` and `session` stay NULL. The audit
+    table is new and starts empty.
+    """
+
+    columns = _columns(connection, "decision")
+    for name in ("actor", "session"):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE decision ADD COLUMN {name} TEXT")
+    connection.execute(_canonical_tables()["rpc_audit"])
 
 
 def _rebuild_drifted_tables(path: Path) -> None:

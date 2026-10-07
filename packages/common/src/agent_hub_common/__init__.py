@@ -30,7 +30,7 @@ from .models import (
     WorkflowStatus,
 )
 from .stdio import reserve_stdout
-from .token import TokenError, load_or_create_token, token_matches
+from .token import TokenError, load_or_create_token, read_token_file, token_matches
 
 __all__ = [
     "IMPLEMENTER_RESULT_SCHEMA",
@@ -67,6 +67,7 @@ __all__ = [
     "iso_after",
     "load_or_create_token",
     "profile_from_env",
+    "read_token_file",
     "reserve_stdout",
     "to_iso",
     "token_matches",

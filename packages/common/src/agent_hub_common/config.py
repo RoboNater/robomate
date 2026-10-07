@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import UNKNOWN, AgentProfile, ModelSource
+from .registry import operator_token_path
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,10 @@ class HubSettings:
     # `call_log` table, plus an optional raw JSONL stream.
     call_accounting: bool = False
     call_log_jsonl: Path | None = None
+    # The operator credential `robomate up` creates beside the machine registry
+    # (#128). The hub only reads it; None, or a file that does not exist,
+    # leaves every operator-only method refused.
+    operator_token_file: Path | None = None
 
     def bounded_wait(self, requested: float | None) -> float:
         """Clamp a caller-requested hold to the configured ceiling."""
@@ -297,4 +302,5 @@ class HubSettings:
             event_lease_s=_positive_seconds(env, "HUB_EVENT_LEASE_S", DEFAULT_EVENT_LEASE_S),
             call_accounting=_FLAG_VALUES[raw_accounting],
             call_log_jsonl=call_log_jsonl,
+            operator_token_file=operator_token_path(env),
         )

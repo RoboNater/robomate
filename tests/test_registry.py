@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 from agent_hub_common import registry
-from agent_hub_common.registry import deregister, live_entries, register, registry_path
+from agent_hub_common.registry import (
+    deregister,
+    live_entries,
+    operator_token_path,
+    register,
+    registry_path,
+)
 
 
 def test_registry_register_prune_and_deregister(
@@ -74,3 +80,14 @@ def test_windows_handle_probe_distinguishes_running_and_exited(
     assert not registry._windows_process_alive(20)
     assert registry._windows_process_alive(30)  # Access denied is conservative.
     assert closed == [10, 20]
+
+
+def test_operator_token_lives_beside_the_registry_unless_overridden(tmp_path: Path) -> None:
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "LOCALAPPDATA": str(tmp_path / "local")}
+
+    assert operator_token_path(env) == registry_path(env).with_name("operator-token")
+    moved = {**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(tmp_path / "op")}
+    assert operator_token_path(moved) == tmp_path / "op"
+    assert operator_token_path({**env, "ROBOMATE_OPERATOR_TOKEN_FILE": " "}) == (
+        registry_path(env).with_name("operator-token")
+    )

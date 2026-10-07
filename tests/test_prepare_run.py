@@ -828,6 +828,30 @@ def test_no_token_or_clone_path_inside_clones(
     assert (run_dir / "configs/bob.mcp.json").exists()
 
 
+def test_no_operator_token_or_its_path_in_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#128: the launch files and output carry neither the credential nor where it is."""
+
+    operator_file = tmp_path / "registry" / "operator-token"
+    operator_file.parent.mkdir()
+    operator_file.write_text("operator-secret-value\n")
+    operator_file.chmod(0o600)
+    monkeypatch.setenv("ROBOMATE_OPERATOR_TOKEN_FILE", str(operator_file))
+    run_dir, _ = prepare(tmp_path, monkeypatch)
+    printed = capsys.readouterr()
+    needles = ("operator-secret-value", str(operator_file), "operator-token")
+    for text in (printed.out, printed.err):
+        assert not any(needle in text for needle in needles)
+    files = [path for path in run_dir.rglob("*") if path.is_file() and ".git" not in path.parts]
+    assert any(path.name.startswith("start-") for path in files)
+    for path in files:
+        text = path.read_text(errors="replace")
+        assert not any(needle in text for needle in needles), path
+
+
 GOLDEN = ROOT / "tests/fixtures/prepare-run-default"
 GOLDEN_FILES = {
     "alice.mcp.json": "configs/alice.mcp.json",
