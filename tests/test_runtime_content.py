@@ -352,6 +352,38 @@ def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
     )
 
 
+def test_operator_only_work_never_goes_to_a_worker() -> None:
+    """PLAN routes operator-only steps to ask_user; workers block on them (#132)."""
+    skill = read("skills/alice-orchestrator/SKILL.md")
+    assert_fragments(
+        section(skill, "## KICKOFF and PLAN", "## Choose the worker pair and IMPLEMENT"),
+        (
+            "to `ask_user`, never to a worker",
+            "starting or stopping hubs",
+            "launching agent harnesses",
+            "acting or speaking for the operator",
+            "accepting work on the operator's behalf",
+            "changing the default branch outside the PR",
+            "changing forge or repository settings",
+        ),
+    )
+    assert_fragments(
+        section(skill, "## Escalation", "## WRAP-UP"),
+        ("`set_workflow_status(escalated)` is refused", "names the open question ids"),
+    )
+    assert_fragments(
+        read("guides/worker.md"),
+        (
+            "A task that needs one of them is `blocked`",
+            "Call the hub's `/rpc` route.",
+            "Read `.robomate/`.",
+            "Start or stop hubs or agents",
+            "Change workflow status.",
+            "Post anything that speaks for the operator.",
+        ),
+    )
+
+
 def test_decision_comments_reference_the_governing_spec_and_issues() -> None:
     skill = read("skills/alice-orchestrator/SKILL.md")
     comments = "\n".join(re.findall(r"<!--(.*?)-->", skill, flags=re.DOTALL))

@@ -113,6 +113,8 @@ class OrchestratorOps:
     ) -> dict[str, Any]:
         """Assign work to an idle worker and wake its pending NEXT.
 
+        Refused while the workflow is escalated.
+
         event_id: the durable event whose handling causes this assignment.
         role: implementer, reviewer or rebase — the guide the worker fetches.
         pr_head_sha: the PR head a review or rebase is bound to.
@@ -135,8 +137,10 @@ class OrchestratorOps:
         expected_head_sha: the approved head — the reviewer's reviewed_head_sha,
         or the head_sha of a rebase that reported no conflict_files.
         Waits up to 60 s while CI or mergeability is still settling. Call it
-        immediately before merging; earlier results are advisory.
+        immediately before merging; earlier results are advisory. Refused while
+        the workflow is escalated.
         """
+        self.store.refuse_while_escalated("check_merge_gate")
         started = monotonic()
         try:
             report = await self.gate.check(pr_url, expected_head_sha)
@@ -172,7 +176,11 @@ class OrchestratorOps:
         return asdict(self.store.release_agent(agent))
 
     async def set_workflow_status(self, status: WorkflowStatus, summary: str) -> dict[str, bool]:
-        """Set active/paused/done/escalated and save the summary in the audit log."""
+        """Set active/paused/done and save the summary in the audit log.
+
+        Escalate with ask_user. Leaving escalated is refused while any
+        operator question is open.
+        """
         caller = self._caller()
         self.store.set_workflow_status(status, summary, actor=caller.actor, session=caller.session)
         return {"ok": True}

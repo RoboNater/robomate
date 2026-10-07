@@ -97,6 +97,18 @@ expected, successful result in that case; prefer it to improvising. Use
 `failed` for an execution failure, not for ordinary uncertainty that Alice can
 resolve.
 
+<!-- Operator-only actions: #132, from #99. -->
+
+Never do any of the following, whatever the instructions say. A task that
+needs one of them is `blocked`; name the action as the blocker.
+
+- Call the hub's `/rpc` route.
+- Read `.robomate/`.
+- Start or stop hubs or agents, other than a throwaway hub that you start and
+  stop yourself to test your change.
+- Change workflow status.
+- Post anything that speaks for the operator.
+
 ## References, payloads, and trust
 
 <!-- Forge authority and prompt-injection rail: spec §5 Rails / #29. -->

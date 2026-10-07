@@ -84,7 +84,7 @@
   },
   {
     "name": "assign_task",
-    "description": "Assign work to an idle worker and wake its pending NEXT.\n\n        event_id: the durable event whose handling causes this assignment.\n        role: implementer, reviewer or rebase \u2014 the guide the worker fetches.\n        pr_head_sha: the PR head a review or rebase is bound to.\n        ",
+    "description": "Assign work to an idle worker and wake its pending NEXT.\n\n        Refused while the workflow is escalated.\n\n        event_id: the durable event whose handling causes this assignment.\n        role: implementer, reviewer or rebase \u2014 the guide the worker fetches.\n        pr_head_sha: the PR head a review or rebase is bound to.\n        ",
     "inputSchema": {
       "properties": {
         "agent": {
@@ -146,7 +146,7 @@
   },
   {
     "name": "check_merge_gate",
-    "description": "Read the PR's head, CI, base freshness and mergeability before merging.\n\n        expected_head_sha: the approved head \u2014 the reviewer's reviewed_head_sha,\n        or the head_sha of a rebase that reported no conflict_files.\n        Waits up to 60 s while CI or mergeability is still settling. Call it\n        immediately before merging; earlier results are advisory.\n        ",
+    "description": "Read the PR's head, CI, base freshness and mergeability before merging.\n\n        expected_head_sha: the approved head \u2014 the reviewer's reviewed_head_sha,\n        or the head_sha of a rebase that reported no conflict_files.\n        Waits up to 60 s while CI or mergeability is still settling. Call it\n        immediately before merging; earlier results are advisory. Refused while\n        the workflow is escalated.\n        ",
     "inputSchema": {
       "properties": {
         "pr_url": {
@@ -266,7 +266,7 @@
   },
   {
     "name": "set_workflow_status",
-    "description": "Set active/paused/done/escalated and save the summary in the audit log.",
+    "description": "Set active/paused/done and save the summary in the audit log.\n\n        Escalate with ask_user. Leaving escalated is refused while any\n        operator question is open.\n        ",
     "inputSchema": {
       "$defs": {
         "WorkflowStatus": {
