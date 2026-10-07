@@ -344,5 +344,44 @@
       "title": "log_decisionDictOutput",
       "type": "object"
     }
+  },
+  {
+    "name": "ask_user",
+    "description": "Ask the operator a question and set the workflow to escalated.\n\n        The answer arrives as a user_answered event naming the question_id.\n        Ask again while escalated to add another question.\n        ",
+    "inputSchema": {
+      "properties": {
+        "question": {
+          "title": "Question",
+          "type": "string"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Options"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "title": "ask_userArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "ask_userDictOutput",
+      "type": "object"
+    }
   }
 ]

@@ -394,15 +394,16 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 | `await_assignment`, `get_role_guide`, `report_progress` | worker | unchanged semantics; hold capped by the harness profile |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
 | `ask_orchestrator` | worker | renamed from `ask_alice` |
+| `get_operator_answer(question_id)` | worker | **new** (#129): reads `hub.operator_answer`, so a worker can check an operator decision it is told of |
 | `get_statement(sha)` | worker, orchestrator | **new** (#9) |
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
-| `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` |
+| `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed |
 | `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape |
-| `ask_user` | orchestrator | **new** |
+| `ask_user(question, options?)` | orchestrator | **new** (#129): holds the question, sets `escalated` with an attributed decision row, returns `question_id`; asking again while escalated adds a question |
 
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same
@@ -415,10 +416,13 @@ stable `code` and the original message: -32602 invalid params (including argumen
 validation), -32001 not found, -32002 conflict, -32003 payload too large, -32004 merge gate
 unavailable, -32005 operator credential required, -32603 anything else.
 Every orchestrator operation carries `X-Robomate-Actor` and `X-Robomate-Session` and is refused
-without them; `hub.info` and `hub.status` need only the bearer token. Operator-only methods,
+without them; `hub.info`, `hub.status`, and the read-only `hub.questions` (open operator
+questions) and `hub.operator_answer(question_id)` (the question, its answer and answer time, or
+`unanswered`; not found is -32001) need only the bearer token (#129). Operator-only methods,
 `hub.shutdown` first, also need `X-Robomate-Operator` with the operator token that `robomate up`
 creates beside the machine registry (#128). Each call other than `get_state`, `wait_for_event`,
-`hub.info`, `hub.status`, `hub.heartbeat` and `hub.record_calls` leaves an `rpc_audit` row (actor,
+`hub.info`, `hub.status`, `hub.heartbeat`, `hub.record_calls`, `hub.questions` and
+`hub.operator_answer` leaves an `rpc_audit` row (actor,
 session, method, outcome; never params), as does each orchestrator session takeover.
 
 ---

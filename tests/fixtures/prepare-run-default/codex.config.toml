@@ -6,7 +6,7 @@ command = "uv"
 args = ["run", "--locked", "--project", "$ROOT", "robomate", "mcp", "--role", "worker"]
 startup_timeout_sec = 120
 tool_timeout_sec = 330
-enabled_tools = ["check_in", "get_role_guide", "await_assignment", "report_progress", "ask_alice", "submit_result"]
+enabled_tools = ["check_in", "get_role_guide", "await_assignment", "report_progress", "ask_alice", "submit_result", "get_operator_answer"]
 env = { ROBOMATE_HUB_URL = "http://127.0.0.1:8420", ROBOMATE_TOKEN_FILE = "$HUB_REPO/.robomate/token", AGENT_NAME = "charlie", HUB_WORKSPACE = "$RUN_DIR/charlie", HUB_HARNESS = "codex", HUB_HARNESS_VERSION = "0.154.0", HUB_PROVIDER = "openai", HUB_MODEL = "", HUB_CAPABILITIES = "", HUB_TELEMETRY_LOG = "$RUN_DIR/charlie-telemetry.jsonl", PYTHONUTF8 = "1" }
 
 [mcp_servers.robomate.tools.check_in]
@@ -25,4 +25,7 @@ approval_mode = "approve"
 approval_mode = "approve"
 
 [mcp_servers.robomate.tools.submit_result]
+approval_mode = "approve"
+
+[mcp_servers.robomate.tools.get_operator_answer]
 approval_mode = "approve"

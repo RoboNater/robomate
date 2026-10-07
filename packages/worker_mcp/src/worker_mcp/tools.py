@@ -134,6 +134,21 @@ def create_worker_mcp(
         )
 
     @server.tool()
+    async def get_operator_answer(question_id: int) -> dict[str, Any]:
+        """Read an operator question and its answer straight from the hub.
+
+        Returns {question_id, question, status, answer, answered}; status is
+        answered or unanswered. Use it to check an operator decision you are told of.
+        """
+        resolved = await resolve()
+        return await invoke(
+            resolved,
+            "get_operator_answer",
+            resolved.get_operator_answer(question_id),
+            {"question_id": question_id},
+        )
+
+    @server.tool()
     async def submit_result(
         task_id: str,
         # RebaseResult last: a body that fits several models validates as the

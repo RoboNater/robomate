@@ -614,6 +614,99 @@ class HubStore:
             )
             return int(cursor.lastrowid or 0)
 
+    # -- operator questions (#129) -------------------------------------------
+
+    def ask_user(
+        self, question: str, options: Sequence[str] | None, *, actor: str, session: str | None
+    ) -> int:
+        """Hold a question for the operator and escalate the workflow.
+
+        The question, the status change and its decision row commit together,
+        so the workflow is never escalated over a question the hub did not
+        keep. A question asked while already escalated is added beside the
+        open ones, and still leaves a decision row naming who asked it.
+        """
+
+        for label, value in (("question", question), ("options", options)):
+            size = _json_size_bytes(value)
+            if size > MAX_MESSAGE_PART_BYTES:
+                raise PayloadTooLargeError(
+                    f"{label} is {size} bytes; maximum is {MAX_MESSAGE_PART_BYTES} bytes. "
+                    "Link to the forge for detail instead."
+                )
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            workflow_id = self._require_workflow(connection, "ask_user")
+            now = self._now_iso()
+            cursor = connection.execute(
+                "INSERT INTO operator_question"
+                " (workflow_id, asked, actor, session, question, options_json)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    workflow_id,
+                    now,
+                    actor,
+                    session,
+                    question,
+                    None if options is None else json.dumps(list(options)),
+                ),
+            )
+            question_id = int(cursor.lastrowid or 0)
+            row = connection.execute(
+                "SELECT status FROM workflow WHERE id = ?", (workflow_id,)
+            ).fetchone()
+            if row["status"] == WorkflowStatus.ESCALATED.value:
+                rationale = "Workflow already escalated; question added"
+            else:
+                connection.execute(
+                    "UPDATE workflow SET status = ? WHERE id = ?",
+                    (WorkflowStatus.ESCALATED.value, workflow_id),
+                )
+                rationale = f"Workflow status set to {WorkflowStatus.ESCALATED.value}"
+            connection.execute(
+                "INSERT INTO decision (ts, summary, rationale, actor, session)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (now, f"Asked the operator question {question_id}", rationale, actor, session),
+            )
+        return question_id
+
+    def open_operator_questions(self) -> list[dict[str, Any]]:
+        """The questions still waiting for the operator, oldest first."""
+
+        with database(self.path) as connection:
+            rows = connection.execute(
+                "SELECT id, asked, actor, question, options_json FROM operator_question"
+                " WHERE answered IS NULL ORDER BY id"
+            ).fetchall()
+        return [
+            {
+                "question_id": row["id"],
+                "asked": row["asked"],
+                "actor": row["actor"],
+                "question": row["question"],
+                "options": None if row["options_json"] is None else json.loads(row["options_json"]),
+            }
+            for row in rows
+        ]
+
+    def operator_answer(self, question_id: int) -> dict[str, Any]:
+        """One question with its answer, or `unanswered` while it waits."""
+
+        with database(self.path) as connection:
+            row = connection.execute(
+                "SELECT id, question, answer, answered FROM operator_question WHERE id = ?",
+                (question_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"unknown operator question: {question_id}")
+        return {
+            "question_id": row["id"],
+            "question": row["question"],
+            "status": "unanswered" if row["answered"] is None else "answered",
+            "answer": row["answer"],
+            "answered": row["answered"],
+        }
+
     def record_rpc_audit(
         self, actor: str | None, session: str | None, method: str, outcome: str
     ) -> None:

@@ -32,7 +32,7 @@ from agent_hub.rpc import (
     require_operator,
 )
 from agent_hub.store import HubStore
-from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, HubSettings
+from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from fastapi import FastAPI
 
@@ -876,3 +876,101 @@ def test_require_operator_accepts_only_the_operator_token() -> None:
         with pytest.raises(RpcError) as raised:
             require_operator(headers, expected)
         assert raised.value.code == OPERATOR_REQUIRED
+
+
+async def test_ask_user_holds_the_question_and_escalates_once(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#129: each question is kept, and every ask leaves a decision naming the asker."""
+
+    first = await call(client, "ask_user", question="Merge or wait?", options=["merge", "wait"])
+    second = await call(client, "ask_user", question="And the follow-up?")
+    assert first["result"] == {"question_id": 1}
+    assert second["result"] == {"question_id": 2}
+    assert hub_store.get_state()["workflow"]["status"] == "escalated"
+    with database(hub_store.path) as connection:
+        decisions = connection.execute(
+            "SELECT summary, rationale, actor, session FROM decision ORDER BY id"
+        ).fetchall()
+        asked = connection.execute(
+            "SELECT actor, session, answer, answered, answered_by FROM operator_question"
+        ).fetchall()
+    assert [tuple(row) for row in decisions] == [
+        ("Asked the operator question 1", "Workflow status set to escalated", "alice", SESSION),
+        (
+            "Asked the operator question 2",
+            "Workflow already escalated; question added",
+            "alice",
+            SESSION,
+        ),
+    ]
+    assert [tuple(row) for row in asked] == [("alice", SESSION, None, None, None)] * 2
+    assert [row[2:] for row in audit_rows(hub_store)] == [("ask_user", "ok"), ("ask_user", "ok")]
+
+    # Read with the bearer token alone: no caller headers, and no audit rows.
+    listed = (await bare_call(app, "hub.questions"))["result"]["questions"]
+    assert [(q["question_id"], q["question"], q["options"], q["actor"]) for q in listed] == [
+        (1, "Merge or wait?", ["merge", "wait"], "alice"),
+        (2, "And the follow-up?", None, "alice"),
+    ]
+    assert (await bare_call(app, "hub.operator_answer", question_id=1))["result"] == {
+        "question_id": 1,
+        "question": "Merge or wait?",
+        "status": "unanswered",
+        "answer": None,
+        "answered": None,
+    }
+    assert len(audit_rows(hub_store)) == 2
+
+
+async def test_operator_answer_reports_an_answer_once_one_is_stored(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    await call(client, "ask_user", question="Merge?")
+    # #130 writes the answer; until then a test stands in for it.
+    with database(hub_store.path) as connection:
+        connection.execute(
+            "UPDATE operator_question SET answer = 'yes', answered = '2026-10-06T00:00:00Z',"
+            " answered_by = 'operator' WHERE id = 1"
+        )
+
+    assert (await bare_call(app, "hub.operator_answer", question_id=1))["result"] == {
+        "question_id": 1,
+        "question": "Merge?",
+        "status": "answered",
+        "answer": "yes",
+        "answered": "2026-10-06T00:00:00Z",
+    }
+    assert (await bare_call(app, "hub.questions"))["result"] == {"questions": []}
+
+
+async def test_operator_question_reads_refuse_bad_params_and_unknown_ids(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    assert error_of(await bare_call(app, "hub.operator_answer", question_id=9)) == (
+        NOT_FOUND,
+        "unknown operator question: 9",
+    )
+    for params in ({}, {"question_id": "1"}, {"question_id": True}, {"question_id": 1, "x": 2}):
+        body = await bare_call(app, "hub.operator_answer", **params)
+        assert error_of(body)[0] == INVALID_PARAMS
+    assert error_of(await bare_call(app, "hub.questions", x=1))[0] == INVALID_PARAMS
+
+
+async def test_ask_user_requires_the_caller_headers(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    body = await bare_call(app, "ask_user", question="Merge?")
+    assert error_of(body)[0] == INVALID_REQUEST
+    with database(hub_store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM operator_question").fetchone()[0] == 0
+
+
+async def test_wait_for_event_delivers_user_answered(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    hub_store.append_event(EventKind.USER_ANSWERED, {"question_id": 1, "answer": "merge"})
+
+    event = (await call(client, "wait_for_event", timeout_s=1))["result"]["event"]
+    assert event["kind"] == "user_answered"
+    assert event["payload"] == {"question_id": 1, "answer": "merge"}

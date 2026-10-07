@@ -104,7 +104,7 @@ def test_operations_are_exactly_the_public_methods() -> None:
     }
 
     assert public == set(OPERATIONS)
-    assert len(OPERATIONS) == 10
+    assert len(OPERATIONS) == 11
 
 
 # -- parity: the same operation over stdio MCP and over /rpc -----------------
@@ -218,6 +218,14 @@ async def log_decision(store: HubStore) -> dict[str, Any]:
     return {"summary": "Decision", "rationale": "Because", "key": "k1"}
 
 
+async def ask_user(store: HubStore) -> dict[str, Any]:
+    return {"question": "Merge or wait?", "options": ["merge", "wait"]}
+
+
+async def ask_user_too_large(store: HubStore) -> dict[str, Any]:
+    return {"question": "x" * MAX_MESSAGE_PART_BYTES}
+
+
 Prepare = Callable[[HubStore], Any]
 OK, FAILS = False, True
 # (operation, prepare, whether it fails): every operation succeeds at least
@@ -240,6 +248,8 @@ CASES: list[tuple[str, Prepare, bool]] = [
     ("release_agent", release_agent_unknown, FAILS),
     ("set_workflow_status", set_workflow_status, OK),
     ("log_decision", log_decision, OK),
+    ("ask_user", ask_user, OK),
+    ("ask_user", ask_user_too_large, FAILS),
 ]
 
 

@@ -288,14 +288,14 @@ class WorkerHubClient:
                     continue
                 raise
 
-    async def _post_rpc(self, method: str, params: dict[str, Any]) -> Any:
+    async def _post_rpc(self, method: str, params: dict[str, Any], *, path: str = "/a2a") -> Any:
         payload = {
             "jsonrpc": "2.0",
             "id": uuid4().hex,
             "method": method,
             "params": params,
         }
-        response = await self._request_with_retry("POST", "/a2a", json_body=payload)
+        response = await self._request_with_retry("POST", path, json_body=payload)
         if response.status_code >= 400:
             try:
                 data = response.json()
@@ -566,6 +566,19 @@ class WorkerHubClient:
             raise FileNotFoundError(f"Role guide for {clean_role!r} not found (404)")
         response.raise_for_status()
         return response.text
+
+    async def get_operator_answer(self, question_id: int) -> dict[str, Any]:
+        """Read one operator question and its answer from the hub's `/rpc` (#129).
+
+        A read with the bearer token alone, so it needs no check-in and is safe
+        to retry.
+        """
+        result = await self._post_rpc(
+            "hub.operator_answer", {"question_id": question_id}, path="/rpc"
+        )
+        if not isinstance(result, dict):
+            raise WorkerProtocolError(None, "hub.operator_answer response was not a dict")
+        return result
 
     async def await_assignment(self, timeout_s: float | None = None) -> dict[str, Any]:
         """Poll the hub for the next task assignment, holding until assigned or released."""

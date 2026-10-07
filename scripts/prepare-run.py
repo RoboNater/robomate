@@ -126,6 +126,7 @@ ALICE_TOOLS = [
     "release_agent",
     "set_workflow_status",
     "log_decision",
+    "ask_user",
 ]
 DEFAULT_HUB_HOST = "127.0.0.1"
 DEFAULT_HUB_PORT = 8420

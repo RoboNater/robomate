@@ -34,6 +34,7 @@ OPERATIONS = (
     "release_agent",
     "set_workflow_status",
     "log_decision",
+    "ask_user",
 )
 
 
@@ -54,7 +55,7 @@ CALLER: ContextVar[Caller | None] = ContextVar("robomate_caller", default=None)
 
 
 class OrchestratorOps:
-    """The ten orchestrator operations over one store and merge gate."""
+    """The eleven orchestrator operations over one store and merge gate."""
 
     def __init__(
         self, store: HubStore, gate: ForgeGate | None = None, *, caller: Caller | None = None
@@ -186,3 +187,15 @@ class OrchestratorOps:
                 summary, rationale, key=key, actor=caller.actor, session=caller.session
             )
         }
+
+    async def ask_user(self, question: str, options: list[str] | None = None) -> dict[str, int]:
+        """Ask the operator a question and set the workflow to escalated.
+
+        The answer arrives as a user_answered event naming the question_id.
+        Ask again while escalated to add another question.
+        """
+        caller = self._caller()
+        question_id = self.store.ask_user(
+            question, options, actor=caller.actor, session=caller.session
+        )
+        return {"question_id": question_id}

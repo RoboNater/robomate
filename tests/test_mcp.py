@@ -20,6 +20,7 @@ TOOLS = {
     "release_agent",
     "set_workflow_status",
     "log_decision",
+    "ask_user",
     "check_merge_gate",
 }
 
