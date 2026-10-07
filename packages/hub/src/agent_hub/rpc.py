@@ -238,6 +238,22 @@ class RpcDispatcher:
             ):
                 raise RpcError(INVALID_PARAMS, "hub.operator_answer takes an integer question_id")
             return self.ops.store.operator_answer(question_id)
+        # Only the operator answers (#130): an agent holding the bearer token
+        # must not be able to stand in for an operator decision.
+        if method == "hub.answer":
+            require_operator(headers, self.operator_token)
+            audit.actor, audit.session = "operator", None
+            params = payload.get("params")
+            if (
+                not isinstance(params, dict)
+                or set(params) != {"question_id", "answer"}
+                or type(params["question_id"]) is not int
+                or not isinstance(params["answer"], str)
+            ):
+                raise RpcError(
+                    INVALID_PARAMS, "hub.answer takes an integer question_id and a string answer"
+                )
+            return self.ops.store.answer_operator_question(params["question_id"], params["answer"])
         if method == "hub.shutdown" and self.shutdown is not None:
             require_operator(headers, self.operator_token)
             audit.actor, audit.session = "operator", None

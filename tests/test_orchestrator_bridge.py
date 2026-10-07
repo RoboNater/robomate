@@ -16,7 +16,6 @@ import pytest
 from agent_hub.accounting import CallRecord
 from agent_hub.database import database
 from agent_hub.store import HubStore
-from agent_hub_common import EventKind
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
 from conftest import BASE_URL, TOKEN
 from fastapi import FastAPI
@@ -438,9 +437,10 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
 async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
     app: FastAPI, hub_store: HubStore
 ) -> None:
-    """#129: ask_user and user_answered through the bridge; the worker reads the answer."""
+    """#129/#130: ask_user, the operator's hub.answer, user_answered, then the worker's read."""
 
     async with app.router.lifespan_context(app):
+        app.state.rpc.operator_token = "operator-secret"
         bridge = OrchestratorBridge()
         bridge._client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -465,13 +465,31 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
                 unanswered = await _call(worker, "get_operator_answer", question_id=question_id)
                 assert unanswered["status"] == "unanswered" and unanswered["answer"] is None
 
-                # #130 emits this event when the operator answers; a test stands in.
-                hub_store.append_event(
-                    EventKind.USER_ANSWERED, {"question_id": question_id, "answer": "yes"}
-                )
-                event = (await _call(alice, "wait_for_event", timeout_s=2))["event"]
+                # Alice is already holding when the operator answers.
+                waiting = asyncio.create_task(_call(alice, "wait_for_event", timeout_s=2))
+                await asyncio.sleep(0.05)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url=BASE_URL
+                ) as operator:
+                    response = await operator.post(
+                        "/rpc",
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "hub.answer",
+                            "params": {"question_id": question_id, "answer": "yes"},
+                        },
+                        headers={
+                            "Authorization": f"Bearer {TOKEN}",
+                            "X-Robomate-Operator": "operator-secret",
+                        },
+                    )
+                assert "result" in response.json(), response.json()
+                event = (await waiting)["event"]
                 assert event["kind"] == "user_answered"
                 assert event["payload"] == {"question_id": question_id, "answer": "yes"}
+                answered = await _call(worker, "get_operator_answer", question_id=question_id)
+                assert answered["status"] == "answered" and answered["answer"] == "yes"
 
                 with pytest.raises(ToolError, match="unknown operator question: 99"):
                     await _call(worker, "get_operator_answer", question_id=99)
