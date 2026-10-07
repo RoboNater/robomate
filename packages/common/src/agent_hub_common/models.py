@@ -71,6 +71,8 @@ class EventKind(StrEnum):
     WORKER_QUESTION = "worker_question"
     LEASE_EXPIRED = "lease_expired"
     AGENT_LOST = "agent_lost"
+    # The operator answered an `ask_user` question (#129); #130 emits it.
+    USER_ANSWERED = "user_answered"
 
 
 class TaskRole(StrEnum):

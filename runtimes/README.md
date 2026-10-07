@@ -112,7 +112,7 @@ validate clone topology, origin, identity ownership and permissions before
 reporting the persisted ID. Non-repository tests/endurance may omit
 `HUB_WORKSPACE`; explicitly setting it empty is an error.
 
-Step 6 launchers render private run-local configurations and expose all six
+Step 6 launchers render private run-local configurations and expose all seven
 worker tools. Bob uses the existing transport-only supervisor with the worker
 prompt and repository tools. Its continuation prompt remains fixed and owns
 no workflow decisions. Charlie uses `--approve-for-me`, which selects

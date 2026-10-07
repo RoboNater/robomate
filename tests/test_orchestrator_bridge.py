@@ -16,6 +16,7 @@ import pytest
 from agent_hub.accounting import CallRecord
 from agent_hub.database import database
 from agent_hub.store import HubStore
+from agent_hub_common import EventKind
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
 from conftest import BASE_URL, TOKEN
 from fastapi import FastAPI
@@ -341,8 +342,8 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 10
-            assert len((await bob.list_tools()).tools) == 6
+            assert len((await alice.list_tools()).tools) == 11
+            assert len((await bob.list_tools()).tools) == 7
             created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
             assert created.structuredContent is not None
             checked = await bob.call_tool("check_in")
@@ -432,3 +433,47 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         for stream in (hub.stdout, hub.stderr):
             if stream is not None:
                 stream.close()
+
+
+async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
+    app: FastAPI, hub_store: HubStore
+) -> None:
+    """#129: ask_user and user_answered through the bridge; the worker reads the answer."""
+
+    async with app.router.lifespan_context(app):
+        bridge = OrchestratorBridge()
+        bridge._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={
+                "Authorization": f"Bearer {TOKEN}",
+                "X-Robomate-Actor": "alice",
+                "X-Robomate-Session": bridge.session,
+            },
+        )
+        alice = create_orchestrator_mcp(bridge)
+        worker_client = WorkerHubClient(
+            WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL),
+        )
+        async with worker_client:
+            worker = create_worker_mcp(worker_client, server_name="robomate")
+            try:
+                asked = await _call(alice, "ask_user", question="Merge?", options=["yes", "no"])
+                question_id = asked["question_id"]
+                assert hub_store.get_state()["workflow"]["status"] == "escalated"
+                unanswered = await _call(worker, "get_operator_answer", question_id=question_id)
+                assert unanswered["status"] == "unanswered" and unanswered["answer"] is None
+
+                # #130 emits this event when the operator answers; a test stands in.
+                hub_store.append_event(
+                    EventKind.USER_ANSWERED, {"question_id": question_id, "answer": "yes"}
+                )
+                event = (await _call(alice, "wait_for_event", timeout_s=2))["event"]
+                assert event["kind"] == "user_answered"
+                assert event["payload"] == {"question_id": question_id, "answer": "yes"}
+
+                with pytest.raises(ToolError, match="unknown operator question: 99"):
+                    await _call(worker, "get_operator_answer", question_id=99)
+            finally:
+                await bridge.close()

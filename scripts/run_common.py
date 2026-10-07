@@ -19,7 +19,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: The six worker-mcp coordination tools every worker config must approve.
+#: The seven worker-mcp coordination tools every worker config must approve.
 TOOLS = [
     "check_in",
     "get_role_guide",
@@ -27,6 +27,7 @@ TOOLS = [
     "report_progress",
     "ask_alice",
     "submit_result",
+    "get_operator_answer",
 ]
 
 #: CLI invoked with ``--version`` to report each harness version.

@@ -19,6 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v15 is #129's `operator_question` table and the `user_answered` event kind.
 # v14 is #128's caller attribution: `decision.actor`/`session` and the
 # `rpc_audit` table. v13 is #105's durable gate readings. v12 is #126's
 # observed peer addresses on `agent`, after #77's v11
@@ -28,7 +29,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 class DatabaseVersionError(RuntimeError):
@@ -206,6 +207,20 @@ CREATE TABLE IF NOT EXISTS rpc_audit (
     outcome TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS operator_question (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id TEXT NOT NULL,
+    asked TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    session TEXT,
+    question TEXT NOT NULL,
+    options_json TEXT,
+    answer TEXT,
+    answered TEXT,
+    answered_by TEXT,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_workflow_state ON task(workflow_id, state);
 CREATE INDEX IF NOT EXISTS idx_task_assignee ON task(assignee);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_source_event_id
@@ -291,7 +306,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v13 -> v14).
+        # (any of v1-v14 -> v15).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -304,6 +319,7 @@ def initialize_database(path: Path) -> None:
         _migrate_peer_addresses(connection)
         _migrate_gate_reading(connection)
         _migrate_caller_attribution(connection)
+        _migrate_operator_question(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -512,6 +528,17 @@ def _migrate_caller_attribution(connection: sqlite3.Connection) -> None:
         if name not in columns:
             connection.execute(f"ALTER TABLE decision ADD COLUMN {name} TEXT")
     connection.execute(_canonical_tables()["rpc_audit"])
+
+
+def _migrate_operator_question(connection: sqlite3.Connection) -> None:
+    """Add the questions the orchestrator asks the operator (#129, v15).
+
+    No question was held by the hub before v15, so the table starts empty. The
+    new `user_answered` event kind widens `event.kind`'s CHECK, which the
+    rebuild below brings every migrated `event` table up to.
+    """
+
+    connection.execute(_canonical_tables()["operator_question"])
 
 
 def _rebuild_drifted_tables(path: Path) -> None:

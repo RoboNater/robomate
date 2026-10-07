@@ -17,6 +17,7 @@ EXPECTED_TOOLS = {
     "report_progress",
     "ask_alice",
     "submit_result",
+    "get_operator_answer",
 }
 
 

@@ -29,7 +29,8 @@
         "await_assignment",
         "report_progress",
         "ask_alice",
-        "submit_result"
+        "submit_result",
+        "get_operator_answer"
       ],
       "timeoutSeconds": 330
     }

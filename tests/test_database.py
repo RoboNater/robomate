@@ -839,12 +839,48 @@ def test_migration_from_v13_attributes_new_decisions_and_adds_an_empty_audit(
     store.log_decision("After", "v14", key="k-1", actor="alice", session="s-1")
     store.record_rpc_audit("alice", "s-1", "log_decision", "ok")
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 14
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         rows = connection.execute("SELECT key, actor, session FROM decision ORDER BY id").fetchall()
         audit = connection.execute("SELECT actor, session, method, outcome FROM rpc_audit")
         assert [tuple(row) for row in audit.fetchall()] == [("alice", "s-1", "log_decision", "ok")]
     assert [tuple(row) for row in rows] == [("k-0", None, None), ("k-1", "alice", "s-1")]
     assert store.log_decision("Again", "dedup", key="k-0", actor="bob", session=None) == 1
+
+
+def test_migration_from_v14_admits_user_answered_and_holds_questions(tmp_path: Path) -> None:
+    """#129's v15: `event.kind` accepts the new kind and existing events keep their ids."""
+
+    path = tmp_path / "v14.db"
+    _legacy_database(path, 14)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, policy_json, created)"
+            " VALUES ('wf-1', 'Goal', 'active', '{}', '2026-10-01T00:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO event (kind, payload_json, ts)"
+            " VALUES ('agent_checked_in', '{}', '2026-10-01T00:00:00Z')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO event (kind, payload_json, ts)"
+                " VALUES ('user_answered', '{}', '2026-10-01T00:00:00Z')"
+            )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    store = HubStore(path)
+    question_id = store.ask_user("Merge?", None, actor="alice", session="s-1")
+    event = store.append_event(
+        EventKind.USER_ANSWERED, {"question_id": question_id, "answer": "yes"}
+    )
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 15
+        kinds = connection.execute("SELECT id, kind FROM event ORDER BY id").fetchall()
+    assert [tuple(row) for row in kinds] == [(1, "agent_checked_in"), (2, "user_answered")]
+    assert event.id == 2
+    assert store.get_state()["workflow"]["status"] == "escalated"
 
 
 def test_a_null_declared_model_reads_as_unknown(tmp_path: Path) -> None:

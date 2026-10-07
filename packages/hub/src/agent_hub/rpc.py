@@ -44,7 +44,16 @@ OPERATOR_HEADER = "X-Robomate-Operator"
 # Read-only or high-frequency methods, whose rows would bury the actions the
 # audit exists to show (#128). Every other /rpc call leaves one rpc_audit row.
 UNAUDITED_METHODS = frozenset(
-    {"get_state", "wait_for_event", "hub.info", "hub.status", "hub.heartbeat", "hub.record_calls"}
+    {
+        "get_state",
+        "wait_for_event",
+        "hub.info",
+        "hub.status",
+        "hub.heartbeat",
+        "hub.record_calls",
+        "hub.questions",
+        "hub.operator_answer",
+    }
 )
 # The audit row a takeover leaves, under the session that took over.
 SUPERSEDE_METHOD = "session.supersede"
@@ -212,6 +221,23 @@ class RpcDispatcher:
                 },
                 **summary,
             }
+        # Operator questions (#129) are readable with the bearer token alone,
+        # so a worker can check an answer the orchestrator says it received.
+        if method == "hub.questions":
+            params = payload.get("params", {})
+            if not isinstance(params, dict) or params:
+                raise RpcError(INVALID_PARAMS, "hub.questions takes no params")
+            return {"questions": self.ops.store.open_operator_questions()}
+        if method == "hub.operator_answer":
+            params = payload.get("params")
+            question_id = params.get("question_id") if isinstance(params, dict) else None
+            if (
+                not isinstance(params, dict)
+                or set(params) != {"question_id"}
+                or type(question_id) is not int
+            ):
+                raise RpcError(INVALID_PARAMS, "hub.operator_answer takes an integer question_id")
+            return self.ops.store.operator_answer(question_id)
         if method == "hub.shutdown" and self.shutdown is not None:
             require_operator(headers, self.operator_token)
             audit.actor, audit.session = "operator", None

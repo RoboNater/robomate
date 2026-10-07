@@ -12,7 +12,7 @@ tool_timeout_sec = 330
 env = { ROBOMATE_HUB_URL = "http://alice-host:8420", ROBOMATE_TOKEN_FILE = "/path/to/target/.robomate/token", AGENT_NAME = "charlie", HUB_WORKSPACE = "/absolute/path/to/charlie-sandbox", HUB_HARNESS = "codex", HUB_HARNESS_VERSION = "", HUB_PROVIDER = "openai", HUB_MODEL = "", HUB_CAPABILITIES = "", HUB_TELEMETRY_LOG = "" }
 
 # Unattended workers cannot answer interactive MCP approval prompts. These
-# approvals cover only the bridge's six coordination tools; shell commands and
+# approvals cover only the bridge's seven coordination tools; shell commands and
 # every other Codex capability remain governed by the launcher's normal policy.
 [mcp_servers.robomate.tools.check_in]
 approval_mode = "approve"
@@ -30,4 +30,7 @@ approval_mode = "approve"
 approval_mode = "approve"
 
 [mcp_servers.robomate.tools.submit_result]
+approval_mode = "approve"
+
+[mcp_servers.robomate.tools.get_operator_answer]
 approval_mode = "approve"

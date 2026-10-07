@@ -174,6 +174,7 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
         "report_progress",
         "ask_alice",
         "submit_result",
+        "get_operator_answer",
     }
     assert set(hub["tools"]) == expected_tools
     assert {tool["approval_mode"] for tool in hub["tools"].values()} == {"approve"}
