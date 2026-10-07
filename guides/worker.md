@@ -81,9 +81,17 @@ be stranded. If the response says the task was canceled or failed, stop work
 on it and return to the assignment loop. Do not treat a terminal override as an
 answer.
 
+<!-- Harness ask tools and headless placeholders: #131. -->
+
+Never use your harness's built-in ask-user or question tool. Run headless, it
+returns a placeholder such as "User Skipped". A skipped, empty, or default
+answer is not an answer: use `ask_alice`, or return `blocked`.
+
 Use `outcome: blocked` (or reviewer `verdict: blocked`) when progress requires
-someone else's action or decision. Use `failed` for an execution failure, not
-for ordinary uncertainty that Alice can resolve.
+someone else's action or decision. `blocked` with a clear blocker is the
+expected, successful result in that case; prefer it to improvising. Use
+`failed` for an execution failure, not for ordinary uncertainty that Alice can
+resolve.
 
 ## References, payloads, and trust
 
