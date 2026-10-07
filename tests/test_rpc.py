@@ -127,6 +127,9 @@ async def test_hub_status_is_compact_and_reports_open_work(
         }
     ]
     assert result["pending_questions"] == 1
+    assert result["operator_questions"] == 0
+    hub_store.ask_user("Operator question text", None, actor="alice", session=SESSION)
+    assert (await call(client, "hub.status"))["result"]["operator_questions"] == 1
     assert "secret instructions" not in str(result)
     assert "question text" not in str(result)
     assert error_of(await call(client, "hub.status", unexpected=True)) == (
@@ -923,25 +926,85 @@ async def test_ask_user_holds_the_question_and_escalates_once(
     assert len(audit_rows(hub_store)) == 2
 
 
-async def test_operator_answer_reports_an_answer_once_one_is_stored(
+OPERATOR_TOKEN = "operator-secret-for-tests"
+OPERATOR = {OPERATOR_HEADER: OPERATOR_TOKEN}
+
+
+async def test_hub_answer_needs_the_operator_and_answers_once(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    await call(client, "ask_user", question="Merge?")
-    # #130 writes the answer; until then a test stands in for it.
-    with database(hub_store.path) as connection:
-        connection.execute(
-            "UPDATE operator_question SET answer = 'yes', answered = '2026-10-06T00:00:00Z',"
-            " answered_by = 'operator' WHERE id = 1"
-        )
+    """#130: only the operator answers, once, and the orchestrator hears of it."""
 
-    assert (await bare_call(app, "hub.operator_answer", question_id=1))["result"] == {
+    cast(RpcDispatcher, app.state.rpc).operator_token = OPERATOR_TOKEN
+    await call(client, "ask_user", question="Merge?")
+
+    # The bearer token every agent holds is not enough, nor are an
+    # orchestrator's caller headers or a wrong operator token.
+    for headers in (None, CALLER_HEADERS, {OPERATOR_HEADER: "wrong"}):
+        body = await bare_call(app, "hub.answer", headers, question_id=1, answer="yes")
+        assert error_of(body)[0] == OPERATOR_REQUIRED
+    assert (await bare_call(app, "hub.operator_answer", question_id=1))["result"][
+        "status"
+    ] == "unanswered"
+
+    answered = await bare_call(app, "hub.answer", OPERATOR, question_id=1, answer="yes")
+    assert answered["result"]["question_id"] == 1
+    read = (await bare_call(app, "hub.operator_answer", question_id=1))["result"]
+    assert read == {
         "question_id": 1,
         "question": "Merge?",
         "status": "answered",
         "answer": "yes",
-        "answered": "2026-10-06T00:00:00Z",
+        "answered": answered["result"]["answered"],
     }
+    with database(hub_store.path) as connection:
+        row = connection.execute(
+            "SELECT answer, answered, answered_by FROM operator_question WHERE id = 1"
+        ).fetchone()
+    assert tuple(row) == ("yes", read["answered"], "operator")
     assert (await bare_call(app, "hub.questions"))["result"] == {"questions": []}
+
+    event = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    assert event["kind"] == EventKind.USER_ANSWERED.value
+    assert event["payload"] == {"question_id": 1, "answer": "yes"}
+
+    again = await bare_call(app, "hub.answer", OPERATOR, question_id=1, answer="no")
+    assert error_of(again) == (CONFLICT, "operator question 1 is already answered")
+    assert (await bare_call(app, "hub.operator_answer", question_id=1))["result"]["answer"] == "yes"
+    assert [row[:3] for row in audit_rows(hub_store)][-5:] == [
+        (None, None, "hub.answer"),
+        ("alice", SESSION, "hub.answer"),
+        (None, None, "hub.answer"),
+        ("operator", None, "hub.answer"),
+        ("operator", None, "hub.answer"),
+    ]
+    assert [row[3] for row in audit_rows(hub_store)][-2:] == ["ok", f"error {CONFLICT}"]
+
+
+async def test_hub_answer_refuses_bad_params_unknown_ids_and_no_operator_token(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    body = await bare_call(app, "hub.answer", OPERATOR, question_id=1, answer="yes")
+    assert error_of(body) == (OPERATOR_REQUIRED, "this hub has no operator credential loaded")
+
+    cast(RpcDispatcher, app.state.rpc).operator_token = OPERATOR_TOKEN
+    await call(client, "ask_user", question="Merge?")
+    unknown = await bare_call(app, "hub.answer", OPERATOR, question_id=9, answer="yes")
+    assert error_of(unknown) == (NOT_FOUND, "unknown operator question: 9")
+    for params in (
+        {},
+        {"question_id": 1},
+        {"question_id": "1", "answer": "yes"},
+        {"question_id": True, "answer": "yes"},
+        {"question_id": 1, "answer": 3},
+        {"question_id": 1, "answer": "yes", "x": 2},
+        {"question_id": 1, "answer": "  "},
+    ):
+        body = await bare_call(app, "hub.answer", OPERATOR, **params)
+        assert error_of(body)[0] == INVALID_PARAMS, params
+    oversized = "x" * (MAX_MESSAGE_PART_BYTES + 1)
+    body = await bare_call(app, "hub.answer", OPERATOR, question_id=1, answer=oversized)
+    assert error_of(body)[0] == PAYLOAD_TOO_LARGE
 
 
 async def test_operator_question_reads_refuse_bad_params_and_unknown_ids(

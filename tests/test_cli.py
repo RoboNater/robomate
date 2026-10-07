@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 import robomate.cli as cli
-from agent_hub.database import initialize_database
+from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile
 from agent_hub_common.discovery import read_hub_json, write_hub_json
@@ -444,6 +444,83 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
         assert "Pending questions: 1" in result.stdout
         assert "secret instructions" not in result.stdout
         assert "secret question" not in result.stdout
+    finally:
+        stop(root, env, process)
+
+
+def test_inbox_answer_and_status_serve_the_operator(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#130: the operator lists open questions, answers them once, and status counts them."""
+
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    database_path = directory / "hub.db"
+    initialize_database(database_path)
+    hub_store = HubStore(database_path)
+    hub_store.initialize_workflow("Build issue #43")
+    hub_store.ask_user("Merge or wait?\x1b[2J", ["merge", "wait"], actor="alice", session=None)
+    hub_store.ask_user("Which follow-up label?", None, actor="alice", session=None)
+
+    def robomate(*args: str, environ: dict[str, str] = env) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [CLI, *args], cwd=root, env=environ, text=True, capture_output=True, timeout=10
+        )
+
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        status = robomate("status")
+        assert status.returncode == 0, status.stderr
+        assert "Operator questions: 2  (see robomate inbox)" in status.stdout
+
+        inbox = robomate("inbox")
+        assert inbox.returncode == 0, inbox.stderr
+        assert re.search(r"\[1\] asked \S+ \(\d+s ago\) by alice\n", inbox.stdout), inbox.stdout
+        assert "    Merge or wait?\\x1b[2J\n" in inbox.stdout
+        assert "\x1b" not in inbox.stdout
+        assert "    --option 2: wait\n" in inbox.stdout
+        assert "[2] asked" in inbox.stdout and "    Which follow-up label?\n" in inbox.stdout
+        listed = json.loads(robomate("inbox", "--json").stdout)
+        assert [q["question_id"] for q in listed] == [1, 2]
+
+        # Without the operator credential the hub is never asked.
+        no_token = {**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(tmp_path / "absent")}
+        refused = robomate("answer", "1", "merge", environ=no_token)
+        assert refused.returncode == 1 and "operator token" in refused.stderr
+
+        for args, message in (
+            (("answer", "1"), "either an answer text or --option N"),
+            (("answer", "1", "merge", "--option", "1"), "either an answer text or --option N"),
+            (("answer", "1", "--option", "3"), "has no option 3; choose 1 to 2"),
+            (("answer", "2", "--option", "1"), "has no option 1; answer with text"),
+            (("answer", "9", "--option", "1"), "question 9 is not open"),
+            (("answer", "9", "yes"), "unknown operator question: 9"),
+        ):
+            result = robomate(*args)
+            assert result.returncode == 1 and message in result.stderr, (args, result.stderr)
+
+        answered = robomate("answer", "1", "--option", "2")
+        assert answered.returncode == 0, answered.stderr
+        assert answered.stdout == "Answered question 1: wait\n"
+        answered = robomate("answer", "2", "needs-triage")
+        assert answered.returncode == 0, answered.stderr
+        again = robomate("answer", "2", "other")
+        assert again.returncode == 1 and "already answered" in again.stderr
+
+        assert robomate("inbox").stdout == "No open questions.\n"
+        assert "Operator questions: 0\n" in robomate("status").stdout
+        assert hub_store.operator_answer(1)["answer"] == "wait"
+        assert hub_store.operator_answer(2)["answer"] == "needs-triage"
+        with database(database_path) as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM event WHERE kind = 'user_answered' ORDER BY id"
+            ).fetchall()
+        assert [json.loads(row[0]) for row in rows] == [
+            {"question_id": 1, "answer": "wait"},
+            {"question_id": 2, "answer": "needs-triage"},
+        ]
     finally:
         stop(root, env, process)
 

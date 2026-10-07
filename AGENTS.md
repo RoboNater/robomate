@@ -29,7 +29,7 @@ move, and their bare numbers are PoC issues.
 
 ```
 packages/common/      agent_hub_common  — config, token, models, clock (shared)
-packages/cli/         robomate          — operator CLI (up/down/status/ls/mcp)
+packages/cli/         robomate          — operator CLI (up/down/status/ls/inbox/answer/mcp)
 packages/hub/         agent_hub         — HTTP A2A and RPC server + SQLite
 packages/worker_mcp/  worker_mcp        — MCP bridge for Alice and workers
 guides/               role guides the hub serves; forge/ holds forge appendices
