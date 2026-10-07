@@ -133,12 +133,15 @@ recent conversation, which may be another agent's.
 A resumed `opencode run` may never exit on its own after the agent's final
 message, even with the workflow `done` and no pending tool call: the process
 idles indefinitely while still holding its MCP bridge, whose heartbeat keeps
-`robomate status` showing a live orchestrator. This matches publicly reported
-upstream `opencode run` lifecycle bugs (the session loop fails to treat the
-final response as terminal), not a hub defect: the workflow state in the
-database is already final. Once `get_state` (or `robomate status --json`)
-shows the workflow `done` and the agent was released, stop the leftover
-`opencode run` with Ctrl-C or a targeted signal and confirm the process exits.
+`robomate status` showing a live orchestrator. The suspected cause is an
+upstream `opencode run` lifecycle bug (the session loop failing to treat the
+final response as terminal, as in publicly reported `opencode run` hangs after
+the last tool call) — that mechanism is unconfirmed. What is established is
+only that the workflow state in the database is already final, so on current
+evidence this is an idle harness process, not a hub defect. Once `get_state`
+(or `robomate status --json`) shows the workflow `done` and the agent was
+released, stop the leftover `opencode run` with Ctrl-C or a targeted signal
+and confirm the process exits.
 If it recurs, record the `opencode --version`, model/provider, and a
 `--print-logs --log-level DEBUG` capture for an upstream report; do not leave
 the idle process running as if the workflow were still active (#94).

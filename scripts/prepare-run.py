@@ -872,11 +872,11 @@ RESUME_PROMPT_SHARED = """\
 Do NOT call `initialize_workflow` and do NOT rerun your start script: the start
 script sends the original kickoff prompt, which would try to initialize a
 second workflow in this state directory. Your hub tools run in a new harness
-process, so first call `check_in` once, then reconcile before any new action:
+process. Reconcile before any new action:
 
-- Read durable state (`get_state` for Alice) and the run manifest
-  (`RUN_DIR/run.json`); verify the hub ID and workflow ID match the operator's
-  before-snapshot below.
+- Read the run manifest (`RUN_DIR/run.json`) and your durable state (Alice:
+  `get_state`; workers: your open task and assignment); verify the hub ID and
+  workflow ID match the operator's before-snapshot below.
 - Reconcile worker tasks, PR heads, and CI checks against the forge. Never
   resubmit a result the durable state already holds, and never infer a merge
   from a harness process exit.
@@ -893,6 +893,9 @@ it exited; the hub and workers kept running. You are resuming the saved
 harness conversation for the existing workflow in RUN_DIR. Resume with
 `resume-alice.sh` (`resume-alice.ps1` on Windows), passing the saved session
 ID; never rerun `start-alice.sh` (`start-alice.ps1` on Windows).
+
+The orchestrator bridge has no `check_in`: make `get_state` your first hub
+call, then reconcile.
 
 """
     + RESUME_PROMPT_SHARED
@@ -920,6 +923,9 @@ it exited; the hub kept running. You are resuming the saved harness
 conversation for your open work in RUN_DIR. Resume with
 `resume-{name}.sh` (`resume-{name}.ps1` on Windows), passing the saved session
 ID; never rerun `start-{name}.sh` (`start-{name}.ps1` on Windows).
+
+Your hub tools run in a new `worker-mcp` process, so first call `check_in`
+once, then reconcile.
 
 """
     + RESUME_PROMPT_SHARED

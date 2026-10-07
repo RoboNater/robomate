@@ -2237,6 +2237,18 @@ def test_worker_resume_uses_git_bash_spellings() -> None:
     assert any("resume-bob.prompt.md" in line for line in lines)
 
 
+def test_resume_prompts_use_role_specific_first_hub_call() -> None:
+    """Alice resumes with get_state; workers check in (r1-1)."""
+    from agent_hub.orchestrator import OPERATIONS
+
+    assert "check_in" not in OPERATIONS
+    assert "check_in" in RUN_COMMON.TOOLS
+    alice = PREPARE_RUN.render_resume_prompt("alice")
+    assert "get_state" in alice and "call `check_in`" not in alice
+    for name in ("bob", "charlie"):
+        assert "call `check_in`" in PREPARE_RUN.render_resume_prompt(name)
+
+
 def test_opencode_run_records_title_and_resume_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
