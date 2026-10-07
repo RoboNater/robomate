@@ -8,6 +8,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -53,14 +54,45 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 
 
 def start(root: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
-    return subprocess.Popen(
-        [CLI, "up", *args],
-        cwd=root,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    """Start `robomate up` with hub output sent to files, not pipes.
+
+    Nothing reads the hub's output while it runs, so pipes both leak handles
+    (#121) and risk blocking the hub once the pipe buffer fills. Files remove
+    both risks; use _hub_stdout/_hub_stderr to read them after exit.
+    """
+    xdg = env.get("XDG_STATE_HOME")
+    parent = Path(xdg).parent if xdg else Path(tempfile.gettempdir())
+    log_dir = Path(tempfile.mkdtemp(prefix="hub-logs-", dir=parent if parent.is_dir() else None))
+    stdout_path = log_dir / "stdout.log"
+    stderr_path = log_dir / "stderr.log"
+    with open(stdout_path, "w") as out, open(stderr_path, "w") as err:
+        process = subprocess.Popen(
+            [CLI, "up", *args],
+            cwd=root,
+            env=env,
+            text=True,
+            stdout=out,
+            stderr=err,
+        )
+    process._stdout_log = stdout_path  # type: ignore[attr-defined]
+    process._stderr_log = stderr_path  # type: ignore[attr-defined]
+    return process
+
+
+def _hub_stdout(process: subprocess.Popen[str]) -> str:
+    path = getattr(process, "_stdout_log", None)
+    if path is not None:
+        return Path(path).read_text(errors="replace")
+    assert process.stdout is not None
+    return process.stdout.read()
+
+
+def _hub_stderr(process: subprocess.Popen[str]) -> str:
+    path = getattr(process, "_stderr_log", None)
+    if path is not None:
+        return Path(path).read_text(errors="replace")
+    assert process.stderr is not None
+    return process.stderr.read()
 
 
 def await_hub(root: Path, process: subprocess.Popen[str]) -> dict[str, object]:
@@ -76,8 +108,7 @@ def await_hub(root: Path, process: subprocess.Popen[str]) -> dict[str, object]:
                 # rather than the launcher PID tracked by Popen.
                 return data
         if process.poll() is not None:
-            assert process.stderr is not None
-            raise AssertionError(f"hub exited early: {process.stderr.read()}")
+            raise AssertionError(f"hub exited early: {_hub_stderr(process)}")
         time.sleep(0.05)
     raise AssertionError("hub did not start")
 
@@ -162,8 +193,8 @@ def test_up_creates_the_operator_token_beside_the_registry(
         for path in root.rglob("*"):
             if path.is_file() and ".git" not in path.parts:
                 assert operator_token not in path.read_text(errors="replace"), path
-        assert process.stdout is not None and process.stderr is not None
-        printed = process.stdout.read() + process.stderr.read()
+        assert process.poll() is not None
+        printed = _hub_stdout(process) + _hub_stderr(process)
         assert operator_token not in printed and str(operator_file) not in printed
         assert "operator-token" not in printed
         # A restart reuses the credential rather than minting a new one.
@@ -280,8 +311,7 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
         else:
             winner_pid = winner_info.get("pid")
             assert isinstance(winner_pid, int) and process_alive(winner_pid)
-        assert loser.stderr is not None
-        assert "already" in loser.stderr.read()
+        assert "already" in _hub_stderr(loser)
         stop(root, env, winner)
     finally:
         for process in processes:
@@ -656,10 +686,14 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
         responses: queue.Queue[dict[str, Any]] = queue.Queue()
 
         def read() -> None:
-            for line in stdout:
-                responses.put(json.loads(line))
+            try:
+                for line in stdout:
+                    responses.put(json.loads(line))
+            except ValueError:
+                pass  # stdout closed during shutdown
 
-        threading.Thread(target=read, daemon=True).start()
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
         for payload in (
             {
                 "jsonrpc": "2.0",
@@ -696,11 +730,18 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
         assert json.loads(result["content"][0]["text"])["status"] == "registered"
         stdin.close()
         worker.wait(timeout=10)
+        stdout.close()
+        reader.join(timeout=10)
         stop(root, env, hub)
     finally:
-        if worker is not None and worker.poll() is None:
-            worker.kill()
-            worker.wait(timeout=10)
+        if worker is not None:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait(timeout=10)
+            if worker.stdin is not None and not worker.stdin.closed:
+                worker.stdin.close()
+            if worker.stdout is not None and not worker.stdout.closed:
+                worker.stdout.close()
         if hub.poll() is None:
             hub.terminate()
             hub.wait(timeout=10)
@@ -731,8 +772,7 @@ def test_up_malformed_origin_warns_and_serves(
         info = await_hub(root, process)
         assert info["forge"] == "unknown"
         stop(root, env, process)
-        assert process.stdout is not None
-        assert "forge is unknown" in process.stdout.read()
+        assert "forge is unknown" in _hub_stdout(process)
     finally:
         if process.poll() is None:
             process.terminate()
