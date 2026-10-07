@@ -365,10 +365,13 @@ link, close-out steps, and every `none` with its reason. `robomate report [run]`
 choose and triaging `followup_label` issues in the forge.
 
 ### 7.4 Asking the operator
-`ask_user(question, options?)` queues a question; `robomate inbox` lists it, `robomate answer` answers it,
-and the orchestrator receives a `user_answered` event. It is for escalations (the PoC rails),
-not routine close-out. An orchestrator in an interactive session may still simply ask in chat;
-the inbox makes a headless orchestrator possible and is the channel a future dashboard uses.
+An escalation is `ask_user(question, options?)`, answered with `robomate answer`. `ask_user`
+queues the question and sets `escalated`; `robomate inbox` lists it; `robomate answer <id>
+<text>` (or `--option N`) answers it once through the operator-only `hub.answer` (#130); and the
+orchestrator receives a `user_answered` event. It is for escalations (the PoC rails), not
+routine close-out. Asking in chat is no longer an escalation path: only an answer given with
+`robomate answer` is an operator decision. The inbox makes a headless orchestrator possible and
+is the channel a future dashboard uses.
 
 ### 7.5 Resume (#18, reduced; #19)
 - **Hub restart:** `robomate up` reuses port and state. Bridges reconnect with backoff under the same
@@ -404,6 +407,8 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 | `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed |
 | `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape |
 | `ask_user(question, options?)` | orchestrator | **new** (#129): holds the question, sets `escalated` with an attributed decision row, returns `question_id`; asking again while escalated adds a question |
+| `robomate inbox [--json]` | operator (CLI, not MCP) | **new** (#130): lists open questions (id, time, asking actor, question, options) from `hub.questions` |
+| `robomate answer <id> <text>` / `--option N` | operator (CLI, not MCP) | **new** (#130): answers one question through `hub.answer` with the operator credential and prints a confirmation; `robomate status` shows the open-question count |
 
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same
@@ -420,7 +425,9 @@ without them; `hub.info`, `hub.status`, and the read-only `hub.questions` (open 
 questions) and `hub.operator_answer(question_id)` (the question, its answer and answer time, or
 `unanswered`; not found is -32001) need only the bearer token (#129). Operator-only methods,
 `hub.shutdown` first, also need `X-Robomate-Operator` with the operator token that `robomate up`
-creates beside the machine registry (#128). Each call other than `get_state`, `wait_for_event`,
+creates beside the machine registry (#128). `hub.answer(question_id, answer)` is one (#130): it
+records the answer, its time and actor `operator`, and queues `user_answered`; an unknown id is
+-32001 and a second answer to a question is -32002. Each call other than `get_state`, `wait_for_event`,
 `hub.info`, `hub.status`, `hub.heartbeat`, `hub.record_calls`, `hub.questions` and
 `hub.operator_answer` leaves an `rpc_audit` row (actor,
 session, method, outcome; never params), as does each orchestrator session takeover.
