@@ -817,7 +817,7 @@ itself.
 
 **Checkout scope (#54)** is delivered in three steps, so that nothing ships which M2 would
 have to undo:
-- **Pre-M2:** ownership, hub names, discovery, per-hub lifecycle, and migration (§4) for
+- **Pre-M2 (#147):** ownership, hub names, discovery, per-hub lifecycle, and migration (§4) for
   state that is still in the checkout.
 - **M2:** the state location and bindings (§4), generated and locked worktrees, branches,
   and cleanup (§6), configuration layers (§4), the token under bindings (§12), and the
