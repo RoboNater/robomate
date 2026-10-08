@@ -309,7 +309,7 @@ def test_bash_wrapper_preserves_arguments_and_stops_on_sync_failure(tmp_path: Pa
         ["bash", str(ROOT / "scripts/prep-standard-run.sh"), "--account", "user with spaces"],
         check=True,
         cwd=tmp_path,
-        env={**env, "WORK_FILE": "work with spaces.md"},
+        env=env,
     )
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert calls[0][:3] == ["sync", "--locked", "--all-packages"]
