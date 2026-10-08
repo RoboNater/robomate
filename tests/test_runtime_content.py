@@ -359,7 +359,7 @@ def test_operator_only_work_never_goes_to_a_worker() -> None:
         section(skill, "## KICKOFF and PLAN", "## Choose the worker pair and IMPLEMENT"),
         (
             "to `ask_user`, never to a worker",
-            "starting or stopping hubs",
+            "starting or stopping the run's hub or any agent",
             "launching agent harnesses",
             "acting or speaking for the operator",
             "accepting work on the operator's behalf",
@@ -377,10 +377,64 @@ def test_operator_only_work_never_goes_to_a_worker() -> None:
             "A task that needs one of them is `blocked`",
             "Call the hub's `/rpc` route.",
             "Read `.robomate/`.",
-            # Unqualified: no exception follows the rule (#132 r1-2).
-            "- Start or stop hubs or agents. - Change workflow status.",
+            # Each pinned up to the next bullet, so no qualifier is appended
+            # unnoticed (#132 r1-2, #145).
+            "- Start or stop agents or the run's hub. - Start or stop",
+            "- Start or stop any other hub, except as the isolated smoke run below."
+            " - Change workflow status.",
             "Post anything that speaks for the operator.",
         ),
+    )
+
+
+def test_worker_smoke_hub_exception_states_every_limit() -> None:
+    """The operator's isolated smoke-hub limits, verbatim and complete (#145)."""
+    worker = read("guides/worker.md")
+    smoke = section(worker, "<!-- Isolated smoke hub", "## References, payloads, and trust")
+    # Each limit runs up to the next bullet (or the section end), so a limit
+    # cannot be loosened by a qualifier appended to it.
+    limits = (
+        "allowed, only under all of these limits: - Only for",
+        "- Only for this repository's own entry points. A worker on a target repository"
+        " never needs to start a hub. - Fully isolated state",
+        "- Fully isolated state, set in your own shell for that command only:"
+        " `HUB_STATE_DIR` is a fresh `mktemp -d` directory, or one under your workspace;"
+        " `ROBOMATE_OPERATOR_TOKEN_FILE` is a file in that directory; and"
+        " `XDG_STATE_HOME` (POSIX) or `LOCALAPPDATA` (Windows) also points into that"
+        " directory. `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` from your MCP environment"
+        " are unset for that command. - `robomate up`",
+        "- `robomate up` and `down` keep their state in the checkout's `.robomate/`"
+        " whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a clone,"
+        " or `git init`) inside that directory, never from your workspace"
+        " (spec §4, Isolated smoke hubs). - Its own port",
+        "- Its own port, never the run hub's. - Stopped",
+        "- Stopped before the task ends, with `robomate down` in the same isolated"
+        " environment, or by stopping the `hub` process you started. - Reported",
+        "- Reported in the task result: the commands, the state directory, the port,"
+        " and the confirmation that it was stopped. The reviewer checks them. - Never",
+    )
+    assert_fragments(smoke, limits)
+    assert normalize(smoke).endswith(
+        # Named, not by file name: run files never carry the credential's
+        # location (#128, tests/test_prepare_run.py).
+        "- Never touched: the run's hub, its `.robomate/`, the machine's `hubs.json`"
+        " and operator credential, and any other agent's process."
+    )
+    assert normalize(smoke).count(" - ") == len(limits)
+    assert_fragments(smoke, ("pytest coverage that starts and stops its own hub",))
+
+    agents = read("AGENTS.md")
+    assert_fragments(
+        section(agents, "## Validation", "## Invariants"),
+        ("primary check (#145)", "only as the isolated smoke run in"),
+    )
+    assert_fragments(
+        section(agents, "## Invariants", "## Changing things"),
+        ("never starts or stops the run's hub or any agent", "isolated smoke run"),
+    )
+    assert_fragments(
+        read("skills/alice-orchestrator/SKILL.md"),
+        ("A worker's isolated smoke hub for this repository's own entry points is not",),
     )
 
 

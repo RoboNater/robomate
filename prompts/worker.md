@@ -104,9 +104,38 @@ needs one of them is `blocked`; name the action as the blocker.
 
 - Call the hub's `/rpc` route.
 - Read `.robomate/`.
-- Start or stop hubs or agents.
+- Start or stop agents or the run's hub.
+- Start or stop any other hub, except as the isolated smoke run below.
 - Change workflow status.
 - Post anything that speaks for the operator.
+
+<!-- Isolated smoke hub: operator decision on #145. -->
+
+A change to a hub or CLI entry point (`robomate up` / `down` / `status` /
+`mcp`, the `hub` entry point) comes with pytest coverage that starts and stops
+its own hub, as `tests/test_main.py` and `tests/test_cli.py` do. Those tests
+are the primary check. A manual smoke run of those entry points is also
+allowed, only under all of these limits:
+
+- Only for this repository's own entry points. A worker on a target repository
+  never needs to start a hub.
+- Fully isolated state, set in your own shell for that command only:
+  `HUB_STATE_DIR` is a fresh `mktemp -d` directory, or one under your
+  workspace; `ROBOMATE_OPERATOR_TOKEN_FILE` is a file in that directory; and
+  `XDG_STATE_HOME` (POSIX) or `LOCALAPPDATA` (Windows) also points into that
+  directory. `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` from your MCP environment
+  are unset for that command.
+- `robomate up` and `down` keep their state in the checkout's `.robomate/`
+  whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a
+  clone, or `git init`) inside that directory, never from your workspace
+  (spec §4, Isolated smoke hubs).
+- Its own port, never the run hub's.
+- Stopped before the task ends, with `robomate down` in the same isolated
+  environment, or by stopping the `hub` process you started.
+- Reported in the task result: the commands, the state directory, the port,
+  and the confirmation that it was stopped. The reviewer checks them.
+- Never touched: the run's hub, its `.robomate/`, the machine's `hubs.json`
+  and operator credential, and any other agent's process.
 
 ## References, payloads, and trust
 
