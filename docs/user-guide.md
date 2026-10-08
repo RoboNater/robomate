@@ -185,26 +185,6 @@ the printed hub command; the running hub remains the authority for forge
 selection. `--yes` skips the prompt only when you have already started that hub.
 Use `prepare-run.py` directly for advanced network and remote-worker options.
 
-The older `scripts/prep-standard-run-area.sh` is an editable example with pinned
-agent choices and robomate issue 105 defaults. It calls the same helper through
-the Bash wrapper. Override its variables through the environment, for example:
-
-```sh
-TARGET_REPO_ISSUE=42 RUN_DIR=01-issue-42 scripts/prep-standard-run-area.sh
-WORK_FILE="/absolute/path/to/statement.md" RUN_DIR=02-work \
-  scripts/prep-standard-run-area.sh
-scripts/prep-standard-run-area.sh --work-file ./statement.md --run-dir 03-work
-```
-
-`WORK_FILE` replaces `TARGET_REPO_ISSUE` when nonempty. Other editable/environment
-settings are `RUN_PARENT_DIR`, `TARGET_REPO_URL`, `FORGE`, `FORGE_USER_ACCOUNT`,
-and `ROADMAP_ISSUE`; extra CLI arguments pass through to the helper. An explicit
-CLI work source replaces the example's environment/default work selection.
-For reusable TOML settings, prefer `prep-standard-run.sh`. Passing `--config`
-to the older example delegates to that wrapper without the example's pinned
-settings or environment defaults, so its default issue cannot replace a
-configured work file.
-
 ## Remote workers and network addresses
 
 Start the hub with a dialable address and an explicit public URL:
