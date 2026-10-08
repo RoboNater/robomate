@@ -135,7 +135,7 @@ allowed, only under all of these limits:
 - Reported in the task result: the commands, the state directory, the port,
   and the confirmation that it was stopped. The reviewer checks them.
 - Never touched: the run's hub, its `.robomate/`, the machine's `hubs.json`
-  and `operator-token`, and any other agent's process.
+  and operator credential, and any other agent's process.
 
 ## References, payloads, and trust
 

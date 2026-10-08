@@ -277,10 +277,14 @@ def test_isolated_smoke_hub_leaves_the_machine_state_untouched(
     process = start(root, env)
     try:
         info = await_hub(root, process)
-        assert registry_path(env).is_relative_to(smoke)
-        assert [entry["hub_id"] for entry in json.loads(registry_path(env).read_text())] == [
-            info["hub_id"]
-        ]
+        registry = registry_path(env)
+        assert registry.is_relative_to(smoke)
+        # hub.json is written just before the registry entry.
+        for _ in range(200):
+            if registry.exists():
+                break
+            time.sleep(0.05)
+        assert [entry["hub_id"] for entry in json.loads(registry.read_text())] == [info["hub_id"]]
         assert (smoke / "operator-token").exists()
         stop(root, env, process)
     finally:

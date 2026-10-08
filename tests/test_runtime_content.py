@@ -415,8 +415,10 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
     )
     assert_fragments(smoke, limits)
     assert normalize(smoke).endswith(
+        # Named, not by file name: run files never carry the credential's
+        # location (#128, tests/test_prepare_run.py).
         "- Never touched: the run's hub, its `.robomate/`, the machine's `hubs.json`"
-        " and `operator-token`, and any other agent's process."
+        " and operator credential, and any other agent's process."
     )
     assert normalize(smoke).count(" - ") == len(limits)
     assert_fragments(smoke, ("pytest coverage that starts and stops its own hub",))
