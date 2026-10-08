@@ -99,7 +99,7 @@ def test_isolated_env_drops_selectors_and_points_state_into_temp(tmp_path: Path)
 
 
 def test_driver_hub_leaves_the_machine_state_untouched(
-    tmp_path: Path, normal: dict[str, str]
+    tmp_path: Path, normal: dict[str, str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     before = snapshot(normal)
     machine = driver.MachineState.capture(normal)
@@ -125,6 +125,10 @@ def test_driver_hub_leaves_the_machine_state_untouched(
             "hubs_listed": 0,
             "driver_hub_listed": False,
         }
+        # The operator sees the result on the terminal, not only in the evidence.
+        assert "Operator `robomate ls`: 0 hubs listed; driver's hub listed: False" in (
+            capsys.readouterr().out
+        )
 
     assert hub.facts.stopped
     assert hub.facts.deregistered

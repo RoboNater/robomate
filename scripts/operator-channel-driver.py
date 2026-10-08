@@ -401,6 +401,10 @@ def operator_ls(environ: Mapping[str, str], hub: HubFacts, cwd: Path) -> dict[st
     listed = any(
         entry.get("url") == hub.url or entry.get("repo_root") == hub.clone for entry in entries
     )
+    print(
+        f"Operator `robomate ls`: {len(entries)} hubs listed; driver's hub listed: {listed}",
+        flush=True,
+    )
     return {"hubs_listed": len(entries), "driver_hub_listed": listed}
 
 
