@@ -75,6 +75,17 @@ and `mypy` cannot see a loop whose body never executes — and **re-read each
 edited function in its final form**, not just the diff hunks. If production
 code had to change to make a new test pass, say why in the PR description.
 
+For a hub or CLI entry point (`robomate up` / `down` / `status` / `mcp`, the
+`hub` entry point), pytest tests that start and stop their own hub are the
+primary check (#145). A worker may also smoke-run this repository's entry
+points by hand, but only as the isolated smoke run in
+[`guides/worker.md`](guides/worker.md): its own state directory, operator
+token file and `XDG_STATE_HOME`/`LOCALAPPDATA`, `ROBOMATE_HUB_URL` and
+`ROBOMATE_TOKEN*` unset, its own port and a temporary checkout, stopped
+before the task ends and reported in the result. It never touches the run's
+hub, its `.robomate/`, the machine's `hubs.json` and `operator-token`, or
+another agent's process.
+
 `uv run robomate up` starts the hub from the target repository (first free port from 8420, reused on restart).
 
 Tests that drive the app use conftest's `hub_store`, not `store`: a second
@@ -97,6 +108,8 @@ wake a waiter on the other.
 - **Stop any hub you start**; leave ones from another checkout alone. Use
   `robomate down` for a hub started by `robomate up`. A `hub` entry point
   process serves HTTP only and must also be stopped when a test starts it.
+  A worker never starts or stops the run's hub or any agent; the only hub it
+  starts by hand is the isolated smoke run under Validation (#145).
 - **Edit a shared issue or PR body (roadmap #2 above all) so that a failure
   writes nothing.** Snapshot the live body first. Build the new one in a
   `mktemp` file: `/tmp` is shared across runs and worker names repeat. Chain

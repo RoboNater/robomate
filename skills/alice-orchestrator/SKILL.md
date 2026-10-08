@@ -67,11 +67,13 @@ durable hub policy govern the workflow.
    the implementer assignment carry the reservation. If uniqueness cannot be
    established, escalate instead of guessing.
 5. Route every step only the operator can do to `ask_user`, never to a worker
-   assignment (#132, from #99). These are: starting or stopping hubs;
-   launching agent harnesses; acting or speaking for the operator; accepting
-   work on the operator's behalf; changing the default branch outside the PR;
-   and changing forge or repository settings. Ask the operator to do the step,
-   and keep it out of every worker's instructions.
+   assignment (#132, from #99). These are: starting or stopping the run's hub
+   or any agent; launching agent harnesses; acting or speaking for the
+   operator; accepting work on the operator's behalf; changing the default
+   branch outside the PR; and changing forge or repository settings. Ask the
+   operator to do the step, and keep it out of every worker's instructions.
+   A worker's isolated smoke hub for this repository's own entry points is not
+   one of these steps: `guides/worker.md` states its limits (#145).
 
 <!-- Reservation decision: spec §5 IMPLEMENT / #40. Relay template baseline: #43. -->
 

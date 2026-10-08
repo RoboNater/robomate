@@ -28,10 +28,8 @@ from robomate.cli import _bind
 CLI = str(Path(sys.executable).with_name("robomate.exe" if sys.platform == "win32" else "robomate"))
 
 
-@pytest.fixture
-def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    root = tmp_path / "repo"
-    root.mkdir()
+def init_checkout(root: Path) -> None:
+    root.mkdir(parents=True)
     subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
@@ -43,6 +41,12 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         cwd=root,
         check=True,
     )
+
+
+@pytest.fixture
+def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    root = tmp_path / "repo"
+    init_checkout(root)
     env = {
         **os.environ,
         "XDG_STATE_HOME": str(tmp_path / "xdg"),
@@ -239,6 +243,55 @@ def test_operator_token_file_override_is_honoured_but_never_in_the_repository(
         assert result.returncode == 1
         assert "must not be inside the repository" in result.stderr
         assert not inside.exists()
+
+
+def test_isolated_smoke_hub_leaves_the_machine_state_untouched(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """A worker's smoke run under the guide's limits writes nothing outside them (#145)."""
+
+    _, machine = repository
+    # The worker's MCP environment names the run's hub.
+    machine = {
+        **machine,
+        "ROBOMATE_HUB_URL": "http://127.0.0.1:9",
+        "ROBOMATE_TOKEN": "run-hub-token",
+        "ROBOMATE_TOKEN_FILE": str(tmp_path / "run-hub-token"),
+    }
+    smoke = tmp_path / "smoke"
+    root = smoke / "repo"
+    init_checkout(root)
+    env = {
+        key: value
+        for key, value in machine.items()
+        if key not in {"ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"}
+    }
+    env.update(
+        {
+            "HUB_STATE_DIR": str(smoke),
+            "ROBOMATE_OPERATOR_TOKEN_FILE": str(smoke / "operator-token"),
+            "XDG_STATE_HOME": str(smoke / "state"),
+            "LOCALAPPDATA": str(smoke / "state"),
+        }
+    )
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        assert registry_path(env).is_relative_to(smoke)
+        assert [entry["hub_id"] for entry in json.loads(registry_path(env).read_text())] == [
+            info["hub_id"]
+        ]
+        assert (smoke / "operator-token").exists()
+        stop(root, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+
+    assert not registry_path(machine).parent.exists()
+    assert not (tmp_path / "run-hub-token").exists()
+    # Only the fixture's unused checkout lies outside the smoke directory.
+    assert {path.name for path in tmp_path.iterdir()} == {"repo", "smoke"}
 
 
 def test_recorded_busy_port_is_refused(repository: tuple[Path, dict[str, str]]) -> None:
