@@ -92,7 +92,8 @@ DISCOVERY_OVERRIDES = ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FIL
 CONFLICT = -32002
 OPERATOR_REQUIRED = -32005
 GATE_ATTEMPTS = 8
-SANDBOX_TESTS = "python -m unittest discover -s tests -v"
+# The sandbox's own test command, run and reported from this one definition.
+SANDBOX_TESTS = ("-m", "unittest", "discover", "-s", "tests", "-v")
 
 
 class DriverError(RuntimeError):
@@ -668,7 +669,7 @@ async def scenario(
             f"Every action in this run was performed by {SCRIPT} (robomate#133).\n",
             encoding="utf-8",
         )
-        run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=workspace)
+        run([sys.executable, *SANDBOX_TESTS], cwd=workspace)
         run(["git", "add", marker], cwd=workspace)
         run(
             [
@@ -716,7 +717,7 @@ async def scenario(
                 pr_url=pr_url,
                 head_sha=head,
                 commits=[head],
-                tests=[TestResult(command=SANDBOX_TESTS, status="passed")],
+                tests=[TestResult(command=" ".join(["python", *SANDBOX_TESTS]), status="passed")],
             ),
         )
         completed = await alice.next_event("task_completed", task_id=task["id"])
