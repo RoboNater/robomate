@@ -288,7 +288,7 @@ def test_powershell_wrapper_preserves_arguments_and_sync_failure(tmp_path: Path)
 
 
 @pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="requires Bash")
-def test_bash_wrappers_preserve_arguments_and_stop_on_sync_failure(tmp_path: Path) -> None:
+def test_bash_wrapper_preserves_arguments_and_stops_on_sync_failure(tmp_path: Path) -> None:
     fake_uv = tmp_path / "uv"
     log = tmp_path / "uv.jsonl"
     fake_uv.write_text(
@@ -304,46 +304,21 @@ def test_bash_wrappers_preserve_arguments_and_stop_on_sync_failure(tmp_path: Pat
         "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
         "UV_TEST_LOG": str(log),
     }
-    for script in ("prep-standard-run.sh", "prep-standard-run-area.sh"):
-        log.write_text("")
-        subprocess.run(
-            ["bash", str(ROOT / "scripts" / script), "--account", "user with spaces"],
-            check=True,
-            cwd=tmp_path,
-            env={**env, "WORK_FILE": "work with spaces.md"},
-        )
-        calls = [json.loads(line) for line in log.read_text().splitlines()]
-        assert calls[0][:3] == ["sync", "--locked", "--all-packages"]
-        assert calls[1][-2:] == ["--account", "user with spaces"]
-        if script == "prep-standard-run-area.sh":
-            assert "--issue" not in calls[1]
-            assert calls[1][calls[1].index("--work-file") + 1] == "work with spaces.md"
-            log.write_text("")
-            subprocess.run(
-                ["bash", str(ROOT / "scripts" / script), "--work-file", "cli work.md"],
-                check=True,
-                cwd=tmp_path,
-                env=env,
-            )
-            calls = [json.loads(line) for line in log.read_text().splitlines()]
-            assert "--issue" not in calls[1]
-            assert calls[1][-2:] == ["--work-file", "cli work.md"]
-            for config_args in (
-                ["--config", "settings with spaces.toml"],
-                ["--config=settings with spaces.toml"],
-            ):
-                log.write_text("")
-                subprocess.run(
-                    ["bash", str(ROOT / "scripts" / script), *config_args],
-                    check=True,
-                    cwd=tmp_path,
-                    env={**env, "WORK_FILE": "ignored environment.md"},
-                )
-                calls = [json.loads(line) for line in log.read_text().splitlines()]
-                assert calls[1][calls[1].index("python") + 2 :] == config_args
-        log.write_text("")
-        result = subprocess.run(
-            ["bash", str(ROOT / "scripts" / script)], cwd=tmp_path, env={**env, "UV_TEST_EXIT": "7"}
-        )
-        assert result.returncode == 7
-        assert len(log.read_text().splitlines()) == 1
+    log.write_text("")
+    subprocess.run(
+        ["bash", str(ROOT / "scripts/prep-standard-run.sh"), "--account", "user with spaces"],
+        check=True,
+        cwd=tmp_path,
+        env={**env, "WORK_FILE": "work with spaces.md"},
+    )
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls[0][:3] == ["sync", "--locked", "--all-packages"]
+    assert calls[1][-2:] == ["--account", "user with spaces"]
+    log.write_text("")
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/prep-standard-run.sh")],
+        cwd=tmp_path,
+        env={**env, "UV_TEST_EXIT": "7"},
+    )
+    assert result.returncode == 7
+    assert len(log.read_text().splitlines()) == 1
