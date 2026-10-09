@@ -656,7 +656,7 @@ def test_status_from_nested_directory_and_worktree(
             [CLI, "status"], cwd=nested, env=env, text=True, capture_output=True, timeout=10
         )
         assert stopped.returncode != 0
-        assert "not running" in stopped.stdout
+        assert f"Hub repo ({root}): not running" in stopped.stdout
         assert str(info["url"]) in stopped.stdout
         assert str(info["port"]) in stopped.stdout
     finally:

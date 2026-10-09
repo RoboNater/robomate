@@ -46,6 +46,7 @@ from agent_hub_common.discovery import (
     write_hub_json,
 )
 from agent_hub_common.registry import (
+    RegistryError,
     hub_entries,
     hub_healthy,
     mark_stopped,
@@ -199,19 +200,16 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         raise RuntimeError(f"hub already running at {old['url']}")
     name = _hub_name(args.name, old.get("name"), repo.root)
     hub_id = str(old.get("hub_id") or uuid.uuid4().hex)
-    entry = {
+    identity = {
         "hub_id": hub_id,
         "name": name,
         "checkout": str(repo.root),
-        # The directory registry readers from before checkout scope know.
+        # The same directory, for readers from before checkout scope (#147),
+        # and for hub.info and hub.status callers such as the #133 driver.
         "repo_root": str(repo.root),
         "git_common_dir": str(repo.git_common_dir),
-        "state_dir": str(directory),
     }
-    # Registering first claims the name among the repository's hubs before
-    # anything starts; an entry for a hub that never starts has no hub.json
-    # and is pruned.
-    register(entry | {"url": old.get("url"), "port": old.get("port"), "pid": None})
+    entry = identity | {"state_dir": str(directory)}
     if is_linked_worktree(repo.root, repo.git_common_dir):
         print(
             f"Warning: this hub's state is in {directory}, inside a linked worktree; "
@@ -234,6 +232,18 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
                 "GitLab preflight refused startup; disable the named unsupported "
                 "settings or correct the origin before running up again"
             )
+    # Record the identity, then claim the name among the repository's hubs
+    # before anything starts. The registry prunes an entry without hub.json,
+    # so the file comes first, and is restored if the name is refused.
+    write_hub_json(repo.root, old | identity)
+    try:
+        register(entry | {"url": old.get("url"), "port": old.get("port"), "pid": None})
+    except RegistryError:
+        if old:
+            write_hub_json(repo.root, old)
+        else:
+            (directory / "hub.json").unlink(missing_ok=True)
+        raise
     requested_port = args.port if args.port is not None else old.get("port")
     taken = frozenset(
         port
@@ -262,7 +272,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         load_or_create_token(settings.token, settings.token_file)
         _provision_operator_token(settings, repo)
         info: dict[str, Any] = {
-            **entry,
+            **identity,
             "origin": repo.origin,
             "forge": repo.forge,
             "default_branch": repo.default_branch,
@@ -272,7 +282,6 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
             "started_at": datetime.now(UTC).isoformat(),
             "robomate_version": VERSION,
         }
-        info.pop("state_dir")
 
         def started() -> None:
             write_hub_json(repo.root, info)
@@ -526,7 +535,9 @@ def _status(as_json: bool, selector: str | None) -> None:
         if as_json:
             print(json.dumps(report))
         else:
-            who = f"{local.label().capitalize()} ({local.checkout})" if local else "Hub"
+            who = "Hub"
+            if local is not None:
+                who = " ".join(filter(None, ("Hub", local.name, f"({local.checkout})")))
             print(f"{who}: {reason or 'not running'} (URL: {url}, port: {port})")
         raise SystemExit(1)
 
