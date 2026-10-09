@@ -1260,6 +1260,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # A plain SIGTERM would skip the finally blocks that stop the hub.
     signal.signal(signal.SIGTERM, _interrupt)
 
+    # On Windows, Git may use bundled MSYS2 OpenSSH which cannot find user keys/hosts
+    # when HOME is overridden. Point GIT_SSH to Windows OpenSSH if not already set.
+    if sys.platform == "win32" and "GIT_SSH" not in os.environ:
+        system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        system_ssh = Path(system_root) / "System32" / "OpenSSH" / "ssh.exe"
+        if system_ssh.exists():
+            os.environ["GIT_SSH"] = str(system_ssh)
+
     run_id = f"{datetime.now(UTC):%Y%m%d%H%M%S}_{uuid.uuid4().hex[:8]}"
     caller_env = dict(os.environ)
     record = Record(
