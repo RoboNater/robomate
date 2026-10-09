@@ -10,6 +10,7 @@ from agent_hub_common import registry
 from agent_hub_common.discovery import write_hub_json
 from agent_hub_common.registry import (
     RegistryError,
+    forget,
     hub_entries,
     live_entries,
     mark_stopped,
@@ -88,6 +89,26 @@ def test_a_name_held_by_a_hub_whose_state_is_gone_is_free(
     (tmp_path / "a" / ".robomate" / "hub.json").unlink()
     register(_entry(tmp_path, "c", "wt-a"), env)
     assert [x["hub_id"] for x in hub_entries(env)] == ["c"]
+
+
+def test_forget_removes_the_entry_and_frees_the_name(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#159: forgetting drops the registry entry only; hub.json stays."""
+
+    monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: False)
+    monkeypatch.setattr("agent_hub_common.registry.hub_healthy", lambda url, hub_id: False)
+    register(_entry(tmp_path, "a", "wt-a"), env)
+    register(_entry(tmp_path, "b", "wt-b"), env)
+    removed = forget("a", env)
+    assert removed is not None and removed["hub_id"] == "a"
+    assert [x["hub_id"] for x in hub_entries(env)] == ["b"]
+    # hub.json (the hub's state) is untouched: only the registry entry goes.
+    assert (tmp_path / "a" / ".robomate" / "hub.json").is_file()
+    # The freed name can be claimed by a sibling hub of the same repository.
+    register(_entry(tmp_path, "c", "wt-a"), env)
+    assert {x["hub_id"] for x in hub_entries(env)} == {"b", "c"}
+    assert forget("missing", env) is None
 
 
 def test_windows_liveness_never_signals_a_process(monkeypatch: pytest.MonkeyPatch) -> None:

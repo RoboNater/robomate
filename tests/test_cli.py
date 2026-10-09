@@ -1335,3 +1335,121 @@ def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=10)
+
+
+def test_forget_releases_name_and_port_and_next_up_takes_first_free(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#159: forget a stopped hub; ls drops it, state stays, next up takes first free."""
+
+    root, env = repository
+    wt_a, wt_b, wt_c = tmp_path / "wt-a", tmp_path / "wt-b", tmp_path / "wt-c"
+    _commit_and_add_worktrees(root, wt_a, wt_b, wt_c)
+    hub_a, hub_b = start(wt_a, env), start(wt_b, env)
+    try:
+        a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
+        assert (a["name"], b["name"]) == ("wt-a", "wt-b")
+        assert a["port"] != b["port"]
+
+        # A live hub is never forgotten.
+        refused = _cli(wt_a, env, "forget", "wt-a")
+        assert refused.returncode == 1 and "stop it with robomate down first" in refused.stderr
+
+        stop(wt_a, env, hub_a)
+        rows = {row["name"]: row for row in json.loads(_cli(root, env, "ls", "--json").stdout)}
+        assert (rows["wt-a"]["live"], rows["wt-b"]["live"]) == (False, True)
+
+        forgotten = _cli(root, env, "forget", "wt-a")
+        assert forgotten.returncode == 0, forgotten.stderr
+        assert "Forgot hub wt-a" in forgotten.stdout and "state kept" in forgotten.stdout
+        # State and run reports are kept; only the registry entry goes.
+        assert (wt_a / ".robomate" / "hub.json").is_file()
+        assert (wt_a / ".robomate" / "hub.db").is_file()
+        rows = {row["name"]: row for row in json.loads(_cli(root, env, "ls", "--json").stdout)}
+        assert "wt-a" not in rows and rows["wt-b"]["live"] is True
+
+        # The freed port goes to the next hub that starts (it is the
+        # smallest free port: the other of 8420/8421 is still held live).
+        hub_c = start(wt_c, env)
+        try:
+            c = await_hub(wt_c, hub_c)
+            assert int(str(c["port"])) == int(str(a["port"]))
+            # The forgotten hub's restart takes the next first-free port and says so.
+            hub_a = start(wt_a, env)
+            again = await_hub(wt_a, hub_a)
+            assert again["hub_id"] == a["hub_id"] and again["name"] == "wt-a"
+            assert int(str(again["port"])) not in (int(str(b["port"])), int(str(c["port"])))
+            for _ in range(200):
+                out = _hub_stdout(hub_a)
+                if "previously used port" in out:
+                    break
+                time.sleep(0.05)
+            assert f"previously used port {a['port']}" in out
+            assert "port was released" in out and str(again["port"]) in out
+        finally:
+            if hub_c.poll() is None:
+                stop(wt_c, env, hub_c)
+            if hub_a.poll() is None:
+                stop(wt_a, env, hub_a)
+    finally:
+        for checkout, process in ((wt_a, hub_a), (wt_b, hub_b)):
+            if process.poll() is None:
+                stop(checkout, env, process)
+
+
+def test_forget_all_only_forgets_stopped_hubs(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#159: forget --all drops every stopped hub and keeps live ones and state."""
+
+    root, env = repository
+    wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
+    _commit_and_add_worktrees(root, wt_a, wt_b)
+    hub_a, hub_b = start(wt_a, env), start(wt_b, env)
+    try:
+        await_hub(wt_a, hub_a)
+        await_hub(wt_b, hub_b)
+        stop(wt_a, env, hub_a)
+        result = _cli(root, env, "forget", "--all")
+        assert result.returncode == 0, result.stderr
+        assert "Forgot hub wt-a" in result.stdout
+        rows = {row["name"]: row for row in json.loads(_cli(root, env, "ls", "--json").stdout)}
+        assert list(rows) == ["wt-b"] and rows["wt-b"]["live"] is True
+        assert (wt_a / ".robomate" / "hub.db").is_file()
+        again = _cli(root, env, "forget", "--all")
+        assert again.returncode == 0 and "No stopped hubs to forget." in again.stdout
+    finally:
+        for checkout, process in ((wt_a, hub_a), (wt_b, hub_b)):
+            if process.poll() is None:
+                stop(checkout, env, process)
+
+
+def test_down_all_stops_every_live_hub(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#159: one command stops all live hubs; ls then shows none live."""
+
+    root, env = repository
+    wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
+    _commit_and_add_worktrees(root, wt_a, wt_b)
+    hub_a, hub_b = start(wt_a, env), start(wt_b, env)
+    try:
+        a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
+        assert hub_a.poll() is None and hub_b.poll() is None
+        result = _cli(root, env, "down", "--all")
+        assert result.returncode == 0, result.stderr
+        assert f"Stopping hub wt-a at {a['url']}" in result.stdout
+        assert f"Stopping hub wt-b at {b['url']}" in result.stdout
+        assert hub_a.wait(timeout=10) == 0
+        assert hub_b.wait(timeout=10) == 0
+        rows = json.loads(_cli(root, env, "ls", "--json").stdout)
+        assert len(rows) == 2 and all(not row["live"] for row in rows)
+        assert (wt_a / ".robomate" / "hub.db").is_file()
+        assert (wt_b / ".robomate" / "hub.db").is_file()
+        idle = _cli(root, env, "down", "--all")
+        assert idle.returncode == 0 and "No live hubs." in idle.stdout
+    finally:
+        for process in (hub_a, hub_b):
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)

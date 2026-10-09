@@ -37,9 +37,12 @@ from agent_hub_common.discovery import (
     find_hub,
     hub_checkout,
     is_linked_worktree,
+    local_hub,
     read_hub_json,
     repository_dir,
+    resolve_checkout,
     resolve_repository,
+    select_hub,
     state_dir,
     token_file,
     validate_hub_name,
@@ -50,10 +53,14 @@ from agent_hub_common.registry import (
     RegistryError,
     hub_entries,
     hub_healthy,
+    live_entries,
     mark_stopped,
     operator_token_path,
     process_alive,
     register,
+)
+from agent_hub_common.registry import (
+    forget as forget_entry,
 )
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
@@ -199,8 +206,32 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         and hub_healthy(str(old.get("url") or ""), str(old.get("hub_id") or ""))
     ):
         raise RuntimeError(f"hub already running at {old['url']}")
-    name = _hub_name(args.name, old.get("name"), repo.root)
     hub_id = str(old.get("hub_id") or uuid.uuid4().hex)
+    # A hub forgotten with `robomate forget` (#159) carries an explicit
+    # `released_port` marker in hub.json: its port counts as released, so the
+    # next up takes the first free port instead of reusing a saved one, and
+    # says so once the new port is known. Registry absence alone means
+    # nothing: a hub.json written without registering (or a lost registry)
+    # keeps its saved port pinned, as before.
+    released_port: int | None = None
+    if old.get("hub_id") == hub_id and old.get("released_port") is not None:
+        try:
+            released_port = int(old["released_port"])
+        except (TypeError, ValueError):
+            released_port = None
+    recorded = old.get("name")
+    if recorded and args.name is not None and args.name != recorded:
+        if released_port is None:
+            raise RuntimeError(
+                f"this hub is named {recorded!r}; a hub's name is fixed once recorded, "
+                "because agent worktrees and branches carry it"
+            )
+        # A forgotten hub released its registry name: an explicit --name may
+        # rename it at its next up, since the old name may since have been
+        # taken by a sibling hub.
+        name = validate_hub_name(args.name)
+    else:
+        name = _hub_name(args.name, old.get("name"), repo.root)
     identity = {
         "hub_id": hub_id,
         "name": name,
@@ -236,16 +267,32 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     # Record the identity, then claim the name among the repository's hubs
     # before anything starts. The registry prunes an entry without hub.json,
     # so the file comes first, and is restored if the name is refused.
+    # `released_port` was read above from the forget marker in hub.json: while
+    # it is set the startup entry claims no port, so the released port is
+    # reusable by a sibling hub at once.
     write_hub_json(repo.root, old | identity)
     try:
-        register(entry | {"url": old.get("url"), "port": old.get("port"), "pid": None})
+        register(
+            entry
+            | (
+                {"url": None, "port": None, "pid": None}
+                if released_port is not None and args.port is None
+                else {"url": old.get("url"), "port": old.get("port"), "pid": None}
+            )
+        )
     except RegistryError:
         if old:
             write_hub_json(repo.root, old)
         else:
             (directory / "hub.json").unlink(missing_ok=True)
         raise
-    requested_port = args.port if args.port is not None else old.get("port")
+    if args.port is not None:
+        requested_port = args.port
+        released_port = None
+    elif released_port is not None:
+        requested_port = None
+    else:
+        requested_port = old.get("port")
     taken = frozenset(
         port
         for item in hub_entries()
@@ -288,6 +335,19 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
             write_hub_json(repo.root, info)
             register(entry | {"url": settings.public_url, "port": port, "pid": os.getpid()})
             print(f"Hub {name} running at {settings.public_url}", flush=True)
+            if released_port is not None and released_port != port:
+                print(
+                    f"Hub {name} previously used port {released_port}; its port was "
+                    f"released, so it now runs at port {port}. Remote agents "
+                    "configured with the old port need the new one.",
+                    flush=True,
+                )
+            elif released_port is not None:
+                print(
+                    f"Hub {name} port {port} was released; it was still the first "
+                    "free port, so the hub reuses it.",
+                    flush=True,
+                )
             print(f"Hub checkout: {repo.root}", flush=True)
             print(f"Hub state: {directory}", flush=True)
             print(f"ROBOMATE_HUB_URL={settings.public_url}", flush=True)
@@ -368,6 +428,137 @@ def _down(selector: str | None) -> None:
     if not result.get("stopping"):
         raise RuntimeError("hub did not acknowledge shutdown")
     print(f"Stopping {label} at {endpoint.url}")
+
+
+def _down_all(as_json: bool) -> None:
+    """Stop every live hub in the machine registry (operator-only, #159).
+
+    Uses the operator credential, as `robomate down` does. Reports what was
+    stopped and what failed; hub state and run reports are kept.
+    """
+
+    entries = live_entries()
+    if not entries:
+        if as_json:
+            print(json.dumps([]))
+        else:
+            print("No live hubs.")
+        return
+    operator_token = read_token_file(operator_token_path(), "operator token")
+    outcomes: list[dict[str, Any]] = []
+    for entry in entries:
+        name = entry.get("name") or "(unnamed)"
+        url = str(entry.get("url") or "")
+        hub_id = str(entry.get("hub_id") or "")
+        checkout = hub_checkout(entry)
+        try:
+            if checkout is None:
+                raise RuntimeError("registry entry names no checkout")
+            token = token_file(checkout).read_text(encoding="utf-8").strip()
+            result = _rpc(url, token, "hub.shutdown", operator_token=operator_token)
+            if not result.get("stopping"):
+                raise RuntimeError("hub did not acknowledge shutdown")
+            outcomes.append({"hub_id": hub_id, "name": name, "url": url, "stopped": True})
+            if not as_json:
+                print(f"Stopping hub {name} at {url}")
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError, RuntimeError) as exc:
+            outcomes.append(
+                {"hub_id": hub_id, "name": name, "url": url, "stopped": False, "error": str(exc)}
+            )
+            if not as_json:
+                print(f"Failed to stop hub {name} at {url}: {exc}")
+    if as_json:
+        print(json.dumps(outcomes))
+    elif outcomes and all(item["stopped"] for item in outcomes):
+        print(f"Stopped {len(outcomes)} hub(s).")
+    if any(not item["stopped"] for item in outcomes):
+        failed = sum(1 for item in outcomes if not item["stopped"])
+        raise RuntimeError(f"failed to stop {failed} of {len(outcomes)} hub(s)")
+
+
+def _forget(selectors: list[str], forget_all: bool, as_json: bool) -> None:
+    """Forget stopped hubs: drop their registry entries, freeing name and port (#159).
+
+    Hub state, including run reports, is kept: only the machine registry
+    entry goes. A forgotten hub's next `up` takes the first free port and
+    says so. Live hubs are never forgotten; stop them first.
+    """
+
+    if forget_all and selectors:
+        raise ValueError("give either hub names or --all, not both")
+    if not forget_all and not selectors:
+        checkout, _ = resolve_checkout(Path.cwd())
+        hub = local_hub(checkout)
+        if hub is None:
+            raise DiscoveryError(f"no hub is recorded for checkout {checkout}")
+        selectors = [hub.hub_id]
+    entries = {str(item.get("hub_id")): item for item in hub_entries()}
+    targets: list[dict[str, Any]] = []
+    if forget_all:
+        targets = [item for item in entries.values() if not item["live"]]
+        if not targets:
+            if as_json:
+                print(json.dumps([]))
+            else:
+                print("No stopped hubs to forget.")
+            return
+    else:
+        for selector in selectors:
+            hub = select_hub(selector)
+            entry = entries.get(hub.hub_id)
+            if entry is None:
+                raise DiscoveryError(
+                    f"--hub {selector}: hub {hub.hub_id} is not registered; it is already forgotten"
+                )
+            if entry["live"]:
+                raise RuntimeError(
+                    f"hub {entry.get('name')} is live at {entry.get('url')}; "
+                    "stop it with robomate down first"
+                )
+            targets.append(entry)
+    outcomes: list[dict[str, Any]] = []
+    for entry in targets:
+        hub_id = str(entry.get("hub_id"))
+        name = entry.get("name") or "(unnamed)"
+        entry_checkout = hub_checkout(entry)
+        removed = forget_entry(hub_id)
+        if removed is None:
+            outcomes.append({"hub_id": hub_id, "name": name, "forgotten": False})
+            if not as_json:
+                print(f"Hub {name} is already forgotten.")
+            continue
+        port = removed.get("port") or _entry_port(removed)
+        state = str(
+            removed.get("state_dir") or (state_dir(entry_checkout) if entry_checkout else "?")
+        )
+        # Release the saved port: record it as released so the next up takes
+        # the first free port and says so. The last URL and port stay in
+        # hub.json so `status` still reports the stopped hub; only pid and
+        # started_at are cleared. Anything else — hub_id, name, checkout,
+        # origin — stays, as does hub.db.
+        if entry_checkout is not None:
+            current = read_hub_json(entry_checkout)
+            if current is not None and current.get("hub_id") == hub_id:
+                current["pid"] = None
+                current["started_at"] = None
+                try:
+                    current["released_port"] = int(port) if port is not None else None
+                except (TypeError, ValueError):
+                    current["released_port"] = None
+                if current.get("released_port") is None:
+                    current.pop("released_port", None)
+                write_hub_json(entry_checkout, current)
+        outcomes.append(
+            {"hub_id": hub_id, "name": name, "forgotten": True, "port": port, "state_dir": state}
+        )
+        if not as_json:
+            print(
+                f"Forgot hub {name} (hub_id {hub_id}): released its name"
+                + (f" and port {port}" if port else "")
+                + f"; state kept at {state}"
+            )
+    if as_json:
+        print(json.dumps(outcomes))
 
 
 def _age(elapsed: timedelta) -> str:
@@ -787,6 +978,12 @@ def main() -> None:
     up.add_argument("--port", type=int)
     up.add_argument("--no-call-accounting", action="store_true")
     down = commands.add_parser("down", help="stop this checkout's hub, or the one --hub names")
+    down.add_argument(
+        "--all",
+        action="store_true",
+        help="stop every live hub in the machine registry",
+    )
+    down.add_argument("--json", action="store_true", help="with --all: report as JSON")
     status = commands.add_parser("status", help="show this checkout's hub, or the one --hub names")
     status.add_argument("--json", action="store_true")
     status.add_argument(
@@ -813,6 +1010,22 @@ def main() -> None:
         )
     listing = commands.add_parser("ls", help="list the hubs on this machine")
     listing.add_argument("--json", action="store_true")
+    forget = commands.add_parser(
+        "forget",
+        help="forget stopped hubs: release their names and ports, keeping their state",
+    )
+    forget.add_argument(
+        "hubs",
+        nargs="*",
+        metavar="HUB",
+        help="hub name, hub_id or checkout path; without --all, defaults to this checkout's hub",
+    )
+    forget.add_argument(
+        "--all",
+        action="store_true",
+        help="forget every stopped hub in the machine registry",
+    )
+    forget.add_argument("--json", action="store_true")
     mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
     mcp.add_argument("--role", choices=("orchestrator", "worker"), required=True)
     mcp.add_argument("--name")
@@ -822,7 +1035,12 @@ def main() -> None:
         if args.command == "up":
             asyncio.run(_up(args))
         elif args.command == "down":
-            _down(args.hub)
+            if args.all:
+                if args.hub:
+                    raise ValueError("give either --hub or --all, not both")
+                _down_all(args.json)
+            else:
+                _down(args.hub)
         elif args.command == "status":
             if args.stopped_at is not None and not args.snapshot:
                 raise ValueError("--stopped-at goes with --snapshot")
@@ -836,6 +1054,8 @@ def main() -> None:
             _answer(args.question_id, args.text, args.option, args.hub)
         elif args.command == "ls":
             _ls(args.json)
+        elif args.command == "forget":
+            _forget(args.hubs, args.all, args.json)
         else:
             logging.basicConfig(level=logging.INFO, stream=sys.stderr)
             with reserve_stdout() as protocol_stdout:

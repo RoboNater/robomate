@@ -293,6 +293,29 @@ uv run --project /absolute/path/to/robomate robomate down
 
 Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository and state directory. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
+A stopped hub keeps its registry entry, so its name stays taken and its port stays
+reserved for its next `up`. When you no longer need a stopped hub in the list, release
+its name and port with (these are operator-only; agents never call them):
+
+```sh
+uv run --project /absolute/path/to/robomate robomate forget <name | hub_id | checkout path>
+uv run --project /absolute/path/to/robomate robomate forget --all   # every stopped hub
+```
+
+Forgetting keeps the hub's state and run reports; only the registry entry goes, so the
+hub leaves `robomate ls` and its name and port become reusable. A live hub is never
+forgotten: stop it first. The forgotten hub's next `up` takes the first free port from
+8420 and says that its port was released and names the new one, since remote agents
+configured with the old port need the new one. To stop every running hub at once:
+
+```sh
+uv run --project /absolute/path/to/robomate robomate down --all
+```
+
+This stops each live hub with the operator credential and reports what it stopped;
+state and reports are kept. Removing hub state stays a separate, explicit operator
+action.
+
 On Linux or macOS, `ss -ltnp 'sport = :8420'` shows the listener for the default port. On Windows, `Get-NetTCPConnection -LocalPort 8420` shows its owning PID. Compare it with the PID in the hub checkout's `.robomate/hub.json` before stopping a process manually. A merged PR closes its issue when its body contains `Closes owner/repo#N`.
 
 Keep the run's `hub-target/.robomate/` for its report, including after shutdown.
