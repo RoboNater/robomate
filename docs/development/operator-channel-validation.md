@@ -65,7 +65,8 @@ It needs `gh` signed in with write access to the sandbox, and writes
 `docs/evidence/operator-channel-scripted-<run-id>.md`. Each run seeds its own
 issue and branch, so a rerun on a fresh clone repeats the same steps. It exits
 0 only when all ten steps pass, its hub has stopped, and the machine state is
-unchanged.
+unchanged. Validated on Linux (WSL, #133 and #147) and on native Windows (#160,
+evidence in [`docs/evidence/operator-channel-scripted-20261009185320_8e45b75c.md`](../evidence/operator-channel-scripted-20261009185320_8e45b75c.md)).
 
 The driver's hub is an [isolated smoke hub](../../guides/worker.md) (#145):
 
