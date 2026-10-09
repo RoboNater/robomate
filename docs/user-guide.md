@@ -247,7 +247,7 @@ CODEX_HOME=/absolute/path/to/my-run/configs/codex codex exec -C . \
 
 The manual route uses [`prompts/alice.md`](../prompts/alice.md) for Alice and [`prompts/worker.md`](../prompts/worker.md) for each worker. Install the [`alice-orchestrator`](../skills/alice-orchestrator/SKILL.md) skill in Alice's runtime and the [`worker`](../skills/worker/SKILL.md) skill in a Claude worker's runtime. The generated run directory does these steps for you and keeps every config outside the clones.
 
-The bridge finds its hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, or else the hub of the checkout it starts in. It never attaches to another hub, even the only one on the machine: anywhere else it returns the list of live hubs as a tool error. The generated configs set the explicit values.
+The bridge finds its hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, or else the hub of the checkout it starts in, once that hub's `/healthz` reports the hub ID recorded for it. It never attaches to another hub, even the only one on the machine: anywhere else it returns the list of live hubs as a tool error. The generated configs set the explicit values.
 
 ## Answering escalations
 
