@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2260,16 +2260,41 @@ class HubStore:
 
     # -- activity and stalls (#144) -------------------------------------------
 
+    def _is_current_instance(self, name: str, instance: str) -> bool:
+        """Whether `instance` is the durable, live instance for `name` right now.
+
+        Checked before every tracker change, so a replayed check-in or a held
+        stream from a superseded instance cannot replace the current one's
+        record (#144).
+        """
+
+        with database(self.path) as connection:
+            row = connection.execute(
+                "SELECT worker_instance_id, status FROM agent WHERE name = ?", (name,)
+            ).fetchone()
+        return (
+            row is not None
+            and bool(instance)
+            and row["worker_instance_id"] == instance
+            and row["status"] != AgentStatus.LOST.value
+        )
+
     def note_worker_call(self, name: str, instance: str, kind: str) -> None:
         """A substantive call by the worker instance that is current for `name`."""
 
-        self.activity.worker_call(name, instance, kind, self._now())
+        if self._is_current_instance(name, instance):
+            self.activity.worker_call(name, instance, kind, self._now())
 
     def worker_hold(
         self, name: str, instance: str, kind: str, timeout_s: float
     ) -> AbstractContextManager[None]:
-        """Exempt a worker from the silence check while one of its calls is held."""
+        """Exempt a worker from the silence check while one of its calls is held.
 
+        A hold from an instance that is no longer current records nothing.
+        """
+
+        if not self._is_current_instance(name, instance):
+            return nullcontext()
         return self.activity.worker_hold(name, instance, kind, timeout_s, self._now)
 
     def note_orchestrator_session(self, actor: str, session: str) -> None:
@@ -2316,12 +2341,27 @@ class HubStore:
             "SELECT id, status, policy_json FROM workflow ORDER BY created LIMIT 1"
         ).fetchone()
         if row is None:
+            # Workers may check in before Alice initializes the workflow; they
+            # are listed, never assessed.
             return {
                 "workflow_id": None,
                 "workflow_status": None,
                 "stall_after_min": None,
                 "orchestrator": None,
-                "agents": {},
+                "agents": {
+                    r["name"]: {
+                        "stalled": False,
+                        "reasons": [],
+                        "suppressed": "no_workflow",
+                        "instance": r["worker_instance_id"] or None,
+                        "heartbeat_age_s": _age_seconds(r["last_heartbeat"], now),
+                        "task_id": None,
+                        "progress_age_s": None,
+                    }
+                    for r in connection.execute(
+                        "SELECT name, worker_instance_id, last_heartbeat FROM agent ORDER BY name"
+                    )
+                },
             }
         status = WorkflowStatus(row["status"])
         threshold_min = self._stall_after_min(_json_object(row["policy_json"]) or {})

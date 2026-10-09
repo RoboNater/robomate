@@ -70,6 +70,10 @@ DEFAULT_RESUME_DELAY_S = 5.0
 DEFAULT_READ_RETRIES = 5
 DEFAULT_READ_RETRY_DELAY_S = 2.0
 HUB_TIMEOUT_S = 10.0
+# How long, after the harness exits, its remaining output may take to arrive.
+RELAY_GRACE_S = 0.5
+# How long a terminated harness child has to exit before it is killed.
+CHILD_KILL_AFTER_S = 10.0
 
 EXIT_DONE = 0
 EXIT_RESUMES_SPENT = 1
@@ -300,6 +304,9 @@ class Launcher:
         that one process (#144's stall check, #146's exit check) and no other.
         """
 
+        if self.interrupted:
+            raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
+
         self.child = subprocess.Popen(
             launch.argv,
             stdin=subprocess.PIPE if launch.stdin is not None else None,
@@ -310,6 +317,9 @@ class Launcher:
             errors="replace",
             bufsize=1,
         )
+        if self.interrupted:
+            # A signal that landed just before this launch.
+            self.stop_child(wait=True)
         self.log(action, resumes=resumes, pid=self.child.pid)
         say(
             f"{action} ({self.harness}) pid {self.child.pid},"
@@ -319,8 +329,22 @@ class Launcher:
             threading.Thread(
                 target=_feed, args=(self.child.stdin, launch.stdin), daemon=True
             ).start()
-        assert self.child.stdout is not None
-        for line in self.child.stdout:
+        # The output is relayed on its own thread and the child's exit is
+        # awaited here, so a descendant that inherited the pipe (a bridge, a
+        # shell) cannot hold recovery up after the harness itself exits.
+        relay = threading.Thread(target=self.relay, args=(self.child.stdout,), daemon=True)
+        relay.start()
+        code = self.child.wait()
+        relay.join(RELAY_GRACE_S)
+        self.child = None
+        return code
+
+    def relay(self, stream: TextIO | None) -> None:
+        """Copy the harness's output through, noting its conversation ID once."""
+
+        if stream is None:
+            return
+        for line in stream:
             sys.stdout.write(line)
             sys.stdout.flush()
             if self.conversation is None:
@@ -329,24 +353,80 @@ class Launcher:
                     self.conversation = found
                     self.log("conversation")
                     say(f"conversation {found}")
-        code = self.child.wait()
-        self.child = None
-        return code
 
-    def stop_child(self) -> None:
+    def stop_child(self, *, wait: bool) -> None:
+        """Terminate this launcher's own harness child, killing it after 10 s.
+
+        From a signal handler `wait` is False: the main thread may be inside
+        that child's `wait()` already, which a second `wait()` would deadlock;
+        it returns once the child exits, and a timer kills a child that
+        ignores the terminate.
+        """
+
         child = self.child
         if child is None or child.poll() is not None:
             return
         child.terminate()
+        if not wait:
+            timer = threading.Timer(CHILD_KILL_AFTER_S, _kill_if_running, args=(child,))
+            timer.daemon = True
+            timer.start()
+            return
         try:
-            child.wait(timeout=10)
+            child.wait(timeout=CHILD_KILL_AFTER_S)
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait()
 
     def interrupt(self, *_: object) -> None:
+        """SIGTERM: stop the child and launch nothing more."""
+
         self.interrupted = True
-        self.stop_child()
+        self.stop_child(wait=False)
+
+    def resumable(self, exit_code: int, resumes: int) -> str:
+        """Read the pinned hub and return "done" or "resume"; stop for anything else."""
+
+        workflow = self.read_hub()
+        if workflow is None:
+            raise Stop(
+                EXIT_CANNOT_RESUME,
+                "no_workflow",
+                f"the harness exited (code {exit_code}) before initializing the workflow. "
+                "Not replaying the kickoff prompt. Inspect the harness output, then rerun "
+                "start-alice if nothing was done, or resume by hand.",
+            )
+        status = workflow["status"]
+        if status == "done":
+            self.log("stop", reason="done", workflow_status=status, resumes=resumes)
+            say(f"workflow done after {resumes} automatic resume(s)")
+            return "done"
+        if self.conversation is None:
+            raise Stop(
+                EXIT_CANNOT_RESUME,
+                "no_conversation",
+                f"the harness exited (code {exit_code}) without printing its conversation "
+                "ID, so there is nothing exact to resume. Find it in the harness's session "
+                "list and resume by hand with resume-alice.",
+            )
+        if status == "paused":
+            raise Stop(
+                EXIT_PAUSED,
+                "paused",
+                f"the workflow is paused; not restarting Alice while it is. Resume by hand "
+                f"with resume-alice {self.conversation} when the operator is ready.",
+            )
+        if resumes >= self.args.max_resumes:
+            raise Stop(
+                EXIT_RESUMES_SPENT,
+                "resumes_spent",
+                f"the harness exited (code {exit_code}) with the workflow {status} and the "
+                f"{self.args.max_resumes} automatic resume(s) are spent. Take a "
+                "before-snapshot with `robomate status --snapshot` in the target "
+                f"repository, then resume by hand with resume-alice {self.conversation} "
+                "(docs/development/agent-recovery.md).",
+            )
+        return "resume"
 
     def run(self) -> int:
         manual = self.args.resume_session is not None
@@ -385,53 +465,26 @@ class Launcher:
             self.log("exit", resumes=resumes, exit_code=exit_code)
             if self.interrupted:
                 raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
-            workflow = self.read_hub()
-            status = None if workflow is None else workflow["status"]
-            if workflow is None:
-                raise Stop(
-                    EXIT_CANNOT_RESUME,
-                    "no_workflow",
-                    f"the harness exited (code {exit_code}) before initializing the workflow. "
-                    "Not replaying the kickoff prompt. Inspect the harness output, then rerun "
-                    "start-alice if nothing was done, or resume by hand.",
-                )
-            if status == "done":
-                self.log("stop", reason="done", workflow_status=status, resumes=resumes)
-                say(f"workflow done after {resumes} automatic resume(s)")
+            if self.resumable(exit_code, resumes) == "done":
                 return EXIT_DONE
-            if self.conversation is None:
-                raise Stop(
-                    EXIT_CANNOT_RESUME,
-                    "no_conversation",
-                    f"the harness exited (code {exit_code}) without printing its conversation "
-                    "ID, so there is nothing exact to resume. Find it in the harness's session "
-                    "list and resume by hand with resume-alice.",
-                )
-            if status == "paused":
-                raise Stop(
-                    EXIT_PAUSED,
-                    "paused",
-                    f"the workflow is paused; not restarting Alice while it is. Resume by hand "
-                    f"with resume-alice {self.conversation} when the operator is ready.",
-                )
-            if resumes >= self.args.max_resumes:
-                raise Stop(
-                    EXIT_RESUMES_SPENT,
-                    "resumes_spent",
-                    f"the harness exited (code {exit_code}) with the workflow {status} and the "
-                    f"{self.args.max_resumes} automatic resume(s) are spent. Take a "
-                    "before-snapshot with `robomate status --snapshot` in the target "
-                    f"repository, then resume by hand with resume-alice {self.conversation} "
-                    "(docs/development/agent-recovery.md).",
-                )
             resumes += 1
             say(
-                f"harness exited (code {exit_code}) with the workflow {status}; resuming "
-                f"({resumes}/{self.args.max_resumes}) in {self.args.resume_delay_s:g} s"
+                f"harness exited (code {exit_code}); resuming"
+                f" ({resumes}/{self.args.max_resumes}) in {self.args.resume_delay_s:g} s"
             )
             self.sleep(self.args.resume_delay_s)
+            # The workflow may have been paused or finished during the delay,
+            # or the hub replaced: decide again just before launching.
+            if self.resumable(exit_code, resumes - 1) == "done":
+                return EXIT_DONE
+            assert self.conversation is not None
             launch = resume_launch(self.harness, self.base, self.conversation, CONTINUE_PROMPT)
             action = "resume"
+
+
+def _kill_if_running(child: subprocess.Popen[str]) -> None:
+    if child.poll() is None:
+        child.kill()
 
 
 def _feed(stream: TextIO | None, text: str) -> None:
@@ -490,7 +543,8 @@ def main(argv: list[str] | None = None, reader: HubReader | None = None) -> int:
     try:
         return launcher.run()
     except KeyboardInterrupt:
-        launcher.interrupt()
+        launcher.interrupted = True
+        launcher.stop_child(wait=True)
         return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
     except Stop as stop:
         return _stopped(launcher, stop)

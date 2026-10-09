@@ -23,9 +23,10 @@ What counts:
 
 Nothing here is persisted. A restarted hub starts every silence clock at its
 own start and knows no holds until the agents call again, so it never reports
-a hold it did not see; a stall is therefore reported at the earliest one
-threshold after a restart. Stall episodes, which the operator report reads,
-are durable in `stall_episode`.
+a hold it did not see, and reports silence or event backlog at the earliest one
+threshold after a restart. Task progress comes from durable messages, so a
+task already stale before the restart is reported at once. Stall episodes,
+which the operator report reads, are durable in `stall_episode`.
 """
 
 from __future__ import annotations

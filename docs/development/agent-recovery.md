@@ -157,9 +157,11 @@ check, and resuming it restarts every clock.
 The threshold relates to the other limits like this: `HUB_LOST_AFTER_S` (180 s)
 catches a bridge that stopped; `stall_after_min` catches a live bridge whose
 harness stopped working; `max_task_lease_min` (120 minutes) caps one task
-however busy its worker is. Activity is held in memory: a restarted hub knows
-no holds and measures silence from its own start, so it reports a stall no
-sooner than one threshold after a restart, and an episode that still holds
+however busy its worker is. Calls and holds are held in memory: a restarted
+hub knows no holds and measures silence and event backlog from its own start,
+so it reports `no_hub_call` or `event_backlog` no sooner than one threshold
+after a restart. Task progress is durable (the task's messages), so a task
+already stale reports `no_task_progress` at once; an episode that still holds
 continues without a second event.
 
 For a stalled agent, read its harness's own log before acting. **OpenCode on a

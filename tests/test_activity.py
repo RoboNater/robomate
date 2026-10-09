@@ -8,10 +8,12 @@ import httpx
 import pytest
 from agent_hub.activity import EVENT_BACKLOG, NO_HUB_CALL, NO_TASK_PROGRESS, ActivityTracker
 from agent_hub.database import database, initialize_database
+from agent_hub.protocol import A2AProtocol
 from agent_hub.store import HubStore
 from agent_hub_common import (
     AgentStatus,
     EventKind,
+    HubSettings,
     MetaKeys,
     TaskState,
     WorkflowStatus,
@@ -557,3 +559,59 @@ async def test_status_json_carries_the_assessment_additively(
     assert status["orchestrator_activity"]["stalled"] is False
     assert status["workflow"]["id"] == hub_store.get_state()["workflow"]["id"]
     assert hub_store.get_task(bob["current_task"]).state is TaskState.SUBMITTED  # type: ignore[union-attr]
+
+
+# -- review r1 -------------------------------------------------------------------------
+
+
+async def test_a_replayed_check_in_of_a_superseded_instance_keeps_the_current_hold(
+    tmp_path: Path, clock: FakeClock, settings: HubSettings
+) -> None:
+    """r1-1: the cached replay names the old instance; it must not touch the new one."""
+
+    store = make_store(tmp_path / "hub.db", clock)
+    protocol = A2AProtocol(store, settings)
+
+    def ready(instance: str, operation: str) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            MetaKeys.AGENT: "bob",
+            MetaKeys.SCHEMA_VERSION: 1,
+            MetaKeys.OPERATION_ID: operation,
+            MetaKeys.WORKER_INSTANCE_ID: instance,
+        }
+        return rpc("message/send", message("READY", metadata=metadata))
+
+    old = ready("old", "old-op")
+    assert (await protocol.dispatch(old)).status_code == 200
+    clock.advance(minutes=4)
+    store.sweep(lost_after_s=180)
+    assert (await protocol.dispatch(ready("new", "new-op"))).status_code == 200
+    with store.worker_hold("bob", "new", "await_assignment", 100):
+        clock.advance(seconds=30)
+        assert (await protocol.dispatch(old)).status_code == 200  # the cached replay
+        assert store.agent_by_name("bob").worker_instance_id == "new"  # type: ignore[union-attr]
+        state = assessed(store, "bob")
+        assert state["holding"] == "await_assignment" and state["last_call"] == "await_assignment"
+        # A held stream from the old instance records nothing either.
+        with store.worker_hold("bob", "old", "await_assignment", 100):
+            assert assessed(store, "bob")["holding"] == "await_assignment"
+        store.note_worker_call("bob", "old", "progress")
+    record = store.activity.worker("bob", "new")
+    assert record is not None and record.last_call_kind == "await_assignment"
+
+
+def test_status_lists_workers_that_checked_in_before_the_workflow(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    """r1-2: no workflow yet means no assessment, not a broken status read."""
+
+    initialize_database(tmp_path / "hub.db")
+    store = HubStore(tmp_path / "hub.db", clock=clock)
+    store.check_in("bob")
+    clock.advance(hours=1)
+    status = store.status_summary()
+    assert status["workflow"] is None and status["orchestrator_activity"] is None
+    (bob,) = status["agents"]
+    assert bob["name"] == "bob" and bob["stalled"] is False
+    assert bob["activity"]["suppressed"] == "no_workflow"
+    assert store.sweep_stalls() == [] and store.stall_episodes() == []

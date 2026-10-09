@@ -2409,9 +2409,10 @@ def test_start_and_resume_alice_scripts_run_the_launcher_to_done(
         "FAKE_ARGV_LOG": str(base / "argv.jsonl"),
         "FAKE_ID_LINE": FAKE_ID_LINES[harness],
     }
-    # start-alice reads: before launching, after each of two exits; then
-    # resume-alice reads before its launch and after it.
-    with stub_hub("active", "active", "done", "escalated", "done") as url:
+    # start-alice reads before launching, after its first exit and again
+    # after the resume delay, then after its second exit; resume-alice reads
+    # before its launch and after it.
+    with stub_hub("active", "active", "active", "done", "escalated", "done") as url:
         run_dir, manifest = prepare(
             base,
             monkeypatch,

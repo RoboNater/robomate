@@ -167,7 +167,11 @@ def test_each_harness_resumes_its_own_conversation_until_done(
     run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, harness: str
 ) -> None:
     use_harness(harness, monkeypatch)
-    reader = ScriptedReader(wf("active"), wf("active"), wf("escalated"), wf("done"))
+    # Reads: before the first launch, then after each exit and again after
+    # each resume delay.
+    reader = ScriptedReader(
+        wf("active"), wf("active"), wf("active"), wf("escalated"), wf("escalated"), wf("done")
+    )
 
     assert LAUNCHER.main(start_args(run_dir, fake, harness), reader) == 0
 
@@ -321,7 +325,7 @@ def test_a_manual_resume_uses_the_operator_prompt_once_then_the_continuation(
     run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, harness: str
 ) -> None:
     use_harness(harness, monkeypatch)
-    reader = ScriptedReader(wf("paused"), wf("active"), wf("done"))
+    reader = ScriptedReader(wf("paused"), wf("active"), wf("active"), wf("done"))
     extra = ["--resume-session", "conv-given", "--resume-prompt"]
     code = LAUNCHER.main(
         args(run_dir, fake, harness, *extra, str(run_dir / "resume-alice.prompt.md")), reader
@@ -485,3 +489,76 @@ def test_hub_reads_are_bearer_only_and_never_open_a_session(run_dir: Path) -> No
         headers = {key.lower(): value for key, value in call["headers"].items()}
         assert headers["authorization"] == "Bearer secret-token-value"
         assert not any(key.startswith("x-robomate") for key in headers)
+
+
+# -- review r1 -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("after_delay", "code", "reason"),
+    [
+        (wf("paused"), LAUNCHER.EXIT_PAUSED, "paused"),
+        (wf("done"), LAUNCHER.EXIT_DONE, "done"),
+        (wf("active", hub="hub-2"), LAUNCHER.EXIT_HUB_UNREADABLE, "hub_unreadable"),
+    ],
+    ids=["paused", "done", "other hub"],
+)
+def test_the_hub_is_read_again_after_the_delay_before_any_resume(
+    run_dir: Path, fake: Path, after_delay: Any, code: int, reason: str
+) -> None:
+    """r1-3: a pause (or done, or another hub) during the delay prevents the launch."""
+
+    reader = ScriptedReader(wf("active"), wf("active"), after_delay)
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(start_args(run_dir, fake, "claude-code", "--read-retries", "1")),
+        reader,
+    )
+    delays: list[float] = []
+    launcher.sleep = delays.append
+    try:
+        result = launcher.run()
+    except LAUNCHER.Stop as stop:
+        result = stop.code
+        assert stop.reason == reason
+    assert result == code
+    assert delays == [0.0]
+    assert len(launches(run_dir)) == 1
+
+
+DESCENDANT_HARNESS = """\
+import json, os, subprocess, sys
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": sys.argv[1:], "stdin": None, "env": {}}) + "\\n")
+# A descendant inherits stdout and outlives the harness, as a bridge or a
+# shell can; the harness itself exits at once.
+hold = "import time; time.sleep(float(%r))" % os.environ["HOLD_S"]
+subprocess.Popen([sys.executable, "-c", hold])
+print("harness exiting now", flush=True)
+"""
+
+
+def test_a_descendant_holding_the_pipe_does_not_delay_recovery(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-4: the child's exit is awaited directly, not through output EOF."""
+
+    script = run_dir / "descendant harness.py"
+    script.write_text(DESCENDANT_HARNESS, encoding="utf-8")
+    monkeypatch.setenv("FAKE_LOG", str(run_dir / "launches.jsonl"))
+    monkeypatch.setenv("HOLD_S", "15")
+    reader = ScriptedReader(wf("active"), wf("done"))
+    started = time.monotonic()
+    assert LAUNCHER.main(start_args(run_dir, script, "claude-code"), reader) == 0
+    elapsed = time.monotonic() - started
+    assert elapsed < LAUNCHER.RELAY_GRACE_S + 5, f"waited {elapsed:.1f}s for the descendant"
+    assert len(launches(run_dir)) == 1
+
+
+def test_a_conversation_id_printed_just_before_exit_is_still_captured(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_harness("opencode", monkeypatch)
+    reader = ScriptedReader(wf("active"), wf("active"), wf("active"), wf("done"))
+    assert LAUNCHER.main(start_args(run_dir, fake, "opencode"), reader) == 0
+    runs = launches(run_dir)
+    assert len(runs) == 2 and IDS["opencode"] in runs[1]["argv"]
