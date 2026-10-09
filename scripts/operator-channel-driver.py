@@ -34,6 +34,7 @@ import argparse
 import asyncio
 import json
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -240,7 +241,10 @@ class IsolatedHub:
 
     def start(self, timeout_s: float = 60) -> HubEndpoint:
         # Files, not pipes: nothing reads the hub's output while it runs.
-        with open(self.stdout_log, "w") as out, open(self.stderr_log, "w") as err:
+        with (
+            open(self.stdout_log, "w", encoding="utf-8") as out,
+            open(self.stderr_log, "w", encoding="utf-8") as err,
+        ):
             self.process = subprocess.Popen(
                 [str(self.robomate), "up", "--port", str(self.facts.port)],
                 cwd=self.clone,
@@ -254,11 +258,12 @@ class IsolatedHub:
         printed: dict[str, str] = {}
         while "ROBOMATE_TOKEN_FILE" not in printed:
             if self.process.poll() is not None:
-                raise DriverError(f"hub exited early: {self.stderr_log.read_text().strip()}")
+                err = self.stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+                raise DriverError(f"hub exited early: {err}")
             if time.monotonic() > deadline:
                 raise DriverError("hub did not start")
             time.sleep(0.1)
-            for line in self.stdout_log.read_text().splitlines():
+            for line in self.stdout_log.read_text(encoding="utf-8", errors="replace").splitlines():
                 key, sep, value = line.partition("=")
                 if sep and key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN_FILE"):
                     printed[key] = value.strip()
@@ -308,6 +313,8 @@ class IsolatedHub:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
 
@@ -398,6 +405,8 @@ def operator_ls(environ: Mapping[str, str], hub: HubFacts, cwd: Path) -> dict[st
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
     if listing.returncode != 0:
@@ -497,6 +506,8 @@ def run(args: Sequence[str], cwd: Path | None = None, input_text: str | None = N
         stdin=None if input_text is not None else subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if completed.returncode != 0:
@@ -539,6 +550,7 @@ class Record:
     repository: str
     started: str
     robomate_commit: str
+    platform: str = field(default_factory=platform.platform)
     hub: HubFacts | None = None
     machine_before: MachineState | None = None
     machine_after: MachineState | None = None
@@ -919,6 +931,7 @@ async def scenario(
         for _ in range(GATE_ATTEMPTS):
             gate = await alice.call("check_merge_gate", pr_url=pr_url, expected_head_sha=head)
             if gate["ci"] in ("pending", "no_checks") or gate["mergeable"] == "unknown":
+                await asyncio.sleep(2)
                 continue
             break
         if not (
@@ -1085,6 +1098,7 @@ def render_evidence(record: Record) -> str:
         f"- Sandbox: `{record.repository}`",
         f"- Started: {record.started}",
         f"- robomate commit: `{record.robomate_commit}`",
+        f"- Platform: `{record.platform}`",
         f"- Actor names the script used: orchestrator `{ORCHESTRATOR}`, implementer "
         f"`{IMPLEMENTER}`, reviewer `{REVIEWER}`; the hub records the operator channel as "
         "`operator`, and here the script used it too",
@@ -1209,6 +1223,12 @@ def render_evidence(record: Record) -> str:
 def _remove_tree(path: Path) -> None:
     def make_writable(function: Any, target: str, _exc: object) -> None:
         os.chmod(target, stat.S_IWRITE)
+        for _ in range(5):
+            try:
+                function(target)
+                return
+            except PermissionError:
+                time.sleep(0.1)
         function(target)
 
     shutil.rmtree(path, onexc=make_writable)
@@ -1247,6 +1267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         repository=args.repository,
         started=datetime.now(UTC).isoformat(timespec="seconds"),
         robomate_commit=robomate_commit(),
+        platform=platform.platform(),
     )
     record.machine_before = MachineState.capture(caller_env)
     temp = Path(tempfile.mkdtemp(prefix="robomate-opchan-")).resolve()

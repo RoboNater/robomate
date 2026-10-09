@@ -262,5 +262,6 @@ def test_evidence_credits_the_script_in_its_first_line_and_every_row(tmp_path: P
     for row in data:
         cells = [cell.strip() for cell in row.strip("|").split("|")]
         assert any(cell.startswith("script") for cell in cells), row
+    assert f"- Platform: `{record.platform}`" in text
     assert "--operator-ls" in text
     assert "Result: **FAILED**" in text  # the hub never started, so it never stopped
