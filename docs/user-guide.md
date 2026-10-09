@@ -302,11 +302,16 @@ uv run --project /absolute/path/to/robomate robomate forget <name | hub_id | che
 uv run --project /absolute/path/to/robomate robomate forget --all   # every stopped hub
 ```
 
-Forgetting keeps the hub's state and run reports; only the registry entry goes, so the
-hub leaves `robomate ls` and its name and port become reusable. A live hub is never
-forgotten: stop it first. The forgotten hub's next `up` takes the first free port from
-8420 and says that its port was released and names the new one, since remote agents
-configured with the old port need the new one. To stop every running hub at once:
+Forgetting deletes nothing: the hub's database and run reports are kept; hub.json keeps
+its identity and last address, records the released port, and clears its pid. Only the
+registry entry goes, so the hub leaves `robomate ls` and its name and port become
+reusable. A live hub is never forgotten: stop it first. The forgotten hub's next `up`
+takes the first free port from 8420 and says that its port was released and names the
+new one, since remote agents configured with the old port need the new one. If another
+hub has taken the freed name since, that `up` is refused; rename with
+`robomate up --name <new>`. A rename starts a new worktree/branch namespace: agent
+worktrees and `robomate/<old>/…` branches made under the old name keep it. To stop
+every running hub at once:
 
 ```sh
 uv run --project /absolute/path/to/robomate robomate down --all

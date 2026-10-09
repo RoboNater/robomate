@@ -1418,6 +1418,36 @@ def test_forget_all_only_forgets_stopped_hubs(
         assert (wt_a / ".robomate" / "hub.db").is_file()
         again = _cli(root, env, "forget", "--all")
         assert again.returncode == 0 and "No stopped hubs to forget." in again.stdout
+        # r1-5: the released port is still the first free one, so the restart
+        # reuses it and says so; the marker is then cleared, so the next
+        # restart is silent.
+        stopped_info = read_hub_json(wt_a)
+        assert stopped_info is not None
+        assert stopped_info.get("released_port") == stopped_info.get("port")
+        restarted = start(wt_a, env)
+        try:
+            back = await_hub(wt_a, restarted)
+            assert back["port"] == stopped_info["port"]
+            for _ in range(200):
+                out = _hub_stdout(restarted)
+                if "first free port" in out:
+                    break
+                time.sleep(0.05)
+            assert "was released; it was still the first free port" in out
+            cleared = read_hub_json(wt_a)
+            assert cleared is not None and cleared.get("released_port") is None
+        finally:
+            stop(wt_a, env, restarted)
+        second = start(wt_a, env)
+        try:
+            assert (await_hub(wt_a, second))["port"] == stopped_info["port"]
+            stop(wt_a, env, second)
+            out = _hub_stdout(second)
+            assert "previously used port" not in out and "was released" not in out
+        finally:
+            if second.poll() is None:
+                second.terminate()
+                second.wait(timeout=10)
     finally:
         for checkout, process in ((wt_a, hub_a), (wt_b, hub_b)):
             if process.poll() is None:
@@ -1453,3 +1483,108 @@ def test_down_all_stops_every_live_hub(
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)
+
+
+def test_forgotten_hub_can_be_renamed_and_pinned(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#159 r1-3/r1-4: a stolen name forces rename; --port pins without a message."""
+
+    root, env = repository
+    wt_a, wt_c = tmp_path / "wt-a", tmp_path / "wt-c"
+    _commit_and_add_worktrees(root, wt_a, wt_c)
+    hub_a = start(wt_a, env)
+    hub_c: subprocess.Popen[str] | None = None
+    try:
+        a = await_hub(wt_a, hub_a)
+        stop(wt_a, env, hub_a)
+        assert _cli(root, env, "forget", "wt-a").returncode == 0
+        # A sibling takes the freed name.
+        hub_c = start(wt_c, env, "--name", "wt-a")
+        assert await_hub(wt_c, hub_c)["name"] == "wt-a"
+        # A plain up is refused naming the holder; an explicit --name renames.
+        refused = _cli(wt_a, env, "up")
+        assert refused.returncode == 1 and "'wt-a' is taken" in refused.stderr
+        hub_a = start(wt_a, env, "--name", "wt-a2")
+        renamed = await_hub(wt_a, hub_a)
+        assert renamed["name"] == "wt-a2"
+        for _ in range(200):
+            out = _hub_stdout(hub_a)
+            if "previously used port" in out:
+                break
+            time.sleep(0.05)
+        assert f"previously used port {a['port']}" in out
+        stop(wt_a, env, hub_a)
+        # An explicit --port pins instead of taking first-free, with no message.
+        with socket.socket() as free:
+            free.bind(("127.0.0.1", 0))
+            pinned = free.getsockname()[1]
+        hub_a = start(wt_a, env, "--port", str(pinned))
+        assert await_hub(wt_a, hub_a)["port"] == pinned
+        stop(wt_a, env, hub_a)
+        out = _hub_stdout(hub_a)
+        assert "previously used port" not in out and "was released" not in out
+        cleared = read_hub_json(wt_a)
+        assert cleared is not None and cleared.get("released_port") is None
+    finally:
+        for checkout, process in ((wt_a, hub_a), (wt_c, hub_c)):
+            if process is not None and process.poll() is None:
+                stop(checkout, env, process)
+
+
+def test_down_all_partial_failure_stops_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#159 r1-2: one malformed shutdown response is reported, not fatal to the loop."""
+
+    operator_file = tmp_path / "operator-token"
+    operator_file.write_text("operator-token")
+    operator_file.chmod(0o600)
+    monkeypatch.setattr(cli, "operator_token_path", lambda: operator_file)
+    checkouts = []
+    for name in ("one", "two"):
+        checkout = tmp_path / name
+        (checkout / ".robomate").mkdir(parents=True)
+        (checkout / ".robomate" / "token").write_text("bearer-token")
+        checkouts.append(checkout)
+    entries = [
+        {
+            "hub_id": f"id-{name}",
+            "name": name,
+            "checkout": str(checkout),
+            "url": f"http://127.0.0.1:{port}",
+        }
+        for name, checkout, port in zip(("one", "two"), checkouts, (8400, 8401), strict=True)
+    ]
+    monkeypatch.setattr(cli, "live_entries", lambda: entries)
+    calls: list[str] = []
+
+    def fake_rpc(
+        url: str,
+        token: str,
+        method: str,
+        *,
+        operator_token: str | None = None,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        calls.append(url)
+        assert method == "hub.shutdown"
+        assert operator_token == "operator-token" and token == "bearer-token"
+        if url.endswith(":8400"):
+            raise ValueError("invalid JSON in response")
+        return {"stopping": True}
+
+    monkeypatch.setattr(cli, "_rpc", fake_rpc)
+    with pytest.raises(RuntimeError, match="failed to stop 1 of 2"):
+        cli._down_all(False)
+    assert calls == [entry["url"] for entry in entries]
+    out = capsys.readouterr().out
+    assert "Failed to stop hub one" in out and "Stopping hub two" in out
+
+
+def test_down_json_requires_all(repository: tuple[Path, dict[str, str]]) -> None:
+    """#159 r1-7: down --json without --all is refused instead of ignored."""
+
+    root, env = repository
+    result = _cli(root, env, "down", "--json")
+    assert result.returncode == 1 and "--json goes with --all" in result.stderr

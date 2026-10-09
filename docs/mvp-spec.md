@@ -265,9 +265,14 @@ repository, URL, live or stopped, agents joined, and phase. The operator credent
 `operator-token` (mode 0600), lives in the same directory and never in a repository or a
 hub's state (#128). A stopped hub keeps its entry, and so its name and port, until the
 operator releases them with `robomate forget` (#159): forgetting removes the registry
-entry, freeing the name and the saved port for reuse, and keeps hub state and run reports
-untouched. `robomate forget --all` forgets every stopped hub; a live hub is never
-forgotten (stop it first). Removing hub state stays a separate, explicit operator action.
+entry, freeing the name and the saved port for reuse, and deletes nothing. hub.db and
+run reports are kept; hub.json keeps its identity and last address, records the
+released port, and clears pid/started_at. `robomate forget --all` forgets every stopped
+hub; a live hub is never forgotten (stop it first). If a sibling hub has since taken the
+freed name, the forgotten hub's next `up` is refused naming the holder; an explicit
+`robomate up --name <new>` renames it for that start. A rename starts a new
+worktree/branch namespace: agent worktrees and `robomate/<old>/…` branches made under
+the old name keep it. Removing hub state stays a separate, explicit operator action.
 
 **Port** — per hub: the first free port from 8420 upward on the hub's first `up`, saved in
 `hub.json` and reused on restart so remote agents keep working; `--port` pins it. A pinned
