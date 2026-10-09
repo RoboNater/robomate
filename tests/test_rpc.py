@@ -102,6 +102,8 @@ async def test_hub_status_is_compact_and_reports_open_work(
     assert {
         key: result[key] for key in ("repo_root", "origin", "forge", "url", "default_branch")
     } == dispatcher.hub_info
+    # A hub.json from before checkout scope (#147): its checkout is repo_root.
+    assert (result["checkout"], result["name"], result["git_common_dir"]) == ("/repo", None, None)
     assert result["workflow"]["status"] == "active"
     assert result["orchestrator"]["name"] == "alice"
     assert result["orchestrator"]["session"] == SESSION

@@ -1,0 +1,106 @@
+**Scripted run: every action below was performed by `scripts/operator-channel-driver.py`, not by agents and not by the operator.** It played the orchestrator, both workers and the operator through the hub's real interfaces.
+
+# Operator-channel validation, scripted run `20261009122525_e3b5eda2`
+
+- Result: **PASSED**
+- Issue: robomate#133; step list: [operator-channel-validation.md](../development/operator-channel-validation.md)
+- Sandbox: `RoboNater/robo-agents-sandbox`
+- Started: 2026-10-09T12:25:25+00:00
+- robomate commit: `35ce7d21a14171d55d07d86c14af1a61a3675206`
+- Actor names the script used: orchestrator `script-alice`, implementer `script-bob`, reviewer `script-charlie`; the hub records the operator channel as `operator`, and here the script used it too
+
+## Steps
+
+| # | Step | Performed by | Action | Hub facts | Forge facts | Result |
+|---|---|---|---|---|---|---|
+| 1 | Start a hub on a fresh clone of the sandbox repository | script, as operator | `gh repo clone` into a new temporary directory; `robomate up --port 33261` | hub `6db0eafdd8764c07ab05569f66b8b38a` at http://127.0.0.1:33261; registered only in the throwaway registry: True | clone of `RoboNater/robo-agents-sandbox` at `d1953e8265819f3a3b90cc991e8eb3591b7bd85e` | pass |
+| 2 | Start a workflow on a seeded sandbox issue | script, as orchestrator `script-alice` and workers | `gh issue create`; `initialize_workflow`; `script-bob` and `script-charlie` check in | workflow `547d1b44e8224d35a4f30ae5df86d544` active; agent_checked_in events [1, 2] | issue https://github.com/RoboNater/robo-agents-sandbox/issues/32 | pass |
+| 3 | Assign an implementer task. The PR is opened | script, as orchestrator and implementer `script-bob` | `assign_task`; `await_assignment`, `get_role_guide` (5277 bytes), push, `gh pr create`, `submit_result` | task `11750056fd744daa86c8eb5b017b894b` completed; task_completed event 3 | https://github.com/RoboNater/robo-agents-sandbox/pull/33 at head `e4c38566b2adf34138b277c0d7b12b944de5a923` | pass |
+| 4 | The orchestrator calls ask_user and holds on wait_for_event | script, as orchestrator `script-alice` | `ask_user` with two options; `wait_for_event(timeout_s=100)` left holding | question 1; workflow escalated; `robomate inbox` lists [1] | — | pass |
+| 5 | While escalated, set_workflow_status(active), assign_task and check_merge_gate are refused | script, as orchestrator `script-alice` | the three calls, made while the hold is pending | `set_workflow_status` -32002: workflow is escalated with open operator questions 1; wait for their user_answered events before changing its status; `assign_task` -32002: assign_task is refused while the workflow is escalated: operator questions 1 are open; `check_merge_gate` -32002: check_merge_gate is refused while the workflow is escalated: operator questions 1 are open | — | pass |
+| 6 | A worker-side hub.answer with only the bearer token is refused | script, as worker `script-bob` | `hub.answer` on `/rpc` over the worker's client, without the operator credential | refused -32005: X-Robomate-Operator with the operator token is required; question 1 still unanswered | — | pass |
+| 7 | The operator answers with robomate answer | script, as operator | `robomate answer 1 --option 1` with the run's temporary operator token | Answered question 1: Approve: review and merge | — | pass |
+| 8 | The orchestrator receives user_answered and resumes; the reviewer confirms the decision with get_operator_answer and approves | script, as orchestrator `script-alice` and reviewer `script-charlie` | the held `wait_for_event` returns; `log_decision`; `set_workflow_status(active)`; `assign_task`; `get_role_guide` (7283 bytes); `get_operator_answer`; `gh pr comment`; `submit_result` approved | user_answered event 4 for question 1; decision 2; review task `bca23ea49f5a4062913021fcad0b121d` completed (event 5) | review comment https://github.com/RoboNater/robo-agents-sandbox/pull/33#issuecomment-6080839248 at `e4c38566b2adf34138b277c0d7b12b944de5a923` | pass |
+| 9 | The gate passes at the approved head; the PR merges bound to it | script, as orchestrator `script-alice` | `check_merge_gate`; `gh pr merge --squash --match-head-commit e4c38566b2adf34138b277c0d7b12b944de5a923`; `set_workflow_status(done)`; `release_agent` for both workers | gate: head_matches True, ci pass (test=pass), mergeable clean, base_behind_main False | merged 2026-10-09T12:25:57Z as `ed0e0df43a5d0b13c7f3cb737af0acbe145edd5f`, head `e4c38566b2adf34138b277c0d7b12b944de5a923`; issue #32 CLOSED | pass |
+| 10 | Check the rpc_audit and decision rows: every change names its actor | script, as operator | read the hub database read-only | 16 rpc_audit rows, 5 decision rows, 1 operator_question rows; every accepted call and every decision names its actor (tables below) | — | pass |
+
+## Isolated hub
+
+| Fact | Value | Recorded by |
+|---|---|---|
+| Temporary directory | /home/alfred/lw/w535-robomate/w535r-run-log/lhi05-issue-147/tmp/bob/robomate-opchan-vluikp22 | script |
+| Clone | /home/alfred/lw/w535-robomate/w535r-run-log/lhi05-issue-147/tmp/bob/robomate-opchan-vluikp22/robo-agents-sandbox | script |
+| Hub state directory | /home/alfred/lw/w535-robomate/w535r-run-log/lhi05-issue-147/tmp/bob/robomate-opchan-vluikp22/robo-agents-sandbox/.robomate | script |
+| Port | 33261 | script |
+| URL | http://127.0.0.1:33261 | script |
+| hub_id | 6db0eafdd8764c07ab05569f66b8b38a | script |
+| pid | 895439 | script |
+| Registry (throwaway) | /home/alfred/lw/w535-robomate/w535r-run-log/lhi05-issue-147/tmp/bob/robomate-opchan-vluikp22/state/robomate/hubs.json | script |
+| Registered in the throwaway registry | True | script |
+| Registry records it stopped | True | script |
+| Stopped | True | script |
+| Stop | `robomate down` exited 0: Stopping hub at http://127.0.0.1:33261; hub process exited with code 0; http://127.0.0.1:33261/healthz no longer answers | script |
+
+## Machine state
+
+Compared by `os.stat` only; neither file is opened.
+
+| File | Before | After | Unchanged | Recorded by |
+|---|---|---|---|---|
+| hubs.json `/home/alfred/.local/state/robomate/hubs.json` | size 413, mtime_ns 1791546661401555860 | size 413, mtime_ns 1791546661401555860 | True | script |
+| operator-token `/home/alfred/.local/state/robomate/operator-token` | size 44, mtime_ns 1791321420422913758 | size 44, mtime_ns 1791321420422913758 | True | script |
+
+`robomate ls` in the operator's normal environment was not run (`--operator-ls` not given): it contacts every hub in the machine registry, so it is left to the operator's own rerun.
+
+## rpc_audit
+
+| id | ts | actor | session | method | outcome | Performed by |
+|---|---|---|---|---|---|---|
+| 1 | 2026-10-09T12:25:28.089Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | initialize_workflow | ok | script |
+| 2 | 2026-10-09T12:25:28.328Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | assign_task | ok | script |
+| 3 | 2026-10-09T12:25:35.351Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | ask_user | ok | script |
+| 4 | 2026-10-09T12:25:38.291Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | set_workflow_status | error -32002 | script |
+| 5 | 2026-10-09T12:25:38.313Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | assign_task | error -32002 | script |
+| 6 | 2026-10-09T12:25:38.379Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | check_merge_gate | error -32002 | script |
+| 7 | 2026-10-09T12:25:38.441Z | — | — | hub.answer | error -32005 | script |
+| 8 | 2026-10-09T12:25:40.050Z | operator | — | hub.answer | ok | script |
+| 9 | 2026-10-09T12:25:40.291Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | log_decision | ok | script |
+| 10 | 2026-10-09T12:25:40.320Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | set_workflow_status | ok | script |
+| 11 | 2026-10-09T12:25:40.396Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | assign_task | ok | script |
+| 12 | 2026-10-09T12:25:57.032Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | check_merge_gate | ok | script |
+| 13 | 2026-10-09T12:25:59.289Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | log_decision | ok | script |
+| 14 | 2026-10-09T12:25:59.379Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | set_workflow_status | ok | script |
+| 15 | 2026-10-09T12:25:59.450Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | release_agent | ok | script |
+| 16 | 2026-10-09T12:25:59.546Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | release_agent | ok | script |
+
+A refused call made without the orchestrator headers, such as the worker's `hub.answer`, has no actor: the hub records only what the caller declared.
+
+## decision
+
+| id | ts | actor | session | summary | rationale | Performed by |
+|---|---|---|---|---|---|---|
+| 1 | 2026-10-09T12:25:35.339Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | Asked the operator question 1 | Workflow status set to escalated | script |
+| 2 | 2026-10-09T12:25:40.278Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | Operator approved https://github.com/RoboNater/robo-agents-sandbox/pull/33 (question 1) | user_answered event 4: Approve: review and merge | script |
+| 3 | 2026-10-09T12:25:40.308Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | Resumed after the operator answered question 1 | Workflow status set to active; operator answered questions 1 | script |
+| 4 | 2026-10-09T12:25:59.276Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | Merged https://github.com/RoboNater/robo-agents-sandbox/pull/33 at e4c38566b2adf34138b277c0d7b12b944de5a923 | Gate passed; squash merge commit ed0e0df43a5d0b13c7f3cb737af0acbe145edd5f | script |
+| 5 | 2026-10-09T12:25:59.367Z | script-alice | 55f34697-81d1-43c9-bf86-450197f3abe6 | Merged https://github.com/RoboNater/robo-agents-sandbox/pull/33 | Workflow status set to done | script |
+
+## operator_question
+
+| id | asked | actor | answered | answered_by | resumed_by | Performed by |
+|---|---|---|---|---|---|---|
+| 1 | 2026-10-09T12:25:35.339Z | script-alice | 2026-10-09T12:25:40.031Z | operator | 3 | script |
+
+## Forge facts
+
+| Fact | Value | Recorded by |
+|---|---|---|
+| base_sha | d1953e8265819f3a3b90cc991e8eb3591b7bd85e | script |
+| branch | operator-channel/20261009122525_e3b5eda2 | script |
+| head_sha | e4c38566b2adf34138b277c0d7b12b944de5a923 | script |
+| issue_state | CLOSED | script |
+| issue_url | https://github.com/RoboNater/robo-agents-sandbox/issues/32 | script |
+| merge_sha | ed0e0df43a5d0b13c7f3cb737af0acbe145edd5f | script |
+| merged_at | 2026-10-09T12:25:57Z | script |
+| pr_url | https://github.com/RoboNater/robo-agents-sandbox/pull/33 | script |
+| review_url | https://github.com/RoboNater/robo-agents-sandbox/pull/33#issuecomment-6080839248 | script |
