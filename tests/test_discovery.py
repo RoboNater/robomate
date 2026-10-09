@@ -207,8 +207,12 @@ def test_hub_selector_by_name_hub_id_or_checkout(repository: Path, tmp_path: Pat
     assert discover(repository, env) == HubEndpoint("http://repo:8420", "repo-token")
     with pytest.raises(DiscoveryError, match="no registered hub has that name"):
         find_hub(repository, env, selector="missing")
+    plain = tmp_path / "plain"
+    plain.mkdir()
     with pytest.raises(DiscoveryError, match="not inside a git repository"):
-        find_hub(repository, env, selector=str(tmp_path / "xdg"))
+        find_hub(repository, env, selector=str(plain))
+    with pytest.raises(DiscoveryError, match="no such checkout directory"):
+        find_hub(repository, env, selector=str(tmp_path / "missing"))
     no_hub = tmp_path / "no-hub"
     no_hub.mkdir()
     git(no_hub, "init")

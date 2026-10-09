@@ -311,9 +311,11 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         while True:
             info = read_hub_json(repo)
             # On Windows robomate.exe is a launcher running the hub as its
-            # child, so hub.json records another pid; the fresh repo has no
-            # stale hub.json to mistake for this hub's.
-            if info is not None and (os.name == "nt" or info.get("pid") == hub.pid):
+            # child, so hub.json records another pid. Before the hub serves,
+            # hub.json holds only its identity, with no pid (#147).
+            if info is not None and (
+                info.get("pid") == hub.pid or (os.name == "nt" and info.get("pid"))
+            ):
                 break
             if hub.poll() is not None or time.monotonic() >= deadline:
                 raise AssertionError("hub did not start")
