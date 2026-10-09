@@ -219,6 +219,7 @@ def test_each_harness_resumes_its_own_conversation_until_done(
         "stop",
     ]
     assert log[-1]["reason"] == "done"
+    assert all(isinstance(r["pid"], int) for r in log if r["event"] in ("start", "resume"))
     assert {r["hub_id"] for r in log[1:]} == {HUB} and log[-1]["workflow_id"] == WORKFLOW
     text = (run_dir / "alice-sessions.jsonl").read_text()
     assert "secret-token-value" not in text and str(fake) not in text

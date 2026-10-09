@@ -63,8 +63,113 @@ picks. Whenever `claude` exits before the worker's telemetry records
 most five times. Every launch and exit is logged to
 `RUN_DIR/<worker>-sessions.jsonl` (`launch.agents.<worker>.sessions` in
 `run.json`). When its resumes are spent it exits 1 and prints the conversation
-ID to resume by hand. Other harnesses and Alice have no launcher: resume them
-by hand as below.
+ID to resume by hand. Workers on other harnesses have no launcher: resume them
+by hand as below. Alice has her own launcher on every harness (next section).
+
+## Alice exits before the workflow is done
+
+<!-- Orchestrator launcher: #146. -->
+
+An auto-started Alice runs under `scripts/alice-launcher.py`, written into
+`start-alice` and `resume-alice` (`.sh`, or `.ps1` on Windows) for Claude Code,
+Codex, OpenCode and AntiGravity. `--no-auto-start` keeps her interactive and
+unsupervised. The launcher:
+
+- records her exact conversation ID in `RUN_DIR/alice-sessions.jsonl`: the
+  `--session-id` it chose for Claude Code, or the one the harness prints
+  (Codex `session id:`, OpenCode `sessionID` from `--format json`,
+  AntiGravity's conversation ID from `--output-format stream-json`). It never
+  resumes a "latest" conversation.
+- after each exit, reads the run hub named by `--hub-url` and `--token-file`
+  with bearer-only `hub.info` and `hub.status`. It pins the hub ID and workflow
+  ID it first sees and never opens an orchestrator session, so it cannot
+  supersede Alice, and it never reads `.robomate/`.
+- on `done`, exits 0 without another launch. On `active` or `escalated`, waits
+  `--resume-delay-s` (default 5) and resumes the same conversation with one
+  fixed continuation prompt: call `get_state` first, reconcile with the skill,
+  keep escalation and pause, do not repeat work. That prompt carries no state
+  and no operator decision. It resumes at most `--max-resumes` times (default
+  5; 0 disables it), then exits 1 with these manual steps.
+- stops without launching again, and says why, when the workflow is `paused`
+  (exit 5: resume by hand when you are ready), when Alice exited before
+  initializing the workflow or before printing her conversation ID (exit 4: it
+  never replays the kickoff or guesses an ID), or when the hub stays unreadable
+  or names another hub or workflow after `--read-retries` reads (exit 3: it
+  never guesses `done`).
+- on Ctrl-C or SIGTERM, stops only the harness process it started, launches
+  nothing more, and exits 130.
+
+`prepare-run.py --max-resumes N --resume-delay-s S` sets both for the run, and
+`run.json` records them under `launch.agents.alice`. Every launch, exit,
+conversation ID and stop reason is one line in `alice-sessions.jsonl`; the
+token and command lines are never logged.
+
+When the launcher has stopped, take a before-snapshot and resume by hand:
+
+```sh
+cd /absolute/path/to/my-run/hub-target          # the target clone running the hub
+uv run --project /absolute/path/to/robomate robomate status --snapshot \
+  --stopped-at 2026-10-08T12:34:56Z               # when you saw the old process stop
+"$RUN_DIR/resume-alice.sh" CONVERSATION_ID        # resume-alice.ps1 on Windows
+```
+
+Paste the snapshot into `RUN_DIR/resume-alice.prompt.md` where it asks, first.
+`resume-alice` runs the same launcher with `--resume-session`: its first launch
+resumes the given conversation with that manual prompt, and later exits get a
+fresh budget of `--max-resumes` automatic resumes with the fixed continuation.
+It refuses to launch when the workflow is already done. Only `start-alice`
+sends the kickoff prompt; never rerun it to resume.
+
+The launcher watches only for an exit. A harness that keeps running without
+working is #144's stall warning below, and stopping it stays with you.
+
+## An agent that stops working but keeps running
+
+<!-- Stall detection: #144. -->
+
+The bridge heartbeat proves only that `robomate mcp` is running. A harness
+whose model is rate-limited or hung, or that ended its turn without exiting,
+keeps it running. The hub therefore tracks substantive hub calls, task
+progress and held calls separately, and `robomate status` marks an agent
+`STALLED` when, for longer than the workflow policy's `stall_after_min`
+(default 20 minutes; `prepare-run.py --stall-after-min`):
+
+- it made no substantive hub call and holds none (`no_hub_call`);
+- a worker's assigned task has had no message, progress, question or result
+  since its assignment (`no_task_progress`);
+- an event for Alice has never been delivered (`event_backlog`).
+
+Each line names the ages, the bridge heartbeat's age, and the task or event
+IDs. `robomate status --json` carries the same under each agent's `activity`
+and `orchestrator_activity`; `scripts/hub-report.py` lists every stall episode.
+A held `await_assignment`, `ask_alice` or `wait_for_event` is never a stall,
+however long the waiting goes on; an open operator question is not by itself
+an exemption, because Alice should be holding `wait_for_event` for its answer.
+A long non-hub command (a test suite, a CI watch) can also trigger the
+warning: it is not proof of a provider fault. `lost` is different: the
+heartbeat itself stopped (`HUB_LOST_AFTER_S`, 180 s). A stall changes nothing:
+no task fails, nothing is reassigned, and no process is stopped. A worker's
+stall reaches Alice as one `agent_stalled` event per episode; Alice's own
+stall reaches only you, through status and the report. Done workflows and
+released or lost agents are never reported; a paused workflow suspends the
+check, and resuming it restarts every clock.
+
+The threshold relates to the other limits like this: `HUB_LOST_AFTER_S` (180 s)
+catches a bridge that stopped; `stall_after_min` catches a live bridge whose
+harness stopped working; `max_task_lease_min` (120 minutes) caps one task
+however busy its worker is. Activity is held in memory: a restarted hub knows
+no holds and measures silence from its own start, so it reports a stall no
+sooner than one threshold after a restart, and an episode that still holds
+continues without a second event.
+
+For a stalled agent, read its harness's own log before acting. **OpenCode on a
+provider rate limit** neither retries nor exits: `opencode run` idles with its
+last assistant message unfinished, and its log
+(`~/.local/share/opencode/log/opencode.log`) records `AI_APICallError: Rate
+limit exceeded`. A resume can hit the same limit at once (#144's run
+`la005-issue-132`). Wait for the limit to clear, stop that `opencode` process,
+and resume its conversation; under the launcher, stopping Alice's `opencode`
+child is enough, and the launcher resumes her.
 
 ## Resuming a harness conversation
 
@@ -85,6 +190,7 @@ worker runs a new `worker-mcp`, so the prompt should tell it to call
 | --- | --- |
 | Claude Code | A UUID. For a worker under `scripts/claude-worker.py`, take `session_id` from `RUN_DIR/<worker>-sessions.jsonl`. Otherwise it is the file name of `~/.claude/projects/<dir>/<uuid>.jsonl`, where `<dir>` is the working directory with every character other than a letter or digit replaced by `-`; pick by modification time. |
 | Codex | A UUID from the saved session or the CLI output; the exact `codex exec resume` form is in [M1 restart and recovery](m1-restart-recovery.md). |
+| Alice (any harness) | Under `scripts/alice-launcher.py`, the `conversation_id` in `RUN_DIR/alice-sessions.jsonl`. |
 | OpenCode | A `ses_...` ID. `prepare-run.py` starts every OpenCode agent with `--title "<agent> <run-slug>"` and records that title in `run.json` `launch.agents.<agent>.title`, so run `opencode session list --format json` from the working directory and match the title; `opencode export <id>` prints a transcript to confirm. Runs prepared before the title change all read `New session - <ISO time>`, so match by time instead (#94). |
 
 Claude Code takes the flags from the start script's `claude` command, with
@@ -121,9 +227,12 @@ the conversation/session ID as its only argument:
 ./resume-alice.sh SES_ID        # or resume-alice.ps1 on Windows
 ```
 
-Fill the `<...>` placeholders in the resume prompt first (hub ID, workflow ID,
-task IDs and owners, delivered event/delivery IDs for Alice), and verify the
-old harness process is gone before resuming.
+Fill in the resume prompt first: for Alice, paste the output of
+`robomate status --snapshot --stopped-at <UTC time>` from the target clone
+(hub ID, workflow, her RPC session, open tasks, unacknowledged deliveries);
+for a worker, the `<...>` placeholders. Every generated resume prompt already
+names the real run directory. Verify the old harness process is gone before
+resuming.
 
 Never use `claude --continue` or `opencode --continue`: each picks the most
 recent conversation, which may be another agent's.

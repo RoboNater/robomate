@@ -293,8 +293,12 @@ class Launcher:
 
     # -- running the harness ------------------------------------------------------
 
-    def run_child(self, launch: Launch) -> int:
-        """Run one harness process, relaying its output and watching for its conversation ID."""
+    def run_child(self, launch: Launch, action: str, resumes: int) -> int:
+        """Run one harness process, relaying its output and watching for its conversation ID.
+
+        The child's PID is logged with the launch, so an operator can signal
+        that one process (#144's stall check, #146's exit check) and no other.
+        """
 
         self.child = subprocess.Popen(
             launch.argv,
@@ -305,6 +309,11 @@ class Launcher:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+        )
+        self.log(action, resumes=resumes, pid=self.child.pid)
+        say(
+            f"{action} ({self.harness}) pid {self.child.pid},"
+            f" conversation {self.conversation or 'pending'}"
         )
         if launch.stdin is not None:
             threading.Thread(
@@ -372,9 +381,7 @@ class Launcher:
             action = "start"
         resumes = 0
         while True:
-            self.log(action, resumes=resumes)
-            say(f"{action} ({self.harness}), conversation {self.conversation or 'pending'}")
-            exit_code = self.run_child(launch)
+            exit_code = self.run_child(launch, action, resumes)
             self.log("exit", resumes=resumes, exit_code=exit_code)
             if self.interrupted:
                 raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
