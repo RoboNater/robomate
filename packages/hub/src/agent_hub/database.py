@@ -19,6 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v17 is #144's `stall_episode` table and the `agent_stalled` event kind.
 # v16 is #132's `operator_question.resumed_by`, the decision that ended a
 # question's escalation. v15 is #129's `operator_question` table and the `user_answered` event kind.
 # v14 is #128's caller attribution: `decision.actor`/`session` and the
@@ -30,7 +31,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 class DatabaseVersionError(RuntimeError):
@@ -223,6 +224,23 @@ CREATE TABLE IF NOT EXISTS operator_question (
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS stall_episode (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id TEXT,
+    role TEXT NOT NULL CHECK (role IN ('orchestrator', 'worker')),
+    actor TEXT NOT NULL,
+    instance TEXT,
+    task_id TEXT,
+    started TEXT NOT NULL,
+    assessed TEXT NOT NULL,
+    cleared TEXT,
+    cleared_reason TEXT,
+    reasons_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    event_id INTEGER,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_workflow_state ON task(workflow_id, state);
 CREATE INDEX IF NOT EXISTS idx_task_assignee ON task(assignee);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_source_event_id
@@ -232,6 +250,7 @@ CREATE INDEX IF NOT EXISTS idx_event_state_id ON event(state, id);
 CREATE INDEX IF NOT EXISTS idx_event_delivery_id ON event(delivery_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_key ON decision(key) WHERE key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_call_log_actor ON call_log(actor, tool);
+CREATE INDEX IF NOT EXISTS idx_stall_episode_open ON stall_episode(cleared, role, actor);
 """
 # `idx_decision_key` — not a column-level UNIQUE on `decision.key` — is what
 # makes `log_decision` idempotent. It is partial (`key IS NOT NULL`), which is
@@ -308,7 +327,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v15 -> v16).
+        # (any of v1-v16 -> v17).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -323,6 +342,7 @@ def initialize_database(path: Path) -> None:
         _migrate_caller_attribution(connection)
         _migrate_operator_question(connection)
         _migrate_question_resumed_by(connection)
+        _migrate_stall_episode(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -559,6 +579,20 @@ def _migrate_question_resumed_by(connection: sqlite3.Connection) -> None:
         "UPDATE operator_question SET resumed_by = 0 WHERE answered IS NOT NULL"
         " AND workflow_id IN (SELECT id FROM workflow WHERE status != ?)",
         (WorkflowStatus.ESCALATED.value,),
+    )
+
+
+def _migrate_stall_episode(connection: sqlite3.Connection) -> None:
+    """Add the stall episodes the sweeper records (#144, v17).
+
+    No stall was assessed before v17, so the table starts empty. The new
+    `agent_stalled` event kind widens `event.kind`'s CHECK, which the rebuild
+    below brings every migrated `event` table up to.
+    """
+
+    connection.execute(_canonical_tables()["stall_episode"])
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stall_episode_open ON stall_episode(cleared, role, actor)"
     )
 
 

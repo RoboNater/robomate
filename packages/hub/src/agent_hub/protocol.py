@@ -488,6 +488,7 @@ class A2AProtocol:
         agent = self._resolve_agent(message, metadata)
         task = self._owned_task(message.task_id, agent)
         kind = metadata.get(MetaKeys.KIND, "progress")
+        self.store.note_worker_call(agent.name, agent.worker_instance_id, str(kind)[:32])
         if kind == "result":
             return self._result(task, agent, _text(message), metadata)
         if kind == "progress":
@@ -571,7 +572,13 @@ class A2AProtocol:
             remote_addr=remote_addr,
         )
         note_a2a(actor=agent_name)
-        return A2AMessage.model_validate(json.loads(resp_json))
+        response = A2AMessage.model_validate(json.loads(resp_json))
+        # A replayed check-in names the instance it registered; a refused one
+        # never gets here.
+        instance = (response.metadata or {}).get(MetaKeys.WORKER_INSTANCE_ID)
+        if isinstance(instance, str) and instance:
+            self.store.note_worker_call(agent_name, instance, "check_in")
+        return response
 
     def _heartbeat(
         self, message: A2AMessage, metadata: dict[str, Any], remote_addr: str | None
@@ -711,7 +718,10 @@ class A2AProtocol:
     async def _assignment_stream(
         self, request_id: RequestId, agent: AgentRecord, timeout_s: float
     ) -> AsyncIterator[bytes]:
-        outcome = await self.store.await_assignment(agent.context_id, timeout_s)
+        with self.store.worker_hold(
+            agent.name, agent.worker_instance_id, "await_assignment", timeout_s
+        ):
+            outcome = await self.store.await_assignment(agent.context_id, timeout_s)
         if isinstance(outcome, Released):
             note_a2a(outcome="release")
             yield _sse(
@@ -741,7 +751,8 @@ class A2AProtocol:
         timeout_s: float,
         sent_as: str,
     ) -> AsyncIterator[bytes]:
-        reply = await self.store.await_reply(task.id, question_id, timeout_s)
+        with self.store.worker_hold(agent.name, agent.worker_instance_id, "ask_alice", timeout_s):
+            reply = await self.store.await_reply(task.id, question_id, timeout_s)
         current = self.store.get_task(task.id)
         if current is not None and current.state in (
             TaskState.CANCELED,

@@ -912,9 +912,45 @@ def test_migration_from_v15_marks_answered_questions_of_resumed_workflows(
     initialize_database(path)
 
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 16
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         rows = connection.execute("SELECT id, resumed_by FROM operator_question ORDER BY id")
         assert [tuple(row) for row in rows] == [(1, 0), (2, None), (3, None), (4, None)]
+
+
+def test_migration_from_v16_adds_stall_episodes_and_the_stalled_event_kind(
+    tmp_path: Path,
+) -> None:
+    """#144's v17: existing events survive, and `agent_stalled` becomes valid."""
+
+    path = tmp_path / "v16.db"
+    _legacy_database(path, 16)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, policy_json, created)"
+            " VALUES ('wf', 'Goal', 'active', '{}', '2026-10-01T00:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO event (kind, payload_json, ts)"
+            " VALUES ('task_completed', '{}', '2026-10-01T00:00:00Z')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO event (kind, payload_json, ts)"
+                " VALUES ('agent_stalled', '{}', '2026-10-01T00:00:00Z')"
+            )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    store = HubStore(path)
+    event = store.append_event(EventKind.AGENT_STALLED, {"agent": "bob"})
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 17
+        kinds = connection.execute("SELECT id, kind FROM event ORDER BY id").fetchall()
+        assert connection.execute("SELECT COUNT(*) FROM stall_episode").fetchone()[0] == 0
+    assert [tuple(row) for row in kinds] == [(1, "task_completed"), (2, "agent_stalled")]
+    assert event.id == 2
+    assert store.stall_episodes() == []
 
 
 def test_a_null_declared_model_reads_as_unknown(tmp_path: Path) -> None:

@@ -49,6 +49,7 @@ UNAUDITED_METHODS = frozenset(
         "wait_for_event",
         "hub.info",
         "hub.status",
+        "hub.snapshot",
         "hub.heartbeat",
         "hub.record_calls",
         "hub.questions",
@@ -221,6 +222,25 @@ class RpcDispatcher:
                 },
                 **summary,
             }
+        # The operator's before-snapshot (#146): bearer-only and read-only. It
+        # names the current session without accepting or superseding any.
+        if method == "hub.snapshot":
+            params = payload.get("params", {})
+            if not isinstance(params, dict) or params:
+                raise RpcError(INVALID_PARAMS, "hub.snapshot takes no params")
+            snapshot = self.ops.store.snapshot()
+            session = self.orchestrator
+            return {
+                "hub_id": None if self.hub_info is None else self.hub_info.get("hub_id"),
+                "orchestrator": None
+                if session is None
+                else {
+                    "name": session.actor,
+                    "session": session.session,
+                    "last_seen": session.last_seen.isoformat(),
+                },
+                **snapshot,
+            }
         # Operator questions (#129) are readable with the bearer token alone,
         # so a worker can check an answer the orchestrator says it received.
         if method == "hub.questions":
@@ -266,6 +286,8 @@ class RpcDispatcher:
             if not isinstance(params, dict) or params:
                 raise RpcError(INVALID_PARAMS, "hub.heartbeat takes no params")
             self._accept_session(*caller)
+            # Bridge liveness only: never activity (#144).
+            self.ops.store.note_orchestrator_heartbeat(caller[1])
             return {"ok": True}
         if method == "hub.record_calls":
             if caller is None:
@@ -308,7 +330,8 @@ class RpcDispatcher:
         self._accept_session(*caller)
         token = CALLER.set(Caller(*caller))
         try:
-            result = await operation(**params)
+            with self.ops.store.orchestrator_call(caller[1], method, _hold_s(method, params)):
+                result = await operation(**params)
         finally:
             CALLER.reset(token)
         if self.orchestrator is not None and caller[1] != self.orchestrator.session:
@@ -386,6 +409,22 @@ class RpcDispatcher:
             self.ops.store.expire_event_leases()
             self._record_audit(actor, session, SUPERSEDE_METHOD, "ok")
         self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
+        self.ops.store.note_orchestrator_session(actor, session)
+
+
+def _hold_s(method: str, params: Mapping[str, Any]) -> float:
+    """How long an orchestrator call may legitimately run before it stops exempting her.
+
+    `wait_for_event` holds for its own timeout; the merge gate settles for up
+    to a minute; nothing else should take longer than the bridge's 75 s.
+    """
+
+    if method == "wait_for_event":
+        timeout = params.get("timeout_s", 100)
+        if isinstance(timeout, int | float) and not isinstance(timeout, bool):
+            return min(max(float(timeout), 0.0), 120.0)
+        return 100.0
+    return 75.0
 
 
 def _valid_id(request_id: Any) -> bool:
