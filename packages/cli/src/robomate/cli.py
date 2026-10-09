@@ -43,6 +43,7 @@ from agent_hub_common.discovery import (
     state_dir,
     token_file,
     validate_hub_name,
+    verify_local_hub,
     write_hub_json,
 )
 from agent_hub_common.registry import (
@@ -337,25 +338,12 @@ def _provision_operator_token(settings: HubSettings, repo: Repository) -> None:
     load_or_create_token(None, resolved, label="operator token")
 
 
-def _require_running(hub: LocalHub) -> None:
-    """Check a local hub's hub_id against /healthz before acting on it (spec §4)."""
-
-    if hub_healthy(hub.url, hub.hub_id):
-        return
-    pid = int(hub.info.get("pid") or 0)
-    if process_alive(pid):
-        raise RuntimeError(
-            f"{hub.label()} at {hub.url} is unreachable; recorded pid {pid} is visible"
-        )
-    raise RuntimeError(f"{hub.label()} at {hub.url} is not running")
-
-
 def _connect(selector: str | None) -> tuple[HubEndpoint, LocalHub | None]:
     """The selected or discovered hub's endpoint, and the local hub when one was found."""
 
     hub = find_hub(Path.cwd(), selector=selector)
     if isinstance(hub, LocalHub):
-        _require_running(hub)
+        verify_local_hub(hub)
         return hub.endpoint(), hub
     return hub, None
 

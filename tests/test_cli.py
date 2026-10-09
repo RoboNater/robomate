@@ -284,7 +284,7 @@ def test_hub_names_are_validated_and_unique_per_repository(
 def test_bare_repository_hub_runs_in_a_linked_worktree(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    """#147 Test 4."""
+    """#147 Test 4, on an unmodified `git clone --bare`: it has no origin/HEAD."""
 
     root, env = repository
     _commit_and_add_worktrees(root)
@@ -292,22 +292,29 @@ def test_bare_repository_hub_runs_in_a_linked_worktree(
     subprocess.run(
         ["git", "clone", "--bare", str(root), str(bare)], check=True, capture_output=True
     )
-    main = tmp_path / "r" / "main"
+    main, feature = tmp_path / "r" / "main", tmp_path / "r" / "feature"
     for args in (
-        ["remote", "set-url", "origin", "git@github.com:example/repo.git"],
-        ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         ["worktree", "add", str(main), "main"],
+        ["worktree", "add", "-b", "feature", str(feature)],
     ):
         subprocess.run(["git", *args], cwd=bare, check=True, capture_output=True)
-    refused = _cli(bare, env, "up")
+    refused = _cli(bare, env, "up", "--forge", "github")
     assert refused.returncode == 1 and "bare repository" in refused.stderr
-    process = start(main, env)
+    # The worktree on another branch still records the repository's default branch.
+    processes = {
+        main: start(main, env, "--forge", "github"),
+        feature: start(feature, env, "--forge", "github"),
+    }
     try:
-        info = await_hub(main, process)
-        assert (info["name"], info["git_common_dir"]) == ("main", str(bare))
+        for checkout, process in processes.items():
+            info = await_hub(checkout, process)
+            assert (info["name"], info["git_common_dir"]) == (checkout.name, str(bare))
+            assert info["default_branch"] == "main"
         assert "/.robomate/" in (bare / "info" / "exclude").read_text()
     finally:
-        stop(main, env, process)
+        for checkout, process in processes.items():
+            if process.poll() is None:
+                stop(checkout, env, process)
 
 
 def test_legacy_hub_keeps_its_state_and_gets_a_name(

@@ -153,13 +153,20 @@ def _windows_process_alive(pid: int) -> bool:
         close_handle(handle)
 
 
-def hub_healthy(url: str, hub_id: str) -> bool:
+def healthz_hub_id(url: str) -> str | None:
+    """The hub_id the hub at `url` reports on /healthz, or None when nothing answers."""
+
     try:
         with urllib.request.urlopen(f"{url.rstrip('/')}/healthz", timeout=0.5) as response:
             data = json.load(response)
-        return isinstance(data, dict) and data.get("hub_id") == hub_id
     except (OSError, ValueError, urllib.error.URLError):
-        return False
+        return None
+    hub_id = data.get("hub_id") if isinstance(data, dict) else None
+    return str(hub_id) if hub_id else None
+
+
+def hub_healthy(url: str, hub_id: str) -> bool:
+    return bool(url) and healthz_hub_id(url) == hub_id
 
 
 def _stale(entry: Mapping[str, Any]) -> bool:

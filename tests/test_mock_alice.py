@@ -1,11 +1,11 @@
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import anyio
@@ -16,7 +16,8 @@ from agent_hub.database import database, initialize_database
 from agent_hub.mcp import create_mcp
 from agent_hub.store import HubStore, TaskRecord
 from agent_hub_common import AgentProfile, HubSettings, TaskState, WorkflowStatus
-from conftest import BASE_URL, TOKEN, MonotonicClock
+from agent_hub_common.discovery import DiscoveryError, local_hub
+from conftest import BASE_URL, TOKEN, MonotonicClock, closed_port_url, record_local_hub
 from mcp import ClientSession
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
@@ -732,7 +733,7 @@ def test_mock_alice_main_cli_mcp_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_mock_alice_mcp_names_its_hub(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """#147: --mcp never relies on the bridge finding a hub by itself."""
 
@@ -742,17 +743,39 @@ def test_mock_alice_mcp_names_its_hub(
         mock_alice.main()
     assert "--mcp needs --hub" in capsys.readouterr().err
 
-    checkout = tmp_path / "wt"
+
+@pytest.mark.parametrize(
+    ("answers", "error"),
+    [
+        ("expected-hub", None),
+        ("different-hub", "answers as hub different-hub, not expected-hub"),
+        (None, "is not running"),
+    ],
+)
+def test_mock_alice_checks_the_hub_it_names(
+    tmp_path: Path,
+    healthz: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    answers: str | None,
+    error: str | None,
+) -> None:
+    """#147 r1-1: --hub is verified, and the bridge starts in its checkout, not by URL."""
+
+    url = healthz(answers) if answers else closed_port_url()
+    checkout = record_local_hub(tmp_path / "wt", url, "expected-hub")
+    monkeypatch.setattr(mock_alice, "select_hub", lambda _selector: local_hub(checkout))
+    # An inherited explicit URL would bypass the bridge's own identity check.
+    monkeypatch.setenv("ROBOMATE_HUB_URL", url)
     monkeypatch.setenv("ROBOMATE_TOKEN", "inherited")
-    monkeypatch.setattr(
-        mock_alice,
-        "select_hub",
-        lambda selector: SimpleNamespace(url="http://127.0.0.1:8421", checkout=checkout),
-    )
-    env = mock_alice.bridge_env("wt")
-    assert env["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8421"
-    assert env["ROBOMATE_TOKEN_FILE"] == str(checkout / ".robomate" / "token")
-    assert "ROBOMATE_TOKEN" not in env
+    monkeypatch.setenv("ROBOMATE_TOKEN_FILE", "inherited")
+    if error is not None:
+        with pytest.raises(DiscoveryError, match=error):
+            mock_alice.bridge_launch("wt")
+        return
+    env, cwd = mock_alice.bridge_launch("wt")
+    assert cwd == checkout
+    assert not {"ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"} & set(env)
+    assert mock_alice.bridge_launch(None) == (dict(os.environ), None)
 
 
 @pytest.mark.parametrize(

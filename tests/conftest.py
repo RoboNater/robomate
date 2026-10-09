@@ -1,8 +1,12 @@
 """Fixtures shared by the hub's HTTP and state tests."""
 
 import json
-from collections.abc import AsyncIterator
+import socket
+import subprocess
+import threading
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import monotonic
 from typing import Any, cast
@@ -15,6 +19,7 @@ from agent_hub import create_app
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
+from agent_hub_common.discovery import token_file, write_hub_json
 from fastapi import FastAPI
 
 TOKEN = "test-token"
@@ -176,3 +181,56 @@ async def check_in(
     )
     response.raise_for_status()
     return str(response.json()["result"]["contextId"])
+
+
+@pytest.fixture
+def healthz() -> Iterator[Callable[[str], str]]:
+    """Start loopback servers whose /healthz reports a given hub_id; return their URLs.
+
+    Stands in for a hub, or for another process that took its address (#147).
+    """
+
+    servers: list[ThreadingHTTPServer] = []
+
+    def serve(hub_id: str) -> str:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                body = json.dumps({"ok": True, "hub_id": hub_id}).encode()
+                self.send_response(200 if self.path == "/healthz" else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        yield serve
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def closed_port_url() -> str:
+    """A loopback URL nothing listens on: a stopped hub's recorded address."""
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{probe.getsockname()[1]}"
+
+
+def record_local_hub(checkout: Path, url: str, hub_id: str) -> Path:
+    """A git checkout whose hub state records a hub at `url` with `hub_id`."""
+
+    checkout.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
+    write_hub_json(checkout, {"url": url, "hub_id": hub_id, "name": checkout.name, "pid": None})
+    token_file(checkout).write_text("local-token\n", encoding="utf-8")
+    return checkout

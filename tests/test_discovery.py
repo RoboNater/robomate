@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from agent_hub_common.discovery import (
     write_hub_json,
 )
 from agent_hub_common.registry import register
+from conftest import closed_port_url
 
 
 def git(cwd: Path, *args: str) -> None:
@@ -71,8 +73,14 @@ def test_linked_worktree_of_a_bare_repository_owns_a_hub(repository: Path, tmp_p
         ["git", "clone", "--bare", str(repository), str(bare)], check=True, capture_output=True
     )
     git(bare, "worktree", "add", str(layout / "main"), "main")
+    git(bare, "worktree", "add", "-b", "feature", str(layout / "feature"))
     assert resolve_checkout(layout / "main") == (layout / "main", bare)
     assert repository_dir(bare) == layout
+    # A plain bare clone has no origin/HEAD: the bare repository's HEAD names
+    # the default branch, whatever branch the worktree has checked out (#147 r1-2).
+    for worktree in ("main", "feature"):
+        info = resolve_repository(layout / worktree)
+        assert (info.root, info.default_branch) == (layout / worktree, "main")
     with pytest.raises(DiscoveryError, match="bare repository with no working tree"):
         resolve_checkout(bare)
     with pytest.raises(DiscoveryError, match="not inside a git working tree"):
@@ -146,14 +154,48 @@ def test_exclude_once_and_atomic_hub_json(
     assert sorted(p.name for p in (repository / ".robomate").iterdir()) == ["hub.json"]
 
 
-def test_discovery_prefers_explicit_then_repo(repository: Path) -> None:
-    write_hub_json(repository, {"url": "http://repo:8420", "hub_id": "repo-id"})
+def test_discovery_prefers_explicit_then_repo(
+    repository: Path, healthz: Callable[[str], str]
+) -> None:
+    url = healthz("repo-id")
+    write_hub_json(repository, {"url": url, "hub_id": "repo-id"})
     (repository / ".robomate/token").write_text("repo-token\n")
-    assert discover(repository, {}) == HubEndpoint("http://repo:8420", "repo-token")
+    assert discover(repository, {}) == HubEndpoint(url, "repo-token")
     assert discover(
         repository,
         {"ROBOMATE_HUB_URL": "http://explicit:8421/", "ROBOMATE_TOKEN": "explicit-token"},
     ) == HubEndpoint("http://explicit:8421", "explicit-token")
+
+
+def test_discover_checks_the_local_hub_identity_before_use(
+    repository: Path, healthz: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#147 r1-1: a local hub is used only when /healthz reports its recorded hub_id."""
+
+    (repository / ".robomate").mkdir()
+    token_file(repository).write_text("repo-token\n")
+    matching = healthz("expected-hub")
+    write_hub_json(repository, {"url": matching, "hub_id": "expected-hub", "name": "repo"})
+    assert discover(repository, {}) == HubEndpoint(matching, "repo-token")
+
+    other = healthz("different-hub")
+    write_hub_json(repository, {"url": other, "hub_id": "expected-hub", "name": "repo"})
+    with pytest.raises(DiscoveryError, match="answers as hub different-hub, not expected-hub"):
+        discover(repository, {})
+
+    stopped = closed_port_url()
+    write_hub_json(
+        repository, {"url": stopped, "hub_id": "expected-hub", "name": "repo", "pid": None}
+    )
+    with pytest.raises(DiscoveryError, match=r"hub repo \(checkout .*\) at .* is not running"):
+        discover(repository, {})
+    monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 4321)
+    write_hub_json(repository, {"url": stopped, "hub_id": "expected-hub", "pid": 4321})
+    with pytest.raises(DiscoveryError, match="unreachable; recorded pid 4321 is visible"):
+        discover(repository, {})
+    # An explicit URL is taken as given: it may name a remote hub.
+    explicit = {"ROBOMATE_HUB_URL": other, "ROBOMATE_TOKEN": "t"}
+    assert discover(repository, explicit) == HubEndpoint(other, "t")
 
 
 def _record_hub(checkout: Path, hub_id: str, name: str, env: dict[str, str]) -> None:
@@ -203,8 +245,10 @@ def test_hub_selector_by_name_hub_id_or_checkout(repository: Path, tmp_path: Pat
         assert hub.endpoint() == HubEndpoint("http://wt-b:8420", "wt-b-token")
     # Without a selector the explicit URL comes first, then the owned hub.
     assert find_hub(worktree, explicit) == HubEndpoint("http://explicit:1", "t")
-    assert discover(worktree, env) == HubEndpoint("http://wt-b:8420", "wt-b-token")
-    assert discover(repository, env) == HubEndpoint("http://repo:8420", "repo-token")
+    for checkout, name in ((worktree, "wt-b"), (repository, "repo")):
+        owned = find_hub(checkout, env)
+        assert isinstance(owned, LocalHub) and owned.checkout == checkout
+        assert owned.endpoint() == HubEndpoint(f"http://{name}:8420", f"{name}-token")
     with pytest.raises(DiscoveryError, match="no registered hub has that name"):
         find_hub(repository, env, selector="missing")
     plain = tmp_path / "plain"

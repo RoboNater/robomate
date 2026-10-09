@@ -48,7 +48,7 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
-from agent_hub_common.discovery import select_hub, token_file
+from agent_hub_common.discovery import select_hub, verify_local_hub
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -928,20 +928,23 @@ def _parse_cmd(cmd: str) -> list[str]:
     return shlex.split(cmd)
 
 
-def bridge_env(selector: str | None) -> dict[str, str]:
-    """The bridge's environment, pinned to the hub `selector` names when given.
+def bridge_launch(selector: str | None) -> tuple[dict[str, str], Path | None]:
+    """The bridge's environment and working directory for the hub `selector` names.
 
     `robomate mcp` attaches only to an explicit URL or the hub of its working
-    directory's checkout (#147), so the bridge is told which hub to use.
+    directory's checkout (#147). A selected hub is checked here, then the
+    bridge starts in its checkout, without an explicit URL, so the bridge's
+    own discovery checks that hub's identity again before connecting.
     """
 
     env = dict(os.environ)
-    if selector:
-        hub = select_hub(selector)
-        env.pop("ROBOMATE_TOKEN", None)
-        env["ROBOMATE_HUB_URL"] = hub.url
-        env["ROBOMATE_TOKEN_FILE"] = str(token_file(hub.checkout))
-    return env
+    if not selector:
+        return env, None
+    hub = select_hub(selector)
+    verify_local_hub(hub)
+    for key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"):
+        env.pop(key, None)
+    return env, hub.checkout
 
 
 def main() -> None:
@@ -1086,10 +1089,9 @@ def main() -> None:
             result["telemetry"] = telemetry
         elif args.mcp:
             cmd_parts = _parse_cmd(args.bridge_cmd)
+            env, cwd = bridge_launch(args.hub)
             params = StdioServerParameters(
-                command=cmd_parts[0],
-                args=cmd_parts[1:],
-                env=bridge_env(args.hub),
+                command=cmd_parts[0], args=cmd_parts[1:], env=env, cwd=cwd
             )
 
             async def run_mcp_session() -> dict[str, Any]:

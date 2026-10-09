@@ -104,19 +104,36 @@ def repository_dir(common: Path) -> Path:
     return common.parent if common.name.startswith(".") else common
 
 
+def _default_branch(root: Path, common: Path) -> str:
+    """The repository's default branch: origin/HEAD, or a bare repository's own HEAD.
+
+    `git clone --bare` copies origin's branches into refs/heads and points the
+    bare repository's HEAD at origin's default branch, but creates no
+    remote-tracking refs, so there is no origin/HEAD to read (#147).
+    """
+
+    try:
+        head = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    except DiscoveryError as exc:
+        if _git(root, f"--git-dir={common}", "rev-parse", "--is-bare-repository") == "true":
+            try:
+                return _git(root, f"--git-dir={common}", "symbolic-ref", "--short", "HEAD")
+            except DiscoveryError:
+                raise DiscoveryError(f"the bare repository {common} has no HEAD branch") from exc
+        raise DiscoveryError("origin/HEAD is unset; run git remote set-head origin --auto") from exc
+    if not head.startswith("origin/"):
+        raise DiscoveryError(f"unexpected origin/HEAD: {head}")
+    return head.removeprefix("origin/")
+
+
 def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     root, common = resolve_checkout(cwd)
     origin = _git(root, "remote", "get-url", "origin")
     if not origin:
         raise DiscoveryError("origin remote is empty")
-    try:
-        head = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-    except DiscoveryError as exc:
-        raise DiscoveryError("origin/HEAD is unset; run git remote set-head origin --auto") from exc
-    if not head.startswith("origin/"):
-        raise DiscoveryError(f"unexpected origin/HEAD: {head}")
+    default_branch = _default_branch(root, common)
     forge = detect_forge(origin, root, probe_cli=probe_cli)
-    return Repository(root, common, origin, head.removeprefix("origin/"), forge)
+    return Repository(root, common, origin, default_branch, forge)
 
 
 def state_dir(checkout: Path) -> Path:
@@ -398,6 +415,30 @@ class LocalHub:
         return HubEndpoint(self.url.rstrip("/"), token)
 
 
+def verify_local_hub(hub: LocalHub) -> None:
+    """Check a local hub's recorded hub_id against /healthz before it is used (spec §4).
+
+    Nothing authenticated is sent first: a process that took the hub's
+    address while it was stopped never receives the bearer token.
+    """
+
+    from .registry import healthz_hub_id, process_alive
+
+    answered = healthz_hub_id(hub.url) if hub.url else None
+    if answered == hub.hub_id:
+        return
+    where = f"{hub.label()} (checkout {hub.checkout}) at {hub.url}"
+    if answered is not None:
+        raise DiscoveryError(
+            f"{where} answers as hub {answered}, not {hub.hub_id}: another process holds "
+            "its address. Stop that process, then run robomate up in that checkout"
+        )
+    pid = int(hub.info.get("pid") or 0)
+    if process_alive(pid):
+        raise DiscoveryError(f"{where} is unreachable; recorded pid {pid} is visible")
+    raise DiscoveryError(f"{where} is not running; run robomate up in that checkout")
+
+
 def local_hub(checkout: Path) -> LocalHub | None:
     """The hub a checkout owns, if `up` has ever recorded one there."""
 
@@ -518,7 +559,14 @@ def find_hub(
 
 
 def discover(cwd: Path, environ: Mapping[str, str] | None = None) -> HubEndpoint:
-    """The URL and token of the hub `find_hub` chooses, for the MCP bridge and scripts."""
+    """The URL and token of the hub `find_hub` chooses, for the MCP bridge and scripts.
+
+    A local hub is used only once /healthz reports its recorded hub_id; an
+    explicit URL is taken as given.
+    """
 
     hub = find_hub(cwd, environ)
-    return hub.endpoint() if isinstance(hub, LocalHub) else hub
+    if isinstance(hub, LocalHub):
+        verify_local_hub(hub)
+        return hub.endpoint()
+    return hub
