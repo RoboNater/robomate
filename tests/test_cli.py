@@ -505,6 +505,194 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
         stop(root, env, process)
 
 
+def _rpc_as_alice(url: str, token: str, method: str) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{url}/rpc",
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Robomate-Actor": "alice",
+            "X-Robomate-Session": "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body: dict[str, Any] = json.load(response)
+    return body
+
+
+def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[str, str]]) -> None:
+    """#144: a fresh bridge heartbeat with no hub call reads STALLED, with its evidence."""
+
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    database_path = directory / "hub.db"
+    initialize_database(database_path)
+    hub_store = HubStore(database_path)
+    # About 60 ms, so the test need not wait minutes for the threshold.
+    hub_store.initialize_workflow("Build issue #43", {"stall_after_min": 0.001})
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        token = (directory / "token").read_text().strip()
+        assert _rpc_as_alice(str(info["url"]), token, "hub.heartbeat")["result"] == {"ok": True}
+        time.sleep(0.2)
+        result = subprocess.run(
+            [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
+        assert result.returncode == 0, result.stderr
+        out = result.stdout
+        assert re.search(
+            r"Orchestrator: alice .*\n  STALLED — no hub call for \d+s \(none seen\);"
+            r" event 1 \(agent_checked_in\) queued \d+s undelivered; bridge heartbeat \d+s ago;"
+            r" threshold 0s\n",
+            out,
+        ), out
+        assert f"bob: codex / gpt-6-sol  STALLED  task {task.id}\n" in out
+        assert re.search(
+            rf"    no hub call for \d+s \(none seen\); task {task.id} no progress for \d+s;"
+            r" bridge heartbeat \d+s ago; threshold 0s\n",
+            out,
+        ), out
+        assert cli.STALL_NOTE in out
+        assert "secret instructions" not in out
+
+        status = json.loads(
+            subprocess.run(
+                [CLI, "status", "--json"],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            ).stdout
+        )
+        (bob,) = status["agents"]
+        assert bob["stalled"] is True and bob["status"] == "busy" and bob["alive"] is True
+        assert bob["activity"]["reasons"] == ["no_hub_call", "no_task_progress"]
+        assert status["orchestrator_activity"]["reasons"] == ["no_hub_call", "event_backlog"]
+        assert status["orchestrator_activity"]["stale_events"][0]["id"] == 1
+        assert status["stall_after_min"] == 0.001
+        # Reading status changed nothing: no session took over, no event moved.
+        with database(database_path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM rpc_audit").fetchone()[0] == 0
+            assert tuple(
+                connection.execute(
+                    "SELECT state, delivery_attempts FROM event WHERE id = 1"
+                ).fetchone()
+            ) == ("queued", 0)
+    finally:
+        stop(root, env, process)
+
+
+def test_status_snapshot_matches_get_state_and_changes_nothing(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#146: the before-snapshot, from bearer-only reads, without superseding Alice."""
+
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    database_path = directory / "hub.db"
+    initialize_database(database_path)
+    hub_store = HubStore(database_path)
+    workflow_id = hub_store.initialize_workflow("Build issue #43")
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
+    delivered = hub_store.lease_next_event()
+    assert delivered is not None
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        url = str(info["url"])
+        token = (directory / "token").read_text().strip()
+        state = _rpc_as_alice(url, token, "get_state")["result"]
+
+        def robomate(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [CLI, *args], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            )
+
+        result = robomate(
+            "status", "--snapshot", "--json", "--stopped-at", "2026-10-08T14:00:00+02:00"
+        )
+        assert result.returncode == 0, result.stderr
+        snapshot = json.loads(result.stdout)
+        assert snapshot["hub_id"] == info["hub_id"]
+        assert snapshot["stopped_at"] == "2026-10-08T12:00:00Z"
+        assert snapshot["workflow"] == {"id": workflow_id, "status": "active"}
+        assert snapshot["orchestrator"]["session"] == "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a"
+        open_tasks = [t for t in state["tasks"] if t["state"] not in TERMINAL]
+        assert [(t["id"], t["assignee"], t["role"], t["state"]) for t in snapshot["tasks"]] == [
+            (t["id"], t["assignee"], t["role"], t["state"]) for t in open_tasks
+        ]
+        assert [
+            (
+                d["event_id"],
+                d["delivery_id"],
+                d["attempt"],
+                d["delivered_at"],
+                d["delivery_expires"],
+            )
+            for d in snapshot["deliveries"]
+        ] == [
+            (
+                e["id"],
+                e["delivery_id"],
+                e["delivery_attempts"],
+                e["delivered_at"],
+                e["delivery_expires"],
+            )
+            for e in state["unacked_delivered"]
+        ]
+        assert snapshot["deliveries"][0]["delivery_id"] == delivered.delivery_id
+
+        text = robomate("status", "--snapshot")
+        assert text.returncode == 0, text.stderr
+        assert (
+            text.stdout
+            == cli.render_snapshot(
+                json.loads(robomate("status", "--snapshot", "--json").stdout)
+                | {"taken_at": _taken_at(text.stdout)}
+            )
+            + "\n"
+        )
+        assert "- Old process stop time: not supplied\n" in text.stdout
+        assert f"  - task {task.id}: owner bob, role implementer, state submitted\n" in text.stdout
+        assert "secret instructions" not in text.stdout
+
+        bad = robomate("status", "--snapshot", "--stopped-at", "yesterday")
+        assert bad.returncode == 1 and "ISO 8601" in bad.stderr
+        lone = robomate("status", "--stopped-at", "2026-10-08T12:00:00Z")
+        assert lone.returncode == 1 and "goes with --snapshot" in lone.stderr
+
+        # Nothing moved: the same delivery, no takeover row, the same session.
+        with database(database_path) as connection:
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM rpc_audit WHERE method = 'session.supersede'"
+                ).fetchone()[0]
+                == 0
+            )
+        after = _rpc_as_alice(url, token, "get_state")["result"]
+        assert after["unacked_delivered"] == state["unacked_delivered"]
+        assert after["tasks"] == state["tasks"]
+    finally:
+        stop(root, env, process)
+
+
+TERMINAL = ("completed", "failed", "canceled")
+
+
+def _taken_at(text: str) -> str:
+    match = re.search(r"- Snapshot time: (\S+) ", text)
+    assert match, text
+    return match.group(1)
+
+
 def test_inbox_answer_and_status_serve_the_operator(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:

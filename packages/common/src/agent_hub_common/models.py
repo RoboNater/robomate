@@ -45,6 +45,8 @@ class WorkflowPolicy(BaseModel):
     pairing_wait_s: PositiveNumber = 120
     max_wall_minutes: PositiveNumber = 120
     max_task_lease_min: PositiveNumber = 120
+    # Minutes without agent activity before the hub reports a stall (#144).
+    stall_after_min: PositiveNumber = 20
 
 
 class AgentStatus(StrEnum):
@@ -73,6 +75,9 @@ class EventKind(StrEnum):
     AGENT_LOST = "agent_lost"
     # The operator answered an `ask_user` question (#129); #130 emits it.
     USER_ANSWERED = "user_answered"
+    # A worker stopped making hub calls or task progress while its bridge
+    # kept heartbeating (#144); one per stall episode, never a lifecycle change.
+    AGENT_STALLED = "agent_stalled"
 
 
 class TaskRole(StrEnum):

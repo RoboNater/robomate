@@ -256,6 +256,7 @@ def read_database(path: Path) -> dict[str, Any]:
                 "decision",
                 "call_log",
                 "gate_reading",
+                "stall_episode",
             ):
                 snapshot[table] = (
                     [dict(row) for row in connection.execute(f"SELECT * FROM {table}")]
@@ -799,6 +800,67 @@ def totals(agents: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+STALL_NUMBERS = (
+    "threshold_s",
+    "silence_s",
+    "last_call_age_s",
+    "heartbeat_age_s",
+    "progress_age_s",
+    "unattempted_events",
+)
+
+
+def stall_figures(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Stall episodes the hub's sweeper recorded (#144): ages, IDs and closed labels.
+
+    An episode with no `cleared` time was still open at the hub's last sweep.
+    The orchestrator's are reported under Alice's name. Stalls are activity
+    warnings beside lifecycle status: `lost` (heartbeat gone) and `released`
+    (finished) are reported by the agent table, not here.
+    """
+
+    stalls = []
+    for row in rows:
+        evidence = json_object(row.get("evidence_json")) or {}
+        reasons = (
+            json.loads(row["reasons_json"]) if isinstance(row.get("reasons_json"), str) else []
+        )
+        figures: dict[str, Any] = {
+            key: round(float(evidence[key]), 1)
+            for key in STALL_NUMBERS
+            if isinstance(evidence.get(key), int | float) and not isinstance(evidence[key], bool)
+        }
+        stale = evidence.get("stale_events")
+        stalls.append(
+            {
+                "id": number(row.get("id")),
+                "agent": ALICE if row.get("role") == "orchestrator" else closed(row.get("actor")),
+                "role": closed(row.get("role")),
+                "task_id": closed(row.get("task_id")),
+                "started": iso(parse_ts(row.get("started"))),
+                "assessed": iso(parse_ts(row.get("assessed"))),
+                "cleared": iso(parse_ts(row.get("cleared"))),
+                "cleared_reason": closed(row.get("cleared_reason")),
+                "open": row.get("cleared") is None,
+                "reasons": [closed(reason) for reason in reasons if closed(reason)]
+                if isinstance(reasons, list)
+                else [],
+                "last_call": closed(evidence.get("last_call")),
+                "holding": closed(evidence.get("holding")),
+                "stale_event_ids": [
+                    number(event.get("id"))
+                    for event in stale
+                    if isinstance(event, dict) and isinstance(event.get("id"), int)
+                ]
+                if isinstance(stale, list)
+                else [],
+                "event_id": row.get("event_id") if isinstance(row.get("event_id"), int) else None,
+                **figures,
+            }
+        )
+    return stalls
+
+
 def build_report(
     state_dir: Path,
     *,
@@ -814,6 +876,10 @@ def build_report(
     tasks = task_figures(snapshot, telemetry, now)
     agents = agent_figures(snapshot, telemetry, tasks, manifest_workers(state_dir), now)
     workflow = workflow_figures(snapshot, tasks, now)
+    stalls = stall_figures(snapshot["stall_episode"])
+    stalled = {stall["agent"] for stall in stalls if stall["open"]}
+    for agent in agents:
+        agent["stalled"] = agent["name"] in stalled
     notes = []
     if not snapshot["has_call_log"] or not snapshot["call_log"]:
         notes.append(
@@ -854,6 +920,7 @@ def build_report(
         "workflow": workflow,
         "agents": agents,
         "tasks": tasks,
+        "stalls": stalls,
         "totals": totals(agents),
     }
 
@@ -888,6 +955,8 @@ def agent_rows(report: Mapping[str, Any]) -> tuple[list[str], list[list[str]]]:
         status = agent.get("status")
         if agent["name"] != "TOTAL" and not agent.get("checked_in"):
             status = "never checked in"
+        if agent.get("stalled"):
+            status = f"{show(status)} STALLED"
         rows.append(
             [
                 agent["name"],
@@ -933,6 +1002,36 @@ def task_rows(report: Mapping[str, Any]) -> tuple[list[str], list[list[str]]]:
         for task in report["tasks"]
     ]
     return header, rows
+
+
+def stall_lines(stalls: list[Mapping[str, Any]]) -> list[str]:
+    if not stalls:
+        return ["No stalls recorded."]
+    lines = []
+    for stall in stalls:
+        state = (
+            f"STALLED (open at the last sweep, {show(stall['assessed'])})"
+            if stall["open"]
+            else f"cleared {show(stall['cleared'])} ({show(stall['cleared_reason'])})"
+        )
+        facts = [f"reasons {', '.join(stall['reasons']) or '-'}"]
+        for key, name in (
+            ("silence_s", "no hub call for"),
+            ("progress_age_s", "no task progress for"),
+            ("heartbeat_age_s", "heartbeat age"),
+            ("threshold_s", "threshold"),
+        ):
+            if key in stall:
+                facts.append(f"{name} {duration(stall[key])}")
+        if stall["task_id"]:
+            facts.append(f"task {stall['task_id']}")
+        if stall["stale_event_ids"]:
+            facts.append("undelivered events " + ", ".join(map(str, stall["stale_event_ids"])))
+        if stall["event_id"] is not None:
+            facts.append(f"agent_stalled event {stall['event_id']}")
+        lines.append(f"  - {stall['agent']}: {state}, since {show(stall['started'])}")
+        lines.append(f"    {'; '.join(facts)}")
+    return lines
 
 
 def plain_table(header: list[str], rows: list[list[str]]) -> list[str]:
@@ -1061,6 +1160,15 @@ def render_text(report: Mapping[str, Any], markdown: bool = False) -> str:
         "",
     ]
     lines += table(*task_rows(report)) if report["tasks"] else ["No tasks yet."]
+    lines += ["", heading("Stalls"), ""]
+    lines += [md_cell(line) if markdown else line for line in stall_lines(report["stalls"])]
+    lines += [
+        "",
+        "A stall is an activity warning beside lifecycle status: no substantive hub call, "
+        "task progress or event consumption within stall_after_min while the bridge may "
+        "still heartbeat. A long non-hub command can cause it; it does not prove a "
+        "provider fault. Lost (heartbeat gone) and done are reported above.",
+    ]
     return "\n".join(lines) + "\n"
 
 

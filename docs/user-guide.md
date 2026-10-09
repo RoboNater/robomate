@@ -92,7 +92,7 @@ To resume the existing workflow, use its original run directory, hub clone,
 goal (the same `--issue` or `--work-file` and roadmap selection), and policy
 options such as merge method, harnesses, capabilities, and CI setting.
 
-The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and eleven enabled tools; a Codex worker gets seven worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report. An auto-started Claude Code worker runs under `scripts/claude-worker.py`, which resumes the same conversation if `claude -p` exits before Alice releases the worker and logs each conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md).
+The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and eleven enabled tools; a Codex worker gets seven worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report. An auto-started Claude Code worker runs under `scripts/claude-worker.py`, which resumes the same conversation if `claude -p` exits before Alice releases the worker and logs each conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation if she exits before the workflow is `done` and logs each launch to `alice-sessions.jsonl`.
 
 Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s configured SSH or HTTPS protocol. It checks `gh auth status`, the harness versions, the repository's merge setting, and the presence of CI workflows before creating the run. A local repository or `--skip-github-checks` skips the GitHub checks. It links Codex authentication into the run-local home and reports `codex login status`. A rerun with the same run directory preserves clean clones and their identity files; a dirty clone causes an actionable error. The start scripts quote paths with spaces or shell metacharacters and keep Codex sessions available for inspection.
 
@@ -103,6 +103,8 @@ Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s 
 | `--alice-effort`, `--bob-effort`, `--charlie-effort` | Pass reasoning effort through to the launcher. |
 | `--no-auto-start` | Open each agent interactively without its rendered prompt; tell the agent to read the prompt once ready. |
 | `--merge-method`, `--allow-no-ci` | Set the workflow policy according to the repository's merge settings and CI. |
+| `--stall-after-min` | Set the policy's `stall_after_min`: minutes without agent activity before `robomate status` reports a stall (default 20). |
+| `--max-resumes`, `--resume-delay-s` | Bound Alice's launcher: automatic resumes after an early exit (default 5; 0 disables) and the delay before each (default 5 s). |
 
 For a Codex Alice, the generated `start-alice.sh` uses `codex exec -C . --skip-git-repo-check` because `alice-runtime/` is outside a git checkout. Interactive `--no-auto-start` launches omit that exec-only flag. `--bob-provider`, `--charlie-provider`, and capability flags override the worker profiles used by Alice's pairing policy.
 
@@ -280,6 +282,8 @@ dedicated `hub-target` clone, stop the hub you started with:
 uv run --project /absolute/path/to/robomate robomate down
 ```
 
+`robomate status` marks an agent `STALLED` when its bridge still heartbeats but it has made no hub call, task progress or event consumption for `stall_after_min`, and names the evidence; it is a warning, not a lifecycle change (see [agent recovery](development/agent-recovery.md#an-agent-that-stops-working-but-keeps-running)). `robomate status --snapshot [--stopped-at UTC_TIME]` prints the before-snapshot a manual `resume-alice` prompt asks for, from read-only calls that never take over Alice's session.
+
 Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down` asks the discovered hub to shut down and leaves another repository's hub alone. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
 On Linux or macOS, `ss -ltnp 'sport = :8420'` shows the listener for the default port. On Windows, `Get-NetTCPConnection -LocalPort 8420` shows its owning PID. Compare it with the PID in the target repository's `.robomate/hub.json` before stopping a process manually. A merged PR closes its issue when its body contains `Closes owner/repo#N`.
@@ -434,6 +438,7 @@ $env:CODEX_HOME = "C:\my-run\configs\codex"; codex login status
   - If `false`: Allows both workers to run on the same harness (e.g. Claude Code for both Bob and Charlie).
 - `max_review_rounds`: Maximum number of review remediation rounds before Alice escalates to the operator (default 3).
 - `merge_method`: Must match repository settings (`squash`, `merge`, or `rebase`).
+- `stall_after_min`: Minutes without substantive hub calls, task progress, or event consumption before the hub reports an agent as stalled (default 20). A diagnostic only: it never fails, reassigns, or stops anything. It sits between `HUB_LOST_AFTER_S` (the bridge heartbeat stopped) and `max_task_lease_min` (one task's total time).
 
 ---
 

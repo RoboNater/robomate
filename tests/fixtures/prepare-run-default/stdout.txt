@@ -51,6 +51,8 @@ $RUN_DIR/start-alice.sh
 $RUN_DIR/start-bob.sh
 $RUN_DIR/start-charlie.sh
 
+start-alice resumes Alice's conversation up to 5 time(s) if her harness exits before the workflow is done; alice-sessions.jsonl records each launch and her conversation ID.
+
 Resume scripts (after a harness crash, with the saved session ID):
 $RUN_DIR/resume-alice.sh
 $RUN_DIR/resume-bob.sh

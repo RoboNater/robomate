@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -46,6 +46,13 @@ from agent_hub_common import (
 )
 from pydantic import ValidationError
 
+from .activity import (
+    EVENT_BACKLOG,
+    NO_HUB_CALL,
+    NO_TASK_PROGRESS,
+    Activity,
+    ActivityTracker,
+)
 from .database import database
 from .merge_gate import GateReport
 from .signals import EVENT_KEY, Signals, context_key, task_key
@@ -55,6 +62,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_GOAL = "Drive the assigned GitHub issue to a merged pull request."
 DEFAULT_LEASE_MIN = 30.0
 DEFAULT_MAX_TASK_LEASE_MIN = 120.0
+DEFAULT_STALL_AFTER_MIN = 20.0
+# How many of the oldest unconsumed events a stall assessment names.
+STALL_EVENT_SAMPLE = 5
 DEFAULT_PROFILE = AgentProfile()
 LOST_REASON = "worker_lost"
 MAX_CHECK_NAME_CHARS = 256
@@ -394,6 +404,8 @@ class HubStore:
     signals: Signals = field(default_factory=Signals)
     clock: Callable[[], datetime] = utcnow
     default_event_lease_s: float = DEFAULT_EVENT_LEASE_S
+    # Hub calls and holds per agent, in memory only (#144).
+    activity: ActivityTracker = field(default_factory=ActivityTracker)
 
     def _now(self) -> datetime:
         return self.clock()
@@ -496,12 +508,19 @@ class HubStore:
         }
 
     def status_summary(self) -> dict[str, Any]:
-        """Return the small operator view without instructions or result bodies."""
+        """Return the small operator view without instructions or result bodies.
+
+        `activity` beside each agent, and `orchestrator_activity`, are the
+        stall assessment (#144): read from the same transaction, additive to
+        the fields older consumers know.
+        """
+        now = self._now()
         with database(self.path) as connection:
             connection.execute("BEGIN")
             workflow = connection.execute(
                 "SELECT id, status, goal FROM workflow ORDER BY created LIMIT 1"
             ).fetchone()
+            assessment = self._assess(connection, now)
             agents = [
                 {
                     "name": row["name"],
@@ -510,6 +529,8 @@ class HubStore:
                     "status": row["status"],
                     "alive": row["status"] != AgentStatus.LOST.value,
                     "current_task": row["current_task_id"],
+                    "stalled": assessment["agents"][row["name"]]["stalled"],
+                    "activity": assessment["agents"][row["name"]],
                 }
                 for row in connection.execute(
                     "SELECT name, harness, model, status, current_task_id FROM agent ORDER BY name"
@@ -561,6 +582,7 @@ class HubStore:
             "workflow": None
             if workflow is None
             else {
+                "id": workflow["id"],
                 "status": workflow["status"],
                 "headline": next(
                     (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
@@ -572,6 +594,65 @@ class HubStore:
             "pending_questions": pending_questions,
             # Open `ask_user` questions, which `robomate inbox` lists (#130).
             "operator_questions": operator_questions,
+            "stall_after_min": assessment["stall_after_min"],
+            "orchestrator_activity": assessment["orchestrator"],
+            "assessed_at": to_iso(now),
+        }
+
+    def snapshot(self) -> dict[str, Any]:
+        """The operator's before-snapshot for a manual resume (#146); a pure read.
+
+        One read transaction, so tasks and deliveries are consistent with each
+        other. Nothing is leased, acknowledged or renewed, and no session is
+        touched: taking it changes nothing Alice or a worker can observe.
+        """
+
+        now = self._now()
+        with database(self.path) as connection:
+            connection.execute("BEGIN")
+            workflow = connection.execute(
+                "SELECT id, status FROM workflow ORDER BY created LIMIT 1"
+            ).fetchone()
+            tasks = [
+                {
+                    "id": row["id"],
+                    "assignee": row["assignee"],
+                    "role": row["role"],
+                    "state": row["state"],
+                    "lease_expires": row["lease_expires"],
+                }
+                for row in connection.execute(
+                    f"SELECT * FROM task WHERE state IN ({_placeholders(OPEN_STATES)})"
+                    " ORDER BY created",
+                    tuple(state.value for state in OPEN_STATES),
+                )
+            ]
+            deliveries = [
+                {
+                    "event_id": row["id"],
+                    "kind": row["kind"],
+                    "delivery_id": row["delivery_id"],
+                    "attempt": row["delivery_attempts"],
+                    "delivered_at": row["delivered_at"],
+                    "delivery_expires": row["delivery_expires"],
+                }
+                for row in connection.execute(
+                    "SELECT * FROM event WHERE state = 'delivered' ORDER BY id"
+                )
+            ]
+            queued = int(
+                connection.execute(
+                    "SELECT COUNT(*) AS n FROM event WHERE state = 'queued'"
+                ).fetchone()["n"]
+            )
+        return {
+            "taken_at": to_iso(now),
+            "workflow": None
+            if workflow is None
+            else {"id": workflow["id"], "status": workflow["status"]},
+            "tasks": tasks,
+            "deliveries": deliveries,
+            "queued_events": queued,
         }
 
     def set_workflow_status(
@@ -621,6 +702,9 @@ class HubStore:
             connection.execute(
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
+            if row is not None and row["status"] == WorkflowStatus.PAUSED.value:
+                # Stall clocks restart when a pause ends (#144).
+                self.activity.note_resumed(self._now())
             cursor = connection.execute(
                 "INSERT INTO decision (ts, summary, rationale, actor, session)"
                 " VALUES (?, ?, ?, ?, ?)",
@@ -2174,6 +2258,379 @@ class HubStore:
             )
         return emitted
 
+    # -- activity and stalls (#144) -------------------------------------------
+
+    def _is_current_instance(self, name: str, instance: str) -> bool:
+        """Whether `instance` is the durable, live instance for `name` right now.
+
+        Checked before every tracker change, so a replayed check-in or a held
+        stream from a superseded instance cannot replace the current one's
+        record (#144).
+        """
+
+        with database(self.path) as connection:
+            row = connection.execute(
+                "SELECT worker_instance_id, status FROM agent WHERE name = ?", (name,)
+            ).fetchone()
+        return (
+            row is not None
+            and bool(instance)
+            and row["worker_instance_id"] == instance
+            and row["status"] != AgentStatus.LOST.value
+        )
+
+    def note_worker_call(self, name: str, instance: str, kind: str) -> None:
+        """A substantive call by the worker instance that is current for `name`."""
+
+        if self._is_current_instance(name, instance):
+            self.activity.worker_call(name, instance, kind, self._now())
+
+    def worker_hold(
+        self, name: str, instance: str, kind: str, timeout_s: float
+    ) -> AbstractContextManager[None]:
+        """Exempt a worker from the silence check while one of its calls is held.
+
+        A hold from an instance that is no longer current records nothing.
+        """
+
+        if not self._is_current_instance(name, instance):
+            return nullcontext()
+        return self.activity.worker_hold(name, instance, kind, timeout_s, self._now)
+
+    def note_orchestrator_session(self, actor: str, session: str) -> None:
+        """The session `/rpc` just accepted as the current orchestrator."""
+
+        self.activity.orchestrator_accepted(actor, session, self._now())
+
+    def note_orchestrator_heartbeat(self, session: str) -> None:
+        self.activity.orchestrator_heartbeat(session, self._now())
+
+    def orchestrator_call(
+        self, session: str, kind: str, timeout_s: float
+    ) -> AbstractContextManager[None]:
+        """Count one orchestrator operation as activity, and hold while it runs."""
+
+        return self.activity.orchestrator_call(session, kind, timeout_s, self._now)
+
+    def _stall_after_min(self, policy: Mapping[str, Any]) -> float:
+        value = policy.get("stall_after_min", DEFAULT_STALL_AFTER_MIN)
+        if isinstance(value, int | float) and not isinstance(value, bool) and value > 0:
+            return float(value)
+        return DEFAULT_STALL_AFTER_MIN
+
+    def assess_activity(self) -> dict[str, Any]:
+        """The current stall assessment for Alice and every worker; a pure read."""
+
+        now = self._now()
+        with database(self.path) as connection:
+            connection.execute("BEGIN")
+            return self._assess(connection, now)
+
+    def _assess(self, connection: Connection, now: datetime) -> dict[str, Any]:
+        """Combine in-memory activity with durable rows into one assessment.
+
+        A stall is an observation beside the lifecycle status, never a change
+        to it. Each reason has its own evidence, so a call made for some other
+        reason cannot hide an event nobody has consumed, and a hold exempts
+        only the silence check, never stale task progress.
+        """
+
+        tracker = self.activity
+        tracker.mark_started(now)
+        row = connection.execute(
+            "SELECT id, status, policy_json FROM workflow ORDER BY created LIMIT 1"
+        ).fetchone()
+        if row is None:
+            # Workers may check in before Alice initializes the workflow; they
+            # are listed, never assessed.
+            return {
+                "workflow_id": None,
+                "workflow_status": None,
+                "stall_after_min": None,
+                "orchestrator": None,
+                "agents": {
+                    r["name"]: {
+                        "stalled": False,
+                        "reasons": [],
+                        "suppressed": "no_workflow",
+                        "instance": r["worker_instance_id"] or None,
+                        "heartbeat_age_s": _age_seconds(r["last_heartbeat"], now),
+                        "task_id": None,
+                        "progress_age_s": None,
+                    }
+                    for r in connection.execute(
+                        "SELECT name, worker_instance_id, last_heartbeat FROM agent ORDER BY name"
+                    )
+                },
+            }
+        status = WorkflowStatus(row["status"])
+        threshold_min = self._stall_after_min(_json_object(row["policy_json"]) or {})
+        threshold = timedelta(minutes=threshold_min)
+        # Done ends the assessment; paused suspends it until the workflow
+        # resumes, when every silence and progress clock restarts.
+        suppressed = {
+            WorkflowStatus.DONE: "workflow_done",
+            WorkflowStatus.PAUSED: "workflow_paused",
+        }.get(status)
+        orchestrator = self._assess_orchestrator(connection, now, threshold, suppressed)
+        agents = {
+            agent.name: self._assess_worker(connection, agent, now, threshold, suppressed)
+            for agent in (
+                _agent(r) for r in connection.execute("SELECT * FROM agent ORDER BY name")
+            )
+        }
+        return {
+            "workflow_id": row["id"],
+            "workflow_status": status.value,
+            "stall_after_min": threshold_min,
+            "orchestrator": orchestrator,
+            "agents": agents,
+        }
+
+    def _activity_fields(
+        self, record: Activity | None, now: datetime, threshold: timedelta
+    ) -> tuple[dict[str, Any], bool]:
+        """Evidence shared by Alice and workers, and whether silence crossed the threshold."""
+
+        tracker = self.activity
+        hold = None if record is None else record.active_hold(now)
+        anchor = tracker.silence_anchor(record, now)
+        silence = max(timedelta(0), now - anchor)
+        last_call = None if record is None else record.last_call
+        fields = {
+            "threshold_s": threshold.total_seconds(),
+            "silence_s": round(silence.total_seconds(), 1),
+            "last_call": None if record is None else record.last_call_kind,
+            "last_call_age_s": None if last_call is None else _age_seconds(to_iso(last_call), now),
+            "holding": None if hold is None else hold.kind,
+            "hold_age_s": None
+            if hold is None
+            else round(max(0.0, (now - hold.started).total_seconds()), 1),
+        }
+        return fields, hold is None and silence >= threshold
+
+    def _assess_orchestrator(
+        self,
+        connection: Connection,
+        now: datetime,
+        threshold: timedelta,
+        suppressed: str | None,
+    ) -> dict[str, Any]:
+        tracker = self.activity
+        record = tracker.orchestrator()
+        fields, silent = self._activity_fields(record, now, threshold)
+        # An event nobody has even tried to deliver ages from when it was
+        # queued, or from when this hub could first have delivered it.
+        floor = max(
+            [moment for moment in (tracker.started, tracker.resumed_at) if moment is not None],
+            default=now,
+        )
+        rows = connection.execute(
+            "SELECT id, kind, ts FROM event WHERE state = 'queued' AND delivery_attempts = 0"
+            " ORDER BY id"
+        ).fetchall()
+        backlog = [
+            row for row in rows if now - max(_parse_timestamp(row["ts"]), floor) >= threshold
+        ]
+        reasons = []
+        if silent:
+            reasons.append(NO_HUB_CALL)
+        if backlog:
+            reasons.append(EVENT_BACKLOG)
+        if suppressed is not None:
+            reasons = []
+        heartbeat = None if record is None else record.heartbeat
+        return {
+            "actor": tracker.orchestrator_actor,
+            "session": tracker.orchestrator_session,
+            "stalled": bool(reasons),
+            "reasons": reasons,
+            "suppressed": suppressed,
+            **fields,
+            "heartbeat_age_s": None if heartbeat is None else _age_seconds(to_iso(heartbeat), now),
+            "unattempted_events": len(rows),
+            "stale_events": [
+                {"id": row["id"], "kind": row["kind"], "age_s": _age_seconds(row["ts"], now)}
+                for row in backlog[:STALL_EVENT_SAMPLE]
+            ],
+        }
+
+    def _assess_worker(
+        self,
+        connection: Connection,
+        agent: AgentRecord,
+        now: datetime,
+        threshold: timedelta,
+        suppressed: str | None,
+    ) -> dict[str, Any]:
+        heartbeat_age = _age_seconds(agent.last_heartbeat, now)
+        base: dict[str, Any] = {
+            "stalled": False,
+            "reasons": [],
+            "instance": agent.worker_instance_id or None,
+            "heartbeat_age_s": heartbeat_age,
+            "task_id": None,
+            "progress_age_s": None,
+        }
+        if agent.status in (AgentStatus.RELEASED, AgentStatus.LOST):
+            # Lifecycle already says what happened; a released worker is
+            # finished and a lost one has no heartbeat (#19).
+            return base | {"suppressed": agent.status.value}
+        if not agent.worker_instance_id:
+            # Detached (#115): its successor has not checked in yet, and the
+            # sweeper declares it lost if none does.
+            return base | {"suppressed": "detached"}
+        record = self.activity.worker(agent.name, agent.worker_instance_id)
+        fields, silent = self._activity_fields(record, now, threshold)
+        reasons = [NO_HUB_CALL] if silent else []
+        task_id = self._open_task_id(connection, agent.current_task_id)
+        progress_age = None
+        if task_id is not None:
+            task = self._require_task(connection, task_id)
+            if task.state in (TaskState.SUBMITTED, TaskState.WORKING):
+                # Progress is any message on the task, starting with the
+                # assignment itself: report_progress, a question, a reply or
+                # the result. A worker answering a question is Alice's wait.
+                latest = connection.execute(
+                    "SELECT MAX(ts) AS ts FROM message WHERE task_id = ?", (task_id,)
+                ).fetchone()["ts"]
+                anchors = [_parse_timestamp(latest or task.created)]
+                if self.activity.resumed_at is not None:
+                    anchors.append(self.activity.resumed_at)
+                progress = max(timedelta(0), now - max(anchors))
+                progress_age = round(progress.total_seconds(), 1)
+                if progress >= threshold:
+                    reasons.append(NO_TASK_PROGRESS)
+        if suppressed is not None:
+            reasons = []
+        return base | {
+            "stalled": bool(reasons),
+            "reasons": reasons,
+            "suppressed": suppressed,
+            **fields,
+            "task_id": task_id,
+            "progress_age_s": progress_age,
+        }
+
+    def sweep_stalls(self) -> list[EventRecord]:
+        """Open, refresh and close stall episodes; queue one event per worker episode.
+
+        Changes nothing about any agent, task or workflow (#144): a stall is
+        diagnostic. A worker's episode starts with one `agent_stalled` event
+        for Alice; an orchestrator stall can only reach the operator, so it is
+        recorded and shown, never queued to the stalled orchestrator itself.
+        An episode stays open while any reason holds and closes once none does,
+        so a recovered agent can start a new one.
+        """
+
+        now = self._now()
+        now_iso = to_iso(now)
+        first = not self.activity.reconciled
+        emitted: list[int] = []
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            report = self._assess(connection, now)
+            stalled: dict[tuple[str, str | None], dict[str, Any]] = {}
+            orchestrator = report["orchestrator"]
+            if orchestrator is not None and orchestrator["stalled"]:
+                stalled[("orchestrator", None)] = orchestrator | {
+                    "actor": orchestrator["actor"] or "orchestrator",
+                    "instance": orchestrator["session"],
+                    "task_id": None,
+                }
+            for name, assessment in report["agents"].items():
+                if assessment["stalled"]:
+                    stalled[(name, assessment["instance"])] = assessment | {"actor": name}
+            open_rows = connection.execute(
+                "SELECT * FROM stall_episode WHERE cleared IS NULL ORDER BY id"
+            ).fetchall()
+            seen: set[tuple[str, str | None]] = set()
+            for row in open_rows:
+                key: tuple[str, str | None] = (
+                    ("orchestrator", None)
+                    if row["role"] == "orchestrator"
+                    else (row["actor"], row["instance"])
+                )
+                current = stalled.get(key)
+                if current is not None and key not in seen:
+                    seen.add(key)
+                    connection.execute(
+                        "UPDATE stall_episode SET assessed = ?, reasons_json = ?,"
+                        " evidence_json = ?, task_id = ?, instance = ? WHERE id = ?",
+                        (
+                            now_iso,
+                            json.dumps(current["reasons"]),
+                            json.dumps(_stall_evidence(current)),
+                            current["task_id"],
+                            current["instance"],
+                            row["id"],
+                        ),
+                    )
+                    continue
+                connection.execute(
+                    "UPDATE stall_episode SET cleared = ?, cleared_reason = ? WHERE id = ?",
+                    (now_iso, _cleared_reason(row, report, first), row["id"]),
+                )
+            for key, current in stalled.items():
+                if key in seen:
+                    continue
+                role = "orchestrator" if key == ("orchestrator", None) else "worker"
+                cursor = connection.execute(
+                    "INSERT INTO stall_episode (workflow_id, role, actor, instance, task_id,"
+                    " started, assessed, reasons_json, evidence_json)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        report["workflow_id"],
+                        role,
+                        current["actor"],
+                        current["instance"],
+                        current["task_id"],
+                        now_iso,
+                        now_iso,
+                        json.dumps(current["reasons"]),
+                        json.dumps(_stall_evidence(current)),
+                    ),
+                )
+                episode_id = int(cursor.lastrowid or 0)
+                if role != "worker":
+                    continue
+                event_id = self._add_event(
+                    connection,
+                    EventKind.AGENT_STALLED,
+                    {
+                        "agent": current["actor"],
+                        "task_id": current["task_id"],
+                        "episode_id": episode_id,
+                        "reasons": current["reasons"],
+                    }
+                    | _stall_evidence(current),
+                )
+                connection.execute(
+                    "UPDATE stall_episode SET event_id = ? WHERE id = ?", (event_id, episode_id)
+                )
+                emitted.append(event_id)
+            events = [
+                _event(row)
+                for row in connection.execute(
+                    f"SELECT * FROM event WHERE id IN ({_placeholders(emitted)}) ORDER BY id",
+                    emitted,
+                ).fetchall()
+            ]
+        self.activity.reconciled = True
+        if events:
+            self.signals.notify(EVENT_KEY)
+        return events
+
+    def stall_episodes(self, *, open_only: bool = False) -> list[dict[str, Any]]:
+        """Recorded stall episodes, oldest first."""
+
+        query = "SELECT * FROM stall_episode"
+        if open_only:
+            query += " WHERE cleared IS NULL"
+        with database(self.path) as connection:
+            rows = connection.execute(query + " ORDER BY id").fetchall()
+        return [_stall_episode(row) for row in rows]
+
 
 def _readmitted(previous: AgentStatus, open_task: str | None) -> AgentStatus:
     """Status for a worker that has just re-announced itself with READY.
@@ -2188,6 +2645,65 @@ def _readmitted(previous: AgentStatus, open_task: str | None) -> AgentStatus:
     if previous is AgentStatus.RELEASED:
         return AgentStatus.RELEASED
     return AgentStatus.BUSY if open_task else AgentStatus.IDLE
+
+
+# Evidence copied into an episode and its event: ages and IDs, never text.
+_EVIDENCE_KEYS = (
+    "threshold_s",
+    "silence_s",
+    "last_call",
+    "last_call_age_s",
+    "holding",
+    "heartbeat_age_s",
+    "task_id",
+    "progress_age_s",
+    "session",
+    "unattempted_events",
+    "stale_events",
+)
+
+
+def _stall_evidence(assessment: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: assessment[key] for key in _EVIDENCE_KEYS if key in assessment}
+
+
+def _cleared_reason(row: Row, report: Mapping[str, Any], first_sweep: bool) -> str:
+    """Why an open episode no longer holds, for the report."""
+
+    if first_sweep:
+        return "hub_restarted"
+    status = report["workflow_status"]
+    if status == WorkflowStatus.DONE.value:
+        return "workflow_done"
+    if status == WorkflowStatus.PAUSED.value:
+        return "workflow_paused"
+    if row["role"] == "worker":
+        assessment = report["agents"].get(row["actor"])
+        if assessment is None:
+            return "agent_removed"
+        if assessment.get("suppressed") in ("released", "lost", "detached"):
+            return str(assessment["suppressed"])
+        if assessment.get("instance") != row["instance"]:
+            return "superseded"
+    return "recovered"
+
+
+def _stall_episode(row: Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "workflow_id": row["workflow_id"],
+        "role": row["role"],
+        "actor": row["actor"],
+        "instance": row["instance"],
+        "task_id": row["task_id"],
+        "started": row["started"],
+        "assessed": row["assessed"],
+        "cleared": row["cleared"],
+        "cleared_reason": row["cleared_reason"],
+        "reasons": json.loads(row["reasons_json"]),
+        "evidence": json.loads(row["evidence_json"]),
+        "event_id": row["event_id"],
+    }
 
 
 def _placeholders(values: Sequence[object]) -> str:

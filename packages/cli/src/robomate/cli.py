@@ -294,6 +294,142 @@ def _age(elapsed: timedelta) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60}m"
 
 
+STALL_NOTE = (
+    "STALLED is an activity warning, not a lifecycle state: no substantive hub call, "
+    "task progress or event consumption within the threshold, while the bridge may "
+    "still heartbeat. A long non-hub command (tests, CI) can cause it; it does not "
+    "prove a provider fault. 'lost' means the bridge heartbeat itself stopped."
+)
+
+
+def _seconds(value: object) -> timedelta | None:
+    return timedelta(seconds=float(value)) if isinstance(value, int | float) else None
+
+
+def _stall_evidence(activity: dict[str, Any]) -> str:
+    """One line of evidence for a stalled agent: reasons, ages and IDs (#144)."""
+
+    parts = []
+    reasons = activity.get("reasons") or []
+    silence = _seconds(activity.get("silence_s"))
+    if "no_hub_call" in reasons and silence is not None:
+        last = activity.get("last_call")
+        parts.append(
+            f"no hub call for {_age(silence)}" + (f" (last: {last})" if last else " (none seen)")
+        )
+    progress = _seconds(activity.get("progress_age_s"))
+    if "no_task_progress" in reasons and progress is not None:
+        parts.append(f"task {activity.get('task_id')} no progress for {_age(progress)}")
+    if "event_backlog" in reasons:
+        for event in activity.get("stale_events") or []:
+            age = _seconds(event.get("age_s"))
+            parts.append(
+                f"event {event.get('id')} ({event.get('kind')}) queued"
+                f" {_age(age) if age is not None else '?'} undelivered"
+            )
+    heartbeat = _seconds(activity.get("heartbeat_age_s"))
+    parts.append(
+        "no bridge heartbeat seen"
+        if heartbeat is None
+        else f"bridge heartbeat {_age(heartbeat)} ago"
+    )
+    threshold = _seconds(activity.get("threshold_s"))
+    if threshold is not None:
+        parts.append(f"threshold {_age(threshold)}")
+    return "; ".join(parts)
+
+
+def _hub_connection() -> tuple[str, str, object]:
+    """The discovered hub's URL, token and port, exiting as `status` does when stopped."""
+
+    try:
+        root, _ = repo_root(Path.cwd())
+    except DiscoveryError:
+        root = None
+    info = read_hub_json(root) if root is not None else None
+    explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
+    if info is not None and not explicit:
+        url = str(info.get("url") or "unknown")
+        port = info.get("port")
+        assert root is not None
+        if not hub_healthy(url, str(info.get("hub_id") or "")):
+            pid = int(info.get("pid") or 0)
+            if process_alive(pid):
+                raise RuntimeError(f"hub at {url} is unreachable; recorded pid {pid} is visible")
+            raise RuntimeError(f"hub at {url} is not running")
+        token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()
+        return url, token, port
+    endpoint = discover(Path.cwd())
+    return endpoint.url, endpoint.token, urllib.parse.urlparse(endpoint.url).port
+
+
+def _stopped_at(value: str | None) -> str | None:
+    """Normalize an operator-supplied stop time to UTC ISO 8601, or refuse it."""
+
+    if value is None:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"--stopped-at {value!r} is not an ISO 8601 time, e.g. 2026-10-08T12:00:00Z"
+        ) from None
+    if moment.tzinfo is None:
+        raise ValueError("--stopped-at needs a timezone, e.g. 2026-10-08T12:00:00Z")
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def render_snapshot(snapshot: dict[str, Any]) -> str:
+    """The before-snapshot block exactly as `resume-<agent>.prompt.md` expects it (#146)."""
+
+    stopped = snapshot.get("stopped_at")
+    workflow = snapshot.get("workflow")
+    orchestrator = snapshot.get("orchestrator")
+    lines = [
+        "Operator before-snapshot",
+        f"- Snapshot time: {snapshot['taken_at']} (when this was read, not a process stop time)",
+        "- Old process stop time: "
+        + (f"{stopped} (operator-supplied)" if stopped else "not supplied"),
+        f"- Hub ID: {snapshot.get('hub_id') or 'unknown'}",
+        "- Workflow: " + ("none" if not workflow else f"{workflow['id']} ({workflow['status']})"),
+        "- Alice RPC session: "
+        + (
+            "none seen by this hub process"
+            if not orchestrator
+            else f"{orchestrator['session']} ({orchestrator['name']},"
+            f" last seen {orchestrator['last_seen']})"
+        ),
+        f"- Open tasks: {len(snapshot['tasks'])}",
+    ]
+    for task in snapshot["tasks"]:
+        lines.append(
+            f"  - task {task['id']}: owner {task['assignee'] or '-'}, role {task['role']},"
+            f" state {task['state']}"
+        )
+    lines.append(f"- Unacknowledged deliveries: {len(snapshot['deliveries'])}")
+    for delivery in snapshot["deliveries"]:
+        lines.append(
+            f"  - event {delivery['event_id']} ({delivery['kind']}): delivery"
+            f" {delivery['delivery_id']}, attempt {delivery['attempt']},"
+            f" delivered_at {delivery['delivered_at']},"
+            f" delivery_expires {delivery['delivery_expires']}"
+        )
+    lines.append(f"- Queued, never delivered events: {snapshot['queued_events']}")
+    return "\n".join(lines)
+
+
+def _snapshot(as_json: bool, stopped_at: str | None) -> None:
+    """Print the operator's before-snapshot from bearer-only reads (#146)."""
+
+    stopped = _stopped_at(stopped_at)
+    url, token, _ = _hub_connection()
+    snapshot = _rpc(url, token, "hub.snapshot") | {"stopped_at": stopped}
+    if as_json:
+        print(json.dumps(snapshot))
+    else:
+        print(render_snapshot(snapshot))
+
+
 def _status(as_json: bool) -> None:
     """Show the discovered hub, retaining local metadata for stopped hubs."""
     try:
@@ -372,15 +508,26 @@ def _status(as_json: bool) -> None:
         )
     else:
         print("Orchestrator: none")
+    # Absent from a hub older than #144, which may still be running.
+    stalled = False
+    alice = status.get("orchestrator_activity")
+    if alice and alice.get("stalled"):
+        stalled = True
+        print(f"  STALLED — {_stall_evidence(alice)}")
     print(f"Agents: {len(status['agents'])}")
     for agent in status["agents"]:
         life = (
             "released" if agent["status"] == "released" else "alive" if agent["alive"] else "lost"
         )
+        if agent.get("stalled"):
+            stalled = True
+            life = "STALLED"
         print(
             f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
             f"  task {agent['current_task'] or '-'}"
         )
+        if agent.get("stalled"):
+            print(f"    {_stall_evidence(agent['activity'])}")
     print(f"Open tasks: {len(status['tasks'])}")
     for task in status["tasks"]:
         print(
@@ -393,6 +540,8 @@ def _status(as_json: bool) -> None:
     if operator_questions is not None:
         hint = "  (see robomate inbox)" if operator_questions else ""
         print(f"Operator questions: {operator_questions}{hint}")
+    if stalled:
+        print(STALL_NOTE)
 
 
 def _printable(text: str) -> str:
@@ -549,6 +698,16 @@ def main() -> None:
     commands.add_parser("down", help="stop the discovered hub")
     status = commands.add_parser("status", help="show this repository's hub state")
     status.add_argument("--json", action="store_true")
+    status.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="print the operator before-snapshot a manual resume prompt asks for",
+    )
+    status.add_argument(
+        "--stopped-at",
+        metavar="UTC_TIME",
+        help="with --snapshot: when the old harness process was seen to stop",
+    )
     inbox = commands.add_parser("inbox", help="list the questions waiting for you")
     inbox.add_argument("--json", action="store_true")
     answer = commands.add_parser("answer", help="answer a question from robomate inbox")
@@ -568,7 +727,12 @@ def main() -> None:
         elif args.command == "down":
             _down()
         elif args.command == "status":
-            _status(args.json)
+            if args.stopped_at is not None and not args.snapshot:
+                raise ValueError("--stopped-at goes with --snapshot")
+            if args.snapshot:
+                _snapshot(args.json, args.stopped_at)
+            else:
+                _status(args.json)
         elif args.command == "inbox":
             _inbox(args.json)
         elif args.command == "answer":

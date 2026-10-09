@@ -106,7 +106,8 @@ async def test_hub_status_is_compact_and_reports_open_work(
     assert result["orchestrator"]["name"] == "alice"
     assert result["orchestrator"]["session"] == SESSION
     assert result["orchestrator"]["last_seen"]
-    assert result["agents"] == [
+    legacy = ("name", "harness", "model", "status", "alive", "current_task")
+    assert [{key: agent[key] for key in legacy} for agent in result["agents"]] == [
         {
             "name": "bob",
             "harness": "codex",
@@ -116,6 +117,9 @@ async def test_hub_status_is_compact_and_reports_open_work(
             "current_task": task.id,
         }
     ]
+    # The stall assessment is additive (#144); bob is waiting on Alice's answer.
+    assert result["agents"][0]["stalled"] is False
+    assert result["agents"][0]["activity"]["reasons"] == []
     assert result["tasks"] == [
         {
             "id": task.id,

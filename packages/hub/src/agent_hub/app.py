@@ -90,6 +90,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         initialize_database(resolved.database_path)
+        # Silence is measured from here at the earliest: a restarted hub knows
+        # nothing of the calls and holds before it (#144).
+        store.activity.mark_started(store.clock())
         app.state.bearer_token = load_or_create_token(resolved.token, resolved.token_file)
         # `robomate up` creates the operator token; the hub only reads it, so a
         # hub started some other way has no operator methods until it exists.

@@ -2,7 +2,9 @@
 
 Nothing else in the hub is driven by the passage of time: a lease only matters
 once it is overdue, and a worker that has gone quiet sends nothing to react to.
-This loop turns both into events on Alice's inbox.
+This loop turns both into events on Alice's inbox, and keeps the stall
+episodes of agents whose bridge is alive but whose harness has gone quiet
+(#144).
 """
 
 from __future__ import annotations
@@ -27,7 +29,13 @@ async def run_sweeper(store: HubStore, interval_s: float, lost_after_s: float) -
             # A sweep failure must not take the loop down with it; the next
             # pass sees the same overdue rows and reports them then.
             logger.exception("Sweep failed")
-            continue
+            events = []
+        try:
+            # Separate from the lease and liveness pass, so neither can stop
+            # the other (#144).
+            events += store.sweep_stalls()
+        except Exception:
+            logger.exception("Stall sweep failed")
         for event in events:
             logger.info("Sweeper queued %s: %s", event.kind.value, event.payload)
 

@@ -371,6 +371,11 @@ unjoined session can call besides `whoami`. Its description is the install-free 
 - **`not listening`** — alive, no task, no hold for longer than that: the harness ended its
   turn. `robomate status` flags it for a nudge ("continue"). This is the expected failure mode of
   IDE harnesses and the signal a supervisor would act on.
+- `STALLED` (#144, before M2) — an activity assessment beside `alive`/`lost`: no substantive
+  hub call and no hold, no task progress on leased work, or an orchestrator event never
+  delivered, for the policy's `stall_after_min`. Shown with its evidence; a worker's episode
+  queues one `agent_stalled` event; nothing is failed or restarted. Episodes are kept in
+  `stall_episode` (DB schema v17).
 
 ---
 
@@ -602,12 +607,14 @@ unavailable, -32005 operator credential required, -32603 anything else.
 Every orchestrator operation carries `X-Robomate-Actor` and `X-Robomate-Session` and is refused
 without them; `hub.info`, `hub.status`, and the read-only `hub.questions` (open operator
 questions) and `hub.operator_answer(question_id)` (the question, its answer and answer time, or
-`unanswered`; not found is -32001) need only the bearer token (#129). Operator-only methods,
+`unanswered`; not found is -32001) need only the bearer token (#129), as does `hub.snapshot`,
+the operator's before-snapshot for a manual resume (#146: hub ID, workflow, current session,
+open tasks, unacknowledged deliveries; it accepts no session and leases nothing). Operator-only methods,
 `hub.shutdown` first, also need `X-Robomate-Operator` with the operator token that `robomate up`
 creates beside the machine registry (#128). `hub.answer(question_id, answer)` is one (#130): it
 records the answer, its time and actor `operator`, and queues `user_answered`; an unknown id is
 -32001 and a second answer to a question is -32002. Each call other than `get_state`, `wait_for_event`,
-`hub.info`, `hub.status`, `hub.heartbeat`, `hub.record_calls`, `hub.questions` and
+`hub.info`, `hub.status`, `hub.snapshot`, `hub.heartbeat`, `hub.record_calls`, `hub.questions` and
 `hub.operator_answer` leaves an `rpc_audit` row (actor,
 session, method, outcome; never params), as does each orchestrator session takeover.
 
