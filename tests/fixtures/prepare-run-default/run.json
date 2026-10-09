@@ -17,10 +17,13 @@
       "alice": {
         "effort": "",
         "harness": "claude-code",
+        "max_resumes": 5,
         "model": "",
+        "resume_delay_s": 5.0,
         "resume_prompt": "$RUN_DIR/resume-alice.prompt.md",
         "resume_script": "$RUN_DIR/resume-alice.sh",
-        "script": "$RUN_DIR/start-alice.sh"
+        "script": "$RUN_DIR/start-alice.sh",
+        "sessions": "$RUN_DIR/alice-sessions.jsonl"
       },
       "bob": {
         "effort": "",
@@ -59,7 +62,8 @@
       "reviewer_capabilities": [],
       "reviewer_harness_differs": true,
       "reviewer_provider_differs": false
-    }
+    },
+    "stall_after_min": 20
   },
   "providers": {
     "bob": "anthropic",

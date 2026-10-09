@@ -3,4 +3,4 @@
 set -e
 cd $RUN_DIR/alice-runtime
 export TMPDIR=$RUN_DIR/tmp/alice
-claude --permission-mode auto --strict-mcp-config --mcp-config $RUN_DIR/configs/alice.mcp.json --add-dir $RUN_DIR -p 'Read $RUN_DIR/alice.prompt.md and follow the instructions in it'
+$PYTHON $ROOT/scripts/alice-launcher.py --harness claude-code --hub-url http://127.0.0.1:8420 --token-file $HUB_REPO/.robomate/token --sessions $RUN_DIR/alice-sessions.jsonl --max-resumes 5 --resume-delay-s 5 --prompt $RUN_DIR/alice.prompt.md -- claude --permission-mode auto --strict-mcp-config --mcp-config $RUN_DIR/configs/alice.mcp.json --add-dir $RUN_DIR

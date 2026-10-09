@@ -6,12 +6,16 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -25,6 +29,14 @@ assert SPEC and SPEC.loader
 PREPARE_RUN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE_RUN)
 RUN_COMMON = sys.modules["run_common"]
+_LAUNCHER_SPEC = importlib.util.spec_from_file_location(
+    "alice_launcher", ROOT / "scripts/alice-launcher.py"
+)
+assert _LAUNCHER_SPEC and _LAUNCHER_SPEC.loader
+ALICE_LAUNCHER = importlib.util.module_from_spec(_LAUNCHER_SPEC)
+# Dataclasses resolve their module through sys.modules while the class is built.
+sys.modules.setdefault("alice_launcher", ALICE_LAUNCHER)
+_LAUNCHER_SPEC.loader.exec_module(ALICE_LAUNCHER)
 
 # A local run's start scripts are PowerShell on a Windows host, bash elsewhere.
 SCRIPT_SUFFIX = "ps1" if os.name == "nt" else "sh"
@@ -1346,7 +1358,12 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
         assert os.access(script, os.X_OK)
         command = script.read_text()
         assert "--permission-mode auto --strict-mcp-config" in command
-        assert f"Read {run_dir / f'{name}.prompt.md'} and follow" in command
+        if name == "alice":
+            # The launcher hands Alice her prompt and resumes her (#146).
+            assert "alice-launcher.py" in command
+            assert f"--prompt {shlex.quote(str(run_dir / 'alice.prompt.md'))}" in command
+        else:
+            assert f"Read {run_dir / f'{name}.prompt.md'} and follow" in command
         assert f"`closeout-report-{name}.md`" in (run_dir / f"{name}.prompt.md").read_text()
     bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())["mcpServers"]["robomate"][
         "env"
@@ -1406,7 +1423,9 @@ def test_a_claude_worker_start_script_runs_under_the_resuming_launcher(
     sessions = run_dir / "bob-sessions.jsonl"
     agents = manifest["launch"]["agents"]
     assert agents["bob"]["sessions"] == str(sessions)
-    assert "sessions" not in agents["alice"] and "sessions" not in agents["charlie"]
+    assert "sessions" not in agents["charlie"]
+    # Alice's own launcher logs hers (#146).
+    assert agents["alice"]["sessions"] == str(run_dir / "alice-sessions.jsonl")
     script = run_dir / f"start-bob.{SCRIPT_SUFFIX}"
     assert "claude-worker.py" in script.read_text(encoding="utf-8")
     assert "claude-worker.py" not in (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text(
@@ -2243,10 +2262,10 @@ def test_resume_prompts_use_role_specific_first_hub_call() -> None:
 
     assert "check_in" not in OPERATIONS
     assert "check_in" in RUN_COMMON.TOOLS
-    alice = PREPARE_RUN.render_resume_prompt("alice")
+    alice = PREPARE_RUN.render_resume_prompt("alice", PurePosixPath("/runs/r"))
     assert "get_state" in alice and "call `check_in`" not in alice
     for name in ("bob", "charlie"):
-        assert "call `check_in`" in PREPARE_RUN.render_resume_prompt(name)
+        assert "call `check_in`" in PREPARE_RUN.render_resume_prompt(name, PurePosixPath("/runs/r"))
 
 
 def test_opencode_run_records_title_and_resume_artifacts(
@@ -2268,7 +2287,8 @@ def test_opencode_run_records_title_and_resume_artifacts(
         start = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
         assert "--title" in start and f"{name} {slug}" in start
         resume = (run_dir / f"resume-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
-        assert "--session" in resume
+        # Alice's launcher adds `--session` itself, from its --resume-session (#146).
+        assert ("--resume-session" if name == "alice" else "--session") in resume
         assert f"resume-{name}.prompt.md" in resume
         kickoff = f"Read {run_dir / f'{name}.prompt.md'} and follow the instructions in it"
         assert kickoff not in resume
@@ -2279,3 +2299,257 @@ def test_opencode_run_records_title_and_resume_artifacts(
     assert "initialize_workflow" in alice_resume and "start-alice.sh" in alice_resume
     bob_resume = (run_dir / "resume-bob.prompt.md").read_text(encoding="utf-8")
     assert "check_in" in bob_resume and "start-bob.sh" in bob_resume
+
+
+# -- Alice's launcher (#146) ---------------------------------------------------------
+
+# A stand-in for each harness CLI: it logs its arguments, standard input and
+# the environment the start script set, prints its conversation ID the way the
+# real CLI does, and exits as an early-exiting headless Alice would.
+FAKE_ALICE = """\
+import json, os, sys
+argv = sys.argv[1:]
+stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
+env = {k: os.environ.get(k) for k in ("CODEX_HOME", "OPENCODE_CONFIG", "HOME", "TMPDIR", "TEMP")}
+with open(os.environ["FAKE_ARGV_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": argv, "stdin": stdin, "env": env, "cwd": os.getcwd()}) + "\\n")
+print(os.environ.get("FAKE_ID_LINE", ""), flush=True)
+"""
+FAKE_ID_LINES = {
+    "claude-code": "",
+    "codex": "session id: 019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+    "opencode": json.dumps({"type": "step_start", "sessionID": "ses_7Fa9b2C"}),
+    "antigravity": json.dumps({"type": "init", "conversation_id": "conv-1234abcd"}),
+}
+CLI_NAMES = {
+    "claude-code": "claude",
+    "codex": "codex",
+    "opencode": "opencode",
+    "antigravity": "agy",
+}
+
+
+class _StubHub(BaseHTTPRequestHandler):
+    """hub.info and hub.status as the run hub answers them, statuses in order."""
+
+    statuses: list[str] = []
+    calls: list[tuple[str, str | None]] = []
+
+    def do_POST(self) -> None:  # noqa: N802 - the stdlib's name
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.calls.append((body["method"], self.headers.get("X-Robomate-Session")))
+        if body["method"] == "hub.info":
+            result: dict[str, Any] = {"hub_id": "hub-stub"}
+        else:
+            status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+            result = {"workflow": {"id": "wf-stub", "status": status, "headline": "h"}}
+        payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *_: Any) -> None:
+        pass
+
+
+@contextmanager
+def stub_hub(*statuses: str) -> Iterator[str]:
+    _StubHub.statuses = list(statuses)
+    _StubHub.calls = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def run_script(script: Path, bin_dir: Path, env: dict[str, str], *args: str) -> str:
+    if os.name == "nt":
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        assert shell is not None
+        command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+        command += ["-File", str(script), *args]
+    else:
+        command = ["bash", str(script), *args]
+    completed = subprocess.run(
+        command, env=env, capture_output=True, text=True, timeout=120, check=False
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return completed.stderr
+
+
+def fake_cli(bin_dir: Path, harness: str) -> None:
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "fake_alice.py"
+    fake.write_text(FAKE_ALICE, encoding="utf-8")
+    name = CLI_NAMES[harness]
+    if os.name == "nt":
+        (bin_dir / f"{name}.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
+    else:
+        cli = bin_dir / name
+        cli.write_text(f"#!{sys.executable}\n{FAKE_ALICE}", encoding="utf-8")
+        cli.chmod(0o755)
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+def test_start_and_resume_alice_scripts_run_the_launcher_to_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    """The generated scripts, run by their own shell, with each harness stood in (#146)."""
+
+    base = tmp_path / "with space"
+    base.mkdir()
+    bin_dir = base / "bin"
+    fake_cli(bin_dir, harness)
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_ARGV_LOG": str(base / "argv.jsonl"),
+        "FAKE_ID_LINE": FAKE_ID_LINES[harness],
+    }
+    # start-alice reads: before launching, after each of two exits; then
+    # resume-alice reads before its launch and after it.
+    with stub_hub("active", "active", "done", "escalated", "done") as url:
+        run_dir, manifest = prepare(
+            base,
+            monkeypatch,
+            test_hub_url=url,
+            alice_harness=harness,
+            alice_model="model-x",
+            alice_effort="high" if harness != "opencode" else "",
+            max_resumes=3,
+            resume_delay_s=0,
+        )
+        assert manifest["launch"]["agents"]["alice"]["max_resumes"] == 3
+        run_script(run_dir / f"start-alice.{SCRIPT_SUFFIX}", bin_dir, env)
+        started = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
+        (base / "argv.jsonl").unlink()
+        run_script(run_dir / f"resume-alice.{SCRIPT_SUFFIX}", bin_dir, env, "conv-given")
+        resumed = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
+        # Bearer-only reads: the launcher never presents an orchestrator session.
+        assert {session for _, session in _StubHub.calls} == {None}
+    assert len(started) == 2
+    records = [
+        json.loads(line) for line in (run_dir / "alice-sessions.jsonl").read_text().splitlines()
+    ]
+    stops = [record for record in records if record["event"] == "stop"]
+    assert [stop["reason"] for stop in stops] == ["done", "done"]
+    conversation = stops[0]["conversation_id"]
+    assert conversation
+    configs = run_dir / "configs"
+    for run in [*started, *resumed]:
+        # Model, working directory, temporary directory and isolated config
+        # are the same on every launch.
+        assert "model-x" in run["argv"]
+        assert Path(run["cwd"]).resolve() == (run_dir / "alice-runtime").resolve()
+        tmp = run["env"]["TEMP" if os.name == "nt" else "TMPDIR"]
+        assert Path(tmp) == run_dir / "tmp" / "alice"
+        if harness == "codex":
+            assert Path(run["env"]["CODEX_HOME"]) == configs / "alice-codex"
+        elif harness == "opencode":
+            assert Path(run["env"]["OPENCODE_CONFIG"]) == configs / "alice.opencode.json"
+        elif harness == "antigravity":
+            assert Path(run["env"]["HOME"]) == configs / "alice-agy"
+    assert conversation in started[1]["argv"]
+    continuation = started[1]["stdin"] if harness == "codex" else started[1]["argv"][-1]
+    assert continuation == ALICE_LAUNCHER.CONTINUE_PROMPT
+    kickoff = started[0]["stdin"] if harness == "codex" else started[0]["argv"][-1]
+    assert kickoff != continuation and "RUN_DIR" not in kickoff
+    # resume-alice resumes the conversation it is given, with the manual prompt.
+    assert len(resumed) == 1 and "conv-given" in resumed[0]["argv"]
+    manual = resumed[0]["stdin"] if harness == "codex" else resumed[0]["argv"][-1]
+    if harness == "codex":
+        assert manual.startswith("# Resume Alice")
+    else:
+        assert (
+            manual == f"Read {run_dir / 'resume-alice.prompt.md'} and follow the instructions in it"
+        )
+
+
+def test_no_auto_start_keeps_alice_interactive_without_the_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, manifest = prepare(tmp_path, monkeypatch, auto_start=False)
+    for script in ("start-alice", "resume-alice"):
+        assert "alice-launcher.py" not in (run_dir / f"{script}.{SCRIPT_SUFFIX}").read_text()
+    assert "sessions" not in manifest["launch"]["agents"]["alice"]
+
+
+def test_stall_and_resume_options_reach_policy_and_scripts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, manifest = prepare(
+        tmp_path, monkeypatch, stall_after_min=2, max_resumes=0, resume_delay_s=1.5
+    )
+    assert manifest["policy"]["stall_after_min"] == 2
+    assert '"stall_after_min": 2' in (run_dir / "alice.prompt.md").read_text()
+    start = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
+    assert "--max-resumes 0 --resume-delay-s 1.5" in start
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("stall_after_min", 0, "--stall-after-min"),
+        ("stall_after_min", float("inf"), "--stall-after-min"),
+        ("max_resumes", -1, "--max-resumes"),
+        ("resume_delay_s", -0.5, "--resume-delay-s"),
+    ],
+)
+def test_invalid_stall_and_resume_options_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, option: str, value: float, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        prepare(tmp_path, monkeypatch, **{option: value})
+
+
+def test_every_resume_prompt_names_the_real_run_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "dir with spaces"
+    base.mkdir()
+    run_dir, _ = prepare(base, monkeypatch)
+    for name in ("alice", "bob", "charlie"):
+        text = (run_dir / f"resume-{name}.prompt.md").read_text(encoding="utf-8")
+        assert "RUN_DIR" not in text
+        assert str(run_dir / "run.json") in text
+    remote = PREPARE_RUN.render_resume_prompt("bob", PureWindowsPath("C:/runs/my run"))
+    assert "RUN_DIR" not in remote and "C:\\runs\\my run\\run.json" in remote
+
+
+def test_the_alice_resume_prompt_shows_the_snapshot_block_robomate_prints() -> None:
+    """The prompt's template and `robomate status --snapshot` agree line by line (#146)."""
+
+    from robomate.cli import render_snapshot
+
+    printed = render_snapshot(
+        {
+            "taken_at": "2026-10-08T12:00:00Z",
+            "stopped_at": "2026-10-08T11:59:00Z",
+            "hub_id": "h",
+            "workflow": {"id": "w", "status": "active"},
+            "orchestrator": {"name": "alice", "session": "s", "last_seen": "t"},
+            "tasks": [{"id": "t1", "assignee": "bob", "role": "implementer", "state": "working"}],
+            "deliveries": [
+                {
+                    "event_id": 7,
+                    "kind": "task_completed",
+                    "delivery_id": "d",
+                    "attempt": 1,
+                    "delivered_at": "a",
+                    "delivery_expires": "b",
+                }
+            ],
+            "queued_events": 0,
+        }
+    ).splitlines()
+    template = PREPARE_RUN.render_resume_prompt("alice", PurePosixPath("/r"))
+    block = template[template.index("Operator before-snapshot\n") :].splitlines()
+    assert len(block) == len(printed)
+    for shown, expected in zip(block, printed, strict=True):
+        # Each <placeholder> stands for one printed value.
+        pattern = re.escape(shown.replace(", or not supplied", ""))
+        pattern = re.sub(r"<[^>]*>", ".+?", pattern.replace("\\<", "<").replace("\\>", ">"))
+        assert re.fullmatch(pattern, expected), (shown, expected)
