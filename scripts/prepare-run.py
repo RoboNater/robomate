@@ -116,6 +116,13 @@ HARNESS_NAMES = {
 }
 WORKERS = ("bob", "charlie")
 AGENTS = ("alice", *WORKERS)
+#: Resume backoff shared by both launchers (#158); ``None`` means no count limit.
+DEFAULT_MAX_RESUMES: int | None = None
+DEFAULT_RESUME_DELAY_S = 5.0
+DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
+DEFAULT_RESUME_TOTAL_S = 12 * 60 * 60.0
+DEFAULT_RESUME_SERIES_RESET_S = 5 * 60.0
+DEFAULT_STALL_AFTER_MIN = 20
 #: The hub's MCP tools, which a Codex or AntiGravity Alice's config enables and approves.
 ALICE_TOOLS = [
     "get_state",
@@ -623,6 +630,12 @@ def claude_worker_launcher(
     telemetry: str,
     sessions: str,
     powershell: bool = False,
+    *,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> list[str]:
     """The words running ``scripts/claude-worker.py`` ahead of a worker's ``claude``.
 
@@ -641,6 +654,13 @@ def claude_worker_launcher(
         shell_word(telemetry, powershell),
         "--sessions",
         shell_word(sessions, powershell),
+        *launcher_backoff_flags(
+            max_resumes=max_resumes,
+            resume_delay_s=resume_delay_s,
+            resume_max_delay_s=resume_max_delay_s,
+            resume_total_s=resume_total_s,
+            resume_series_reset_s=resume_series_reset_s,
+        ),
     ]
 
 
@@ -810,6 +830,11 @@ def launch_lines(
     tmp_dir: Path | None = None,
     worker: str | None = None,
     title: str | None = None,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> list[str]:
     """One local agent's start lines for this platform; paths are shell-quoted.
 
@@ -817,8 +842,9 @@ def launch_lines(
     OpenCode, ``CODEX_HOME`` for Codex, and the isolated home for AntiGravity.
     ``worker`` names a worker agent, whose prompt sits in the run directory
     beside its telemetry and session log; an auto-started Claude Code worker
-    runs under ``scripts/claude-worker.py``. ``title`` is the OpenCode session
-    title; other harnesses ignore it.
+    runs under ``scripts/claude-worker.py`` (#115) with the run's resume
+    backoff (#158). ``title`` is the OpenCode session title; other harnesses
+    ignore it.
     """
     powershell = os.name == "nt"
     flags = model_flags(harness, model, effort, powershell, auto_start)
@@ -831,6 +857,11 @@ def launch_lines(
             str(prompt.parent / f"{worker}-telemetry.jsonl"),
             str(prompt.parent / f"{worker}-sessions.jsonl"),
             powershell,
+            max_resumes=max_resumes,
+            resume_delay_s=resume_delay_s,
+            resume_max_delay_s=resume_max_delay_s,
+            resume_total_s=resume_total_s,
+            resume_series_reset_s=resume_series_reset_s,
         )
     lines = harness_launch(
         harness,
@@ -1206,9 +1237,29 @@ def resume_script(lines: list[str], powershell: bool = False) -> str:
 
 #: Alice's launcher (#146); a fixed continuation, bounded resumes.
 ALICE_LAUNCHER = ROOT / "scripts" / "alice-launcher.py"
-DEFAULT_MAX_RESUMES = 5
-DEFAULT_RESUME_DELAY_S = 5.0
-DEFAULT_STALL_AFTER_MIN = 20
+
+
+def launcher_backoff_flags(
+    *,
+    max_resumes: int | None,
+    resume_delay_s: float,
+    resume_max_delay_s: float,
+    resume_total_s: float,
+    resume_series_reset_s: float,
+) -> list[str]:
+    """The resume-backoff words shared by ``start-alice`` and supervised workers (#158)."""
+    words = ["--resume-delay-s", f"{resume_delay_s:g}"]
+    if max_resumes is not None:
+        words += ["--max-resumes", str(max_resumes)]
+    words += [
+        "--resume-max-delay-s",
+        f"{resume_max_delay_s:g}",
+        "--resume-total-s",
+        f"{resume_total_s:g}",
+        "--resume-series-reset-s",
+        f"{resume_series_reset_s:g}",
+    ]
+    return words
 
 
 def alice_launch_lines(
@@ -1222,8 +1273,11 @@ def alice_launch_lines(
     effort: str = "",
     tmp_dir: Path | None = None,
     title: str | None = None,
-    max_resumes: int = DEFAULT_MAX_RESUMES,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
     resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
     resume_prompt: Path | None = None,
 ) -> list[str]:
     """An auto-started Alice's start or resume lines, under ``scripts/alice-launcher.py``.
@@ -1262,10 +1316,13 @@ def alice_launch_lines(
         shell_word(str(token_file), powershell),
         "--sessions",
         shell_word(str(prompt.parent / "alice-sessions.jsonl"), powershell),
-        "--max-resumes",
-        str(max_resumes),
-        "--resume-delay-s",
-        f"{resume_delay_s:g}",
+        *launcher_backoff_flags(
+            max_resumes=max_resumes,
+            resume_delay_s=resume_delay_s,
+            resume_max_delay_s=resume_max_delay_s,
+            resume_total_s=resume_total_s,
+            resume_series_reset_s=resume_series_reset_s,
+        ),
     ]
     if resume_prompt is None:
         words += ["--prompt", shell_word(str(prompt), powershell)]
@@ -1367,6 +1424,11 @@ def worker_launch(
     root: PurePath = ROOT,
     python: str = sys.executable,
     title: str | None = None,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> list[str]:
     """A remote worker's launch lines, spelled for its host.
 
@@ -1390,6 +1452,11 @@ def worker_launch(
             (root / "scripts" / "claude-worker.py").as_posix(),
             (run_dir / f"{name}-telemetry.jsonl").as_posix(),
             (run_dir / f"{name}-sessions.jsonl").as_posix(),
+            max_resumes=max_resumes,
+            resume_delay_s=resume_delay_s,
+            resume_max_delay_s=resume_max_delay_s,
+            resume_total_s=resume_total_s,
+            resume_series_reset_s=resume_series_reset_s,
         )
     lines = harness_launch(
         harness,
@@ -1713,15 +1780,24 @@ def prepare(
     roadmap: str | None = None,
     hub_repo: Path | None = None,
     stall_after_min: float = DEFAULT_STALL_AFTER_MIN,
-    max_resumes: int = DEFAULT_MAX_RESUMES,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
     resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> dict[str, Any]:
     if not (isinstance(stall_after_min, int | float) and 0 < stall_after_min < float("inf")):
         raise ValueError("--stall-after-min must be a positive number of minutes")
-    if max_resumes < 0:
+    if max_resumes is not None and max_resumes < 0:
         raise ValueError("--max-resumes must not be negative (0 disables automatic resumes)")
     if not 0 <= resume_delay_s < float("inf"):
         raise ValueError("--resume-delay-s must be a non-negative number of seconds")
+    if not 0 <= resume_max_delay_s < float("inf"):
+        raise ValueError("--resume-max-delay-s must be a non-negative number of seconds")
+    if not 0 <= resume_total_s < float("inf"):
+        raise ValueError("--resume-total-s must be a non-negative number of seconds")
+    if not 0 <= resume_series_reset_s < float("inf"):
+        raise ValueError("--resume-series-reset-s must be a non-negative number of seconds")
     if work_file is not None and issue is not None:
         raise ValueError(
             "--work-file and --issue are mutually exclusive; name the issue inside "
@@ -2226,6 +2302,9 @@ def prepare(
                 "title": title,
                 "max_resumes": max_resumes,
                 "resume_delay_s": resume_delay_s,
+                "resume_max_delay_s": resume_max_delay_s,
+                "resume_total_s": resume_total_s,
+                "resume_series_reset_s": resume_series_reset_s,
             }
             prompt_path = run_dir / f"{name}.prompt.md"
             lines = alice_launch_lines(harness, workdirs[name], config, prompt_path, **alice_lines)
@@ -2250,6 +2329,11 @@ def prepare(
                 tmp_dir=run_dir / "tmp" / name,
                 worker=None if name == "alice" else name,
                 title=title,
+                max_resumes=max_resumes,
+                resume_delay_s=resume_delay_s,
+                resume_max_delay_s=resume_max_delay_s,
+                resume_total_s=resume_total_s,
+                resume_series_reset_s=resume_series_reset_s,
             )
             resume = resume_lines(
                 name,
@@ -2287,14 +2371,24 @@ def prepare(
     }
     for name in local:
         if supervised(launch[name][0], auto_start):
-            # scripts/claude-worker.py logs each conversation ID here (#115).
+            # scripts/claude-worker.py logs each launch, wait and conversation ID here (#115, #158).
             manifest["launch"]["agents"][name]["sessions"] = str(run_dir / f"{name}-sessions.jsonl")
+            manifest["launch"]["agents"][name] |= {
+                "max_resumes": max_resumes,
+                "resume_delay_s": resume_delay_s,
+                "resume_max_delay_s": resume_max_delay_s,
+                "resume_total_s": resume_total_s,
+                "resume_series_reset_s": resume_series_reset_s,
+            }
     if auto_start:
-        # scripts/alice-launcher.py logs each launch, exit and conversation ID (#146).
+        # scripts/alice-launcher.py logs each launch, wait, exit and conversation ID (#146, #158).
         manifest["launch"]["agents"]["alice"] |= {
             "sessions": str(run_dir / "alice-sessions.jsonl"),
             "max_resumes": max_resumes,
             "resume_delay_s": resume_delay_s,
+            "resume_max_delay_s": resume_max_delay_s,
+            "resume_total_s": resume_total_s,
+            "resume_series_reset_s": resume_series_reset_s,
         }
     save(manifest_path, manifest)
 
@@ -2348,11 +2442,21 @@ def prepare(
     for script in scripts.values():
         print(script)
     if auto_start:
-        print(
-            f"\nstart-alice resumes Alice's conversation up to {max_resumes} time(s) if her "
-            "harness exits before the workflow is done; alice-sessions.jsonl records "
-            "each launch and her conversation ID."
-        )
+        if max_resumes is None:
+            resume_note = (
+                "start-alice resumes Alice's conversation with a doubling delay until "
+                f"the resume time budget of {resume_total_s:g} s is spent, if her "
+                "harness exits before the workflow is done; alice-sessions.jsonl records "
+                "each launch, wait and her conversation ID."
+            )
+        else:
+            resume_note = (
+                f"start-alice resumes Alice's conversation up to {max_resumes} time(s) "
+                f"or until the resume time budget of {resume_total_s:g} s is spent, if her "
+                "harness exits before the workflow is done; alice-sessions.jsonl records "
+                "each launch, wait and her conversation ID."
+            )
+        print(f"\n{resume_note}")
     print("\nResume scripts (after a harness crash, with the saved session ID):")
     for script in resume_scripts.values():
         print(script)
@@ -2610,15 +2714,40 @@ def main() -> None:
         type=int,
         default=DEFAULT_MAX_RESUMES,
         metavar="N",
-        help="times start-alice resumes Alice's conversation after an early exit; "
-        f"0 disables (#146; default {DEFAULT_MAX_RESUMES})",
+        help="stop automatic resumes after N resumes; 0 disables them "
+        "(#146; default: no count limit, --resume-total-s governs)",
     )
     parser.add_argument(
         "--resume-delay-s",
         type=float,
         default=DEFAULT_RESUME_DELAY_S,
         metavar="SECONDS",
-        help=f"seconds before each such resume (default {DEFAULT_RESUME_DELAY_S:g})",
+        help="first wait between automatic resumes in seconds; doubles until "
+        f"--resume-max-delay-s (#158; default {DEFAULT_RESUME_DELAY_S:g})",
+    )
+    parser.add_argument(
+        "--resume-max-delay-s",
+        type=float,
+        default=DEFAULT_RESUME_MAX_DELAY_S,
+        metavar="SECONDS",
+        help="cap for the doubling wait in seconds "
+        f"(#158; default {DEFAULT_RESUME_MAX_DELAY_S:g}, about 30 minutes)",
+    )
+    parser.add_argument(
+        "--resume-total-s",
+        type=float,
+        default=DEFAULT_RESUME_TOTAL_S,
+        metavar="SECONDS",
+        help="stop automatic resumes after this much launcher elapsed time in seconds "
+        f"(#158; default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
+    )
+    parser.add_argument(
+        "--resume-series-reset-s",
+        type=float,
+        default=DEFAULT_RESUME_SERIES_RESET_S,
+        metavar="SECONDS",
+        help="a run lasting this long starts a new backoff series at the short delay "
+        f"(#158; default {DEFAULT_RESUME_SERIES_RESET_S:g})",
     )
     parser.add_argument("--merge-method", default="squash")
     parser.add_argument("--allow-no-ci", default="auto")
@@ -2682,8 +2811,11 @@ def main() -> None:
             "--alice-model": bool(args.alice_model),
             "--alice-effort": bool(args.alice_effort),
             "--stall-after-min": args.stall_after_min != DEFAULT_STALL_AFTER_MIN,
-            "--max-resumes": args.max_resumes != DEFAULT_MAX_RESUMES,
+            "--max-resumes": args.max_resumes is not None,
             "--resume-delay-s": args.resume_delay_s != DEFAULT_RESUME_DELAY_S,
+            "--resume-max-delay-s": args.resume_max_delay_s != DEFAULT_RESUME_MAX_DELAY_S,
+            "--resume-total-s": args.resume_total_s != DEFAULT_RESUME_TOTAL_S,
+            "--resume-series-reset-s": args.resume_series_reset_s != DEFAULT_RESUME_SERIES_RESET_S,
         }
         if given := [flag for flag, present in hub_only.items() if present]:
             parser.error(f"hub-host flags do not apply to --worker-only: {', '.join(given)}")
@@ -2749,6 +2881,9 @@ def main() -> None:
             stall_after_min=args.stall_after_min,
             max_resumes=args.max_resumes,
             resume_delay_s=args.resume_delay_s,
+            resume_max_delay_s=args.resume_max_delay_s,
+            resume_total_s=args.resume_total_s,
+            resume_series_reset_s=args.resume_series_reset_s,
         )
     except ValueError as exc:
         sys.exit(f"prepare-run: error: {exc}")
