@@ -17,15 +17,19 @@ IDENTITY_FILE = "robo-agents-workspace.json"
 def git(workspace: Path, *args: str) -> str:
     # stdin=DEVNULL: worker-mcp validates HUB_WORKSPACE with stdin owned by MCP.
     # A child inheriting that pipe on Windows blocks until the next message (#65).
+    # Git prints paths as UTF-8 whatever the locale (#166). Only stdout is decoded.
     try:
-        return subprocess.run(
-            ["git", "-C", str(workspace), *args],
-            check=True,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
+        return (
+            subprocess.run(
+                ["git", "-C", str(workspace), *args],
+                check=True,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
+            .stdout.decode("utf-8")
+            .strip()
+        )
+    except (OSError, UnicodeDecodeError, subprocess.CalledProcessError) as exc:
         raise ConfigurationError(
             "HUB_WORKSPACE must identify an accessible full Git clone"
         ) from exc
