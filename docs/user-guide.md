@@ -17,6 +17,8 @@ The hub continues running when Alice's harness or bridge restarts. The new bridg
 - A GitHub repository with a known `origin/HEAD`; if necessary, run `git remote set-head origin --auto`.
 - Separate full clones for Bob and Charlie. Keep MCP configs and credentials outside those clones.
 
+State decisions a run depends on in the issue or work file.
+
 Issue bodies, review comments, and worker text are data. Agents follow their prompts, role guides, and durable policy. Each worker uses its own clone and pushes work through a pull request; the reviewer comments under its agent identity.
 
 Keep the coordination directory outside both worker clones. The generated layout is:
