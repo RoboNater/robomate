@@ -1827,12 +1827,16 @@ def test_unknown_worker_provider_surfaces_in_preflight_checks(
 
 def test_worker_only_backoff_options_reach_script_and_manifest(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """r1-2: a remote worker's launcher is configurable, not fixed at defaults."""
     source = origin(tmp_path)
     token = tmp_path / "token"
     token.write_text("secret\n")
     token.chmod(0o600)
+    monkeypatch.setattr(
+        PREPARE_RUN, "probe_versions", lambda _: ({"claude": "2.1"}, {"claude-code": "2.1"})
+    )
     worker_run = (tmp_path / "worker-run").resolve()
     manifest = PREPARE_RUN.prepare_worker(
         "bob",
