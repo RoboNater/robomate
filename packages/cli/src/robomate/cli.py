@@ -250,7 +250,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
             "HUB_HOST": args.bind,
             "HUB_PORT": str(port),
             "HUB_DB_PATH": str(directory / "hub.db"),
-            "HUB_TOKEN_FILE": str(directory / "token"),
+            "HUB_TOKEN_FILE": str(token_file(repo.root)),
             "HUB_CALL_ACCOUNTING": "0" if args.no_call_accounting else "1",
         }
     )

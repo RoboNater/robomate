@@ -2,9 +2,11 @@
 """Mock Alice orchestrator driving one task through a worker (spec §4.3, §7 Step 4).
 
 Usage:
-    # 1. MCP mode: connects through the orchestrator bridge to robomate up:
-    python scripts/mock-alice.py --mcp --agent bob --harness claude-code
-    python scripts/mock-alice.py --mcp --agent charlie --harness codex
+    # 1. MCP mode: connects through the orchestrator bridge to the robomate up
+    # hub that --hub names (name, hub_id or checkout path), or to
+    # ROBOMATE_HUB_URL with ROBOMATE_TOKEN_FILE; never to a hub it was not given:
+    python scripts/mock-alice.py --mcp --hub my-hub --agent bob --harness claude-code
+    python scripts/mock-alice.py --mcp --hub /path/to/checkout --agent charlie --harness codex
 
     # 2. Database mode: runs against an existing HubStore database.
     # Note: Cross-process database polling only re-evaluates holds at timeout deadlines
@@ -46,6 +48,7 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
+from agent_hub_common.discovery import select_hub, token_file
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -925,6 +928,22 @@ def _parse_cmd(cmd: str) -> list[str]:
     return shlex.split(cmd)
 
 
+def bridge_env(selector: str | None) -> dict[str, str]:
+    """The bridge's environment, pinned to the hub `selector` names when given.
+
+    `robomate mcp` attaches only to an explicit URL or the hub of its working
+    directory's checkout (#147), so the bridge is told which hub to use.
+    """
+
+    env = dict(os.environ)
+    if selector:
+        hub = select_hub(selector)
+        env.pop("ROBOMATE_TOKEN", None)
+        env["ROBOMATE_HUB_URL"] = hub.url
+        env["ROBOMATE_TOKEN_FILE"] = str(token_file(hub.checkout))
+    return env
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mock Alice orchestrator")
     try:
@@ -959,6 +978,11 @@ def main() -> None:
         "--mcp",
         action="store_true",
         help="Drive Alice through robomate mcp against an existing robomate up hub",
+    )
+    parser.add_argument(
+        "--hub",
+        metavar="NAME|HUB_ID|CHECKOUT",
+        help="With --mcp: the hub to drive; required unless ROBOMATE_HUB_URL is set",
     )
     parser.add_argument(
         "--bridge-cmd",
@@ -1010,6 +1034,13 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.hub and not args.mcp:
+        parser.error("--hub goes with --mcp")
+    if args.mcp and not args.hub and not os.environ.get("ROBOMATE_HUB_URL", "").strip():
+        parser.error(
+            "--mcp needs --hub <name | hub_id | checkout path>, or ROBOMATE_HUB_URL "
+            "with ROBOMATE_TOKEN_FILE"
+        )
 
     try:
         if args.endurance:
@@ -1058,7 +1089,7 @@ def main() -> None:
             params = StdioServerParameters(
                 command=cmd_parts[0],
                 args=cmd_parts[1:],
-                env=dict(os.environ),
+                env=bridge_env(args.hub),
             )
 
             async def run_mcp_session() -> dict[str, Any]:

@@ -13,7 +13,7 @@ issue number, model, and effort with this run's values. In terminal A, start
 the hub and leave that foreground command running:
 
 ```sh
-export HUB_REPO=/absolute/path/to/the/dedicated/target-clone
+export HUB_REPO=/absolute/path/to/the/hub-checkout
 cd "$HUB_REPO"
 uv run --locked robomate up
 ```
@@ -22,7 +22,7 @@ In terminal B, set the paths again and prepare the run while terminal A stays
 open:
 
 ```sh
-export HUB_REPO=/absolute/path/to/the/dedicated/target-clone
+export HUB_REPO=/absolute/path/to/the/hub-checkout
 export RUN_DIR=/absolute/path/to/the/run-directory
 cd "$HUB_REPO"
 uv run --locked python scripts/prepare-run.py --hub-repo "$HUB_REPO" \
@@ -39,7 +39,7 @@ workspaces, and prompt. Keep the hub's `.robomate/` directory, especially
 the generated run manifest names the actual state directory. The run directory
 contains `run.json`, generated start scripts, prompts, isolated Codex
 config, and worker telemetry. The worker clone paths are in
-`run.json.workspaces`; do not assume they are adjacent to the hub clone:
+`run.json.workspaces`; do not assume they are adjacent to the hub checkout:
 
 ```sh
 python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); print("state:",m["state_dir"]); print("workspaces:",m["workspaces"]); print("launch:",m["launch"])' "$RUN_DIR/run.json"
@@ -51,7 +51,8 @@ only reviewed, redacted observations and aggregate counts. Never print or copy
 the token into an issue or PR. If worker sandbox PID visibility or its registry
 lock differs from the hub host, set `ROBOMATE_HUB_URL` and
 `ROBOMATE_TOKEN_FILE` to its configured values before `robomate status --json`;
-the explicit URL path bypasses local registry discovery. A matching `/healthz`
+the explicit URL path bypasses discovery from the working directory and the
+registry. A matching `/healthz`
 hub ID plus authenticated `hub.status` proves that hub is reachable even when
 its PID is invisible. A failed HTTP probe with a visible recorded PID is
 reported as *unreachable*; that PID may belong to an unrelated process after

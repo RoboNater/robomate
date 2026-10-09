@@ -215,7 +215,7 @@ class HubFacts:
     registered: bool = False
     stopped: bool = False
     stop_detail: str = "not started"
-    deregistered: bool | None = None
+    registry_stopped: bool | None = None
 
 
 class IsolatedHub:
@@ -346,8 +346,9 @@ class IsolatedHub:
             )
         self.facts.stopped = not answering
         if self.facts.registry:
-            self.facts.deregistered = self.facts.hub_id not in _registry_ids(
-                Path(self.facts.registry)
+            # The registry keeps a stopped hub's entry, without a pid (#147).
+            self.facts.registry_stopped = self.facts.hub_id not in _registry_ids(
+                Path(self.facts.registry), running=True
             )
         self.facts.stop_detail = "; ".join(steps)
         self.process = None
@@ -358,12 +359,16 @@ class IsolatedHub:
         )
 
 
-def _registry_ids(path: Path) -> set[str]:
+def _registry_ids(path: Path, *, running: bool = False) -> set[str]:
     try:
         entries = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return set()
-    return {str(entry.get("hub_id")) for entry in entries if isinstance(entry, dict)}
+    return {
+        str(entry.get("hub_id"))
+        for entry in entries
+        if isinstance(entry, dict) and (entry.get("pid") or not running)
+    }
 
 
 def _plain_rpc(endpoint: HubEndpoint, method: str) -> dict[str, Any]:
@@ -1115,7 +1120,7 @@ def render_evidence(record: Record) -> str:
             ("pid", hub.pid),
             ("Registry (throwaway)", hub.registry),
             ("Registered in the throwaway registry", hub.registered),
-            ("Deregistered on stop", hub.deregistered),
+            ("Registry records it stopped", hub.registry_stopped),
             ("Stopped", hub.stopped),
             ("Stop", hub.stop_detail),
         ):

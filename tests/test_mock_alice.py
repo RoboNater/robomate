@@ -5,6 +5,7 @@ import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
@@ -703,6 +704,7 @@ def test_mock_alice_parse_cmd(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_mock_alice_main_cli_mcp_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOMATE_HUB_URL", "http://127.0.0.1:9")
     called_mcp = False
 
     def fake_run(coro: object) -> dict[str, str]:
@@ -727,6 +729,30 @@ def test_mock_alice_main_cli_mcp_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     mock_alice.main()
     assert called_mcp is True
+
+
+def test_mock_alice_mcp_names_its_hub(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#147: --mcp never relies on the bridge finding a hub by itself."""
+
+    monkeypatch.delenv("ROBOMATE_HUB_URL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["mock-alice.py", "--mcp"])
+    with pytest.raises(SystemExit):
+        mock_alice.main()
+    assert "--mcp needs --hub" in capsys.readouterr().err
+
+    checkout = tmp_path / "wt"
+    monkeypatch.setenv("ROBOMATE_TOKEN", "inherited")
+    monkeypatch.setattr(
+        mock_alice,
+        "select_hub",
+        lambda selector: SimpleNamespace(url="http://127.0.0.1:8421", checkout=checkout),
+    )
+    env = mock_alice.bridge_env("wt")
+    assert env["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8421"
+    assert env["ROBOMATE_TOKEN_FILE"] == str(checkout / ".robomate" / "token")
+    assert "ROBOMATE_TOKEN" not in env
 
 
 @pytest.mark.parametrize(
