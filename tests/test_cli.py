@@ -163,6 +163,198 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
             first.wait(timeout=10)
 
 
+def _commit_and_add_worktrees(root: Path, *paths: Path) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "commit"]
+        + ["--allow-empty", "-m", "start"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    for path in paths:
+        subprocess.run(
+            ["git", "worktree", "add", "-b", path.name, str(path)],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+
+def _cli(cwd: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [CLI, *args], cwd=cwd, env=env, text=True, capture_output=True, timeout=30
+    )
+
+
+def test_two_hubs_in_one_repository(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#147 Tests 1, 2, 3 and 5: worktree hubs side by side, selected, never attached."""
+
+    root, env = repository
+    wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
+    _commit_and_add_worktrees(root, wt_a, wt_b)
+    hub_a, hub_b = start(wt_a, env), start(wt_b, env)
+    try:
+        a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
+        assert (a["name"], b["name"]) == ("wt-a", "wt-b")
+        assert a["port"] != b["port"] and a["hub_id"] != b["hub_id"]
+        for checkout, info in ((wt_a, a), (wt_b, b)):
+            assert (info["checkout"], info["repo_root"]) == (str(checkout), str(checkout))
+            assert info["git_common_dir"] == str(root / ".git")
+            assert (checkout / ".robomate" / "token").is_file()
+        assert not (root / ".robomate").exists()
+        for _ in range(200):
+            printed = _hub_stdout(hub_a)
+            if "ROBOMATE_TOKEN_FILE=" in printed:
+                break
+            time.sleep(0.05)
+        assert f"Hub wt-a running at {a['url']}" in printed
+        assert f"Hub state: {wt_a / '.robomate'}" in printed
+        assert "`git worktree remove` deletes it" in printed
+
+        listing = _cli(root, env, "ls")
+        assert listing.returncode == 0, listing.stderr
+        for checkout, info in ((wt_a, a), (wt_b, b)):
+            line = next(x for x in listing.stdout.splitlines() if x.startswith(f"{info['name']} "))
+            assert "live" in line and str(info["url"]) in line
+            assert f"checkout {checkout}" in line and f"repository {root}" in line
+
+        # The main checkout owns no hub: both commands refuse and list both.
+        for command in (["down"], ["status"]):
+            refused = _cli(root, env, *command)
+            assert refused.returncode == 1
+            assert "wt-a" in refused.stderr and "wt-b" in refused.stderr
+        assert hub_a.poll() is None and hub_b.poll() is None
+        selected = _cli(root, env, "status", "--hub", "wt-b")
+        assert selected.returncode == 0, selected.stderr
+        assert f"Checkout: {wt_b}" in selected.stdout
+
+        stop(wt_a, env, hub_a)
+        running = _cli(wt_b, env, "status")
+        assert running.returncode == 0 and f"Hub: wt-b  {b['url']}" in running.stdout
+        listing = _cli(root, env, "ls", "--json")
+        rows = {row["name"]: row for row in json.loads(listing.stdout)}
+        assert (rows["wt-a"]["live"], rows["wt-b"]["live"]) == (False, True)
+        assert rows["wt-a"]["state_dir"] == str(wt_a / ".robomate")
+
+        renamed = _cli(wt_a, env, "up", "--name", "other")
+        assert renamed.returncode == 1 and "fixed once recorded" in renamed.stderr
+        hub_a = start(wt_a, env)
+        again = await_hub(wt_a, hub_a)
+        assert (again["hub_id"], again["name"], again["port"]) == (a["hub_id"], "wt-a", a["port"])
+    finally:
+        for checkout, process in ((wt_a, hub_a), (wt_b, hub_b)):
+            if process.poll() is None:
+                stop(checkout, env, process)
+
+
+def test_hub_names_are_validated_and_unique_per_repository(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    root, env = repository
+    first, second = tmp_path / "a" / "feature", tmp_path / "b" / "feature"
+    _commit_and_add_worktrees(root, first)
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "feature-b", str(second)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    invalid = _cli(second, env, "up", "--name", "Feature.B")
+    assert invalid.returncode == 1 and "invalid hub name" in invalid.stderr
+    process = start(first, env)
+    try:
+        await_hub(first, process)
+        taken = _cli(second, env, "up")
+        assert taken.returncode == 1
+        assert "'feature' is taken" in taken.stderr and "--name" in taken.stderr
+        assert read_hub_json(second) is None
+    finally:
+        stop(first, env, process)
+    # Stopped, the hub keeps its name.
+    assert _cli(second, env, "up").returncode == 1
+    named = start(second, env, "--name", "feature-b")
+    try:
+        assert await_hub(second, named)["name"] == "feature-b"
+    finally:
+        stop(second, env, named)
+
+
+def test_bare_repository_hub_runs_in_a_linked_worktree(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#147 Test 4, on an unmodified `git clone --bare`: it has no origin/HEAD."""
+
+    root, env = repository
+    _commit_and_add_worktrees(root)
+    bare = tmp_path / "r" / ".bare"
+    subprocess.run(
+        ["git", "clone", "--bare", str(root), str(bare)], check=True, capture_output=True
+    )
+    main, feature = tmp_path / "r" / "main", tmp_path / "r" / "feature"
+    for args in (
+        ["worktree", "add", str(main), "main"],
+        ["worktree", "add", "-b", "feature", str(feature)],
+    ):
+        subprocess.run(["git", *args], cwd=bare, check=True, capture_output=True)
+    refused = _cli(bare, env, "up", "--forge", "github")
+    assert refused.returncode == 1 and "bare repository" in refused.stderr
+    # The worktree on another branch still records the repository's default branch.
+    processes = {
+        main: start(main, env, "--forge", "github"),
+        feature: start(feature, env, "--forge", "github"),
+    }
+    try:
+        for checkout, process in processes.items():
+            info = await_hub(checkout, process)
+            assert (info["name"], info["git_common_dir"]) == (checkout.name, str(bare))
+            assert info["default_branch"] == "main"
+        assert "/.robomate/" in (bare / "info" / "exclude").read_text()
+    finally:
+        for checkout, process in processes.items():
+            if process.poll() is None:
+                stop(checkout, env, process)
+
+
+def test_legacy_hub_keeps_its_state_and_gets_a_name(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#147 Test 6: hub.json and a registry entry as written before checkout scope."""
+
+    root, env = repository
+    with socket.socket() as available:
+        available.bind(("127.0.0.1", 0))
+        port = available.getsockname()[1]
+    legacy = {
+        "repo_root": str(root),
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "default_branch": "main",
+        "url": f"http://127.0.0.1:{port}",
+        "port": port,
+        "pid": None,
+        "started_at": None,
+        "robomate_version": "0.1.0",
+        "hub_id": "legacy-id",
+    }
+    write_hub_json(root, legacy)
+    (root / ".robomate" / "token").write_text("legacy-token\n")
+    (root / ".robomate" / "token").chmod(0o600)
+    register({k: legacy[k] for k in ("repo_root", "url", "hub_id")} | {"pid": 999999}, env)
+    status = _cli(root, env, "status", "--json")
+    assert status.returncode == 1 and json.loads(status.stdout)["repo_root"] == str(root)
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        assert (info["hub_id"], info["port"], info["name"]) == ("legacy-id", port, "repo")
+        assert (root / ".robomate" / "token").read_text() == "legacy-token\n"
+        entries = json.loads(registry_path(env).read_text())
+        assert [(e["hub_id"], e["name"]) for e in entries] == [("legacy-id", "repo")]
+    finally:
+        stop(root, env, process)
+
+
 def _shutdown_with_bearer_only(url: str, token: str) -> dict[str, Any]:
     request = urllib.request.Request(
         f"{url}/rpc",
@@ -428,28 +620,50 @@ def test_status_from_nested_directory_and_worktree(
     process = start(root, env)
     try:
         info = await_hub(root, process)
-        for cwd in (nested, worktree):
+        # The linked worktree owns no hub, so it reaches the main checkout's
+        # hub only when selected (#147).
+        refused = subprocess.run(
+            [CLI, "status"], cwd=worktree, env=env, text=True, capture_output=True, timeout=10
+        )
+        assert refused.returncode == 1
+        assert f"no hub is recorded for checkout {worktree}" in refused.stderr
+        assert "--hub" in refused.stderr and str(info["url"]) in refused.stderr
+        for cwd, selector in (
+            (nested, []),
+            (worktree, ["--hub", "repo"]),
+            (tmp_path, ["--hub", str(root)]),
+        ):
             result = subprocess.run(
-                [CLI, "status"], cwd=cwd, env=env, text=True, capture_output=True, timeout=10
-            )
-            assert result.returncode == 0, result.stderr
-            assert str(root) in result.stdout and str(info["url"]) in result.stdout
-            assert "Workflow: none" in result.stdout
-            result = subprocess.run(
-                [CLI, "status", "--json"],
+                [CLI, "status", *selector],
                 cwd=cwd,
                 env=env,
                 text=True,
                 capture_output=True,
                 timeout=10,
             )
-            assert json.loads(result.stdout)["repo_root"] == str(root)
+            assert result.returncode == 0, result.stderr
+            assert "Hub: repo  " in result.stdout and str(info["url"]) in result.stdout
+            assert f"Checkout: {root}" in result.stdout
+            assert f"Repository: {root}" in result.stdout
+            assert f"State: {root / '.robomate'}" in result.stdout
+            assert "Workflow: none" in result.stdout
+            result = subprocess.run(
+                [CLI, "status", "--json", *selector],
+                cwd=cwd,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            status = json.loads(result.stdout)
+            assert (status["repo_root"], status["checkout"]) == (str(root), str(root))
+            assert (status["name"], status["git_common_dir"]) == ("repo", str(root / ".git"))
         stop(root, env, process)
         stopped = subprocess.run(
-            [CLI, "status"], cwd=worktree, env=env, text=True, capture_output=True, timeout=10
+            [CLI, "status"], cwd=nested, env=env, text=True, capture_output=True, timeout=10
         )
         assert stopped.returncode != 0
-        assert "not running" in stopped.stdout
+        assert f"Hub repo ({root}): not running" in stopped.stdout
         assert str(info["url"]) in stopped.stdout
         assert str(info["port"]) in stopped.stdout
     finally:
@@ -793,7 +1007,7 @@ def test_status_reports_auth_failure_without_calling_hub_stopped(
         stop(root, env, process)
 
 
-def test_status_uses_registry_fallback_and_explicit_url(
+def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     root, env = repository
@@ -803,11 +1017,13 @@ def test_status_uses_registry_fallback_and_explicit_url(
     process = start(root, env)
     try:
         info = await_hub(root, process)
-        fallback = subprocess.run(
-            [CLI, "status"], cwd=other, env=env, text=True, capture_output=True, timeout=10
-        )
-        assert fallback.returncode == 0, fallback.stderr
-        assert str(root) in fallback.stdout and str(info["url"]) in fallback.stdout
+        for command in (["status"], ["status", "--snapshot"], ["inbox"], ["down"]):
+            refused = subprocess.run(
+                [CLI, *command], cwd=other, env=env, text=True, capture_output=True, timeout=10
+            )
+            assert refused.returncode == 1, command
+            assert "no hub is recorded" in refused.stderr and str(root) in refused.stderr
+        assert process.poll() is None
         explicit_env = {
             **env,
             "ROBOMATE_HUB_URL": str(info["url"]),
@@ -876,7 +1092,7 @@ def test_status_uses_matching_hub_health_when_pid_is_not_visible(
         return {"running": True, "hub_id": "same-hub"}
 
     monkeypatch.setattr(cli, "_rpc", status)
-    cli._status(True)
+    cli._status(True, None)
     assert json.loads(capsys.readouterr().out) == {"running": True, "hub_id": "same-hub"}
 
 
@@ -895,10 +1111,13 @@ def test_status_reports_unreachable_with_visible_recorded_pid(
     monkeypatch.setattr(cli, "process_alive", lambda _pid: True)
     monkeypatch.setattr(cli, "hub_healthy", lambda _url, _hub_id: False)
     with pytest.raises(SystemExit, match="1"):
-        cli._status(True)
+        cli._status(True, None)
     assert json.loads(capsys.readouterr().out) == {
         "running": False,
         "repo_root": str(root),
+        "name": None,
+        "checkout": str(root),
+        "state_dir": str(root / ".robomate"),
         "url": "http://127.0.0.1:8420",
         "port": 8420,
         "reason": "unreachable; recorded pid 1234 is visible",

@@ -2,9 +2,11 @@
 """Mock Alice orchestrator driving one task through a worker (spec §4.3, §7 Step 4).
 
 Usage:
-    # 1. MCP mode: connects through the orchestrator bridge to robomate up:
-    python scripts/mock-alice.py --mcp --agent bob --harness claude-code
-    python scripts/mock-alice.py --mcp --agent charlie --harness codex
+    # 1. MCP mode: connects through the orchestrator bridge to the robomate up
+    # hub that --hub names (name, hub_id or checkout path), or to
+    # ROBOMATE_HUB_URL with ROBOMATE_TOKEN_FILE; never to a hub it was not given:
+    python scripts/mock-alice.py --mcp --hub my-hub --agent bob --harness claude-code
+    python scripts/mock-alice.py --mcp --hub /path/to/checkout --agent charlie --harness codex
 
     # 2. Database mode: runs against an existing HubStore database.
     # Note: Cross-process database polling only re-evaluates holds at timeout deadlines
@@ -46,6 +48,7 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
+from agent_hub_common.discovery import select_hub, verify_local_hub
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -925,6 +928,25 @@ def _parse_cmd(cmd: str) -> list[str]:
     return shlex.split(cmd)
 
 
+def bridge_launch(selector: str | None) -> tuple[dict[str, str], Path | None]:
+    """The bridge's environment and working directory for the hub `selector` names.
+
+    `robomate mcp` attaches only to an explicit URL or the hub of its working
+    directory's checkout (#147). A selected hub is checked here, then the
+    bridge starts in its checkout, without an explicit URL, so the bridge's
+    own discovery checks that hub's identity again before connecting.
+    """
+
+    env = dict(os.environ)
+    if not selector:
+        return env, None
+    hub = select_hub(selector)
+    verify_local_hub(hub)
+    for key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"):
+        env.pop(key, None)
+    return env, hub.checkout
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mock Alice orchestrator")
     try:
@@ -959,6 +981,11 @@ def main() -> None:
         "--mcp",
         action="store_true",
         help="Drive Alice through robomate mcp against an existing robomate up hub",
+    )
+    parser.add_argument(
+        "--hub",
+        metavar="NAME|HUB_ID|CHECKOUT",
+        help="With --mcp: the hub to drive; required unless ROBOMATE_HUB_URL is set",
     )
     parser.add_argument(
         "--bridge-cmd",
@@ -1010,6 +1037,13 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.hub and not args.mcp:
+        parser.error("--hub goes with --mcp")
+    if args.mcp and not args.hub and not os.environ.get("ROBOMATE_HUB_URL", "").strip():
+        parser.error(
+            "--mcp needs --hub <name | hub_id | checkout path>, or ROBOMATE_HUB_URL "
+            "with ROBOMATE_TOKEN_FILE"
+        )
 
     try:
         if args.endurance:
@@ -1055,10 +1089,9 @@ def main() -> None:
             result["telemetry"] = telemetry
         elif args.mcp:
             cmd_parts = _parse_cmd(args.bridge_cmd)
+            env, cwd = bridge_launch(args.hub)
             params = StdioServerParameters(
-                command=cmd_parts[0],
-                args=cmd_parts[1:],
-                env=dict(os.environ),
+                command=cmd_parts[0], args=cmd_parts[1:], env=env, cwd=cwd
             )
 
             async def run_mcp_session() -> dict[str, Any]:

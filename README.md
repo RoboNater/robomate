@@ -15,7 +15,7 @@ the hub, tell each agent to join, submit the work, and read the report at the en
 The MVP experience, as the [spec](docs/mvp-spec.md) (§2) defines it:
 
 ```sh
-robomate up                       # in your repo: starts this repo's hub
+robomate up                       # in a checkout of your repo: starts that checkout's hub
 # In each agent's harness, one line:
 #   "Join robomate as alice, orchestrator."
 #   "Join robomate as bob, implementer."
@@ -26,7 +26,9 @@ robomate report                   # merged SHA, review findings and where each o
 ```
 
 **Works today (M1, M5):** `robomate up`, `down`, `status`, and `ls`, the `robomate mcp`
-bridge that connects every agent to the hub, and both GitHub and GitLab workflows. Runs are still
+bridge that connects every agent to the hub, and both GitHub and GitLab workflows. A hub belongs
+to the checkout where `up` runs, so each linked worktree of a repository can run its own named
+hub. Runs are still
 prepared with `scripts/prepare-run.py`, which writes each agent's configuration and launch prompt
 (see the [user guide](docs/user-guide.md)), and each worker uses its own full clone.
 **Planned:** the one-line joins, worktrees, and `robomate submit` (M2); harness installs and

@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -17,7 +18,7 @@ from agent_hub.accounting import CallRecord
 from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
-from conftest import BASE_URL, TOKEN
+from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -124,6 +125,29 @@ async def test_discovery_failure_is_a_tool_error(monkeypatch: pytest.MonkeyPatch
     await server.list_tools()
     with pytest.raises(ToolError, match="Registered hubs: repo-a, repo-b"):
         await _call(server, "get_state")
+
+
+async def test_bridge_checks_the_local_hub_identity_before_connecting(
+    tmp_path: Path, healthz: Callable[[str], str]
+) -> None:
+    """#147 r1-1: no bearer call reaches an address that answers as another hub."""
+
+    matching = healthz("expected-hub")
+    bridge = OrchestratorBridge(cwd=record_local_hub(tmp_path / "ok", matching, "expected-hub"))
+    try:
+        assert str(bridge._http().base_url).rstrip("/") == matching
+    finally:
+        await bridge.close()
+    for checkout, url, error in (
+        (tmp_path / "taken", healthz("different-hub"), "answers as hub different-hub"),
+        (tmp_path / "stopped", closed_port_url(), "is not running"),
+    ):
+        bridge = OrchestratorBridge(cwd=record_local_hub(checkout, url, "expected-hub"))
+        server = create_orchestrator_mcp(bridge)
+        with pytest.raises(ToolError, match=error):
+            await _call(server, "get_state")
+        assert bridge._client is None
+        await bridge.close()
 
 
 @pytest.mark.parametrize(("key", "retries"), [(None, False), ("decision-key", True)])
@@ -311,9 +335,11 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         while True:
             info = read_hub_json(repo)
             # On Windows robomate.exe is a launcher running the hub as its
-            # child, so hub.json records another pid; the fresh repo has no
-            # stale hub.json to mistake for this hub's.
-            if info is not None and (os.name == "nt" or info.get("pid") == hub.pid):
+            # child, so hub.json records another pid. Before the hub serves,
+            # hub.json holds only its identity, with no pid (#147).
+            if info is not None and (
+                info.get("pid") == hub.pid or (os.name == "nt" and info.get("pid"))
+            ):
                 break
             if hub.poll() is not None or time.monotonic() >= deadline:
                 raise AssertionError("hub did not start")

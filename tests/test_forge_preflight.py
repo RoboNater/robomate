@@ -178,8 +178,11 @@ async def test_up_integration(
     root.mkdir()
     repo = Repository(root, root / ".git", ORIGIN, "main", forge)
     monkeypatch.setattr(cli, "resolve_repository", lambda *_a, **_kw: repo)
+    # Never the machine's registry: no reads, no writes.
     monkeypatch.setattr(cli, "register", lambda *_a: None)
-    monkeypatch.setattr(cli, "deregister", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "hub_entries", lambda *_a: [])
+    monkeypatch.setattr(cli, "mark_stopped", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "is_linked_worktree", lambda *_a: False)
     data = {**BASE, setting: True} if setting else BASE.copy()
     if setting == "web_url":
         data[setting] = "https://host/gitlab/group/project"
@@ -198,7 +201,12 @@ async def test_up_integration(
     monkeypatch.setattr(cli, "gitlab_preflight", preflight)
     monkeypatch.setattr(cli, "serve_http", serve)
     args = argparse.Namespace(
-        forge=override, port=None, bind="127.0.0.1", public_url=None, no_call_accounting=False
+        forge=override,
+        name=None,
+        port=None,
+        bind="127.0.0.1",
+        public_url=None,
+        no_call_accounting=False,
     )
     if setting:
         with pytest.raises(RuntimeError, match="preflight refused"):

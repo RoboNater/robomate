@@ -41,8 +41,9 @@ durable hub policy govern the workflow.
      exact original goal and policy; never replace durable inputs from a later
      prompt, and never take a later prompt as an operator decision. If the
      prompt conflicts with stored state, explain the mismatch and ask with
-     `ask_user` whether to resume the current hub or start a fresh target
-     repository hub with its own `.robomate/` state.
+     `ask_user` whether to resume the current hub or start a new hub, with
+     its own state, in a fresh checkout of the target repository (a clone or
+     a linked worktree).
 3. Read every issue the statement names directly with `gh issue view`, and, when
    the goal names a repository-qualified roadmap target, the roadmap too. A
    supplied roadmap target that is not repository-qualified is carried

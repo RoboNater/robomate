@@ -1,10 +1,14 @@
 import sys
+from collections.abc import Callable
 from io import StringIO
-from typing import TextIO
+from pathlib import Path
+from typing import Any, TextIO
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from agent_hub_common import ConfigurationError
+from agent_hub_common.discovery import DiscoveryError
+from conftest import closed_port_url, record_local_hub
 from worker_mcp import WorkerSettings, main
 
 
@@ -71,3 +75,55 @@ async def test_run_worker_initializes_client_and_server(monkeypatch: pytest.Monk
         assert mock_stdio_server.call_args.kwargs["stdin"] is not None
         assert mock_stdio_server.call_args.kwargs["stdout"] is not None
         mock_server._mcp_server.run.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("answers", "error"),
+    [
+        ("expected-hub", None),
+        ("different-hub", "answers as hub different-hub, not expected-hub"),
+        (None, "is not running"),
+    ],
+)
+async def test_worker_bridge_checks_the_local_hub_identity_before_connecting(
+    tmp_path: Path,
+    healthz: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    answers: str | None,
+    error: str | None,
+) -> None:
+    """#147 r1-1: the worker bridge's first tool call verifies the hub it discovered."""
+
+    for key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"):
+        monkeypatch.delenv(key, raising=False)
+    url = healthz(answers) if answers else closed_port_url()
+    monkeypatch.chdir(record_local_hub(tmp_path / "checkout", url, "expected-hub"))
+    connected: list[str] = []
+    tools: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, settings: WorkerSettings) -> None:
+            connected.append(settings.hub_url.rstrip("/"))
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def close(self) -> None:
+            pass
+
+    def capture(get_client: Any, server_name: str) -> object:
+        tools["get_client"] = get_client
+        return object()
+
+    async def serve(_server: object, _stdout: object) -> None:
+        if error is None:
+            await tools["get_client"]()
+        else:
+            with pytest.raises(DiscoveryError, match=error):
+                await tools["get_client"]()
+
+    monkeypatch.setattr(main, "WorkerHubClient", FakeClient)
+    monkeypatch.setattr(main, "create_worker_mcp", capture)
+    monkeypatch.setattr(main, "serve_mcp", serve)
+    await main.run_worker_bridge(StringIO(), name="bob", harness="claude-code")
+    assert connected == ([url] if error is None else [])

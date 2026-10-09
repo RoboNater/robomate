@@ -3,7 +3,7 @@
 robomate coordinates one orchestrator (Alice) and independent workers through a local HTTP hub. GitHub holds code, pull requests, reviews, and checks. The hub holds assignments, questions, typed results, decisions, and call counts. Workers pull tasks; Alice does not launch them.
 
 ```
-terminal in target repo → robomate up → HTTP hub + .robomate/hub.db
+terminal in a target checkout → robomate up → HTTP hub + .robomate/hub.db
 Alice's harness → robomate mcp --role orchestrator → /rpc
 worker harnesses → robomate mcp --role worker → /a2a
 ```
@@ -53,9 +53,11 @@ Worker clones carry an owner-only `.git/robo-agents-workspace.json` identity. Ne
 
 ## Start the hub and prepare a run
 
-Until M2 supports sequential workflows in one hub, give each run a fresh,
-dedicated clone of the target repository. Keep it inside the run directory so
-its hub state remains available for `hub-report` after shutdown. For example:
+A hub belongs to the checkout where `robomate up` runs: a clone's main
+checkout or one of its linked worktrees. Until M2 supports sequential workflows
+in one hub, give each run a fresh checkout of the target repository. Keep it
+inside the run directory so its hub state remains available for `hub-report`
+after shutdown. For example:
 
 ```sh
 mkdir -p /absolute/path/to/my-run
@@ -64,13 +66,16 @@ cd /absolute/path/to/my-run/hub-target
 uv run --project /absolute/path/to/robomate robomate up
 ```
 
-Use a full clone for `hub-target`, not a linked Git worktree: worktrees share
-the owning checkout's `.robomate/` state. If you created a full checkout using
-`git init` and `git remote add origin` instead of `git clone`, run
-`git fetch origin` and `git remote set-head origin --auto` in it before
-`robomate up`.
+A linked worktree (`git worktree add`) works too and gets a hub of its own,
+beside any hub of the main checkout. Its state is in the worktree's own
+`.robomate/` until M2 moves hub state out of the checkout, so
+`git worktree remove` deletes it, with the run's history and report; `up` warns
+about this. A bare repository works through a linked worktree; `up` in the bare
+directory itself is refused. If you created a checkout using `git init` and
+`git remote add origin` instead of `git clone`, run `git fetch origin` and
+`git remote set-head origin --auto` in it before `robomate up`.
 
-The command creates `<target>/.robomate/hub.json`, `hub.db`, and an owner-only token file. It prints its URL and bridge environment settings. Keep this terminal open. A second `up` for the same repository reports the running hub; a later `up` reuses the recorded port. `.robomate/` is excluded from git by the repository's local exclude file.
+The command creates `<target>/.robomate/hub.json`, `hub.db`, and an owner-only token file. It prints the hub's name, its state directory, its URL, and bridge environment settings. Keep this terminal open. A second `up` in the same checkout reports the running hub; a later `up` reuses the recorded name and port, and a port that another process has taken meanwhile fails startup rather than moving the hub. The name comes from the checkout's directory name; give another with `up --name <name>` at the first `up`. It is then fixed, and unique among the repository's hubs: `up` refuses a name a sibling hub holds rather than pick another. `.robomate/` is excluded from git by the repository's local exclude file.
 
 In the robomate checkout, prepare agent configs and start scripts:
 
@@ -82,11 +87,12 @@ uv run --locked python scripts/prepare-run.py \
   --issue 42 --account your-github-username
 ```
 
-`--hub-repo` must point to the repository running `robomate up`. Preparation reads its URL from `.robomate/hub.json` and its token file path; it does not start a hub or create a token. The configs use the MCP key `robomate`, so tools appear as `mcp__robomate__check_in`, `mcp__robomate__get_state`, and so on. The generated bridge command is `uv run --locked --project /absolute/path/to/robomate robomate mcp --role orchestrator` for Alice and `--role worker` for workers. It passes `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN_FILE`; no bearer value is copied into a config.
+`--hub-repo` must point to the checkout running `robomate up`, main checkout or linked worktree. Preparation reads that hub's URL from its `hub.json` and its token file path; it does not start a hub or create a token. The configs use the MCP key `robomate`, so tools appear as `mcp__robomate__check_in`, `mcp__robomate__get_state`, and so on. The generated bridge command is `uv run --locked --project /absolute/path/to/robomate robomate mcp --role orchestrator` for Alice and `--role worker` for workers. It passes `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN_FILE`; no bearer value is copied into a config.
 
 The hub database keeps one workflow even after the hub stops. For the next
-issue, stop the previous hub, clone the target again into the next run directory,
-start `robomate up` there, and pass that new clone as `--hub-repo`. Preparation
+issue, use a fresh checkout: clone the target again into the next run directory,
+or add a linked worktree, start `robomate up` there, and pass that checkout as
+`--hub-repo`. The previous hub can keep running beside it. Preparation
 refuses a hub that already has a workflow and reports its stored goal and status.
 To resume the existing workflow, use its original run directory, hub clone,
 goal (the same `--issue` or `--work-file` and roadmap selection), and policy
@@ -241,14 +247,15 @@ CODEX_HOME=/absolute/path/to/my-run/configs/codex codex exec -C . \
 
 The manual route uses [`prompts/alice.md`](../prompts/alice.md) for Alice and [`prompts/worker.md`](../prompts/worker.md) for each worker. Install the [`alice-orchestrator`](../skills/alice-orchestrator/SKILL.md) skill in Alice's runtime and the [`worker`](../skills/worker/SKILL.md) skill in a Claude worker's runtime. The generated run directory does these steps for you and keeps every config outside the clones.
 
-The bridge discovers a hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, from the current repository's `.robomate/`, or from the single live hub in the machine registry. For remote workers and multiple hubs, set the explicit values.
+The bridge finds its hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, or else the hub of the checkout it starts in, once that hub's `/healthz` reports the hub ID recorded for it. It never attaches to another hub, even the only one on the machine: anywhere else it returns the list of live hubs as a tool error. The generated configs set the explicit values.
 
 ## Answering escalations
 
 When Alice needs a decision only you can make, she calls `ask_user`. The hub
 keeps the question and sets the workflow to `escalated`, and `robomate status`
 shows the count as `Operator questions: N  (see robomate inbox)`. Run these
-from the run's `hub-target` clone, or anywhere `robomate status` finds the hub:
+from the run's `hub-target` checkout, or from anywhere with
+`--hub <name | hub_id | checkout path>`:
 
 ```sh
 uv run --project /absolute/path/to/robomate robomate inbox
@@ -276,7 +283,7 @@ given with `robomate answer` counts as an operator decision.
 ## Status, shutdown, and report
 
 When the workflow is finished, Alice releases the workers. In that run's
-dedicated `hub-target` clone, stop the hub you started with:
+`hub-target` checkout, stop the hub you started with:
 
 ```sh
 uv run --project /absolute/path/to/robomate robomate down
@@ -284,20 +291,20 @@ uv run --project /absolute/path/to/robomate robomate down
 
 `robomate status` marks an agent `STALLED` when its bridge still heartbeats but it has made no hub call, task progress or event consumption for `stall_after_min`, and names the evidence; it is a warning, not a lifecycle change (see [agent recovery](development/agent-recovery.md#an-agent-that-stops-working-but-keeps-running)). `robomate status --snapshot [--stopped-at UTC_TIME]` prints the before-snapshot a manual `resume-alice` prompt asks for, from read-only calls that never take over Alice's session.
 
-Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down` asks the discovered hub to shut down and leaves another repository's hub alone. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
+Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository and state directory. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
-On Linux or macOS, `ss -ltnp 'sport = :8420'` shows the listener for the default port. On Windows, `Get-NetTCPConnection -LocalPort 8420` shows its owning PID. Compare it with the PID in the target repository's `.robomate/hub.json` before stopping a process manually. A merged PR closes its issue when its body contains `Closes owner/repo#N`.
+On Linux or macOS, `ss -ltnp 'sport = :8420'` shows the listener for the default port. On Windows, `Get-NetTCPConnection -LocalPort 8420` shows its owning PID. Compare it with the PID in the hub checkout's `.robomate/hub.json` before stopping a process manually. A merged PR closes its issue when its body contains `Closes owner/repo#N`.
 
 Keep the run's `hub-target/.robomate/` for its report, including after shutdown.
-For the next run, use a fresh target clone and start a new hub there. The run
-report reads that run's target clone state. Alice's MCP rows have `boundary=mcp`, `actor=alice`, and nonzero `content_bytes` after calls with text results. Worker HTTP rows have `boundary=a2a`.
+For the next run, use a fresh target checkout and start a new hub there. The run
+report reads that run's hub state, the directory `robomate status` shows. Alice's MCP rows have `boundary=mcp`, `actor=alice`, and nonzero `content_bytes` after calls with text results. Worker HTTP rows have `boundary=a2a`.
 
 ```sh
 uv run --locked python scripts/hub-report.py \
   --state-dir /absolute/path/to/my-run/hub-target/.robomate
 ```
 
-The report reads SQLite without changing it. `--format json` and `--format md` are available. Call accounting stores byte counts and labels, never payload text. `scripts/measure-call-bytes.py /absolute/empty-run-dir` starts a scratch `robomate up` hub and bridges to replay a published call sequence; `scripts/mock-alice.py --mcp` connects through an orchestrator bridge to an already running hub and a worker.
+The report reads SQLite without changing it. `--format json` and `--format md` are available. Call accounting stores byte counts and labels, never payload text. `scripts/measure-call-bytes.py /absolute/empty-run-dir` starts a scratch `robomate up` hub and bridges to replay a published call sequence; `scripts/mock-alice.py --mcp --hub <name | hub_id | checkout path>` connects through an orchestrator bridge to the already running hub it names and a worker.
 
 The hub records each completed merge-gate call in `gate_reading` (DB schema v13),
 independently of call accounting. The report shows the PR/MR heads, CI checks,

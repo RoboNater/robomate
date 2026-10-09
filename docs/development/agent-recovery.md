@@ -11,8 +11,9 @@ the newest may use RPC. Preserve the generated configuration, `.robomate/`
 database/token/metadata, and all worker workspaces. Do not rerun `prepare-run.py`
 or initialize a new workflow in this state directory.
 
-If the hub itself stopped, run `uv run --locked robomate up` from its dedicated
-target clone and verify the same hub ID and database. A hub started by
+If the hub itself stopped, run `uv run --locked robomate up` from its own
+checkout (`hub_repo` in `run.json`), and verify the same hub name, hub ID and
+database. Another checkout of the same repository has a hub of its own. A hub started by
 `robomate up` is stopped with `robomate down`; leave hubs from other checkouts
 alone. If a worker's sandbox cannot see the hub PID or write the registry
 lock, use its configured `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN_FILE` to run

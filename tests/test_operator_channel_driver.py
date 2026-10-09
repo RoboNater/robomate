@@ -131,7 +131,7 @@ def test_driver_hub_leaves_the_machine_state_untouched(
         )
 
     assert hub.facts.stopped
-    assert hub.facts.deregistered
+    assert hub.facts.registry_stopped
     assert "`robomate down` exited 0" in hub.facts.stop_detail
     assert "no longer answers" in hub.facts.stop_detail
     assert snapshot(normal) == before
@@ -152,7 +152,7 @@ def test_driver_hub_is_stopped_when_a_step_fails(tmp_path: Path, normal: dict[st
         raise driver.DriverError("step failed")
 
     assert hub.facts.stopped
-    assert hub.facts.deregistered
+    assert hub.facts.registry_stopped
     assert hub.process is None
 
 

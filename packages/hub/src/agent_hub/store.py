@@ -452,7 +452,8 @@ class HubStore:
                     "workflow is already initialized with "
                     f"status={row['status']!r}, goal={row['goal']!r}, and a different goal "
                     "or policy; use get_state to resume it, or run robomate up "
-                    "in a fresh dedicated target clone for a different workflow"
+                    "in a fresh checkout of the target (a clone or linked worktree) "
+                    "for a different workflow"
                 )
             return str(row["id"])
 
