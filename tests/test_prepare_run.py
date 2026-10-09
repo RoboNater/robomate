@@ -1532,6 +1532,8 @@ def test_remote_claude_worker_runs_the_launcher_from_git_bash() -> None:
         "/c/src/robomate/.venv/Scripts/python.exe C:/src/robomate/scripts/claude-worker.py "
         "--agent bob --telemetry C:/Users/Bob/runs/step7/bob-telemetry.jsonl "
         "--sessions C:/Users/Bob/runs/step7/bob-sessions.jsonl "
+        "--resume-delay-s 5 --resume-max-delay-s 1800 --resume-total-s 43200 "
+        "--resume-series-reset-s 300 "
         "--prompt 'Read C:/Users/Bob/runs/step7/bob.prompt.md and follow the instructions in it' "
         "claude --permission-mode auto --strict-mcp-config "
         "--mcp-config C:/Users/Bob/runs/step7/configs/bob.mcp.json "
@@ -2521,12 +2523,37 @@ def test_stall_and_resume_options_reach_policy_and_scripts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_dir, manifest = prepare(
-        tmp_path, monkeypatch, stall_after_min=2, max_resumes=0, resume_delay_s=1.5
+        tmp_path,
+        monkeypatch,
+        stall_after_min=2,
+        max_resumes=0,
+        resume_delay_s=1.5,
+        resume_max_delay_s=60,
+        resume_total_s=3600,
+        resume_series_reset_s=30,
     )
     assert manifest["policy"]["stall_after_min"] == 2
     assert '"stall_after_min": 2' in (run_dir / "alice.prompt.md").read_text()
     start = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
-    assert "--max-resumes 0 --resume-delay-s 1.5" in start
+    assert "--max-resumes 0" in start
+    assert "--resume-delay-s 1.5" in start
+    assert "--resume-max-delay-s 60" in start
+    assert "--resume-total-s 3600" in start
+    assert "--resume-series-reset-s 30" in start
+    alice = manifest["launch"]["agents"]["alice"]
+    assert alice["max_resumes"] == 0
+    assert alice["resume_delay_s"] == 1.5
+    assert alice["resume_max_delay_s"] == 60
+    assert alice["resume_total_s"] == 3600
+    assert alice["resume_series_reset_s"] == 30
+    # Supervised workers get the same backoff (#158).
+    bob_start = (run_dir / f"start-bob.{SCRIPT_SUFFIX}").read_text()
+    assert "--max-resumes 0" in bob_start
+    assert "--resume-delay-s 1.5" in bob_start
+    bob = manifest["launch"]["agents"]["bob"]
+    assert bob["resume_max_delay_s"] == 60
+    assert bob["resume_total_s"] == 3600
+    assert bob["resume_series_reset_s"] == 30
 
 
 @pytest.mark.parametrize(
@@ -2536,6 +2563,9 @@ def test_stall_and_resume_options_reach_policy_and_scripts(
         ("stall_after_min", float("inf"), "--stall-after-min"),
         ("max_resumes", -1, "--max-resumes"),
         ("resume_delay_s", -0.5, "--resume-delay-s"),
+        ("resume_max_delay_s", -0.5, "--resume-max-delay-s"),
+        ("resume_total_s", -0.5, "--resume-total-s"),
+        ("resume_series_reset_s", -0.5, "--resume-series-reset-s"),
     ],
 )
 def test_invalid_stall_and_resume_options_are_refused(
