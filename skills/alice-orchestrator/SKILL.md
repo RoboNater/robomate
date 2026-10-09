@@ -117,7 +117,8 @@ Read `get_state.workflow.policy` and apply these defaults for omitted values:
   },
   "pairing_wait_s": 120,
   "max_wall_minutes": 120,
-  "max_task_lease_min": 120
+  "max_task_lease_min": 120,
+  "stall_after_min": 20
 }
 ```
 
@@ -234,6 +235,14 @@ Handle events as follows:
   Reassign only when no matching replacement task exists and the remaining work
   and qualified worker are unambiguous; otherwise escalate. Never infer
   liveness from progress messages.
+- `agent_stalled`: a diagnostic, not a lifecycle change. The worker's bridge
+  still heartbeats, but it made no hub call or task progress for
+  `stall_after_min` (the payload names the reasons and ages); it may be in a
+  long command such as a test run. Its task stays assigned. Log it and keep
+  waiting; do not cancel, fail or reassign on this event alone. Its
+  `lease_expired` or `agent_lost` follows if it has really stopped. If the
+  stall blocks the workflow, escalate with `ask_user`. One event arrives per
+  stall episode.
 
 ### On resume
 

@@ -573,3 +573,58 @@ def test_state_paths_become_read_only_uris_on_windows_and_posix(tmp_path: Path) 
     state = seed_run(tmp_path / "my run #1")
     report = REPORT.build_report(state)
     assert report["workflow"]["id"] == "f" * 32
+
+
+class SteppedClock:
+    def __init__(self) -> None:
+        self.now = T0
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def test_stall_episodes_are_reported_with_their_evidence(tmp_path: Path, capsys: Any) -> None:
+    """#144: an open episode reads STALLED; a recovered one shows when and why it cleared."""
+
+    initialize_database(tmp_path / "hub.db")
+    clock = SteppedClock()
+    store = HubStore(tmp_path / "hub.db", clock=clock)
+    store.activity.mark_started(T0)
+    store.initialize_workflow(MARKER, {"stall_after_min": 2})
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", MARKER, MARKER, lease_min=600)
+    store.sweep_stalls()
+    clock.now = T0 + timedelta(minutes=3)
+    store.sweep_stalls()  # alice and bob open episodes
+    store.note_orchestrator_session("alice", "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a")
+    with store.orchestrator_call("5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a", "wait_for_event", 100):
+        store.lease_next_event()
+        store.lease_next_event()
+        store.lease_next_event()
+    clock.now += timedelta(seconds=10)
+    store.sweep_stalls()  # alice recovers; bob stays stalled
+
+    report = REPORT.build_report(tmp_path, telemetry_paths=[], now=clock.now)
+    stalls = {stall["agent"]: stall for stall in report["stalls"]}
+    assert stalls["alice"]["cleared_reason"] == "recovered" and not stalls["alice"]["open"]
+    assert stalls["alice"]["reasons"] == ["no_hub_call", "event_backlog"]
+    assert stalls["alice"]["stale_event_ids"] == [1]
+    bob = stalls["bob"]
+    assert bob["open"] and bob["reasons"] == ["no_hub_call", "no_task_progress"]
+    assert bob["task_id"] == task.id and bob["threshold_s"] == 120
+    assert isinstance(bob["event_id"], int)
+    assert {agent["name"]: agent["stalled"] for agent in report["agents"]} == {
+        "alice": False,
+        "bob": True,
+    }
+
+    empty = tmp_path / "none-telemetry.jsonl"
+    empty.write_text("")
+    args = ["--state-dir", str(tmp_path), "--telemetry", str(empty), "--no-labels"]
+    assert REPORT.main(args) == 0
+    out = capsys.readouterr().out
+    assert "== Stalls ==" in out
+    assert "  - bob: STALLED (open at the last sweep" in out
+    assert "  - alice: cleared " in out and "(recovered)" in out
+    assert "no task progress for 3m10s" in out and f"task {task.id}" in out
+    assert MARKER not in out

@@ -40,7 +40,8 @@ Policy:
   },
   "pairing_wait_s": 120,
   "max_wall_minutes": 120,
-  "max_task_lease_min": 120
+  "max_task_lease_min": 120,
+  "stall_after_min": 20
 }
 ```
 
