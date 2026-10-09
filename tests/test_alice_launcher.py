@@ -728,3 +728,52 @@ def test_an_interrupted_backoff_wait_stops_without_another_launch(
     records = sessions(run_dir)
     assert records[-1]["event"] == "wait"
     assert not [r for r in records if r["event"] == "stop"]
+
+
+def test_healthy_running_time_does_not_spend_the_budget(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: a first early exit after longer than --resume-total-s still resumes."""
+    clock = FakeClock(monkeypatch)
+    reader = ScriptedReader(wf("active"))
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir,
+                fake,
+                "claude-code",
+                "--max-resumes",
+                "2",
+                "--resume-delay-s",
+                "5",
+                "--resume-total-s",
+                "20",
+            )
+        ),
+        reader,
+    )
+    real_run_child = launcher.run_child
+    calls = 0
+
+    def run_child(launch: Any, action: str, resumes: int) -> Any:
+        nonlocal calls
+        calls += 1
+        code = real_run_child(launch, action, resumes)
+        if calls == 1:
+            # The first run is healthy for 60 s, past the 20 s budget; the
+            # fake clock is frozen while the child runs.
+            clock.now += 60.0
+        return code
+
+    delays: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        delays.append(seconds)
+        clock.now += seconds
+
+    launcher.run_child = run_child
+    launcher.sleep = sleep
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.reason == "resumes_spent"
+    assert delays == [5.0, 10.0]

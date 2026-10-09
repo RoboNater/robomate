@@ -65,9 +65,11 @@ backing off between resumes: the wait doubles from `--resume-delay-s`
 (default 5 s) up to `--resume-max-delay-s` (default 1800 s, about 30 minutes),
 then repeats at the cap. A run that lasts at least `--resume-series-reset-s`
 (default 300 s) starts a new series at the short delay again. Resumes stop
-after `--resume-total-s` (default 43200 s, about 12 hours) of launcher elapsed
-time, or after `--max-resumes` when given (by default no count limit;
-0 disables automatic resumes). Every launch, wait and exit is logged to
+after `--resume-total-s` (default 43200 s, about 12 hours) since the first
+exit of the current series, or after `--max-resumes` when given (by default no
+count limit; 0 disables automatic resumes). Healthy running time before that
+first exit never spends the budget, and a series reset refills it. Every
+launch, wait and exit is logged to
 `RUN_DIR/<worker>-sessions.jsonl` (`launch.agents.<worker>.sessions` in
 `run.json`, with the five backoff settings beside it): each `wait` line records
 `delay_s` and the `next_attempt` time, and stderr says the same. When the
@@ -102,10 +104,12 @@ unsupervised. The launcher:
   `--resume-max-delay-s` (default 1800 s, about 30 minutes), then repeats at
   the cap; a run lasting `--resume-series-reset-s` (default 300 s) starts a new
   series at the short delay. Resumes stop after `--resume-total-s` (default
-  43200 s, about 12 hours), or after `--max-resumes` when given (by default no
-  count limit; 0 disables them), then exits 1 with these manual steps. Each
-  wait is logged as a `wait` line with `delay_s` and `next_attempt`, and stderr
-  says when the next resume goes. The hub is re-read after the wait, before
+  43200 s, about 12 hours) since the first exit of the current series, or after
+  `--max-resumes` when given (by default no count limit; 0 disables them),
+  then exits 1 with these manual steps. Each wait is logged as a `wait` line
+  with `delay_s` and `next_attempt`, and stderr says when the next resume
+  goes. Healthy running time before that first exit never spends the budget,
+  and a series reset refills it. The hub is re-read after the wait, before
   every resume, so a pause, `done`, or a different hub or workflow during a
   long wait still stops the launcher.
 - stops without launching again, and says why, when the workflow is `paused`

@@ -21,9 +21,11 @@ This launcher is Alice's counterpart of ``claude-worker.py`` (#115):
    doubles from ``--resume-delay-s`` up to ``--resume-max-delay-s`` (about 30
    min), then repeats at the cap. A run lasting ``--resume-series-reset-s``
    starts a new series at the short delay. Resumes stop after
-   ``--resume-total-s`` (about 12 h), or after ``--max-resumes`` when given
+   ``--resume-total-s`` (about 12 h) since the first exit of the current
+   series, or after ``--max-resumes`` when given
    (by default no count limit). ``paused`` stops it until the operator resumes
-   by hand.
+   by hand. Healthy running time before that first exit never spends the
+   budget, and a series reset refills it.
 
 It stops, without launching again, when it cannot tell what happened: the hub
 stays unreadable or reports another hub or workflow after ``--read-retries``
@@ -188,7 +190,11 @@ def say(message: str) -> None:
 
 
 def backoff_delay(initial_s: float, cap_s: float, failures_in_series: int) -> float:
-    """The wait before the next resume: doubling from ``initial_s`` to ``cap_s`` (#158)."""
+    """The wait before the next resume: doubling from ``initial_s`` to ``cap_s`` (#158).
+
+    Keep in sync with the copy in scripts/claude-worker.py: each script must
+    stay standalone (standard library only), so the helper is duplicated.
+    """
     if not initial_s > 0:
         return 0.0
     if failures_in_series >= 30:
@@ -483,7 +489,11 @@ class Launcher:
             action = "start"
         resumes = 0
         failures_in_series = 0
-        launcher_start = time.monotonic()
+        # The budget anchor: the first exit of the current series. Healthy
+        # running time before it never spends the budget, and a series reset
+        # refills it (r1-1: anchoring at launcher start stopped long-lived
+        # launchers cold).
+        series_start: float | None = None
         while True:
             run_start = time.monotonic()
             exit_code = self.run_child(launch, action, resumes)
@@ -495,6 +505,7 @@ class Launcher:
                 return EXIT_DONE
             if run_duration >= self.args.resume_series_reset_s and (failures_in_series or resumes):
                 failures_in_series = 0
+                series_start = time.monotonic()
                 self.log(
                     "series_reset",
                     resumes=resumes,
@@ -507,7 +518,9 @@ class Launcher:
             delay = backoff_delay(
                 self.args.resume_delay_s, self.args.resume_max_delay_s, failures_in_series
             )
-            elapsed = time.monotonic() - launcher_start
+            if series_start is None:
+                series_start = time.monotonic()
+            elapsed = time.monotonic() - series_start
             if elapsed >= self.args.resume_total_s or elapsed + delay > self.args.resume_total_s:
                 self.log(
                     "stop",
@@ -606,8 +619,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--resume-total-s",
         type=float,
         default=DEFAULT_RESUME_TOTAL_S,
-        help="stop automatic resumes after this much launcher elapsed time in seconds "
-        f"(default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
+        help="stop automatic resumes after this much time in seconds since the first "
+        f"exit of the current series (default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
     )
     parser.add_argument(
         "--resume-series-reset-s",

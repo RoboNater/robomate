@@ -327,3 +327,39 @@ def test_negative_backoff_options_are_refused() -> None:
             CLAUDE_WORKER.parse_args([*base, flag, "-1", "claude"])
     with pytest.raises(SystemExit):
         CLAUDE_WORKER.parse_args([*base, "--max-resumes", "-2", "claude"])
+
+
+def test_healthy_running_time_does_not_spend_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: a first early exit after longer than --resume-total-s still resumes."""
+    fake = fake_harness(tmp_path, monkeypatch, release_on="")
+    clock = FakeClock(monkeypatch)
+    real_run = CLAUDE_WORKER.subprocess.run
+    calls = 0
+
+    def run(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        result = real_run(*args, **kwargs)
+        if calls == 1:
+            # The first run is healthy for 60 s, past the 20 s budget; the
+            # fake clock is frozen while the subprocess runs.
+            clock.now += 60.0
+        return result
+
+    monkeypatch.setattr(CLAUDE_WORKER.subprocess, "run", run)
+
+    assert (
+        launch(
+            tmp_path,
+            fake,
+            max_resumes=2,
+            extra=["--resume-delay-s", "5", "--resume-total-s", "20"],
+        )
+        == 1
+    )
+
+    records = jsonl(tmp_path / "bob-sessions.jsonl")
+    assert records[-1]["event"] == "stop" and records[-1]["reason"] == "resumes_spent"
+    assert [r["delay_s"] for r in records if r["event"] == "wait"] == [5.0, 10.0]

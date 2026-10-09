@@ -1825,6 +1825,45 @@ def test_unknown_worker_provider_surfaces_in_preflight_checks(
     }
 
 
+def test_worker_only_backoff_options_reach_script_and_manifest(
+    tmp_path: Path,
+) -> None:
+    """r1-2: a remote worker's launcher is configurable, not fixed at defaults."""
+    source = origin(tmp_path)
+    token = tmp_path / "token"
+    token.write_text("secret\n")
+    token.chmod(0o600)
+    worker_run = (tmp_path / "worker-run").resolve()
+    manifest = PREPARE_RUN.prepare_worker(
+        "bob",
+        str(source),
+        worker_run,
+        "http://192.0.2.10:8420",
+        token,
+        "claude-code",
+        max_resumes=7,
+        resume_delay_s=1.5,
+        resume_max_delay_s=60,
+        resume_total_s=3600,
+        resume_series_reset_s=30,
+    )
+    start = (worker_run / "start-bob.sh").read_text()
+    for flag in (
+        "--max-resumes 7",
+        "--resume-delay-s 1.5",
+        "--resume-max-delay-s 60",
+        "--resume-total-s 3600",
+        "--resume-series-reset-s 30",
+    ):
+        assert flag in start
+    agent = manifest["launch"]["agents"]["bob"]
+    assert agent["max_resumes"] == 7
+    assert agent["resume_delay_s"] == 1.5
+    assert agent["resume_max_delay_s"] == 60
+    assert agent["resume_total_s"] == 3600
+    assert agent["resume_series_reset_s"] == 30
+
+
 def test_opencode_effort_with_no_auto_start_is_rejected_before_run_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

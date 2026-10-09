@@ -14,8 +14,10 @@ Resumes run in series: consecutive quick exits double the wait from
 ``--resume-delay-s`` up to ``--resume-max-delay-s`` (default 30 min), then
 repeat at the cap. A run that lasts at least ``--resume-series-reset-s``
 (default 5 min) starts a new series with the short delay again. Resumes stop
-after ``--resume-total-s`` (default 12 h) of launcher elapsed time, or after
-``--max-resumes`` when given (by default no count limit; 0 disables resumes).
+after ``--resume-total-s`` (default 12 h) since the first exit of the current
+series, or after ``--max-resumes`` when given (by default no count limit;
+0 disables resumes). Healthy running time before that first exit never spends
+the budget, and a series reset refills it.
 
 Each launch, wait and exit is appended to ``--sessions`` as one JSON line: that
 is where an operator finds the conversation ID for a manual ``claude --resume``.
@@ -98,7 +100,11 @@ def log_session(path: Path, **fields: object) -> None:
 
 
 def backoff_delay(initial_s: float, cap_s: float, failures_in_series: int) -> float:
-    """The wait before the next resume: doubling from ``initial_s`` to ``cap_s`` (#158)."""
+    """The wait before the next resume: doubling from ``initial_s`` to ``cap_s`` (#158).
+
+    Keep in sync with the copy in scripts/alice-launcher.py: each script must
+    stay standalone (standard library only), so the helper is duplicated.
+    """
     if not initial_s > 0:
         return 0.0
     if failures_in_series >= 30:
@@ -148,8 +154,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--resume-total-s",
         type=float,
         default=DEFAULT_RESUME_TOTAL_S,
-        help="stop automatic resumes after this much launcher elapsed time in seconds "
-        f"(default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
+        help="stop automatic resumes after this much time in seconds since the first "
+        f"exit of the current series (default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
     )
     parser.add_argument(
         "--resume-series-reset-s",
@@ -185,7 +191,10 @@ def run(args: argparse.Namespace) -> int:
     session_id = str(uuid.uuid4())
     start = telemetry_size(args.telemetry)
     turn = ["--session-id", session_id, "-p", args.prompt]
-    launcher_start = time.monotonic()
+    # The budget anchor: the first exit of the current series. Healthy running
+    # time before it never spends the budget, and a series reset refills it
+    # (r1-1: anchoring at launcher start stopped long-lived launchers cold).
+    series_start: float | None = None
     resumes = 0
     failures_in_series = 0
     while True:
@@ -213,6 +222,7 @@ def run(args: argparse.Namespace) -> int:
             return 0
         if run_duration >= args.resume_series_reset_s and (failures_in_series or resumes):
             failures_in_series = 0
+            series_start = time.monotonic()
             log_session(
                 args.sessions,
                 agent=args.agent,
@@ -243,7 +253,9 @@ def run(args: argparse.Namespace) -> int:
             )
             return 1
         delay = backoff_delay(args.resume_delay_s, args.resume_max_delay_s, failures_in_series)
-        elapsed = time.monotonic() - launcher_start
+        if series_start is None:
+            series_start = time.monotonic()
+        elapsed = time.monotonic() - series_start
         if elapsed >= args.resume_total_s or elapsed + delay > args.resume_total_s:
             log_session(
                 args.sessions,

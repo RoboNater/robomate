@@ -1617,6 +1617,11 @@ def render_worker_bundle(
     out_dir: Path,
     effort: str = "",
     auto_start: bool = True,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> dict[str, Any]:
     """Render one worker's config, prompt and start script for the host that runs it.
 
@@ -1654,7 +1659,20 @@ def render_worker_bundle(
     )
     title = opencode_title(name, run_dir) if harness == "opencode" else None
     launch = worker_launch(
-        name, harness, run_dir, workspace, model, effort, auto_start, root=root, title=title
+        name,
+        harness,
+        run_dir,
+        workspace,
+        model,
+        effort,
+        auto_start,
+        root=root,
+        title=title,
+        max_resumes=max_resumes,
+        resume_delay_s=resume_delay_s,
+        resume_max_delay_s=resume_max_delay_s,
+        resume_total_s=resume_total_s,
+        resume_series_reset_s=resume_series_reset_s,
     )
     write_script(out_dir / f"start-{name}.sh", start_script(launch))
     (out_dir / f"resume-{name}.prompt.md").write_text(
@@ -1677,6 +1695,14 @@ def render_worker_bundle(
         bundle["title"] = title
     if supervised(harness, auto_start):
         bundle["sessions"] = (run_dir / f"{name}-sessions.jsonl").as_posix()
+        # Same flat shape as prepare()'s launch.agents entries.
+        bundle["backoff"] = {
+            "max_resumes": max_resumes,
+            "resume_delay_s": resume_delay_s,
+            "resume_max_delay_s": resume_max_delay_s,
+            "resume_total_s": resume_total_s,
+            "resume_series_reset_s": resume_series_reset_s,
+        }
     return bundle
 
 
@@ -1719,6 +1745,11 @@ def worker_only_command(
     capabilities: str,
     effort: str = "",
     auto_start: bool = True,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> str:
     """The ``--worker-only`` command to run on the remote worker's host.
 
@@ -1743,6 +1774,16 @@ def worker_only_command(
         args.append(f"--{name}-provider '{provider}'")
     if capabilities:
         args.append(f"--{name}-capabilities '{capabilities}'")
+    if max_resumes is not None:
+        args.append(f"--max-resumes {max_resumes}")
+    if resume_delay_s != DEFAULT_RESUME_DELAY_S:
+        args.append(f"--resume-delay-s {resume_delay_s:g}")
+    if resume_max_delay_s != DEFAULT_RESUME_MAX_DELAY_S:
+        args.append(f"--resume-max-delay-s {resume_max_delay_s:g}")
+    if resume_total_s != DEFAULT_RESUME_TOTAL_S:
+        args.append(f"--resume-total-s {resume_total_s:g}")
+    if resume_series_reset_s != DEFAULT_RESUME_SERIES_RESET_S:
+        args.append(f"--resume-series-reset-s {resume_series_reset_s:g}")
     return " ".join(args)
 
 
@@ -2484,6 +2525,11 @@ def prepare(
                 capabilities[remote_worker],
                 launch[remote_worker][2],
                 auto_start,
+                max_resumes=max_resumes,
+                resume_delay_s=resume_delay_s,
+                resume_max_delay_s=resume_max_delay_s,
+                resume_total_s=resume_total_s,
+                resume_series_reset_s=resume_series_reset_s,
             )
         )
     if not is_loopback(url_host(network["hub_url"], "--hub-url")):
@@ -2509,6 +2555,11 @@ def prepare_worker(
     worker_dir: Path | None = None,
     effort: str = "",
     auto_start: bool = True,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> dict[str, Any]:
     """Render one remote worker on the host that runs it (``--worker-only``).
 
@@ -2561,6 +2612,11 @@ def prepare_worker(
         run_dir,
         effort,
         auto_start,
+        max_resumes=max_resumes,
+        resume_delay_s=resume_delay_s,
+        resume_max_delay_s=resume_max_delay_s,
+        resume_total_s=resume_total_s,
+        resume_series_reset_s=resume_series_reset_s,
     )
     manifest = {
         "schema_version": 1,
@@ -2589,6 +2645,7 @@ def prepare_worker(
                 }
                 | ({"title": bundle["title"]} if "title" in bundle else {})
                 | ({"sessions": bundle["sessions"]} if "sessions" in bundle else {})
+                | bundle.get("backoff", {}),
             },
         },
     }
@@ -2738,8 +2795,8 @@ def main() -> None:
         type=float,
         default=DEFAULT_RESUME_TOTAL_S,
         metavar="SECONDS",
-        help="stop automatic resumes after this much launcher elapsed time in seconds "
-        f"(#158; default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
+        help="stop automatic resumes after this much time in seconds since the first "
+        f"exit of the current series (#158; default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
     )
     parser.add_argument(
         "--resume-series-reset-s",
@@ -2796,6 +2853,9 @@ def main() -> None:
         if (value := getattr(args, f"{name}_harness")) is not None:
             harnesses[name] = value
     if args.worker_only is not None:
+        # --worker-only renders one worker on its own host; hub-run options
+        # (goal, hub identity, policy) do not apply, but the resume backoff
+        # does: it configures that worker's own launcher (#158 r1-2).
         hub_only = {
             "--issue": args.issue is not None,
             "--work-file": args.work_file is not None,
@@ -2811,11 +2871,6 @@ def main() -> None:
             "--alice-model": bool(args.alice_model),
             "--alice-effort": bool(args.alice_effort),
             "--stall-after-min": args.stall_after_min != DEFAULT_STALL_AFTER_MIN,
-            "--max-resumes": args.max_resumes is not None,
-            "--resume-delay-s": args.resume_delay_s != DEFAULT_RESUME_DELAY_S,
-            "--resume-max-delay-s": args.resume_max_delay_s != DEFAULT_RESUME_MAX_DELAY_S,
-            "--resume-total-s": args.resume_total_s != DEFAULT_RESUME_TOTAL_S,
-            "--resume-series-reset-s": args.resume_series_reset_s != DEFAULT_RESUME_SERIES_RESET_S,
         }
         if given := [flag for flag, present in hub_only.items() if present]:
             parser.error(f"hub-host flags do not apply to --worker-only: {', '.join(given)}")
@@ -2838,6 +2893,11 @@ def main() -> None:
                 getattr(args, f"{name}_dir"),
                 getattr(args, f"{name}_effort"),
                 args.auto_start,
+                max_resumes=args.max_resumes,
+                resume_delay_s=args.resume_delay_s,
+                resume_max_delay_s=args.resume_max_delay_s,
+                resume_total_s=args.resume_total_s,
+                resume_series_reset_s=args.resume_series_reset_s,
             )
         except ValueError as exc:
             sys.exit(f"prepare-run: error: {exc}")
