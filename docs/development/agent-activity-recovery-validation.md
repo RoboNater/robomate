@@ -154,6 +154,9 @@ Keep `$RUN` until the evidence is written, then remove `$ACC`.
 
 ## Evidence
 
+The first run, at f08340c, passed all three checks:
+[agent-activity-recovery-20261009T082101.md](../evidence/agent-activity-recovery-20261009T082101.md).
+
 Record the results in `docs/evidence/agent-activity-recovery-<run-id>.md`:
 
 ```markdown
