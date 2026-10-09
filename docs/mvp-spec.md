@@ -263,15 +263,29 @@ Liveness is checked by pid and `/healthz` (matching `hub_id`); an entry whose st
 location is gone is pruned. `robomate ls` lists the hubs with their name, owning checkout,
 repository, URL, live or stopped, agents joined, and phase. The operator credential,
 `operator-token` (mode 0600), lives in the same directory and never in a repository or a
-hub's state (#128).
+hub's state (#128). A stopped hub keeps its entry, and so its name and port, until the
+operator releases them with `robomate forget` (#159): forgetting removes the registry
+entry, freeing the name and the saved port for reuse, and deletes nothing. hub.db and
+run reports are kept; hub.json keeps its identity and last address, records the
+released port, and clears pid/started_at. `robomate forget --all` forgets every stopped
+hub; a live hub is never forgotten (stop it first). If a sibling hub has since taken the
+freed name, the forgotten hub's next `up` is refused naming the holder; an explicit
+`robomate up --name <new>` renames it for that start. A rename starts a new
+worktree/branch namespace: agent worktrees and `robomate/<old>/…` branches made under
+the old name keep it. Removing hub state stays a separate, explicit operator action.
 
 **Port** — per hub: the first free port from 8420 upward on the hub's first `up`, saved in
 `hub.json` and reused on restart so remote agents keep working; `--port` pins it. A pinned
 or saved port that is taken fails startup instead of moving the hub, so two hubs that ask
 for the same port fail clearly. Allocation binds first; there is no repository-wide lock.
+A hub forgotten with `robomate forget` has its port released: its next `up` ignores the
+saved port, takes the first free port, and says that the port was released and names the
+new one, since remote agents configured with the old port need the new one.
 
 **Process** — foreground by default (visible log, Ctrl-C stops it, same on Windows and
-Linux). `robomate down` stops it from another terminal. Background/service mode is post-MVP.
+Linux). `robomate down` stops it from another terminal. `robomate down --all` stops every
+live hub in the machine registry with the operator credential and reports what it stopped;
+hub state and run reports are kept. Background/service mode is post-MVP.
 
 **Hub discovery** — the same order for `robomate mcp` and for every CLI command that acts
 on a hub. **There is no silent attach**: a checkout never reaches a hub it was not given.
@@ -804,7 +818,8 @@ non-goal (§1) and post-MVP (§16). Neither is ever written into a harness confi
 
 **Operator-only actions.** The orchestrator routes these to `ask_user` (§7.4), never to a
 worker, and a worker whose task needs one returns `blocked` naming it (#132):
-- starting or stopping hubs, and launching agent harnesses;
+- starting or stopping hubs (`robomate up`, `robomate down`, `robomate down --all`),
+  forgetting hubs (`robomate forget`), and launching agent harnesses;
 - acting or speaking for the operator, or accepting work on the operator's behalf;
 - changing the default branch outside the PR, or forge or repository settings;
 - creating and removing robomate worktrees (`robomate up --agents`, `robomate workspace`,

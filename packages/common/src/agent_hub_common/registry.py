@@ -252,3 +252,21 @@ def mark_stopped(
         ]
         if updated != entries:
             _write(path, updated)
+
+
+def forget(hub_id: str, environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
+    """Remove one hub's registry entry, freeing its name and port (#159).
+
+    Hub state and run reports are untouched; only the machine registry entry
+    goes. The next `up` in that checkout re-registers the hub and takes the
+    first free port. Returns the removed entry, or None when absent.
+    """
+
+    path = registry_path(environ)
+    with _locked(path):
+        entries = _read(path)
+        removed = [item for item in entries if item.get("hub_id") == hub_id]
+        if not removed:
+            return None
+        _write(path, [item for item in entries if item.get("hub_id") != hub_id])
+        return removed[0]
