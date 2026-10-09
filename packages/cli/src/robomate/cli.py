@@ -1,4 +1,4 @@
-"""Start and stop the per-repository hub, and answer its operator questions."""
+"""Start and stop a checkout's hub, and answer its operator questions."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import anyio
 from agent_hub.forge_preflight import gitlab_preflight
@@ -29,19 +29,26 @@ from agent_hub.main import serve_http
 from agent_hub_common import HubSettings, load_or_create_token, read_token_file, reserve_stdout
 from agent_hub_common.discovery import (
     DiscoveryError,
+    HubEndpoint,
+    LocalHub,
     Repository,
-    discover,
+    derive_hub_name,
     ensure_excluded,
+    find_hub,
+    hub_checkout,
+    is_linked_worktree,
     read_hub_json,
-    repo_root,
+    repository_dir,
     resolve_repository,
     state_dir,
+    token_file,
+    validate_hub_name,
     write_hub_json,
 )
 from agent_hub_common.registry import (
-    deregister,
+    hub_entries,
     hub_healthy,
-    live_entries,
+    mark_stopped,
     operator_token_path,
     process_alive,
     register,
@@ -52,9 +59,13 @@ from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 VERSION = "0.1.0"
 
 
-def _bind(host: str, port: int | None) -> tuple[socket.socket, int]:
+def _bind(
+    host: str, port: int | None, avoid: frozenset[int] = frozenset()
+) -> tuple[socket.socket, int]:
+    """Bind the pinned or saved port, or the first free one from 8420 not in `avoid`."""
+
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    ports = [port] if port is not None else range(8420, 65536)
+    ports = [port] if port is not None else (p for p in range(8420, 65536) if p not in avoid)
     for candidate in ports:
         assert candidate is not None
         sock = socket.socket(family, socket.SOCK_STREAM)
@@ -105,10 +116,13 @@ def _rpc(
 
 
 @contextmanager
-def _repo_lock(directory: Path) -> Iterator[None]:
-    """Hold an OS file lock for the hub lifetime, including startup."""
+def _hub_lock(checkout: Path) -> Iterator[None]:
+    """Hold this hub's OS file lock for its lifetime, including startup.
 
-    fd = os.open(directory / "up.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    The lock is per hub, in its state directory: it never blocks a sibling hub.
+    """
+
+    fd = os.open(state_dir(checkout) / "up.lock", os.O_RDWR | os.O_CREAT, 0o600)
     locked = False
     try:
         try:
@@ -125,7 +139,7 @@ def _repo_lock(directory: Path) -> Iterator[None]:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             locked = True
         except OSError as exc:
-            info = read_hub_json(directory.parent) or {}
+            info = read_hub_json(checkout) or {}
             url = info.get("url")
             message = f"hub already running at {url}" if url else "hub already starting"
             raise RuntimeError(message) from exc
@@ -146,11 +160,31 @@ async def _up(args: argparse.Namespace) -> None:
     repo = resolve_repository(Path.cwd(), probe_cli=args.forge is None)
     if args.forge:
         repo = replace(repo, forge=args.forge)
+    if args.name is not None:
+        validate_hub_name(args.name)
     directory = state_dir(repo.root)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
-    with _repo_lock(directory):
+    with _hub_lock(repo.root):
         await _run_up(args, repo, directory)
+
+
+def _hub_name(requested: str | None, recorded: object, checkout: Path) -> str:
+    """The recorded name, else the requested or derived one (spec §4 "Hub name")."""
+
+    if recorded:
+        if requested is not None and requested != recorded:
+            raise RuntimeError(
+                f"this hub is named {recorded!r}; a hub's name is fixed once recorded, "
+                "because agent worktrees and branches carry it"
+            )
+        return str(recorded)
+    return validate_hub_name(requested) if requested is not None else derive_hub_name(checkout)
+
+
+def _entry_port(entry: dict[str, Any]) -> int | None:
+    port = entry.get("port") or urllib.parse.urlparse(str(entry.get("url") or "")).port
+    return int(port) if port else None
 
 
 async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -> None:
@@ -163,6 +197,28 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         and hub_healthy(str(old.get("url") or ""), str(old.get("hub_id") or ""))
     ):
         raise RuntimeError(f"hub already running at {old['url']}")
+    name = _hub_name(args.name, old.get("name"), repo.root)
+    hub_id = str(old.get("hub_id") or uuid.uuid4().hex)
+    entry = {
+        "hub_id": hub_id,
+        "name": name,
+        "checkout": str(repo.root),
+        # The directory registry readers from before checkout scope know.
+        "repo_root": str(repo.root),
+        "git_common_dir": str(repo.git_common_dir),
+        "state_dir": str(directory),
+    }
+    # Registering first claims the name among the repository's hubs before
+    # anything starts; an entry for a hub that never starts has no hub.json
+    # and is pruned.
+    register(entry | {"url": old.get("url"), "port": old.get("port"), "pid": None})
+    if is_linked_worktree(repo.root, repo.git_common_dir):
+        print(
+            f"Warning: this hub's state is in {directory}, inside a linked worktree; "
+            "`git worktree remove` deletes it, with the hub's history and run reports, "
+            "until hub state moves out of the checkout (M2).",
+            flush=True,
+        )
     if repo.forge == "unknown":
         print(
             "Warning: forge is unknown; check_merge_gate will use the GitHub gate. "
@@ -179,7 +235,14 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
                 "settings or correct the origin before running up again"
             )
     requested_port = args.port if args.port is not None else old.get("port")
-    sock, port = _bind(args.bind, int(requested_port) if requested_port is not None else None)
+    taken = frozenset(
+        port
+        for item in hub_entries()
+        if item.get("hub_id") != hub_id and (port := _entry_port(item)) is not None
+    )
+    sock, port = _bind(
+        args.bind, int(requested_port) if requested_port is not None else None, taken
+    )
     overlay = dict(os.environ)
     overlay.update(
         {
@@ -197,9 +260,9 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     try:
         settings = HubSettings.from_env(overlay)
         load_or_create_token(settings.token, settings.token_file)
-        _provision_operator_token(settings, repo.root)
+        _provision_operator_token(settings, repo)
         info: dict[str, Any] = {
-            "repo_root": str(repo.root),
+            **entry,
             "origin": repo.origin,
             "forge": repo.forge,
             "default_branch": repo.default_branch,
@@ -208,13 +271,15 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
             "pid": os.getpid(),
             "started_at": datetime.now(UTC).isoformat(),
             "robomate_version": VERSION,
-            "hub_id": old.get("hub_id") or uuid.uuid4().hex,
         }
+        info.pop("state_dir")
 
         def started() -> None:
             write_hub_json(repo.root, info)
-            register(info)
-            print(f"Hub running at {settings.public_url}", flush=True)
+            register(entry | {"url": settings.public_url, "port": port, "pid": os.getpid()})
+            print(f"Hub {name} running at {settings.public_url}", flush=True)
+            print(f"Hub checkout: {repo.root}", flush=True)
+            print(f"Hub state: {directory}", flush=True)
             print(f"ROBOMATE_HUB_URL={settings.public_url}", flush=True)
             print(f"ROBOMATE_TOKEN_FILE={settings.token_file}", flush=True)
 
@@ -223,7 +288,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         finally:
             # The shutdown write can hit a transient Windows sharing
             # violation while a reader holds hub.json (#114). It must never
-            # skip deregister, so the registry cleanup runs even if the
+            # skip mark_stopped, so the registry update runs even if the
             # read or write still fails after retries.
             try:
                 current = read_hub_json(repo.root)
@@ -236,53 +301,76 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
                     current["started_at"] = None
                     write_hub_json(repo.root, current)
             finally:
-                deregister(str(info["hub_id"]), pid=os.getpid())
+                mark_stopped(hub_id, pid=os.getpid())
     finally:
         sock.close()
 
 
-def _provision_operator_token(settings: HubSettings, root: Path) -> None:
+def _provision_operator_token(settings: HubSettings, repo: Repository) -> None:
     """Create the operator credential beside the machine registry (#128).
 
-    Agents read the repository and its `.robomate/`, so a path into either is
-    refused rather than handing them the one credential they must not hold.
-    The token and its path are never printed.
+    Agents read the repository, its checkouts and the hub's state, so a path
+    into any of them is refused rather than handing them the one credential
+    they must not hold. The token and its path are never printed.
     """
 
     path = settings.operator_token_file
     if path is None:
         return
     resolved = path.resolve()
-    if resolved.is_relative_to(root.resolve()):
-        raise RuntimeError("the operator token file must not be inside the repository")
+    for place in (repo.root, state_dir(repo.root), repository_dir(repo.git_common_dir)):
+        if resolved.is_relative_to(place.resolve()):
+            raise RuntimeError(
+                f"the operator token file must not be inside the repository or the "
+                f"hub's state ({place})"
+            )
     resolved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     load_or_create_token(None, resolved, label="operator token")
 
 
-def _down() -> None:
-    endpoint = discover(Path.cwd())
+def _require_running(hub: LocalHub) -> None:
+    """Check a local hub's hub_id against /healthz before acting on it (spec §4)."""
+
+    if hub_healthy(hub.url, hub.hub_id):
+        return
+    pid = int(hub.info.get("pid") or 0)
+    if process_alive(pid):
+        raise RuntimeError(
+            f"{hub.label()} at {hub.url} is unreachable; recorded pid {pid} is visible"
+        )
+    raise RuntimeError(f"{hub.label()} at {hub.url} is not running")
+
+
+def _connect(selector: str | None) -> tuple[HubEndpoint, LocalHub | None]:
+    """The selected or discovered hub's endpoint, and the local hub when one was found."""
+
+    hub = find_hub(Path.cwd(), selector=selector)
+    if isinstance(hub, LocalHub):
+        _require_running(hub)
+        return hub.endpoint(), hub
+    return hub, None
+
+
+def _down(selector: str | None) -> None:
+    endpoint, hub = _connect(selector)
+    label = hub.label() if hub is not None else "hub"
     operator_token = read_token_file(operator_token_path(), "operator token")
     try:
         result = _rpc(endpoint.url, endpoint.token, "hub.shutdown", operator_token=operator_token)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"hub at {endpoint.url} rejected shutdown (HTTP {exc.code})") from exc
+        raise RuntimeError(
+            f"{label} at {endpoint.url} rejected shutdown (HTTP {exc.code})"
+        ) from exc
     except (OSError, urllib.error.URLError) as exc:
-        pid = 0
-        if not os.environ.get("ROBOMATE_HUB_URL"):
-            try:
-                repo = resolve_repository(Path.cwd())
-                info = read_hub_json(repo.root) or {}
-                pid = int(info.get("pid") or 0)
-            except DiscoveryError:
-                pass
+        pid = int(hub.info.get("pid") or 0) if hub is not None else 0
         if process_alive(pid):
             raise RuntimeError(
-                f"hub at {endpoint.url} is unreachable; pid {pid} is still alive"
+                f"{label} at {endpoint.url} is unreachable; pid {pid} is still alive"
             ) from exc
-        raise RuntimeError(f"hub at {endpoint.url} is not running") from exc
+        raise RuntimeError(f"{label} at {endpoint.url} is not running") from exc
     if not result.get("stopping"):
         raise RuntimeError("hub did not acknowledge shutdown")
-    print(f"Stopping hub at {endpoint.url}")
+    print(f"Stopping {label} at {endpoint.url}")
 
 
 def _age(elapsed: timedelta) -> str:
@@ -337,30 +425,6 @@ def _stall_evidence(activity: dict[str, Any]) -> str:
     if threshold is not None:
         parts.append(f"threshold {_age(threshold)}")
     return "; ".join(parts)
-
-
-def _hub_connection() -> tuple[str, str, object]:
-    """The discovered hub's URL, token and port, exiting as `status` does when stopped."""
-
-    try:
-        root, _ = repo_root(Path.cwd())
-    except DiscoveryError:
-        root = None
-    info = read_hub_json(root) if root is not None else None
-    explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
-    if info is not None and not explicit:
-        url = str(info.get("url") or "unknown")
-        port = info.get("port")
-        assert root is not None
-        if not hub_healthy(url, str(info.get("hub_id") or "")):
-            pid = int(info.get("pid") or 0)
-            if process_alive(pid):
-                raise RuntimeError(f"hub at {url} is unreachable; recorded pid {pid} is visible")
-            raise RuntimeError(f"hub at {url} is not running")
-        token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()
-        return url, token, port
-    endpoint = discover(Path.cwd())
-    return endpoint.url, endpoint.token, urllib.parse.urlparse(endpoint.url).port
 
 
 def _stopped_at(value: str | None) -> str | None:
@@ -418,68 +482,72 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _snapshot(as_json: bool, stopped_at: str | None) -> None:
+def _snapshot(as_json: bool, stopped_at: str | None, selector: str | None) -> None:
     """Print the operator's before-snapshot from bearer-only reads (#146)."""
 
     stopped = _stopped_at(stopped_at)
-    url, token, _ = _hub_connection()
-    snapshot = _rpc(url, token, "hub.snapshot") | {"stopped_at": stopped}
+    endpoint, _ = _connect(selector)
+    snapshot = _rpc(endpoint.url, endpoint.token, "hub.snapshot") | {"stopped_at": stopped}
     if as_json:
         print(json.dumps(snapshot))
     else:
         print(render_snapshot(snapshot))
 
 
-def _status(as_json: bool) -> None:
-    """Show the discovered hub, retaining local metadata for stopped hubs."""
-    try:
-        root, _ = repo_root(Path.cwd())
-    except DiscoveryError:
-        root = None
-    info = read_hub_json(root) if root is not None else None
-    explicit = bool(os.environ.get("ROBOMATE_HUB_URL", "").strip())
+def _state_location(local: LocalHub | None, checkout: Path) -> str:
+    if local is not None:
+        return str(state_dir(local.checkout))
+    # Selected by URL: the state is only known when that checkout is on this machine.
+    state = state_dir(checkout)
+    return str(state) if (state / "hub.json").is_file() else "unknown (hub selected by URL)"
 
-    def stopped(url: str, port: object, reason: str | None = None) -> None:
-        known_root = root if not explicit else None
-        stopped = {
+
+def _status(as_json: bool, selector: str | None) -> None:
+    """Show the selected or discovered hub, retaining local metadata for stopped hubs."""
+
+    hub = find_hub(Path.cwd(), selector=selector)
+    local = hub if isinstance(hub, LocalHub) else None
+
+    def stopped(url: str, port: object, reason: str | None = None) -> NoReturn:
+        report: dict[str, Any] = {
             "running": False,
-            "repo_root": str(known_root) if known_root else None,
+            "repo_root": str(local.checkout) if local else None,
             "url": url,
             "port": port,
         }
+        if local is not None:
+            report |= {
+                "name": local.name,
+                "checkout": str(local.checkout),
+                "state_dir": str(state_dir(local.checkout)),
+            }
         if reason is not None:
-            stopped["reason"] = reason
+            report["reason"] = reason
         if as_json:
-            print(json.dumps(stopped))
-        elif reason is not None:
-            print(f"{known_root or 'Hub'}: {reason} (URL: {url}, port: {port})")
+            print(json.dumps(report))
         else:
-            print(f"{known_root or 'Hub'}: not running (URL: {url}, port: {port})")
+            who = f"{local.label().capitalize()} ({local.checkout})" if local else "Hub"
+            print(f"{who}: {reason or 'not running'} (URL: {url}, port: {port})")
         raise SystemExit(1)
 
-    if info is not None and not explicit:
-        url = str(info.get("url") or "unknown")
-        port = info.get("port")
-        pid = int(info.get("pid") or 0)
+    if local is not None:
+        url = local.url
+        port = local.info.get("port")
+        pid = int(local.info.get("pid") or 0)
         # A worker in another PID namespace cannot see the hub process. The
         # matching HTTP hub ID is the authoritative live check in that case.
-        if not hub_healthy(url, str(info.get("hub_id") or "")):
+        if not hub_healthy(url, local.hub_id):
             if process_alive(pid):
                 stopped(url, port, f"unreachable; recorded pid {pid} is visible")
             stopped(url, port)
-        assert root is not None
-        token = (state_dir(root) / "token").read_text(encoding="utf-8").strip()
+        endpoint = local.endpoint()
     else:
-        try:
-            endpoint = discover(Path.cwd())
-        except DiscoveryError as exc:
-            if info is None and root is not None and not explicit:
-                raise RuntimeError(f"not running: no hub recorded for {root}") from exc
-            raise
-        url, token = endpoint.url, endpoint.token
+        assert isinstance(hub, HubEndpoint)
+        endpoint = hub
+        url = hub.url
         port = urllib.parse.urlparse(url).port
     try:
-        status = _rpc(url, token, "hub.status")
+        status = _rpc(url, endpoint.token, "hub.status")
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"hub at {url} rejected status (HTTP {exc.code})") from exc
     except (OSError, urllib.error.URLError):
@@ -487,10 +555,16 @@ def _status(as_json: bool) -> None:
     if as_json:
         print(json.dumps(status))
         return
-    print(f"Repository: {status['repo_root']}")
+    # name, checkout and git_common_dir are absent from a hub older than #147.
+    name = status.get("name") or (local.name if local else None)
+    checkout = Path(status.get("checkout") or status["repo_root"])
+    common = status.get("git_common_dir")
+    print(f"Hub: {name or '(unnamed)'}  {status['url']}")
+    print(f"Checkout: {checkout}")
+    print(f"Repository: {repository_dir(Path(common)) if common else checkout}")
+    print(f"State: {_state_location(local, checkout)}")
     print(f"Origin: {status['origin']}")
     print(f"Forge: {status['forge']}  Default branch: {status['default_branch']}")
-    print(f"Hub: {status['url']}")
     workflow = status["workflow"]
     if workflow:
         print(f"Workflow: {workflow['status']} — {workflow['headline'][:120]}")
@@ -573,11 +647,11 @@ def _open_questions(url: str, token: str) -> list[dict[str, Any]]:
     return questions
 
 
-def _inbox(as_json: bool) -> None:
+def _inbox(as_json: bool, selector: str | None) -> None:
     """List the questions the orchestrator is waiting on the operator to answer."""
 
     _escape_unencodable_output()
-    endpoint = discover(Path.cwd())
+    endpoint, _ = _connect(selector)
     questions = _open_questions(endpoint.url, endpoint.token)
     if as_json:
         print(json.dumps(questions))
@@ -599,13 +673,13 @@ def _inbox(as_json: bool) -> None:
     print('Answer with: robomate answer <id> "<text>"  or  robomate answer <id> --option N')
 
 
-def _answer(question_id: int, text: str | None, option: int | None) -> None:
+def _answer(question_id: int, text: str | None, option: int | None, selector: str | None) -> None:
     """Answer one open question with the operator credential (#130)."""
 
     if (text is None) == (option is None):
         raise ValueError("give either an answer text or --option N, exactly one")
     _escape_unencodable_output()
-    endpoint = discover(Path.cwd())
+    endpoint, _ = _connect(selector)
     operator_token = read_token_file(operator_token_path(), "operator token")
     if option is not None:
         question = next(
@@ -640,20 +714,33 @@ def _answer(question_id: int, text: str | None, option: int | None) -> None:
 
 
 def _ls(as_json: bool) -> None:
+    """List every registered hub, live or stopped, with name, checkout and repository."""
+
     hubs = []
-    for entry in live_entries():
-        repo = Path(str(entry["repo_root"]))
-        url = str(entry["url"])
-        try:
-            token = (state_dir(repo) / "token").read_text(encoding="utf-8").strip()
-            status = _rpc(url, token, "hub.status")
-            agent_count = len(status["agents"])
-            phase = status["workflow"]["status"] if status["workflow"] else "none"
-        except (OSError, urllib.error.URLError, RuntimeError, KeyError):
-            agent_count, phase = None, "unknown"
+    for entry in hub_entries():
+        checkout = hub_checkout(entry)
+        assert checkout is not None  # hub_entries prunes entries without one
+        common = entry.get("git_common_dir")
+        url = str(entry.get("url") or "")
+        agent_count, phase = None, None
+        if entry["live"]:
+            try:
+                token = token_file(checkout).read_text(encoding="utf-8").strip()
+                status = _rpc(url, token, "hub.status")
+                agent_count = len(status["agents"])
+                phase = status["workflow"]["status"] if status["workflow"] else "none"
+            except (OSError, urllib.error.URLError, RuntimeError, KeyError):
+                phase = "unknown"
         hubs.append(
             {
-                "repo_root": str(repo),
+                "hub_id": entry.get("hub_id"),
+                "name": entry.get("name"),
+                "live": entry["live"],
+                "checkout": str(checkout),
+                "repo_root": str(checkout),
+                "repository": str(repository_dir(Path(common)) if common else checkout),
+                "git_common_dir": common,
+                "state_dir": str(entry.get("state_dir") or state_dir(checkout)),
                 "url": url,
                 "agent_count": agent_count,
                 "workflow_status": phase,
@@ -663,10 +750,11 @@ def _ls(as_json: bool) -> None:
         print(json.dumps(hubs))
     else:
         for hub in hubs:
-            count = hub["agent_count"] if hub["agent_count"] is not None else "?"
+            count = hub["agent_count"] if hub["agent_count"] is not None else "-"
             print(
-                f"{hub['repo_root']}  {hub['url']}  agents {count}"
-                f"  workflow {hub['workflow_status']}"
+                f"{hub['name'] or '(unnamed)'}  {'live' if hub['live'] else 'stopped'}"
+                f"  {hub['url']}  checkout {hub['checkout']}  repository {hub['repository']}"
+                f"  agents {count}  workflow {hub['workflow_status'] or '-'}"
             )
 
 
@@ -685,7 +773,11 @@ async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="robomate")
     commands = parser.add_subparsers(dest="command", required=True)
-    up = commands.add_parser("up", help="run this repository's hub in the foreground")
+    up = commands.add_parser("up", help="run this checkout's hub in the foreground")
+    up.add_argument(
+        "--name",
+        help="the hub's name at its first up (default: from the checkout's directory name)",
+    )
     up.add_argument(
         "--forge",
         choices=("github", "gitlab"),
@@ -695,8 +787,8 @@ def main() -> None:
     up.add_argument("--public-url")
     up.add_argument("--port", type=int)
     up.add_argument("--no-call-accounting", action="store_true")
-    commands.add_parser("down", help="stop the discovered hub")
-    status = commands.add_parser("status", help="show this repository's hub state")
+    down = commands.add_parser("down", help="stop this checkout's hub, or the one --hub names")
+    status = commands.add_parser("status", help="show this checkout's hub, or the one --hub names")
     status.add_argument("--json", action="store_true")
     status.add_argument(
         "--snapshot",
@@ -714,7 +806,13 @@ def main() -> None:
     answer.add_argument("question_id", type=int, metavar="id")
     answer.add_argument("text", nargs="?", help="the answer; quote it")
     answer.add_argument("--option", type=int, metavar="N", help="answer with option N")
-    listing = commands.add_parser("ls", help="list live hubs on this machine")
+    for command in (down, status, inbox, answer):
+        command.add_argument(
+            "--hub",
+            metavar="NAME|HUB_ID|CHECKOUT",
+            help="act on this hub instead of the one this checkout owns",
+        )
+    listing = commands.add_parser("ls", help="list the hubs on this machine")
     listing.add_argument("--json", action="store_true")
     mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
     mcp.add_argument("--role", choices=("orchestrator", "worker"), required=True)
@@ -725,18 +823,18 @@ def main() -> None:
         if args.command == "up":
             asyncio.run(_up(args))
         elif args.command == "down":
-            _down()
+            _down(args.hub)
         elif args.command == "status":
             if args.stopped_at is not None and not args.snapshot:
                 raise ValueError("--stopped-at goes with --snapshot")
             if args.snapshot:
-                _snapshot(args.json, args.stopped_at)
+                _snapshot(args.json, args.stopped_at, args.hub)
             else:
-                _status(args.json)
+                _status(args.json, args.hub)
         elif args.command == "inbox":
-            _inbox(args.json)
+            _inbox(args.json, args.hub)
         elif args.command == "answer":
-            _answer(args.question_id, args.text, args.option)
+            _answer(args.question_id, args.text, args.option, args.hub)
         elif args.command == "ls":
             _ls(args.json)
         else:

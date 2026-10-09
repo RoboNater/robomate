@@ -1,4 +1,9 @@
-"""Machine-local live hub registry with bounded advisory locking."""
+"""Machine-local hub registry with bounded advisory locking.
+
+One entry per hub, keyed by `hub_id`, live or stopped (spec §4 "Machine
+registry"). A stopped hub keeps its entry so its name stays taken among the
+hubs of its repository; an entry whose state is gone is pruned.
+"""
 
 from __future__ import annotations
 
@@ -157,40 +162,86 @@ def hub_healthy(url: str, hub_id: str) -> bool:
         return False
 
 
-def live_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+def _stale(entry: Mapping[str, Any]) -> bool:
+    """Whether an entry's state is gone, or now belongs to another hub."""
+
+    from .discovery import DiscoveryError, hub_checkout, read_hub_json
+
+    checkout = hub_checkout(entry)
+    if checkout is None:
+        return True
+    try:
+        info = read_hub_json(checkout)
+    except DiscoveryError:
+        return False
+    return info is None or info.get("hub_id") != entry.get("hub_id")
+
+
+def _live(entry: Mapping[str, Any]) -> bool:
+    return process_alive(int(entry.get("pid") or 0)) and hub_healthy(
+        str(entry.get("url") or ""), str(entry.get("hub_id") or "")
+    )
+
+
+def hub_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    """Every registered hub, each with a computed `live` flag; prunes stale entries."""
+
     path = registry_path(environ)
     with _locked(path):
         entries = _read(path)
-        live = [
-            item
-            for item in entries
-            if process_alive(int(item.get("pid") or 0))
-            and hub_healthy(str(item.get("url") or ""), str(item.get("hub_id") or ""))
-        ]
-        if live != entries:
-            _write(path, live)
-        return live
+        checked = [(item, _live(item)) for item in entries]
+        kept = [(item, live) for item, live in checked if live or not _stale(item)]
+        if len(kept) != len(entries):
+            _write(path, [item for item, _ in kept])
+    return [item | {"live": live} for item, live in kept]
+
+
+def live_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    return [item for item in hub_entries(environ) if item["live"]]
 
 
 def register(entry: Mapping[str, Any], environ: Mapping[str, str] | None = None) -> None:
+    """Record or update one hub by `hub_id`, never evicting another.
+
+    A name another hub of the same git common directory holds is refused:
+    `up` never picks a different name silently (spec §4 "Hub name").
+    """
+
     path = registry_path(environ)
     with _locked(path):
         entries = _read(path)
-        entries = [item for item in entries if item.get("repo_root") != entry["repo_root"]]
+        name, common = entry.get("name"), entry.get("git_common_dir")
+        for item in entries:
+            if (
+                name
+                and item.get("hub_id") != entry["hub_id"]
+                and item.get("name") == name
+                and item.get("git_common_dir") == common
+                and not _stale(item)
+            ):
+                raise RegistryError(
+                    f"hub name {name!r} is taken by hub {item.get('hub_id')} of checkout "
+                    f"{item.get('checkout')} in the same repository; choose another with "
+                    "robomate up --name"
+                )
+        entries = [item for item in entries if item.get("hub_id") != entry["hub_id"]]
         entries.append(dict(entry))
         _write(path, entries)
 
 
-def deregister(
+def mark_stopped(
     hub_id: str, environ: Mapping[str, str] | None = None, *, pid: int | None = None
 ) -> None:
+    """Record that a hub stopped, keeping its entry and so its name."""
+
     path = registry_path(environ)
     with _locked(path):
         entries = _read(path)
-        remaining = [
-            item
+        updated = [
+            item | {"pid": None}
+            if item.get("hub_id") == hub_id and (pid is None or item.get("pid") == pid)
+            else item
             for item in entries
-            if item.get("hub_id") != hub_id or (pid is not None and item.get("pid") != pid)
         ]
-        if remaining != entries:
-            _write(path, remaining)
+        if updated != entries:
+            _write(path, updated)

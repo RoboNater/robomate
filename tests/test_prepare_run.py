@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
+from agent_hub_common.discovery import state_dir, token_file
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("prepare_run", ROOT / "scripts/prepare-run.py")
@@ -72,9 +73,9 @@ def origin(tmp_path: Path) -> Path:
 
 def hub_repo(tmp_path: Path, url: str = "http://127.0.0.1:8521") -> Path:
     repo = tmp_path / "target"
-    state = repo / ".robomate"
+    state = state_dir(repo)
     state.mkdir(parents=True)
-    token = state / "token"
+    token = token_file(repo)
     token.write_text("test-token\n")
     token.chmod(0o600)
     (state / "hub.json").write_text(
@@ -124,6 +125,44 @@ def prepare(
     kwargs.setdefault("account", "tester")
     manifest = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, **kwargs)
     return run_dir, manifest
+
+
+def test_a_linked_worktree_hub_repo_uses_that_worktrees_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#147 Test 7: the worktree's token and workflow check, not the main checkout's."""
+
+    source = origin(tmp_path)
+    main = running_hub(tmp_path, monkeypatch)
+    for args in (
+        ["init", "-b", "main"],
+        ["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "--allow-empty"]
+        + ["-m", "start"],
+        ["worktree", "add", "-b", "wt", str(tmp_path / "wt")],
+    ):
+        subprocess.run(["git", *args], cwd=main, check=True, capture_output=True)
+    worktree = tmp_path / "wt"
+    state_dir(worktree).mkdir()
+    token_file(worktree).write_text("worktree-token\n")
+    token_file(worktree).chmod(0o600)
+    url = "http://127.0.0.1:8522"
+    (state_dir(worktree) / "hub.json").write_text(
+        json.dumps({"pid": os.getpid(), "url": url, "port": 8522, "hub_id": "wt"})
+    )
+    # The main checkout's hub is busy with another workflow; that is not this run's hub.
+    initialize_database(state_dir(main) / "hub.db")
+    HubStore(state_dir(main) / "hub.db").initialize_workflow("another goal", {})
+    run_dir = tmp_path / "run"
+    manifest = PREPARE_RUN.prepare(
+        str(source), run_dir, issue=42, account="tester", hub_repo=worktree
+    )
+    assert (manifest["hub_repo"], manifest["state_dir"]) == (
+        str(worktree),
+        str(state_dir(worktree)),
+    )
+    alice = json.loads((run_dir / "configs/alice.mcp.json").read_text())["mcpServers"]
+    assert alice["robomate"]["env"]["ROBOMATE_HUB_URL"] == url
+    assert alice["robomate"]["env"]["ROBOMATE_TOKEN_FILE"] == str(token_file(worktree))
 
 
 def test_configs_use_bridge_and_existing_hub(
@@ -217,7 +256,7 @@ def test_existing_hub_workflow_requires_the_same_run_and_goal(
         PREPARE_RUN.prepare(str(source), tmp_path / "run2", issue=43, hub_repo=target)
     message = str(error.value)
     assert "status='active'" in message and repr(goal) in message
-    assert "fresh dedicated target clone" in message and "robomate down" in message
+    assert "fresh checkout of the target (a new linked worktree or clone)" in message
     assert not (tmp_path / "run2").exists()
     assert database_path.stat().st_mtime_ns == modified
 

@@ -209,6 +209,11 @@ class RpcDispatcher:
             session = self.orchestrator
             return {
                 "repo_root": self.hub_info["repo_root"],
+                # Additive since checkout scope (#147); absent from older hub.json.
+                "hub_id": self.hub_info.get("hub_id"),
+                "name": self.hub_info.get("name"),
+                "checkout": self.hub_info.get("checkout") or self.hub_info["repo_root"],
+                "git_common_dir": self.hub_info.get("git_common_dir"),
                 "origin": self.hub_info["origin"],
                 "forge": self.hub_info["forge"],
                 "url": self.hub_info["url"],

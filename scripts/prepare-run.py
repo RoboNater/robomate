@@ -26,7 +26,8 @@ file (auto-start) unless ``--no-auto-start`` is given (#30). Any other harness
 fails up front with an actionable message.
 
 For networked runs, start ``robomate up --bind ... --public-url ...`` in the
-target repository first. The existing hub URL is read from ``--hub-repo``;
+target checkout first. The existing hub URL is read from ``--hub-repo``, the
+checkout (main checkout or linked worktree) that owns the hub;
 ``--hub-url`` and ``--public-url`` can only confirm that URL. ``--remote-worker NAME``
 leaves that worker to another host, which renders it with
 ``--worker-only NAME`` from its own robo-agents checkout::
@@ -65,7 +66,8 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, check_merge_compatibility
-from agent_hub_common.discovery import read_hub_json
+from agent_hub_common.discovery import read_hub_json, token_file
+from agent_hub_common.discovery import state_dir as hub_state_dir
 from agent_hub_common.registry import hub_healthy, process_alive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -305,7 +307,7 @@ def check_hub_workflow(
     hub_repo: Path, run_dir: Path, goal: str, policy: dict[str, Any] | None = None
 ) -> None:
     """Refuse a different run on a hub whose single workflow is initialized."""
-    path = hub_repo / ".robomate" / "hub.db"
+    path = hub_state_dir(hub_repo) / "hub.db"
     if not path.exists():
         return
     try:
@@ -329,13 +331,14 @@ def check_hub_workflow(
                     f"hub in {hub_repo} already has workflow status={row[1]!r}, "
                     f"goal={row[0]!r}, but its policy differs; resume with the "
                     "original preparation options (including merge method, harnesses, "
-                    "capabilities, and CI setting), or use a fresh dedicated target clone"
+                    "capabilities, and CI setting), or use a fresh checkout of the target "
+                    "(a new linked worktree or clone) with its own hub"
                 )
             return
     raise ValueError(
         f"hub in {hub_repo} already has workflow status={row[1]!r}, goal={row[0]!r}; "
-        "for a new run, stop this hub with `robomate down`, use a fresh dedicated "
-        "target clone as --hub-repo, run `robomate up` there, and retry "
+        "for a new run, use a fresh checkout of the target (a new linked worktree "
+        "or clone) as --hub-repo, run `robomate up` there, and retry "
         "(docs/user-guide.md: Start the hub and prepare a run). To resume this "
         "workflow, rerun preparation with its original run directory and goal"
     )
@@ -1750,7 +1753,7 @@ def prepare(
     if remote_worker is not None and remote_worker not in WORKERS:
         raise ValueError(f"--remote-worker must be one of {list(WORKERS)}")
     if hub_repo is None:
-        raise ValueError("--hub-repo is required; start robomate up in that repository first")
+        raise ValueError("--hub-repo is required; start robomate up in that checkout first")
     if hub_host != DEFAULT_HUB_HOST:
         raise ValueError(
             "--hub-host belongs to robomate up --bind; start the hub with "
@@ -1804,7 +1807,7 @@ def prepare(
             raise ValueError(f"{label} must be absolute and canonical")
     if bob_path == charlie_path:
         raise ValueError("--bob-dir and --charlie-dir must differ")
-    resolved_state = hub_repo / ".robomate"
+    resolved_state = hub_state_dir(hub_repo)
     if state_dir is not None and state_dir != resolved_state:
         raise ValueError("--state-dir is set by --hub-repo and cannot differ")
     gl_project: GitLabProject | None = None
@@ -2029,7 +2032,7 @@ def prepare(
     # Bootstrap before minting the token so a failed clone leaves no state behind.
     paths = {"bob": bob_path, "charlie": charlie_path}
     workspaces = {name: bootstrap_clone(name, paths[name], clone_from) for name in local}
-    read_hub_token(resolved_state / "token")
+    read_hub_token(token_file(hub_repo))
     if len(local) == 2 and (
         workspaces["bob"]["workspace_id"] == workspaces["charlie"]["workspace_id"]
     ):
@@ -2065,7 +2068,7 @@ def prepare(
             models[name],
             capabilities[name],
             workspace,
-            str(resolved_state / "token"),
+            str(token_file(hub_repo)),
             telemetry,
             network["hub_url"],
         )
@@ -2075,7 +2078,7 @@ def prepare(
 
     hub_env = {
         "ROBOMATE_HUB_URL": live_url,
-        "ROBOMATE_TOKEN_FILE": str(resolved_state / "token"),
+        "ROBOMATE_TOKEN_FILE": str(token_file(hub_repo)),
         "PYTHONUTF8": "1",
     }
     hub_args = [
@@ -2216,7 +2219,7 @@ def prepare(
             # conversation until the workflow is done (#146).
             alice_lines = {
                 "hub_url": live_url,
-                "token_file": resolved_state / "token",
+                "token_file": token_file(hub_repo),
                 "model": model,
                 "effort": effort,
                 "tmp_dir": run_dir / "tmp" / name,
@@ -2370,7 +2373,7 @@ def prepare(
                 remote_worker,
                 repository,
                 network["hub_url"],
-                resolved_state / "token",
+                token_file(hub_repo),
                 harnesses[remote_worker],
                 models[remote_worker],
                 bob_provider if remote_worker == "bob" else charlie_provider,
@@ -2591,7 +2594,8 @@ def main() -> None:
         "--hub-repo",
         type=Path,
         default=None,
-        help="absolute repository path with a running robomate up hub",
+        help="absolute path of the checkout (main checkout or linked worktree) "
+        "whose running robomate up hub the run uses",
     )
     parser.add_argument(
         "--stall-after-min",
