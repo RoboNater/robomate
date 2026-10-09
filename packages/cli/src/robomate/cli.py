@@ -603,9 +603,24 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
             }
     except RuntimeError as exc:
         if "already running" in str(exc) or "already starting" in str(exc):
-            raise RuntimeError(
-                f"hub {name} is starting; wait for robomate up to finish and try again"
-            ) from exc
+            # Lock contention (r2-1): a concurrent `up` holds the checkout
+            # lock. Read fresh state to say whether that hub is live or still
+            # starting. Under --all this is a skip, never an abort: the loop
+            # continues and the JSON array is still printed.
+            current = next(
+                (item for item in hub_entries() if str(item.get("hub_id")) == hub_id), None
+            )
+            if current is not None and current["live"]:
+                reason = (
+                    f"hub {name} is live at {current.get('url')}; stop it with robomate down first"
+                )
+            else:
+                reason = f"hub {name} is starting; wait for robomate up to finish and try again"
+            if forget_all:
+                if not as_json:
+                    print(f"Skipping {reason}")
+                return {"hub_id": hub_id, "name": name, "forgotten": False, "reason": reason}
+            raise RuntimeError(reason) from exc
         raise
 
 

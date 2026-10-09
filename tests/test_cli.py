@@ -1488,7 +1488,7 @@ def test_down_all_stops_every_live_hub(
 def test_forgotten_hub_can_be_renamed_and_pinned(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    """#159 r1-3/r1-4: a stolen name forces rename; --port pins without a message."""
+    """#159 r1-3/r1-4/r2-2: stolen name forces rename; --port pins with marker present."""
 
     root, env = repository
     wt_a, wt_c = tmp_path / "wt-a", tmp_path / "wt-c"
@@ -1502,7 +1502,8 @@ def test_forgotten_hub_can_be_renamed_and_pinned(
         # A sibling takes the freed name.
         hub_c = start(wt_c, env, "--name", "wt-a")
         assert await_hub(wt_c, hub_c)["name"] == "wt-a"
-        # A plain up is refused naming the holder; an explicit --name renames.
+        # A plain up is refused naming the holder; an explicit --name renames,
+        # and the forgotten port is released to first-free with a message.
         refused = _cli(wt_a, env, "up")
         assert refused.returncode == 1 and "'wt-a' is taken" in refused.stderr
         hub_a = start(wt_a, env, "--name", "wt-a2")
@@ -1515,7 +1516,11 @@ def test_forgotten_hub_can_be_renamed_and_pinned(
             time.sleep(0.05)
         assert f"previously used port {a['port']}" in out
         stop(wt_a, env, hub_a)
-        # An explicit --port pins instead of taking first-free, with no message.
+        # r2-2: forget again, then pin with --port while the marker is present:
+        # it binds the pinned port, prints no release message, clears the marker.
+        assert _cli(root, env, "forget", "wt-a2").returncode == 0
+        marked = read_hub_json(wt_a)
+        assert marked is not None and marked.get("released_port") is not None
         with socket.socket() as free:
             free.bind(("127.0.0.1", 0))
             pinned = free.getsockname()[1]
@@ -1588,3 +1593,62 @@ def test_down_json_requires_all(repository: tuple[Path, dict[str, str]]) -> None
     root, env = repository
     result = _cli(root, env, "down", "--json")
     assert result.returncode == 1 and "--json goes with --all" in result.stderr
+
+
+def test_forget_one_lock_contention_skips_under_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#159 r2-1: a held _hub_lock is a skip under --all, with an accurate message."""
+
+    from agent_hub_common.discovery import write_hub_json as _write_hub_json
+
+    checkout = tmp_path / "wt-a"
+    (checkout / ".robomate").mkdir(parents=True)
+    _write_hub_json(
+        checkout,
+        {
+            "hub_id": "hid-a",
+            "name": "wt-a",
+            "url": "http://127.0.0.1:8420",
+            "port": 8420,
+            "pid": None,
+        },
+    )
+    entry = {
+        "hub_id": "hid-a",
+        "name": "wt-a",
+        "checkout": str(checkout),
+        "url": "http://127.0.0.1:8420",
+        "port": 8420,
+        "live": False,
+    }
+
+    def locked(_checkout: Path) -> object:
+        raise RuntimeError("hub already running at http://127.0.0.1:8420")
+
+    monkeypatch.setattr(cli, "_hub_lock", locked)
+
+    # The holder is live: --all skips it naming liveness; explicit mode raises.
+    monkeypatch.setattr(cli, "hub_entries", lambda: [entry | {"live": True}])
+    outcome = cli._forget_one(entry, forget_all=True, as_json=False)
+    assert outcome == {
+        "hub_id": "hid-a",
+        "name": "wt-a",
+        "forgotten": False,
+        "reason": "hub wt-a is live at http://127.0.0.1:8420; stop it with robomate down first",
+    }
+    assert "Skipping hub wt-a is live" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="is live"):
+        cli._forget_one(entry, forget_all=False, as_json=False)
+
+    # The holder is only starting: the message says so, and --all still skips.
+    monkeypatch.setattr(cli, "hub_entries", lambda: [entry | {"live": False}])
+    outcome = cli._forget_one(entry, forget_all=True, as_json=True)
+    assert outcome == {
+        "hub_id": "hid-a",
+        "name": "wt-a",
+        "forgotten": False,
+        "reason": "hub wt-a is starting; wait for robomate up to finish and try again",
+    }
+    with pytest.raises(RuntimeError, match="is starting"):
+        cli._forget_one(entry, forget_all=False, as_json=False)
