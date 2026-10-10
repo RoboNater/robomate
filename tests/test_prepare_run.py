@@ -707,18 +707,27 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lines = PREPARE_RUN.worker_launch(
-        "bob", "codex", WINDOWS_RUN, WINDOWS_RUN / "bob", "gpt-6-sol", "high"
+        "bob",
+        "codex",
+        WINDOWS_RUN,
+        WINDOWS_RUN / "bob",
+        "gpt-6-sol",
+        "high",
+        token_file="C:/private/token",
     )
-    assert lines == [
+    assert lines[:4] == [
         "cd /c/Users/Bob/runs/step7/bob",
         "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob",
         "export TEMP=C:/Users/Bob/runs/step7/tmp/bob",
         "export TMP=C:/Users/Bob/runs/step7/tmp/bob",
-        "CODEX_HOME=C:/Users/Bob/runs/step7/configs/bob-codex codex exec "
-        "-C . --add-dir C:/Users/Bob/runs/step7/bob/.git --approve-for-me "
-        "--model gpt-6-sol -c 'model_reasoning_effort=\"high\"' - "
-        "< /c/Users/Bob/runs/step7/bob.prompt.md",
     ]
+    command = lines[-1]
+    assert "CODEX_HOME=C:/Users/Bob/runs/step7/configs/bob-codex" in command
+    assert "worker-launcher.py" in command and "--token-file C:/private/token" in command
+    assert "--prompt C:/Users/Bob/runs/step7/bob.prompt.md" in command
+    assert "-- codex exec -C . --add-dir C:/Users/Bob/runs/step7/bob/.git" in command
+    assert "--approve-for-me --model gpt-6-sol" in command
+    assert "< /c/" not in command  # native Python opens the prompt file now
     posix = PurePosixPath("/srv/run")
     # A POSIX worker host renders its own lines; worker_launch reads the host.
     with monkeypatch.context() as patch:
@@ -1098,7 +1107,7 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
     assert (
         'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
         "HOME=C:/Users/Bob/runs/step7/configs/bob-agy "
-        "USERPROFILE=C:/Users/Bob/runs/step7/configs/bob-agy agy"
+        "USERPROFILE=C:/Users/Bob/runs/step7/configs/bob-agy "
     ) in agy_script
     assert "XDG_CONFIG_HOME" not in agy_script
 
@@ -1402,7 +1411,7 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
             assert "alice-launcher.py" in command
             assert f"--prompt {shlex.quote(str(run_dir / 'alice.prompt.md'))}" in command
         else:
-            assert f"Read {run_dir / f'{name}.prompt.md'} and follow" in command
+            assert f"--prompt {shlex.quote(str(run_dir / f'{name}.prompt.md'))}" in command
         assert f"`closeout-report-{name}.md`" in (run_dir / f"{name}.prompt.md").read_text()
     bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())["mcpServers"]["robomate"][
         "env"
@@ -1423,12 +1432,12 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
         "Your turn ends only after `await_assignment` returns `release: true`. "
         "A headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits"
     )
-    # The worker guide's rule reaches every harness; the Claude note only claude-code.
+    # Both the guide and the kickoff turn-end reminder reach every worker harness.
     assert guide_rule in bob and guide_rule in charlie
     claude_rule = "Do not end your turn until `await_assignment` returns `release: true`."
-    assert claude_rule in bob and claude_rule not in charlie
+    assert claude_rule in bob and claude_rule in charlie
     assert "do not use `run_in_background` for a wait" in bob
-    assert "Do not end your turn until the workflow is `done` or `escalated`." in alice
+    assert "Do not end your turn until the workflow is `done`." in alice
     # #122: the guide's detached-run recipe reaches every worker, in both shells, and
     # the Claude note points a Claude worker at it.
     for recipe in (
@@ -1442,82 +1451,6 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
     assert pointer in bob and pointer not in charlie and pointer not in alice
 
 
-RELEASING_CLAUDE = """\
-import json, os, sys
-with open(os.environ["FAKE_ARGV_LOG"], "a", encoding="utf-8") as log:
-    log.write(json.dumps(sys.argv[1:]) + "\\n")
-release = {"event": "tool_call", "phase": "success", "tool": "await_assignment",
-           "outcome": "release"}
-with open(os.environ["FAKE_TELEMETRY"], "a", encoding="utf-8") as telemetry:
-    telemetry.write(json.dumps(release) + "\\n")
-"""
-
-
-def test_a_claude_worker_start_script_runs_under_the_resuming_launcher(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # #115: the generated script, run by its own shell with a stand-in claude.
-    run_dir, manifest = prepare(tmp_path, monkeypatch)
-    sessions = run_dir / "bob-sessions.jsonl"
-    agents = manifest["launch"]["agents"]
-    assert agents["bob"]["sessions"] == str(sessions)
-    assert "sessions" not in agents["charlie"]
-    # Alice's own launcher logs hers (#146).
-    assert agents["alice"]["sessions"] == str(run_dir / "alice-sessions.jsonl")
-    script = run_dir / f"start-bob.{SCRIPT_SUFFIX}"
-    assert "claude-worker.py" in script.read_text(encoding="utf-8")
-    assert "claude-worker.py" not in (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text(
-        encoding="utf-8"
-    )
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake = bin_dir / "fake_claude.py"
-    fake.write_text(RELEASING_CLAUDE, encoding="utf-8")
-    if os.name == "nt":
-        (bin_dir / "claude.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
-        shell = shutil.which("pwsh") or shutil.which("powershell")
-        assert shell is not None
-        command = [
-            shell,
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-        ]
-    else:
-        claude = bin_dir / "claude"
-        claude.write_text(f"#!{sys.executable}\n{RELEASING_CLAUDE}", encoding="utf-8")
-        claude.chmod(0o755)
-        command = ["bash", str(script)]
-    argv_log = tmp_path / "argv.jsonl"
-    env = os.environ | {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "FAKE_ARGV_LOG": str(argv_log),
-        "FAKE_TELEMETRY": str(run_dir / "bob-telemetry.jsonl"),
-    }
-
-    completed = subprocess.run(
-        command, env=env, capture_output=True, text=True, timeout=120, check=False
-    )
-
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    [argv] = [json.loads(line) for line in argv_log.read_text(encoding="utf-8").splitlines()]
-    prompt = run_dir / "bob.prompt.md"
-    assert argv[-2:] == ["-p", f"Read {prompt} and follow the instructions in it"]
-    assert argv[argv.index("--mcp-config") + 1] == str(run_dir / "configs" / "bob.mcp.json")
-    session_id = argv[argv.index("--session-id") + 1]
-    records = [json.loads(line) for line in sessions.read_text(encoding="utf-8").splitlines()]
-    assert [(r["event"], r["session_id"]) for r in records] == [
-        ("start", session_id),
-        ("exit", session_id),
-    ]
-    assert records[-1]["released"] is True
-
-
 def test_remote_claude_worker_runs_the_launcher_from_git_bash() -> None:
     lines = PREPARE_RUN.worker_launch(
         "bob",
@@ -1526,19 +1459,18 @@ def test_remote_claude_worker_runs_the_launcher_from_git_bash() -> None:
         WINDOWS_RUN / "bob",
         root=PureWindowsPath("C:/src/robomate"),
         python="C:\\src\\robomate\\.venv\\Scripts\\python.exe",
+        token_file="C:/private/token",
     )
     # Git Bash runs the interpreter; python and claude read Windows paths.
-    assert lines[-1] == (
-        "/c/src/robomate/.venv/Scripts/python.exe C:/src/robomate/scripts/claude-worker.py "
-        "--agent bob --telemetry C:/Users/Bob/runs/step7/bob-telemetry.jsonl "
-        "--sessions C:/Users/Bob/runs/step7/bob-sessions.jsonl "
-        "--resume-delay-s 5 --resume-max-delay-s 1800 --resume-total-s 43200 "
-        "--resume-series-reset-s 300 "
-        "--prompt 'Read C:/Users/Bob/runs/step7/bob.prompt.md and follow the instructions in it' "
-        "claude --permission-mode auto --strict-mcp-config "
-        "--mcp-config C:/Users/Bob/runs/step7/configs/bob.mcp.json "
-        "--add-dir C:/Users/Bob/runs/step7"
+    command = lines[-1]
+    assert (
+        "/c/src/robomate/.venv/Scripts/python.exe C:/src/robomate/scripts/worker-launcher.py"
+        in command
     )
+    assert "--harness claude-code" in command and "--token-file C:/private/token" in command
+    assert "--agent bob --telemetry C:/Users/Bob/runs/step7/bob-telemetry.jsonl" in command
+    assert "--prompt C:/Users/Bob/runs/step7/bob.prompt.md -- claude" in command
+    assert "--mcp-config C:/Users/Bob/runs/step7/configs/bob.mcp.json" in command
 
 
 def test_same_harness_pair_renders_both_claude_configs(
@@ -2295,10 +2227,11 @@ def test_resume_lines_resume_each_harness_by_id(
         True,
         tmp_dir=run_dir / "tmp" / "bob",
         title="bob my run",
+        token_file=run_dir / "token",
     )
     text = "\n".join(lines)
-    assert marker in text and '"$SESSION_ID"' in text
-    assert "usage: resume-bob.sh <session-id>" in text
+    assert "--resume-session" in text and '"$SESSION_ID"' in text
+    assert "usage: resume-bob.sh <conversation-id>" in text
     assert "bob.prompt.md" not in text.replace("resume-bob.prompt.md", "")
     if harness == "opencode":
         assert "--title" in text and "bob my run" in text
@@ -2333,10 +2266,17 @@ def test_resume_lines_windows_powershell(tmp_path: Path, monkeypatch: pytest.Mon
 def test_worker_resume_uses_git_bash_spellings() -> None:
     run = PureWindowsPath("C:/Users/Bob/runs/step7")
     lines = PREPARE_RUN.worker_resume(
-        "bob", "opencode", run, run / "bob", "m", "high", title="bob step7"
+        "bob",
+        "opencode",
+        run,
+        run / "bob",
+        "m",
+        "high",
+        title="bob step7",
+        token_file="C:/private/token",
     )
     assert lines[0] == "cd /c/Users/Bob/runs/step7/bob"
-    assert any('--session "$SESSION_ID"' in line and "--title" in line for line in lines)
+    assert any('--resume-session "$SESSION_ID"' in line and "--title" in line for line in lines)
     assert any("resume-bob.prompt.md" in line for line in lines)
 
 
@@ -2372,7 +2312,7 @@ def test_opencode_run_records_title_and_resume_artifacts(
         assert "--title" in start and f"{name} {slug}" in start
         resume = (run_dir / f"resume-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
         # Alice's launcher adds `--session` itself, from its --resume-session (#146).
-        assert ("--resume-session" if name == "alice" else "--session") in resume
+        assert "--resume-session" in resume
         assert f"resume-{name}.prompt.md" in resume
         kickoff = f"Read {run_dir / f'{name}.prompt.md'} and follow the instructions in it"
         assert kickoff not in resume
@@ -2426,7 +2366,10 @@ class _StubHub(BaseHTTPRequestHandler):
             result: dict[str, Any] = {"hub_id": "hub-stub"}
         else:
             status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
-            result = {"workflow": {"id": "wf-stub", "status": status, "headline": "h"}}
+            result = {
+                "workflow": {"id": "wf-stub", "status": status, "headline": "h"},
+                "agents": [],
+            }
         payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(payload)))
@@ -2479,8 +2422,9 @@ def fake_cli(bin_dir: Path, harness: str) -> None:
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
-def test_start_and_resume_alice_scripts_run_the_launcher_to_done(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+@pytest.mark.parametrize("agent", ["alice", "bob", "charlie"])
+def test_start_and_resume_scripts_run_the_launcher_to_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, agent: str
 ) -> None:
     """The generated scripts, run by their own shell, with each harness stood in (#146)."""
 
@@ -2496,28 +2440,35 @@ def test_start_and_resume_alice_scripts_run_the_launcher_to_done(
     # start-alice reads before launching, after its first exit and again
     # after the resume delay, then after its second exit; resume-alice reads
     # before its launch and after it.
-    with stub_hub("active", "active", "active", "done", "escalated", "done") as url:
+    statuses = (
+        ["active"] * 3 + ["done", "escalated", "done"]
+        if agent == "alice"
+        else ["active"] * 5 + ["done", "escalated", "escalated", "done"]
+    )
+    with stub_hub(*statuses) as url:
         run_dir, manifest = prepare(
             base,
             monkeypatch,
             test_hub_url=url,
-            alice_harness=harness,
-            alice_model="model-x",
-            alice_effort="high" if harness != "opencode" else "",
+            **{
+                f"{agent}_harness": harness,
+                f"{agent}_model": "model-x",
+                f"{agent}_effort": "high" if harness != "opencode" else "",
+            },
             max_resumes=3,
             resume_delay_s=0,
         )
-        assert manifest["launch"]["agents"]["alice"]["max_resumes"] == 3
-        run_script(run_dir / f"start-alice.{SCRIPT_SUFFIX}", bin_dir, env)
+        assert manifest["launch"]["agents"][agent]["max_resumes"] == 3
+        run_script(run_dir / f"start-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         started = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         (base / "argv.jsonl").unlink()
-        run_script(run_dir / f"resume-alice.{SCRIPT_SUFFIX}", bin_dir, env, "conv-given")
+        run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env, "conv-given")
         resumed = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         # Bearer-only reads: the launcher never presents an orchestrator session.
         assert {session for _, session in _StubHub.calls} == {None}
     assert len(started) == 2
     records = [
-        json.loads(line) for line in (run_dir / "alice-sessions.jsonl").read_text().splitlines()
+        json.loads(line) for line in (run_dir / f"{agent}-sessions.jsonl").read_text().splitlines()
     ]
     stops = [record for record in records if record["event"] == "stop"]
     assert [stop["reason"] for stop in stops] == ["done", "done"]
@@ -2528,28 +2479,46 @@ def test_start_and_resume_alice_scripts_run_the_launcher_to_done(
         # Model, working directory, temporary directory and isolated config
         # are the same on every launch.
         assert "model-x" in run["argv"]
-        assert Path(run["cwd"]).resolve() == (run_dir / "alice-runtime").resolve()
+        assert (
+            Path(run["cwd"]).resolve()
+            == ((run_dir / "alice-runtime") if agent == "alice" else run_dir / agent).resolve()
+        )
         tmp = run["env"]["TEMP" if os.name == "nt" else "TMPDIR"]
-        assert Path(tmp) == run_dir / "tmp" / "alice"
+        assert Path(tmp) == run_dir / "tmp" / agent
         if harness == "codex":
-            assert Path(run["env"]["CODEX_HOME"]) == configs / "alice-codex"
+            assert Path(run["env"]["CODEX_HOME"]) == configs / PREPARE_RUN.codex_home_name(agent)
         elif harness == "opencode":
-            assert Path(run["env"]["OPENCODE_CONFIG"]) == configs / "alice.opencode.json"
+            assert Path(run["env"]["OPENCODE_CONFIG"]) == configs / f"{agent}.opencode.json"
         elif harness == "antigravity":
-            assert Path(run["env"]["HOME"]) == configs / "alice-agy"
+            assert Path(run["env"]["HOME"]) == configs / f"{agent}-agy"
+    for script in (f"start-{agent}", f"resume-{agent}"):
+        body = (run_dir / f"{script}.{SCRIPT_SUFFIX}").read_text()
+        assert ("alice-launcher.py" if agent == "alice" else "worker-launcher.py") in body
+    prompt_body = (run_dir / f"resume-{agent}.prompt.md").read_text()
+    if agent == "alice":
+        assert "workflow is `done`" in prompt_body and "`wait_for_event`" in prompt_body
+    else:
+        assert "Every reply contains a tool call" in prompt_body
+        assert "`await_assignment` returns `release: true`" in prompt_body
+        assert "Do not end your turn until" in (run_dir / f"{agent}.prompt.md").read_text()
     assert conversation in started[1]["argv"]
     continuation = started[1]["stdin"] if harness == "codex" else started[1]["argv"][-1]
-    assert continuation == ALICE_LAUNCHER.CONTINUE_PROMPT
+    if agent == "alice":
+        assert continuation == ALICE_LAUNCHER.CONTINUE_PROMPT
+    else:
+        assert "call check_in once" in continuation
+        assert "await_assignment returns release: true" in continuation
     kickoff = started[0]["stdin"] if harness == "codex" else started[0]["argv"][-1]
     assert kickoff != continuation and "RUN_DIR" not in kickoff
     # resume-alice resumes the conversation it is given, with the manual prompt.
     assert len(resumed) == 1 and "conv-given" in resumed[0]["argv"]
     manual = resumed[0]["stdin"] if harness == "codex" else resumed[0]["argv"][-1]
     if harness == "codex":
-        assert manual.startswith("# Resume Alice")
+        assert manual.startswith(f"# Resume {'Alice' if agent == 'alice' else agent}")
     else:
         assert (
-            manual == f"Read {run_dir / 'resume-alice.prompt.md'} and follow the instructions in it"
+            manual
+            == f"Read {run_dir / f'resume-{agent}.prompt.md'} and follow the instructions in it"
         )
 
 

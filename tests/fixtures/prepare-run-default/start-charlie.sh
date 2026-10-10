@@ -3,4 +3,4 @@
 set -e
 cd $RUN_DIR/charlie
 export TMPDIR=$RUN_DIR/tmp/charlie
-CODEX_HOME=$RUN_DIR/configs/codex codex exec -C . --add-dir $RUN_DIR/charlie/.git --approve-for-me - < $RUN_DIR/charlie.prompt.md
+CODEX_HOME=$RUN_DIR/configs/codex $PYTHON $ROOT/scripts/worker-launcher.py --harness codex --hub-url http://127.0.0.1:8420 --token-file $HUB_REPO/.robomate/token --sessions $RUN_DIR/charlie-sessions.jsonl --resume-delay-s 5 --resume-max-delay-s 1800 --resume-total-s 43200 --resume-series-reset-s 300 --agent charlie --telemetry $RUN_DIR/charlie-telemetry.jsonl --prompt $RUN_DIR/charlie.prompt.md -- codex exec -C . --add-dir $RUN_DIR/charlie/.git --approve-for-me
