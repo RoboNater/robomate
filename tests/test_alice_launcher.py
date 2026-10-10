@@ -26,10 +26,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/alice-launcher.py"
-SPEC = importlib.util.spec_from_file_location("alice_launcher", SCRIPT)
+SPEC = importlib.util.spec_from_file_location("agent_launcher", ROOT / "scripts/agent_launcher.py")
 assert SPEC and SPEC.loader
 LAUNCHER = importlib.util.module_from_spec(SPEC)
-sys.modules["alice_launcher"] = LAUNCHER
+sys.modules["agent_launcher"] = LAUNCHER
 SPEC.loader.exec_module(LAUNCHER)
 
 HUB = "hub-1"

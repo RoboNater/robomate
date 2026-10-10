@@ -496,7 +496,7 @@ def prompt_sections(name: str, harness: str) -> str:
             "prevents the wait from being shifted to a background task by the harness."
         )
         last = (
-            "the workflow is `done` or `escalated`"
+            "the workflow is `done`"
             if name == "alice"
             else "`await_assignment` returns `release: true`"
         )
@@ -526,6 +526,15 @@ def prompt_sections(name: str, harness: str) -> str:
         sections.append(
             f"{runtime_label} runtime note: if the alice-orchestrator skill is not already loaded, "
             f"read {skill} in full and follow it. Hub tools are the MCP server `robomate`."
+        )
+    if name != "alice" and harness != "claude-code":
+        mode = {"codex": "codex exec", "opencode": "opencode run", "antigravity": "agy -p"}[harness]
+        sections.append(
+            "Do not end your turn until `await_assignment` returns `release: true`. "
+            f"In headless mode (`{mode}`), the process exits when your turn ends. "
+            "Every reply must contain a tool call; an announcement of a step comes "
+            "with its tool call. Wait for CI and other work in the foreground. "
+            "After a failed or canceled task, return to `await_assignment`."
         )
     if name == "alice":
         sections.append(
@@ -592,14 +601,10 @@ def claude_launch(
     flags: list[str],
     auto_start: bool,
     powershell: bool = False,
-    launcher: list[str] | None = None,
 ) -> list[str]:
     """A ``claude`` launch; auto-start runs it in print mode on its prompt file.
 
     ``--add-dir`` lets Claude read the prompt when it is outside the clone.
-    With a ``launcher`` (an auto-started worker), ``scripts/claude-worker.py``
-    runs ``claude`` and supplies ``-p`` itself, resuming the conversation if it
-    exits before release (#115).
     """
     words = ["claude", *flags]
     if auto_start:
@@ -611,57 +616,14 @@ def claude_launch(
         "--add-dir",
         shell_word(prompt_dir, powershell),
     ]
-    if auto_start and launcher is not None:
-        words = [*launcher, "--prompt", auto_start_instruction(prompt, powershell), *words]
-    elif auto_start:
+    if auto_start:
         words += ["-p", auto_start_instruction(prompt, powershell)]
     return [" ".join(words)]
 
 
 def supervised(harness: str, auto_start: bool) -> bool:
-    """Whether a worker's start script runs it under ``scripts/claude-worker.py`` (#115)."""
-    return harness == "claude-code" and auto_start
-
-
-def claude_worker_launcher(
-    name: str,
-    python: str,
-    script: str,
-    telemetry: str,
-    sessions: str,
-    powershell: bool = False,
-    *,
-    max_resumes: int | None = DEFAULT_MAX_RESUMES,
-    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
-    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
-    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
-    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
-) -> list[str]:
-    """The words running ``scripts/claude-worker.py`` ahead of a worker's ``claude``.
-
-    The run's own interpreter runs it directly rather than ``uv run``, which
-    would put a virtualenv on the PATH the worker's shell inherits.
-    """
-    words = [shell_word(python, powershell), shell_word(script, powershell)]
-    if powershell:
-        # PowerShell reads a quoted command name as a string until `&` calls it.
-        words[0] = "& " + words[0]
-    return [
-        *words,
-        "--agent",
-        shell_word(name, powershell),
-        "--telemetry",
-        shell_word(telemetry, powershell),
-        "--sessions",
-        shell_word(sessions, powershell),
-        *launcher_backoff_flags(
-            max_resumes=max_resumes,
-            resume_delay_s=resume_delay_s,
-            resume_max_delay_s=resume_max_delay_s,
-            resume_total_s=resume_total_s,
-            resume_series_reset_s=resume_series_reset_s,
-        ),
-    ]
+    """Every auto-started worker runs under worker-launcher.py (#165)."""
+    return harness in HARNESS_NAMES.values() and auto_start
 
 
 def codex_launch(
@@ -805,17 +767,16 @@ def harness_launch(
     flags: list[str],
     auto_start: bool,
     powershell: bool = False,
-    launcher: list[str] | None = None,
     title: str | None = None,
 ) -> list[str]:
-    """Dispatch to the harness's launch-line builder; only Claude Code takes a launcher."""
+    """Direct harness launch lines; supervised agents use agent_launch_lines."""
     if harness == "codex":
         return codex_launch(config, git_dir, prompt, flags, auto_start, powershell)
     if harness == "opencode":
         return opencode_launch(config, prompt, flags, auto_start, title, powershell)
     if harness == "antigravity":
         return antigravity_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
-    return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell, launcher)
+    return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
 
 
 def launch_lines(
@@ -829,6 +790,8 @@ def launch_lines(
     auto_start: bool = True,
     tmp_dir: Path | None = None,
     worker: str | None = None,
+    hub_url: str = DEFAULT_HUB_URL,
+    token_file: Path | None = None,
     title: str | None = None,
     max_resumes: int | None = DEFAULT_MAX_RESUMES,
     resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
@@ -841,27 +804,32 @@ def launch_lines(
     ``config`` is the MCP config for Claude Code, ``OPENCODE_CONFIG`` for
     OpenCode, ``CODEX_HOME`` for Codex, and the isolated home for AntiGravity.
     ``worker`` names a worker agent, whose prompt sits in the run directory
-    beside its telemetry and session log; an auto-started Claude Code worker
-    runs under ``scripts/claude-worker.py`` (#115) with the run's resume
+    beside its telemetry and session log; every auto-started worker
+    runs under ``scripts/worker-launcher.py`` (#165) with the run's resume
     backoff (#158). ``title`` is the OpenCode session title; other harnesses
     ignore it.
     """
     powershell = os.name == "nt"
     flags = model_flags(harness, model, effort, powershell, auto_start)
-    launcher = None
     if worker is not None and supervised(harness, auto_start):
-        launcher = claude_worker_launcher(
-            worker,
-            sys.executable,
-            str(ROOT / "scripts" / "claude-worker.py"),
-            str(prompt.parent / f"{worker}-telemetry.jsonl"),
-            str(prompt.parent / f"{worker}-sessions.jsonl"),
-            powershell,
-            max_resumes=max_resumes,
-            resume_delay_s=resume_delay_s,
-            resume_max_delay_s=resume_max_delay_s,
-            resume_total_s=resume_total_s,
-            resume_series_reset_s=resume_series_reset_s,
+        return agent_launch_lines(
+            harness,
+            workdir,
+            config,
+            prompt,
+            hub_url,
+            token_file,
+            model,
+            effort,
+            tmp_dir,
+            title,
+            max_resumes,
+            resume_delay_s,
+            resume_max_delay_s,
+            resume_total_s,
+            resume_series_reset_s,
+            worker=worker,
+            git_dir=git_dir,
         )
     lines = harness_launch(
         harness,
@@ -872,7 +840,6 @@ def launch_lines(
         flags,
         auto_start,
         powershell,
-        launcher,
         title,
     )
     temp_lines = []
@@ -933,6 +900,10 @@ automatic resumes were spent or it stopped. Never rerun `start-alice.sh`
 The orchestrator bridge has no `check_in`: make `get_state` your first hub
 call, then reconcile.
 
+End your turn only when the workflow is `done`. While `escalated`, hold on
+`wait_for_event` for the operator's answer. Every announcement of a step must
+come with its tool call; do not end your turn to wait.
+
 """
     + RESUME_PROMPT_SHARED
     + """\
@@ -978,6 +949,10 @@ ID; never rerun `start-{name}.sh` (`start-{name}.ps1` on Windows).
 Your hub tools run in a new `worker-mcp` process, so first call `check_in`
 once, then reconcile.
 
+Every reply contains a tool call until `await_assignment` returns `release: true`.
+An announcement of a step comes with its tool call. Do not end your turn to
+wait. After a failed or canceled task, restart the loop at `await_assignment`.
+
 """
     + RESUME_PROMPT_SHARED
     + """\
@@ -1018,7 +993,7 @@ def claude_resume(
     """A manual ``claude --resume`` one-liner for a crashed session (#94).
 
     Auto-started workers normally resume by themselves under
-    ``scripts/claude-worker.py``; this is the hand resume once its resumes are
+    ``scripts/worker-launcher.py``; this is the hand resume once its resumes are
     spent. The original kickoff prompt is never reused.
     """
     words = ["claude", *flags]
@@ -1158,6 +1133,13 @@ def resume_lines(
     auto_start: bool = True,
     tmp_dir: Path | None = None,
     title: str | None = None,
+    hub_url: str = DEFAULT_HUB_URL,
+    token_file: Path | None = None,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> list[str]:
     """One agent's resume lines for this platform; the session ID is the first argument (#94).
 
@@ -1167,6 +1149,27 @@ def resume_lines(
     the generated ``resume-<name>.prompt.md`` rather than the kickoff prompt.
     ``title`` is the OpenCode session title; other harnesses ignore it.
     """
+    if name != "alice" and supervised(harness, auto_start):
+        return agent_launch_lines(
+            harness,
+            workdir,
+            config,
+            resume_prompt,
+            hub_url,
+            token_file,
+            model,
+            effort,
+            tmp_dir,
+            title,
+            max_resumes,
+            resume_delay_s,
+            resume_max_delay_s,
+            resume_total_s,
+            resume_series_reset_s,
+            resume_prompt=resume_prompt,
+            worker=name,
+            git_dir=git_dir,
+        )
     powershell = os.name == "nt"
     flags = model_flags(harness, model, effort, powershell, auto_start)
     session_var = "$SessionId" if powershell else '"$SESSION_ID"'
@@ -1235,10 +1238,6 @@ def resume_script(lines: list[str], powershell: bool = False) -> str:
     return "\n".join([*header, *lines]) + "\n"
 
 
-#: Alice's launcher (#146); a fixed continuation, bounded resumes.
-ALICE_LAUNCHER = ROOT / "scripts" / "alice-launcher.py"
-
-
 def launcher_backoff_flags(
     *,
     max_resumes: int | None,
@@ -1262,25 +1261,31 @@ def launcher_backoff_flags(
     return words
 
 
-def alice_launch_lines(
+def agent_launch_lines(
     harness: str,
-    workdir: Path,
-    config: Path,
-    prompt: Path,
+    workdir: PurePath,
+    config: PurePath,
+    prompt: PurePath,
     hub_url: str,
-    token_file: Path,
+    token_file: PurePath | str | None,
     model: str = "",
     effort: str = "",
-    tmp_dir: Path | None = None,
+    tmp_dir: PurePath | None = None,
     title: str | None = None,
     max_resumes: int | None = DEFAULT_MAX_RESUMES,
     resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
-    resume_prompt: Path | None = None,
+    resume_prompt: PurePath | None = None,
+    worker: str | None = None,
+    git_dir: PurePath | None = None,
+    root: PurePath = ROOT,
+    python: str = sys.executable,
+    powershell: bool | None = None,
+    git_bash: bool = False,
 ) -> list[str]:
-    """An auto-started Alice's start or resume lines, under ``scripts/alice-launcher.py``.
+    """An auto-started agent's start or resume lines under its launcher (#165).
 
     The launcher adds the prompt and conversation arguments itself, so it can
     choose or capture the conversation ID and resume exactly that one until
@@ -1290,11 +1295,23 @@ def alice_launch_lines(
     after ``--`` are reused verbatim. With ``resume_prompt`` (resume-alice),
     the conversation ID is the script's first argument.
     """
-    powershell = os.name == "nt"
+
+    def spelling(path: PurePath) -> str:
+        # Local scripts keep native Windows spellings; remote Git Bash hands
+        # forward-slash Windows paths to native Python and harness programs.
+        return path.as_posix() if git_bash else str(path)
+
+    powershell = os.name == "nt" if powershell is None else powershell
     flags = model_flags(harness, model, effort, powershell, True)
-    prompt_dir = shell_word(str(prompt.parent), powershell)
+    prompt_dir = shell_word(spelling(prompt.parent), powershell)
     if harness == "codex":
-        base = ["codex", "exec", "-C", ".", "--skip-git-repo-check", "--approve-for-me", *flags]
+        base = ["codex", "exec", "-C", "."]
+        base += (
+            ["--add-dir", shell_word(spelling(git_dir), powershell)]
+            if git_dir is not None
+            else ["--skip-git-repo-check"]
+        )
+        base += ["--approve-for-me", *flags]
     elif harness == "opencode":
         base = ["opencode", "run", "--auto", *flags]
         if title:
@@ -1303,19 +1320,28 @@ def alice_launch_lines(
         base = ["agy", *flags, "--dangerously-skip-permissions", "--add-dir", prompt_dir]
     else:
         base = ["claude", *flags, "--permission-mode", "auto", "--strict-mcp-config"]
-        base += ["--mcp-config", shell_word(str(config), powershell), "--add-dir", prompt_dir]
-    python = shell_word(sys.executable, powershell)
+        base += ["--mcp-config", shell_word(spelling(config), powershell), "--add-dir", prompt_dir]
+    agent = worker or "alice"
+    if worker is not None and token_file is None:
+        raise ValueError("a supervised worker requires its hub token file")
+    python = shell_word(python, powershell)
     words = [
         "& " + python if powershell else python,
-        shell_word(str(ALICE_LAUNCHER), powershell),
+        shell_word(
+            spelling(root / "scripts" / ("worker-launcher.py" if worker else "alice-launcher.py")),
+            powershell,
+        ),
         "--harness",
         harness,
         "--hub-url",
         shell_word(hub_url, powershell),
         "--token-file",
-        shell_word(str(token_file), powershell),
+        shell_word(
+            spelling(token_file) if isinstance(token_file, PurePath) else str(token_file),
+            powershell,
+        ),
         "--sessions",
-        shell_word(str(prompt.parent / "alice-sessions.jsonl"), powershell),
+        shell_word(spelling(prompt.parent / f"{agent}-sessions.jsonl"), powershell),
         *launcher_backoff_flags(
             max_resumes=max_resumes,
             resume_delay_s=resume_delay_s,
@@ -1324,18 +1350,25 @@ def alice_launch_lines(
             resume_series_reset_s=resume_series_reset_s,
         ),
     ]
+    if worker is not None:
+        words += [
+            "--agent",
+            shell_word(worker, powershell),
+            "--telemetry",
+            shell_word(spelling(prompt.parent / f"{worker}-telemetry.jsonl"), powershell),
+        ]
     if resume_prompt is None:
-        words += ["--prompt", shell_word(str(prompt), powershell)]
+        words += ["--prompt", shell_word(spelling(prompt), powershell)]
     else:
         session_var = "$SessionId" if powershell else '"$SESSION_ID"'
         words += [
             "--resume-session",
             session_var,
             "--resume-prompt",
-            shell_word(str(resume_prompt), powershell),
+            shell_word(spelling(resume_prompt), powershell),
         ]
     command = " ".join([*words, "--", *base])
-    config_word = shell_word(str(config), powershell)
+    config_word = shell_word(spelling(config), powershell)
     if harness == "codex":
         env = {"CODEX_HOME": config_word}
     elif harness == "opencode":
@@ -1345,10 +1378,10 @@ def alice_launch_lines(
     if harness == "antigravity":
         # The same isolated home as antigravity_launch, around the launcher.
         lines = antigravity_launch(
-            str(config), str(prompt), str(prompt.parent), [], False, powershell
+            spelling(config), spelling(prompt), spelling(prompt.parent), [], False, powershell
         )
         spelled = "agy --dangerously-skip-permissions --add-dir " + shell_word(
-            str(prompt.parent), powershell
+            spelling(prompt.parent), powershell
         )
         assert spelled in lines[-1]
         lines[-1] = lines[-1].replace(spelled, command)
@@ -1361,24 +1394,32 @@ def alice_launch_lines(
     if tmp_dir is not None:
         if powershell:
             temp_lines = [
-                f"$env:TEMP = {shell_word(str(tmp_dir), powershell)}",
-                f"$env:TMP = {shell_word(str(tmp_dir), powershell)}",
+                f"$env:TEMP = {shell_word(spelling(tmp_dir), powershell)}",
+                f"$env:TMP = {shell_word(spelling(tmp_dir), powershell)}",
             ]
+        elif git_bash:
+            temp_lines = [f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}"]
+            if isinstance(tmp_dir, PureWindowsPath):
+                temp_lines += [
+                    f"export TEMP={shell_word(spelling(tmp_dir))}",
+                    f"export TMP={shell_word(spelling(tmp_dir))}",
+                ]
         else:
-            temp_lines = [f"export TMPDIR={shell_word(str(tmp_dir), powershell)}"]
+            temp_lines = [f"export TMPDIR={shell_word(spelling(tmp_dir), powershell)}"]
     usage = []
     if resume_prompt is not None:
         if powershell:
             usage = [
-                "if (-not $args[0]) { throw 'usage: resume-alice.ps1 <conversation-id>' }; "
+                f"if (-not $args[0]) {{ throw 'usage: resume-{agent}.ps1 <conversation-id>' }}; "
                 "$SessionId = $args[0]"
             ]
         else:
             usage = [
-                'if [ $# -ne 1 ]; then echo "usage: resume-alice.sh <conversation-id>" >&2; '
+                f'if [ $# -ne 1 ]; then echo "usage: resume-{agent}.sh <conversation-id>" >&2; '
                 'exit 1; fi && SESSION_ID="$1"'
             ]
-    return [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, *usage, *lines]
+    directory = git_bash_path(workdir) if git_bash else str(workdir)
+    return [f"cd {shell_word(directory, powershell)}", *temp_lines, *usage, *lines]
 
 
 def remote_note(name: str) -> str:
@@ -1424,6 +1465,8 @@ def worker_launch(
     root: PurePath = ROOT,
     python: str = sys.executable,
     title: str | None = None,
+    hub_url: str = DEFAULT_HUB_URL,
+    token_file: str | None = None,
     max_resumes: int | None = DEFAULT_MAX_RESUMES,
     resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
@@ -1436,7 +1479,7 @@ def worker_launch(
     ``<`` and the command it runs take Git Bash spellings, while arguments and
     variables handed to native programs (claude, codex, opencode, agy, python)
     keep forward-slash Windows paths (#75). ``root`` and ``python`` are the
-    robomate checkout and interpreter on that host, for ``scripts/claude-worker.py``.
+    robomate checkout and interpreter on that host, for ``scripts/worker-launcher.py``.
     ``title`` is the OpenCode session title; other harnesses ignore it.
     """
     if tmp_dir is None:
@@ -1444,19 +1487,29 @@ def worker_launch(
     is_windows = bool(run_dir.drive) or os.name == "nt"
     prompt = run_dir / f"{name}.prompt.md"
     flags = model_flags(harness, model, effort, auto_start=auto_start)
-    launcher = None
     if supervised(harness, auto_start):
-        launcher = claude_worker_launcher(
-            name,
-            git_bash_path(PureWindowsPath(python)) if is_windows else python,
-            (root / "scripts" / "claude-worker.py").as_posix(),
-            (run_dir / f"{name}-telemetry.jsonl").as_posix(),
-            (run_dir / f"{name}-sessions.jsonl").as_posix(),
-            max_resumes=max_resumes,
-            resume_delay_s=resume_delay_s,
-            resume_max_delay_s=resume_max_delay_s,
-            resume_total_s=resume_total_s,
-            resume_series_reset_s=resume_series_reset_s,
+        return agent_launch_lines(
+            harness,
+            workspace,
+            launch_config_path(harness, run_dir / "configs", name),
+            prompt,
+            hub_url,
+            token_file,
+            model,
+            effort,
+            tmp_dir,
+            title,
+            max_resumes,
+            resume_delay_s,
+            resume_max_delay_s,
+            resume_total_s,
+            resume_series_reset_s,
+            worker=name,
+            git_dir=workspace / ".git",
+            root=root,
+            python=git_bash_path(PureWindowsPath(python)) if is_windows else python,
+            powershell=False,
+            git_bash=True,
         )
     lines = harness_launch(
         harness,
@@ -1466,7 +1519,6 @@ def worker_launch(
         run_dir.as_posix(),
         flags,
         auto_start,
-        launcher=launcher,
         title=title,
     )
     if is_windows:
@@ -1490,6 +1542,15 @@ def worker_resume(
     auto_start: bool = True,
     tmp_dir: PurePath | None = None,
     title: str | None = None,
+    hub_url: str = DEFAULT_HUB_URL,
+    token_file: str | None = None,
+    root: PurePath = ROOT,
+    python: str = sys.executable,
+    max_resumes: int | None = DEFAULT_MAX_RESUMES,
+    resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
+    resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
+    resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
+    resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
 ) -> list[str]:
     """A remote worker's resume lines, spelled for its host's bash (#94).
 
@@ -1502,6 +1563,31 @@ def worker_resume(
     is_windows = bool(run_dir.drive) or os.name == "nt"
     prompt = run_dir / f"resume-{name}.prompt.md"
     prompt_arg = git_bash_path(prompt) if harness == "codex" else prompt.as_posix()
+    if supervised(harness, auto_start):
+        return agent_launch_lines(
+            harness,
+            workspace,
+            launch_config_path(harness, run_dir / "configs", name),
+            prompt,
+            hub_url,
+            token_file,
+            model,
+            effort,
+            tmp_dir,
+            title,
+            max_resumes,
+            resume_delay_s,
+            resume_max_delay_s,
+            resume_total_s,
+            resume_series_reset_s,
+            resume_prompt=prompt,
+            worker=name,
+            git_dir=workspace / ".git",
+            root=root,
+            python=git_bash_path(PureWindowsPath(python)) if is_windows else python,
+            powershell=False,
+            git_bash=True,
+        )
     flags = model_flags(harness, model, effort, auto_start=auto_start)
     session_var = '"$SESSION_ID"'
     config = launch_config_path(harness, run_dir / "configs", name).as_posix()
@@ -1667,6 +1753,8 @@ def render_worker_bundle(
         effort,
         auto_start,
         root=root,
+        hub_url=hub_url,
+        token_file=token_file,
         title=title,
         max_resumes=max_resumes,
         resume_delay_s=resume_delay_s,
@@ -1679,7 +1767,22 @@ def render_worker_bundle(
         render_resume_prompt(name, run_dir), encoding="utf-8"
     )
     resume = worker_resume(
-        name, harness, run_dir, workspace, model, effort, auto_start, title=title
+        name,
+        harness,
+        run_dir,
+        workspace,
+        model,
+        effort,
+        auto_start,
+        title=title,
+        root=root,
+        hub_url=hub_url,
+        token_file=token_file,
+        max_resumes=max_resumes,
+        resume_delay_s=resume_delay_s,
+        resume_max_delay_s=resume_max_delay_s,
+        resume_total_s=resume_total_s,
+        resume_series_reset_s=resume_series_reset_s,
     )
     write_script(out_dir / f"resume-{name}.sh", start_script(resume))
     bundle = {
@@ -2348,8 +2451,8 @@ def prepare(
                 "resume_series_reset_s": resume_series_reset_s,
             }
             prompt_path = run_dir / f"{name}.prompt.md"
-            lines = alice_launch_lines(harness, workdirs[name], config, prompt_path, **alice_lines)
-            resume = alice_launch_lines(
+            lines = agent_launch_lines(harness, workdirs[name], config, prompt_path, **alice_lines)
+            resume = agent_launch_lines(
                 harness,
                 workdirs[name],
                 config,
@@ -2369,6 +2472,8 @@ def prepare(
                 auto_start,
                 tmp_dir=run_dir / "tmp" / name,
                 worker=None if name == "alice" else name,
+                hub_url=live_url,
+                token_file=token_file(hub_repo),
                 title=title,
                 max_resumes=max_resumes,
                 resume_delay_s=resume_delay_s,
@@ -2388,6 +2493,13 @@ def prepare(
                 auto_start,
                 tmp_dir=run_dir / "tmp" / name,
                 title=title,
+                hub_url=live_url,
+                token_file=token_file(hub_repo),
+                max_resumes=max_resumes,
+                resume_delay_s=resume_delay_s,
+                resume_max_delay_s=resume_max_delay_s,
+                resume_total_s=resume_total_s,
+                resume_series_reset_s=resume_series_reset_s,
             )
         script = run_dir / f"start-{name}.{suffix}"
         write_script(script, start_script(lines, os.name == "nt"))
@@ -2412,7 +2524,7 @@ def prepare(
     }
     for name in local:
         if supervised(launch[name][0], auto_start):
-            # scripts/claude-worker.py logs each launch, wait and conversation ID here (#115, #158).
+            # worker-launcher.py logs launches, waits and conversation IDs (#165).
             manifest["launch"]["agents"][name]["sessions"] = str(run_dir / f"{name}-sessions.jsonl")
             manifest["launch"]["agents"][name] |= {
                 "max_resumes": max_resumes,

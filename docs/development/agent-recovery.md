@@ -28,7 +28,7 @@ hub ID, workflow ID, Alice RPC session ID, and task ID as separate fields.
 | Alice idle, no delivered event | Resume Alice's saved conversation with the same config and an operator prompt to read durable state. Reconcile tasks, PR heads, and checks before new assignments. There is no redelivery proof to claim. |
 | Alice active, delivered event | Confirm the old process is gone, then resume. New Alice reads state and redelivery before ack. If the event was already acked, continue ordinary recovery and mark a Step 7 checkpoint failed. |
 | Bob or Charlie idle | Relaunch that worker from its generated script/config and workspace. Check in once for the new runtime, then await assignment. Do not assign duplicate work merely because a harness exited. |
-| Bob or Charlie with active task | An auto-started Claude Code worker's launcher resumes it by itself; act only once it reports its resumes spent. Otherwise preserve branch, uncommitted edits, pending question/result, task ID, and PR head, and resume the worker's saved conversation in the same workspace before the hub declares it lost (below). Failing that, relaunch with the same worker identity; Alice reconciles task state and decides whether the same worker can finish or a fresh task is needed. Never silently overwrite a result or assign another worker to the same branch. |
+| Bob or Charlie with active task | Every auto-started worker's launcher resumes it by itself; act only once it reports its resumes spent. Otherwise preserve branch, uncommitted edits, pending question/result, task ID, and PR head, and resume the worker's saved conversation in the same workspace before the hub declares it lost (below). Failing that, relaunch with the same worker identity; Alice reconciles task state and decides whether the same worker can finish or a fresh task is needed. Never silently overwrite a result or assign another worker to the same branch. |
 | Pending `ask_alice` question | Worker retries the **same text on the same task** after a normal timeout, preserving message correlation. Alice replies to the durable question once. A canceled/failed/completed task response is terminal, not an answer. |
 | Result submitted before crash | Alice reads the durable typed result and GitHub PR state. Do not submit it again or infer merge from a process exit. |
 | Uncommitted worker changes | Inspect `git status`, local diff, and remote branch separately; retain the workspace until the owner decides to commit, discard, or hand off. A new clone cannot reconstruct uncommitted work. |
@@ -57,26 +57,114 @@ a new timer. It bridges only a resume of the same worker in the same
 workspace; takeover by another session waits for M2 join (#18), and host
 standby is #19.
 
-`prepare-run.py` runs every auto-started Claude Code worker under
-`scripts/claude-worker.py`. It starts `claude -p` with a `--session-id` it
-picks. Whenever `claude` exits before the worker's telemetry records
-`release: true`, it resumes that conversation with a fixed continue prompt,
-backing off between resumes: the wait doubles from `--resume-delay-s`
-(default 5 s) up to `--resume-max-delay-s` (default 1800 s, about 30 minutes),
-then repeats at the cap. A run that lasts at least `--resume-series-reset-s`
-(default 300 s) starts a new series at the short delay again. Resumes stop
-after `--resume-total-s` (default 43200 s, about 12 hours) since the first
-exit of the current series, or after `--max-resumes` when given (by default no
-count limit; 0 disables automatic resumes). Healthy running time before that
-first exit never spends the budget, and a series reset refills it. Every
-launch, wait and exit is logged to
-`RUN_DIR/<worker>-sessions.jsonl` (`launch.agents.<worker>.sessions` in
-`run.json`, with the five backoff settings beside it): each `wait` line records
-`delay_s` and the `next_attempt` time, and stderr says the same. When the
-resumes are spent it exits 1 and prints the conversation ID to resume by hand.
-Ctrl-C during a wait stops the launcher at once with exit 130. Workers on
-other harnesses have no launcher: resume them by hand as below. Alice has her
-own launcher on every harness (next section).
+`prepare-run.py` now runs every auto-started worker, local or remote, under
+`scripts/worker-launcher.py` (#165). Both worker start and hand-resume scripts
+use it. Alice and workers share the standard-library `scripts/agent_launcher.py`
+for harness commands, exact conversation-ID capture, child supervision, logs
+and #158 backoff. Only the first start sends the kickoff prompt. Each automatic
+resume sends a fixed continuation with no operator decision or state: check in
+once, reconcile the held task, drop a failed/canceled task, and return to
+`await_assignment`. Every reply must include a tool call until `release: true`.
+Kickoff and hand-resume prompts carry the turn-end rule on all four harnesses;
+Alice's hand-resume prompt also says to hold `wait_for_event` while escalated.
+
+The chosen recovery approach is **launcher-side waiting**, rather than relying
+on every harness to stop its MCP servers cleanly. Before every worker launch,
+the launcher reads bearer-only `hub.info` and `hub.status`, pins the hub and
+workflow IDs, and checks the worker's `activity.instance` and `alive` fields.
+A missing agent or a detached instance (`activity.instance: null`) can check
+in immediately. An attached predecessor must first become lost (`alive: false`)
+under the existing hub lost window; its held task then fails and Alice must
+assign retry work. The launcher polls every 2 seconds for up to 300 seconds
+(`--predecessor-poll-s`, `--predecessor-wait-s`). It also checks for release,
+workflow completion and pause while waiting. It changes no hub state and
+never takes ownership from a live bridge.
+
+The predecessor wait is independent of `HUB_LOST_AFTER_S`. If the operator
+raises the hub's lost window, set `--predecessor-wait-s` above that window
+with margin for the sweeper and status reads. `prepare-run.py` does not expose
+this tuning: add the launcher flag before `--` in both generated worker start
+and resume scripts. For example, a 600-second lost window needs a wait longer
+than 600 seconds, such as `--predecessor-wait-s 660`.
+
+Workers retry unreadable hub status up to 60 times, 2 seconds apart by default
+(about two minutes for an immediately refused connection), so a brief hub
+restart does not immediately end automatic recovery. Alice keeps her 5-read
+default. Both accept `--read-retries` and `--read-retry-delay-s`; sustained
+outages still stop with exit 3. HTTP request timeouts also count as waiting,
+so a server that accepts a connection but fails to respond can take longer.
+
+If a harness leaves an orphan MCP bridge **still heartbeating**, the worker
+never becomes lost. At the wait limit the launcher exits 4 with
+`predecessor_alive`. The operator must confirm the old harness is gone, stop
+its orphan bridge, and use the generated hand-resume script. A clean detach
+continues to preserve an open task when the successor checks in before the
+lost window expires; waiting for loss cannot preserve that task. These two
+paths are covered with fake harnesses and stub status. Real OpenCode and
+AntiGravity mid-task kill checks remain operator validation: workers may not
+start or stop agents. A harness that hangs without exiting remains #144's
+stall case, outside launcher supervision.
+
+Resumes back off from `--resume-delay-s` (default 5 seconds), doubling to
+`--resume-max-delay-s` (1800 seconds), then repeating at the cap. A harness run
+lasting `--resume-series-reset-s` (300 seconds) resets the series. The budget
+starts at its first exit, not while it is running healthily, and lasts
+`--resume-total-s` (43200 seconds); `--max-resumes` optionally caps the count
+(0 disables resumes). Each launch, exit, conversation ID, wait and stop is
+logged to `RUN_DIR/<name>-sessions.jsonl`; `run.json` records the path and
+backoff settings. Waits include `delay_s` and `next_attempt`. The launcher stops
+on release or workflow `done` (exit 0), spent resumes (1), unreadable or changed
+hub/workflow (3), missing workflow/ID or an attached predecessor (4), pause
+(5), or Ctrl-C/SIGTERM (130). On interruption it stops only its own harness
+child. It checks status again after a backoff before launching a successor.
+
+When automatic attempts are spent, preserve the workspace and pending task,
+question/result, verify the old harness is gone, and take the operator's
+before-snapshot. Fill in `RUN_DIR/resume-<name>.prompt.md`, then run:
+
+```sh
+"$RUN_DIR/resume-bob.sh" CONVERSATION_ID       # or resume-charlie.sh
+# Windows: & "$RUN_DIR/resume-bob.ps1" CONVERSATION_ID
+```
+
+The generated resume repeats the start environment, config, working directory,
+model and effort. It starts the exact saved conversation with the manual prompt
+once, then resumes automatically with the fixed continuation and a fresh
+backoff budget. Never rerun `start-<name>` for recovery. Runs prepared before
+#165 retain their old scripts; this change does not rewrite a running manifest.
+Their existing direct hand-resume scripts still work, but old Claude worker
+start scripts refer to the replaced `claude-worker.py`. To adopt supervision
+without rerunning preparation, the operator can adapt the existing command to
+`worker-launcher.py` with `--agent`, `--harness`, `--hub-url`, `--token-file`,
+`--telemetry`, `--sessions`, `--resume-session` and `--resume-prompt`, then `--`
+and the unchanged harness flags (omit its old prompt/session flags).
+
+### Agent and harness coverage after #165
+
+All auto-started pairs below have kickoff and hand-resume turn-end rules,
+automatic backoff, and a generated `resume-<name>.sh`/`.ps1` for hand recovery.
+`--no-auto-start` remains interactive and has no automatic launcher.
+
+| Agent | Harness | Automatic launcher | Conversation ID location | Hand resume |
+| --- | --- | --- | --- | --- |
+| Alice | Claude Code | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (UUID) | `resume-alice ID` |
+| Alice | Codex | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (UUID) | `resume-alice ID` |
+| Alice | OpenCode | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-alice ID` |
+| Alice | AntiGravity | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-alice ID` |
+| Bob | Claude Code | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (UUID) | `resume-bob ID` |
+| Bob | Codex | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (UUID) | `resume-bob ID` |
+| Bob | OpenCode | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-bob ID` |
+| Bob | AntiGravity | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-bob ID` |
+| Charlie | Claude Code | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (UUID) | `resume-charlie ID` |
+| Charlie | Codex | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (UUID) | `resume-charlie ID` |
+| Charlie | OpenCode | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-charlie ID` |
+| Charlie | AntiGravity | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-charlie ID` |
+
+These files live in the run directory on the host running that agent; remote
+workers use their worker-host run directory. IDs are distinct from the hub ID,
+workflow ID, task ID and Alice RPC session ID. OpenCode's `ses_…` is never the
+robomate session ID. A separate nudge loop is no longer needed for exited
+harnesses; the bounded launcher provides it.
 
 ## Alice exits before the workflow is done
 
@@ -196,8 +284,8 @@ last assistant message unfinished, and its log
 (`~/.local/share/opencode/log/opencode.log`) records `AI_APICallError: Rate
 limit exceeded`. A resume can hit the same limit at once (#144's run
 `la005-issue-132`). Wait for the limit to clear, stop that `opencode` process,
-and resume its conversation; under the launcher, stopping Alice's `opencode`
-child is enough, and the launcher resumes her.
+and resume its conversation; under the launcher, stopping the agent's `opencode`
+child triggers automatic recovery, subject to predecessor and backoff limits.
 
 ## Resuming a harness conversation
 
@@ -216,10 +304,11 @@ worker runs a new `worker-mcp`, so the prompt should tell it to call
 
 | Harness | Conversation ID and where to find it |
 | --- | --- |
-| Claude Code | A UUID. For a worker under `scripts/claude-worker.py`, take `session_id` from `RUN_DIR/<worker>-sessions.jsonl`. Otherwise it is the file name of `~/.claude/projects/<dir>/<uuid>.jsonl`, where `<dir>` is the working directory with every character other than a letter or digit replaced by `-`; pick by modification time. |
-| Codex | A UUID from the saved session or the CLI output; the exact `codex exec resume` form is in [M1 restart and recovery](m1-restart-recovery.md). |
+| Claude Code | A UUID. For any supervised agent, take `conversation_id` from `RUN_DIR/<name>-sessions.jsonl`. Legacy #115 worker logs use `session_id`. Otherwise it is the file name of `~/.claude/projects/<dir>/<uuid>.jsonl`, where `<dir>` is the working directory with every character other than a letter or digit replaced by `-`; pick by modification time. |
+| Codex | A UUID from `RUN_DIR/<name>-sessions.jsonl`, CLI `session id:`/JSON `thread_id`, or the configured `CODEX_HOME` session store; the exact `codex exec resume` form is in [M1 restart and recovery](m1-restart-recovery.md). |
 | Alice (any harness) | Under `scripts/alice-launcher.py`, the `conversation_id` in `RUN_DIR/alice-sessions.jsonl`. |
-| OpenCode | A `ses_...` ID. `prepare-run.py` starts every OpenCode agent with `--title "<agent> <run-slug>"` and records that title in `run.json` `launch.agents.<agent>.title`, so run `opencode session list --format json` from the working directory and match the title; `opencode export <id>` prints a transcript to confirm. Runs prepared before the title change all read `New session - <ISO time>`, so match by time instead (#94). |
+| OpenCode | A `ses_...` ID. `prepare-run.py` starts every OpenCode agent with `--title "<agent> <run-slug>"` and records that title in `run.json` `launch.agents.<agent>.title`, so run `opencode session list --format json` from the working directory and match the title; `opencode export <id>` prints a transcript to confirm. The session database is `~/.local/share/opencode/opencode.db` on the agent host; never substitute a robomate session ID. Runs prepared before the title change all read `New session - <ISO time>`, so match by time instead (#94). |
+| AntiGravity | `conversation_id` from the launcher sessions log, captured from `--output-format stream-json`; if missing, inspect the captured stream output for the conversation/session ID. Never guess a latest conversation. |
 
 Claude Code takes the flags from the start script's `claude` command, with
 `--resume` in place of `--session-id` and a new `-p`:
@@ -288,7 +377,9 @@ The disposable CLI up/down test covers hub identity and port reuse;
 covers active task, pending question retry, and event redelivery;
 `tests/test_mock_alice.py` covers simulated delivery/ack crash paths;
 `tests/test_worker_client.py::test_a_restarted_worker_checks_in_at_once_and_finishes_its_task`
-covers the detach, and `tests/test_claude_worker.py` the launcher's resumes. These
+covers the detach, and `tests/test_worker_launcher.py` the four-harness worker
+resumes and predecessor waits. `tests/test_prepare_run.py` executes generated
+start and resume scripts for every agent/harness pair. These
 fixtures do not prove a real operator kill, Codex conversation resumption,
 cross-host worker relaunch, or PR merge sequencing. [M2 join/takeover](../mvp-spec.md)
 must define safe new-session ownership and reassignment before this becomes
