@@ -29,6 +29,8 @@ DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
 DEFAULT_RESUME_TOTAL_S = 12 * 60 * 60.0
 DEFAULT_RESUME_SERIES_RESET_S = 5 * 60.0
 DEFAULT_READ_RETRIES = 5
+# Workers tolerate a hub restart without exhausting the short Alice read window (#165 r1-1).
+DEFAULT_WORKER_READ_RETRIES = 60
 DEFAULT_READ_RETRY_DELAY_S = 2.0
 HUB_TIMEOUT_S = 10.0
 # How long, after the harness exits, its remaining output may take to arrive.
@@ -544,7 +546,12 @@ def _feed(stream: TextIO | None, text: str) -> None:
 
 
 def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    description = (
+        "Resume a headless worker on any supported harness until release."
+        if worker
+        else "Run a headless Alice, resuming the same conversation until her workflow is done."
+    )
+    parser = argparse.ArgumentParser(description=description)
     if worker:
         parser.add_argument("--agent", required=True)
         parser.add_argument("--telemetry", type=Path, required=True)
@@ -594,7 +601,12 @@ def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Name
         help="a run lasting this long starts a new backoff series at the short delay "
         f"(default {DEFAULT_RESUME_SERIES_RESET_S:g})",
     )
-    parser.add_argument("--read-retries", type=int, default=DEFAULT_READ_RETRIES)
+    parser.add_argument(
+        "--read-retries",
+        type=int,
+        default=DEFAULT_WORKER_READ_RETRIES if worker else DEFAULT_READ_RETRIES,
+        help="bounded hub read attempts (default: 60 for workers, 5 for Alice)",
+    )
     parser.add_argument("--read-retry-delay-s", type=float, default=DEFAULT_READ_RETRY_DELAY_S)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="the harness command, after --")
     args = parser.parse_args(argv)

@@ -80,6 +80,20 @@ assign retry work. The launcher polls every 2 seconds for up to 300 seconds
 workflow completion and pause while waiting. It changes no hub state and
 never takes ownership from a live bridge.
 
+The predecessor wait is independent of `HUB_LOST_AFTER_S`. If the operator
+raises the hub's lost window, set `--predecessor-wait-s` above that window
+with margin for the sweeper and status reads. `prepare-run.py` does not expose
+this tuning: add the launcher flag before `--` in both generated worker start
+and resume scripts. For example, a 600-second lost window needs a wait longer
+than 600 seconds, such as `--predecessor-wait-s 660`.
+
+Workers retry unreadable hub status up to 60 times, 2 seconds apart by default
+(about two minutes for an immediately refused connection), so a brief hub
+restart does not immediately end automatic recovery. Alice keeps her 5-read
+default. Both accept `--read-retries` and `--read-retry-delay-s`; sustained
+outages still stop with exit 3. HTTP request timeouts also count as waiting,
+so a server that accepts a connection but fails to respond can take longer.
+
 If a harness leaves an orphan MCP bridge **still heartbeating**, the worker
 never becomes lost. At the wait limit the launcher exits 4 with
 `predecessor_alive`. The operator must confirm the old harness is gone, stop

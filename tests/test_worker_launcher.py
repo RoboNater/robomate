@@ -318,3 +318,27 @@ def test_worker_reader_retains_detached_and_attached_state(
     del agent["activity"]["instance"]
     with pytest.raises(ValueError, match="malformed agent"):
         reader.read()
+
+
+@pytest.mark.parametrize("harness", list(IDS))
+def test_worker_recovers_a_hub_restart_longer_than_five_reads(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    use_harness(harness, monkeypatch)
+    reader = ScriptedReader(*([OSError("hub restarting")] * 8), wf(), wf(), wf(status="done"))
+    assert (
+        WORKER.main(
+            worker_args(
+                run_dir,
+                fake,
+                harness,
+                "--prompt",
+                str(run_dir / "alice.prompt.md"),
+                "--read-retry-delay-s",
+                "0",
+            ),
+            reader,
+        )
+        == 0
+    )
+    assert reader.reads == 11 and len(launches(run_dir)) == 1

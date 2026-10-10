@@ -2635,3 +2635,28 @@ def test_the_alice_resume_prompt_shows_the_snapshot_block_robomate_prints() -> N
         pattern = re.escape(shown.replace(", or not supplied", ""))
         pattern = re.sub(r"<[^>]*>", ".+?", pattern.replace("\\<", "<").replace("\\>", ">"))
         assert re.fullmatch(pattern, expected), (shown, expected)
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+def test_supervised_local_windows_paths_keep_native_spelling(harness: str) -> None:
+    """Exercise Windows path rendering even when the test host is POSIX (#165)."""
+    prompt = WINDOWS_RUN / "bob.prompt.md"
+    temp = WINDOWS_RUN / "tmp" / "bob"
+    lines = PREPARE_RUN.agent_launch_lines(
+        harness,
+        WINDOWS_RUN / "bob",
+        PREPARE_RUN.launch_config_path(harness, WINDOWS_RUN / "configs", "bob"),
+        prompt,
+        "http://hub.example:8420",
+        WINDOWS_RUN / "token",
+        tmp_dir=temp,
+        worker="bob",
+        git_dir=WINDOWS_RUN / "bob" / ".git",
+        root=PureWindowsPath("C:/src/robomate"),
+        powershell=True,
+    )
+    text = "\n".join(lines)
+    assert f"--prompt {PREPARE_RUN.shell_word(str(prompt), powershell=True)}" in text
+    assert f"$env:TEMP = {PREPARE_RUN.shell_word(str(temp), powershell=True)}" in text
+    assert f"$env:TMP = {PREPARE_RUN.shell_word(str(temp), powershell=True)}" in text
+    assert "C:/Users/Bob" not in text

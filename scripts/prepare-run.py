@@ -1295,13 +1295,19 @@ def agent_launch_lines(
     after ``--`` are reused verbatim. With ``resume_prompt`` (resume-alice),
     the conversation ID is the script's first argument.
     """
+
+    def spelling(path: PurePath) -> str:
+        # Local scripts keep native Windows spellings; remote Git Bash hands
+        # forward-slash Windows paths to native Python and harness programs.
+        return path.as_posix() if git_bash else str(path)
+
     powershell = os.name == "nt" if powershell is None else powershell
     flags = model_flags(harness, model, effort, powershell, True)
-    prompt_dir = shell_word(prompt.parent.as_posix(), powershell)
+    prompt_dir = shell_word(spelling(prompt.parent), powershell)
     if harness == "codex":
         base = ["codex", "exec", "-C", "."]
         base += (
-            ["--add-dir", shell_word(git_dir.as_posix(), powershell)]
+            ["--add-dir", shell_word(spelling(git_dir), powershell)]
             if git_dir is not None
             else ["--skip-git-repo-check"]
         )
@@ -1314,7 +1320,7 @@ def agent_launch_lines(
         base = ["agy", *flags, "--dangerously-skip-permissions", "--add-dir", prompt_dir]
     else:
         base = ["claude", *flags, "--permission-mode", "auto", "--strict-mcp-config"]
-        base += ["--mcp-config", shell_word(config.as_posix(), powershell), "--add-dir", prompt_dir]
+        base += ["--mcp-config", shell_word(spelling(config), powershell), "--add-dir", prompt_dir]
     agent = worker or "alice"
     if worker is not None and token_file is None:
         raise ValueError("a supervised worker requires its hub token file")
@@ -1322,9 +1328,7 @@ def agent_launch_lines(
     words = [
         "& " + python if powershell else python,
         shell_word(
-            (
-                root / "scripts" / ("worker-launcher.py" if worker else "alice-launcher.py")
-            ).as_posix(),
+            spelling(root / "scripts" / ("worker-launcher.py" if worker else "alice-launcher.py")),
             powershell,
         ),
         "--harness",
@@ -1333,11 +1337,11 @@ def agent_launch_lines(
         shell_word(hub_url, powershell),
         "--token-file",
         shell_word(
-            token_file.as_posix() if isinstance(token_file, PurePath) else str(token_file),
+            spelling(token_file) if isinstance(token_file, PurePath) else str(token_file),
             powershell,
         ),
         "--sessions",
-        shell_word((prompt.parent / f"{agent}-sessions.jsonl").as_posix(), powershell),
+        shell_word(spelling(prompt.parent / f"{agent}-sessions.jsonl"), powershell),
         *launcher_backoff_flags(
             max_resumes=max_resumes,
             resume_delay_s=resume_delay_s,
@@ -1351,20 +1355,20 @@ def agent_launch_lines(
             "--agent",
             shell_word(worker, powershell),
             "--telemetry",
-            shell_word((prompt.parent / f"{worker}-telemetry.jsonl").as_posix(), powershell),
+            shell_word(spelling(prompt.parent / f"{worker}-telemetry.jsonl"), powershell),
         ]
     if resume_prompt is None:
-        words += ["--prompt", shell_word(prompt.as_posix(), powershell)]
+        words += ["--prompt", shell_word(spelling(prompt), powershell)]
     else:
         session_var = "$SessionId" if powershell else '"$SESSION_ID"'
         words += [
             "--resume-session",
             session_var,
             "--resume-prompt",
-            shell_word(resume_prompt.as_posix(), powershell),
+            shell_word(spelling(resume_prompt), powershell),
         ]
     command = " ".join([*words, "--", *base])
-    config_word = shell_word(config.as_posix(), powershell)
+    config_word = shell_word(spelling(config), powershell)
     if harness == "codex":
         env = {"CODEX_HOME": config_word}
     elif harness == "opencode":
@@ -1374,10 +1378,10 @@ def agent_launch_lines(
     if harness == "antigravity":
         # The same isolated home as antigravity_launch, around the launcher.
         lines = antigravity_launch(
-            config.as_posix(), prompt.as_posix(), prompt.parent.as_posix(), [], False, powershell
+            spelling(config), spelling(prompt), spelling(prompt.parent), [], False, powershell
         )
         spelled = "agy --dangerously-skip-permissions --add-dir " + shell_word(
-            prompt.parent.as_posix(), powershell
+            spelling(prompt.parent), powershell
         )
         assert spelled in lines[-1]
         lines[-1] = lines[-1].replace(spelled, command)
@@ -1390,18 +1394,18 @@ def agent_launch_lines(
     if tmp_dir is not None:
         if powershell:
             temp_lines = [
-                f"$env:TEMP = {shell_word(tmp_dir.as_posix(), powershell)}",
-                f"$env:TMP = {shell_word(tmp_dir.as_posix(), powershell)}",
+                f"$env:TEMP = {shell_word(spelling(tmp_dir), powershell)}",
+                f"$env:TMP = {shell_word(spelling(tmp_dir), powershell)}",
             ]
         elif git_bash:
             temp_lines = [f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}"]
             if isinstance(tmp_dir, PureWindowsPath):
                 temp_lines += [
-                    f"export TEMP={shell_word(tmp_dir.as_posix())}",
-                    f"export TMP={shell_word(tmp_dir.as_posix())}",
+                    f"export TEMP={shell_word(spelling(tmp_dir))}",
+                    f"export TMP={shell_word(spelling(tmp_dir))}",
                 ]
         else:
-            temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix(), powershell)}"]
+            temp_lines = [f"export TMPDIR={shell_word(spelling(tmp_dir), powershell)}"]
     usage = []
     if resume_prompt is not None:
         if powershell:
@@ -1414,7 +1418,7 @@ def agent_launch_lines(
                 f'if [ $# -ne 1 ]; then echo "usage: resume-{agent}.sh <conversation-id>" >&2; '
                 'exit 1; fi && SESSION_ID="$1"'
             ]
-    directory = git_bash_path(workdir) if git_bash else workdir.as_posix()
+    directory = git_bash_path(workdir) if git_bash else str(workdir)
     return [f"cd {shell_word(directory, powershell)}", *temp_lines, *usage, *lines]
 
 

@@ -121,6 +121,13 @@ class WorkerLauncher(common.Launcher):
             return True
         return False
 
+    def manual_resume_hint(self) -> str:
+        return (
+            "Take a before-snapshot with `robomate status --snapshot` in the target "
+            f"repository, fill in resume-{self.agent}.prompt.md, then resume by hand "
+            f"with resume-{self.agent} {self.conversation or '(find the exact conversation ID)'}."
+        )
+
     def resumable(self, exit_code: int, resumes: int) -> str:
         # A release in local telemetry remains decisive when the hub is unavailable.
         if released(self.args.telemetry, self.telemetry_offset):
@@ -131,18 +138,28 @@ class WorkerLauncher(common.Launcher):
             return "done"
         # Reuse the common stop checks without doing a second status read.
         if workflow is None:
-            raise common.Stop(common.EXIT_CANNOT_RESUME, "no_workflow", "no workflow to resume")
+            raise common.Stop(
+                common.EXIT_CANNOT_RESUME,
+                "no_workflow",
+                "no workflow to resume. " + self.manual_resume_hint(),
+            )
         if self.conversation is None:
             raise common.Stop(
-                common.EXIT_CANNOT_RESUME, "no_conversation", "no exact conversation ID to resume"
+                common.EXIT_CANNOT_RESUME,
+                "no_conversation",
+                "no exact conversation ID to resume. " + self.manual_resume_hint(),
             )
         if workflow["status"] == "paused":
-            raise common.Stop(common.EXIT_PAUSED, "paused", "workflow paused; resume by hand")
+            raise common.Stop(
+                common.EXIT_PAUSED,
+                "paused",
+                "workflow paused; wait until the operator resumes it. " + self.manual_resume_hint(),
+            )
         if self.args.max_resumes is not None and resumes >= self.args.max_resumes:
             raise common.Stop(
                 common.EXIT_RESUMES_SPENT,
                 "resumes_spent",
-                f"resumes spent; resume-{self.agent} {self.conversation} by hand",
+                "automatic resumes spent. " + self.manual_resume_hint(),
             )
         return "resume"
 
@@ -156,9 +173,18 @@ class WorkerLauncher(common.Launcher):
             # Workers may check in before Alice initializes a new workflow.
             # A resume still needs the existing workflow, checked by resumable().
             if workflow is None and (resumes or self.args.resume_session is not None):
-                raise common.Stop(common.EXIT_CANNOT_RESUME, "no_workflow", "no workflow to resume")
+                raise common.Stop(
+                    common.EXIT_CANNOT_RESUME,
+                    "no_workflow",
+                    "no workflow to resume. " + self.manual_resume_hint(),
+                )
             if workflow is not None and workflow["status"] == "paused":
-                raise common.Stop(common.EXIT_PAUSED, "paused", "workflow paused; resume by hand")
+                raise common.Stop(
+                    common.EXIT_PAUSED,
+                    "paused",
+                    "workflow paused; wait until the operator resumes it. "
+                    + self.manual_resume_hint(),
+                )
             agent = (
                 workflow.get("agent")
                 if workflow
@@ -168,7 +194,7 @@ class WorkerLauncher(common.Launcher):
                 raise common.Stop(
                     common.EXIT_RESUMES_SPENT,
                     "time_budget_spent",
-                    f"resume time budget spent; resume-{self.agent} {self.conversation} by hand",
+                    "resume time budget spent. " + self.manual_resume_hint(),
                 )
             if agent is None or not agent["alive"] or agent["activity"]["instance"] is None:
                 return True
@@ -181,7 +207,7 @@ class WorkerLauncher(common.Launcher):
                     common.EXIT_CANNOT_RESUME,
                     "predecessor_alive",
                     f"{self.agent}'s predecessor is still attached; operator must stop its "
-                    f"orphan bridge, then resume-{self.agent} {self.conversation or '(unknown)'}",
+                    "orphan bridge. " + self.manual_resume_hint(),
                 )
             if self.resume_deadline is not None:
                 remaining = min(remaining, self.resume_deadline - time.monotonic())
