@@ -313,7 +313,7 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
             "Hub recovery state is incomplete. Restore hub reachability/version and retry.",
         )
     if any(not isinstance(a, dict) for a in status["agents"]) or any(
-        not isinstance(q, dict) or not isinstance(q.get("id"), str) for q in questions
+        not isinstance(q, dict) or not isinstance(q.get("question_id"), int) for q in questions
     ):
         refuse("hub_state", "Malformed agent/question state. Restore the hub/version and retry.")
     matches = [a for a in status["agents"] if a.get("name") == agent]
@@ -373,7 +373,7 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
     if agent != "alice" and questions:
         advisories.append(
             "Open operator question(s) "
-            + ", ".join(str(q.get("id", "unknown")) for q in questions)
+            + ", ".join(str(q["question_id"]) for q in questions)
             + ": answer with robomate answer, or use --force to reconcile without answering them."
         )
     if advisories and not args.force:

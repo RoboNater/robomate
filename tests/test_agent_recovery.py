@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from agent_hub.store import HubStore
 from test_alice_launcher import CODEX_ID, LAUNCHER
 
 RECOVERY = importlib.import_module("agent_recovery")
@@ -271,7 +272,7 @@ def test_advisories_preserve_state_and_alice_can_handle_pending_questions(
         reader.workflow("paused")
     else:
         reader.workflow("escalated")
-        reader.state["hub.questions"]["questions"] = [{"id": "q-17", "question": "decision?"}]
+        reader.state["hub.questions"]["questions"] = [{"question_id": 17, "question": "decision?"}]
     before = deepcopy(reader.state)
     if advisory == "paused" or agent != "alice":
         with pytest.raises(LAUNCHER.Stop, match="--force"):
@@ -336,3 +337,32 @@ def test_original_run_metadata_is_essential(recovery_args: argparse.Namespace, c
     recovery_args.force = True
     with pytest.raises(LAUNCHER.Stop):
         RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+
+
+@pytest.mark.parametrize("agent", ["alice", "bob"])
+def test_real_isolated_hub_pending_question_schema_and_recommendation(
+    recovery_args: argparse.Namespace,
+    hub_store: HubStore,
+    agent: str,
+) -> None:
+    question = hub_store.ask_user("Wait or proceed?", None, actor="alice", session="test-session")
+    reader = RecoveryReader()
+    reader.state["hub.status"] = hub_store.status_summary()
+    reader.state["hub.snapshot"] = hub_store.snapshot() | {"hub_id": "hub-1"}
+    reader.state["hub.questions"] = {"questions": hub_store.open_operator_questions()}
+    workflow_id = reader.state["hub.snapshot"]["workflow"]["id"]
+    save_rows(
+        recovery_args,
+        [
+            row("start", agent=agent, workflow_id=workflow_id),
+            row("exit", agent=agent, workflow_id=workflow_id),
+        ],
+    )
+    if agent == "bob":
+        with pytest.raises(LAUNCHER.Stop, match=f"question\\(s\\) {question}.*robomate answer"):
+            RECOVERY.prepare(recovery_args, reader, agent)
+        recovery_args.force = True
+    _, prompt = RECOVERY.prepare(recovery_args, reader, agent)
+    assert f'"question_id": {question}' in prompt
+    assert hub_store.open_operator_questions()[0]["question_id"] == question
+    assert hub_store.status_summary()["workflow"]["status"] == "escalated"
