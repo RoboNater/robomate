@@ -409,3 +409,34 @@ def test_budget_stop_timestamp_is_never_used_as_process_exit(
     recovery_args.confirm_stopped = True
     _, prompt = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
     assert "unknown (not recorded)" in prompt
+
+
+@pytest.mark.parametrize("harness", ["codex", "antigravity"])
+def test_existing_home_without_mcp_configuration_refuses_recovery(
+    recovery_args: argparse.Namespace,
+    harness: str,
+) -> None:
+    recovery_args.harness = harness
+    recovery_args.recovery_config = recovery_args.sessions.parent / "empty-home"
+    recovery_args.recovery_config.mkdir()
+    recovery_args.force = True
+    with pytest.raises(LAUNCHER.Stop, match="Restore that run's configuration"):
+        RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+
+
+def test_windows_shell_selection_uses_git_bash_instead_of_wsl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git = tmp_path / "Git/cmd/git.exe"
+    git.parent.mkdir(parents=True)
+    git.touch()
+    bash = tmp_path / "Git/bin/bash.exe"
+    bash.parent.mkdir(parents=True)
+    bash.touch()
+    wsl = tmp_path / "Windows/System32/bash.exe"
+    monkeypatch.setattr(RECOVERY.shutil, "which", lambda name: str(git if name == "git" else wsl))
+    assert RECOVERY.bash_executable(windows=True) == str(bash)
+    bash.unlink()
+    with pytest.raises(OSError, match="Git Bash is unavailable"):
+        RECOVERY.bash_executable(windows=True)

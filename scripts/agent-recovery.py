@@ -12,7 +12,7 @@ import urllib.error
 from pathlib import Path
 
 from agent_launcher import HARNESSES, HubReader, Stop, log_session, say
-from agent_recovery import add_options, agent_lock, prepare, split_controls
+from agent_recovery import add_options, agent_lock, bash_executable, prepare, split_controls
 
 
 def main() -> int:
@@ -44,7 +44,7 @@ def main() -> int:
                     raise OSError("PowerShell unavailable; restore the original run environment")
                 command = [shell, "-NoProfile", "-Command", args.shell_command]
             else:
-                command = ["bash", "-c", args.shell_command]
+                command = [bash_executable(), "-c", args.shell_command]
             child = subprocess.Popen(
                 command, env=os.environ | {"ROBOMATE_RESUME_SESSION_ID": conversation}
             )

@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -182,12 +183,20 @@ def pin(rows: list[dict[str, Any]], key: str, supplied: str | None) -> str:
 def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[str, str]:
     """Return exact conversation and generated prompt, after all prerequisites pass."""
     config = getattr(args, "recovery_config", None)
-    if config is not None and not config.exists():
-        refuse(
-            "config",
-            f"Original configuration/home {config} is missing. Restore that run's "
-            "configuration and authentication before retrying; do not use another home.",
+    if config is not None:
+        config_file = (
+            config / "config.toml"
+            if args.harness == "codex"
+            else config / ".gemini/config/mcp_config.json"
+            if args.harness == "antigravity"
+            else config
         )
+        if not config.exists() or not config_file.is_file():
+            refuse(
+                "config",
+                f"Original configuration/home {config_file} is missing. Restore that run's "
+                "configuration and authentication before retrying; do not use another home.",
+            )
     rows = records(args.sessions, agent, args.harness)
     manifest_path = args.sessions.parent / "run.json"
     if manifest_path.exists():
@@ -453,3 +462,26 @@ def process_exists(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def bash_executable(*, windows: bool | None = None) -> str:
+    """Use native Git Bash on Windows, never System32's WSL launcher."""
+    windows = os.name == "nt" if windows is None else windows
+    if not windows:
+        return "bash"
+    git = shutil.which("git")
+    if git:
+        for parent in Path(git).parents[:3]:
+            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+                candidate = parent / relative
+                if candidate.is_file():
+                    return str(candidate)
+    bash = shutil.which("bash")
+    if bash and not {"system32", "syswow64", "sysnative"}.intersection(
+        part.casefold() for part in Path(bash).parts
+    ):
+        return bash
+    raise OSError(
+        "Git Bash is unavailable. Install Git for Windows and retry in Git Bash; "
+        "the WSL bash.exe launcher cannot run this native Windows workspace."
+    )

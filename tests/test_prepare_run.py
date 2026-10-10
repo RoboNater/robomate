@@ -2636,7 +2636,7 @@ def test_recovery_controls_refuse_pause_or_reconcile_with_override(
             script = run_dir / "remote-resume-bob.sh"
             PREPARE_RUN.write_script(script, PREPARE_RUN.resume_script(lines))
         shell = (
-            ["bash"]
+            [importlib.import_module("agent_recovery").bash_executable()]
             if remote or os.name != "nt"
             else [
                 shutil.which("pwsh") or shutil.which("powershell") or "powershell",
@@ -2644,8 +2644,9 @@ def test_recovery_controls_refuse_pause_or_reconcile_with_override(
                 "-File",
             ]
         )
+        script_arg = PREPARE_RUN.git_bash_path(script) if remote else str(script)
         completed = subprocess.run(
-            [*shell, str(script), *controls], env=env, text=True, capture_output=True, timeout=30
+            [*shell, script_arg, *controls], env=env, text=True, capture_output=True, timeout=30
         )
         # Force runs one reconciliation turn; automatic continuation then respects pause.
         assert completed.returncode == 5, completed.stdout + completed.stderr
