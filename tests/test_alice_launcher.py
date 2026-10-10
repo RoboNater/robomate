@@ -216,8 +216,10 @@ def test_each_harness_resumes_its_own_conversation_until_done(
         "start",
         *(["conversation"] if harness != "claude-code" else []),
         "exit",
+        "wait",
         "resume",
         "exit",
+        "wait",
         "resume",
         "exit",
         "stop",
@@ -365,6 +367,9 @@ def test_a_manual_resume_of_a_done_or_missing_workflow_launches_nothing(
     [
         ["--max-resumes", "-1"],
         ["--resume-delay-s", "-1"],
+        ["--resume-max-delay-s", "-1"],
+        ["--resume-total-s", "-1"],
+        ["--resume-series-reset-s", "-1"],
         ["--read-retries", "0"],
         ["--resume-session", "c-1"],
         ["--harness-typo"],
@@ -562,3 +567,213 @@ def test_a_conversation_id_printed_just_before_exit_is_still_captured(
     assert LAUNCHER.main(start_args(run_dir, fake, "opencode"), reader) == 0
     runs = launches(run_dir)
     assert len(runs) == 2 and IDS["opencode"] in runs[1]["argv"]
+
+
+# -- backoff (#158) ----------------------------------------------------------------
+
+
+class FakeClock:
+    """A controllable ``time.monotonic`` for the launcher's budget and series clocks."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.now = 1000.0
+        monkeypatch.setattr(LAUNCHER.time, "monotonic", self.monotonic)
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def test_backoff_delay_doubles_then_repeats_at_the_cap() -> None:
+    backoff = LAUNCHER.backoff_delay
+    assert [backoff(5.0, 20.0, n) for n in range(5)] == [5.0, 10.0, 20.0, 20.0, 20.0]
+    assert backoff(5.0, 1800.0, 8) == 1280.0
+    assert backoff(5.0, 1800.0, 9) == 1800.0
+    assert backoff(5.0, 1800.0, 40) == 1800.0
+    assert backoff(0.0, 1800.0, 3) == 0.0
+
+
+def test_waits_double_until_the_cap_with_visible_retries(
+    run_dir: Path, fake: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    reader = ScriptedReader(wf("active"))
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir,
+                fake,
+                "claude-code",
+                "--max-resumes",
+                "4",
+                "--resume-delay-s",
+                "5",
+                "--resume-max-delay-s",
+                "12",
+            )
+        ),
+        reader,
+    )
+    delays: list[float] = []
+    launcher.sleep = delays.append
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.code == LAUNCHER.EXIT_RESUMES_SPENT
+    assert stopped.value.reason == "resumes_spent"
+    assert delays == [5.0, 10.0, 12.0, 12.0]
+    waits = [r for r in sessions(run_dir) if r["event"] == "wait"]
+    assert [w["delay_s"] for w in waits] == [5.0, 10.0, 12.0, 12.0]
+    assert all(w["next_attempt"] for w in waits)
+    err = capsys.readouterr().err
+    assert "in 10 s at" in err and "resuming (2/4)" in err
+
+
+def test_a_further_wait_past_the_time_budget_stops_instead(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock(monkeypatch)
+    reader = ScriptedReader(wf("active"))
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir,
+                fake,
+                "claude-code",
+                "--resume-delay-s",
+                "5",
+                "--resume-total-s",
+                "12",
+            )
+        ),
+        reader,
+    )
+    elapsed: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        elapsed.append(seconds)
+        clock.now += seconds
+
+    launcher.sleep = sleep
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.code == LAUNCHER.EXIT_RESUMES_SPENT
+    assert stopped.value.reason == "time_budget_spent"
+    # The first wait (5 s) fits; the doubled second (10 s) would exceed it.
+    assert elapsed == [5.0]
+    records = sessions(run_dir)
+    assert records[-1]["reason"] == "time_budget_spent"
+    assert len(launches(run_dir)) == 2
+
+
+def test_a_long_run_starts_a_new_series_at_the_short_delay(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock(monkeypatch)
+    reader = ScriptedReader(wf("active"))
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir,
+                fake,
+                "claude-code",
+                "--max-resumes",
+                "3",
+                "--resume-delay-s",
+                "5",
+                "--resume-series-reset-s",
+                "30",
+            )
+        ),
+        reader,
+    )
+    real_run_child = launcher.run_child
+
+    def run_child(launch: Any, action: str, resumes: int) -> Any:
+        code = real_run_child(launch, action, resumes)
+        if resumes == 1:
+            # The second harness run lasts 60 s of launcher time; the fake
+            # clock is frozen while the child runs, so advance it here.
+            clock.now += 60.0
+        return code
+
+    delays: list[float] = []
+    launcher.run_child = run_child
+    launcher.sleep = delays.append
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.reason == "resumes_spent"
+    records = sessions(run_dir)
+    assert [r["event"] for r in records if r["event"] == "series_reset"]
+    # 5 s, then the long run resets the series back to 5 s, then 10 s.
+    assert delays == [5.0, 5.0, 10.0]
+    assert [r["delay_s"] for r in records if r["event"] == "wait"] == [5.0, 5.0, 10.0]
+
+
+def test_an_interrupted_backoff_wait_stops_without_another_launch(
+    run_dir: Path, fake: Path
+) -> None:
+    reader = ScriptedReader(wf("active"))
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(start_args(run_dir, fake, "claude-code", "--resume-delay-s", "1800")),
+        reader,
+    )
+
+    def sleep(_: float) -> None:
+        launcher.interrupted = True
+        raise LAUNCHER.Stop(LAUNCHER.EXIT_INTERRUPTED, "interrupted", "interrupted")
+
+    launcher.sleep = sleep
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.code == LAUNCHER.EXIT_INTERRUPTED
+    assert len(launches(run_dir)) == 1
+    records = sessions(run_dir)
+    assert records[-1]["event"] == "wait"
+    assert not [r for r in records if r["event"] == "stop"]
+
+
+def test_healthy_running_time_does_not_spend_the_budget(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: a first early exit after longer than --resume-total-s still resumes."""
+    clock = FakeClock(monkeypatch)
+    reader = ScriptedReader(wf("active"))
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir,
+                fake,
+                "claude-code",
+                "--max-resumes",
+                "2",
+                "--resume-delay-s",
+                "5",
+                "--resume-total-s",
+                "20",
+            )
+        ),
+        reader,
+    )
+    real_run_child = launcher.run_child
+    calls = 0
+
+    def run_child(launch: Any, action: str, resumes: int) -> Any:
+        nonlocal calls
+        calls += 1
+        code = real_run_child(launch, action, resumes)
+        if calls == 1:
+            # The first run is healthy for 60 s, past the 20 s budget; the
+            # fake clock is frozen while the child runs.
+            clock.now += 60.0
+        return code
+
+    delays: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        delays.append(seconds)
+        clock.now += seconds
+
+    launcher.run_child = run_child
+    launcher.sleep = sleep
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.reason == "resumes_spent"
+    assert delays == [5.0, 10.0]

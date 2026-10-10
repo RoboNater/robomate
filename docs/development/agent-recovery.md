@@ -42,7 +42,7 @@ state and Git status. M1 has no automatic inbox, queue, or takeover contract.
 
 ## A worker that exits mid-task
 
-<!-- Headless turn end, launcher and detach: #115. -->
+<!-- Headless turn end, launcher and detach: #115. Resume backoff: #158. -->
 
 A headless harness (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits
 when its model ends its turn, even mid-task. When `worker-mcp` stops cleanly it
@@ -60,16 +60,27 @@ standby is #19.
 `prepare-run.py` runs every auto-started Claude Code worker under
 `scripts/claude-worker.py`. It starts `claude -p` with a `--session-id` it
 picks. Whenever `claude` exits before the worker's telemetry records
-`release: true`, it resumes that conversation with a fixed continue prompt, at
-most five times. Every launch and exit is logged to
+`release: true`, it resumes that conversation with a fixed continue prompt,
+backing off between resumes: the wait doubles from `--resume-delay-s`
+(default 5 s) up to `--resume-max-delay-s` (default 1800 s, about 30 minutes),
+then repeats at the cap. A run that lasts at least `--resume-series-reset-s`
+(default 300 s) starts a new series at the short delay again. Resumes stop
+after `--resume-total-s` (default 43200 s, about 12 hours) since the first
+exit of the current series, or after `--max-resumes` when given (by default no
+count limit; 0 disables automatic resumes). Healthy running time before that
+first exit never spends the budget, and a series reset refills it. Every
+launch, wait and exit is logged to
 `RUN_DIR/<worker>-sessions.jsonl` (`launch.agents.<worker>.sessions` in
-`run.json`). When its resumes are spent it exits 1 and prints the conversation
-ID to resume by hand. Workers on other harnesses have no launcher: resume them
-by hand as below. Alice has her own launcher on every harness (next section).
+`run.json`, with the five backoff settings beside it): each `wait` line records
+`delay_s` and the `next_attempt` time, and stderr says the same. When the
+resumes are spent it exits 1 and prints the conversation ID to resume by hand.
+Ctrl-C during a wait stops the launcher at once with exit 130. Workers on
+other harnesses have no launcher: resume them by hand as below. Alice has her
+own launcher on every harness (next section).
 
 ## Alice exits before the workflow is done
 
-<!-- Orchestrator launcher: #146. -->
+<!-- Orchestrator launcher: #146. Resume backoff: #158. -->
 
 An auto-started Alice runs under `scripts/alice-launcher.py`, written into
 `start-alice` and `resume-alice` (`.sh`, or `.ps1` on Windows) for Claude Code,
@@ -85,12 +96,22 @@ unsupervised. The launcher:
   with bearer-only `hub.info` and `hub.status`. It pins the hub ID and workflow
   ID it first sees and never opens an orchestrator session, so it cannot
   supersede Alice, and it never reads `.robomate/`.
-- on `done`, exits 0 without another launch. On `active` or `escalated`, waits
-  `--resume-delay-s` (default 5) and resumes the same conversation with one
-  fixed continuation prompt: call `get_state` first, reconcile with the skill,
-  keep escalation and pause, do not repeat work. That prompt carries no state
-  and no operator decision. It resumes at most `--max-resumes` times (default
-  5; 0 disables it), then exits 1 with these manual steps.
+- on `done`, exits 0 without another launch. On `active` or `escalated`, backs
+  off and resumes the same conversation with one fixed continuation prompt:
+  call `get_state` first, reconcile with the skill, keep escalation and pause,
+  do not repeat work. That prompt carries no state and no operator decision.
+  The wait doubles from `--resume-delay-s` (default 5 s) up to
+  `--resume-max-delay-s` (default 1800 s, about 30 minutes), then repeats at
+  the cap; a run lasting `--resume-series-reset-s` (default 300 s) starts a new
+  series at the short delay. Resumes stop after `--resume-total-s` (default
+  43200 s, about 12 hours) since the first exit of the current series, or after
+  `--max-resumes` when given (by default no count limit; 0 disables them),
+  then exits 1 with these manual steps. Each wait is logged as a `wait` line
+  with `delay_s` and `next_attempt`, and stderr says when the next resume
+  goes. Healthy running time before that first exit never spends the budget,
+  and a series reset refills it. The hub is re-read after the wait, before
+  every resume, so a pause, `done`, or a different hub or workflow during a
+  long wait still stops the launcher.
 - stops without launching again, and says why, when the workflow is `paused`
   (exit 5: resume by hand when you are ready), when Alice exited before
   initializing the workflow or before printing her conversation ID (exit 4: it
@@ -98,12 +119,16 @@ unsupervised. The launcher:
   or names another hub or workflow after `--read-retries` reads (exit 3: it
   never guesses `done`).
 - on Ctrl-C or SIGTERM, stops only the harness process it started, launches
-  nothing more, and exits 130.
+  nothing more, and exits 130. A long backoff wait is interruptible: Ctrl-C
+  stops the launcher promptly.
 
-`prepare-run.py --max-resumes N --resume-delay-s S` sets both for the run, and
-`run.json` records them under `launch.agents.alice`. Every launch, exit,
-conversation ID and stop reason is one line in `alice-sessions.jsonl`; the
-token and command lines are never logged.
+`prepare-run.py --max-resumes N --resume-delay-s S --resume-max-delay-s MAX
+--resume-total-s TOTAL --resume-series-reset-s RESET` sets the backoff for the
+run, passing the same settings to supervised workers and to Alice, and
+`run.json` records them under `launch.agents.alice` and each supervised
+worker's `launch.agents.<worker>`. Every launch, wait, exit, conversation ID
+and stop reason is one line in `alice-sessions.jsonl`; the token and command
+lines are never logged.
 
 When the launcher has stopped, take a before-snapshot and resume by hand:
 
