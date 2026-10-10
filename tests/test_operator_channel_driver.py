@@ -156,6 +156,90 @@ def test_driver_hub_is_stopped_when_a_step_fails(tmp_path: Path, normal: dict[st
     assert hub.process is None
 
 
+# -- child output (#164) -----------------------------------------------------
+
+# é encodes in cp1252, so a Windows child wrote it as a byte UTF-8 rejects;
+# → and ā do not, so it could not write them at all.
+NON_ASCII = "é → ā"
+PYTHON_STDIO = ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONLEGACYWINDOWSSTDIO")
+# The caller's Python stdio settings: none (native Windows writes the code
+# page), already UTF-8 either way, and one that is not UTF-8 on any platform.
+CALLER_STDIO = pytest.mark.parametrize(
+    "caller",
+    [{}, {"PYTHONUTF8": "1"}, {"PYTHONIOENCODING": "utf-8"}, {"PYTHONIOENCODING": "cp1252"}],
+    ids=["default", "utf8-mode", "ioencoding-utf8", "ioencoding-cp1252"],
+)
+
+
+@pytest.fixture
+def caller_stdio(monkeypatch: pytest.MonkeyPatch, caller: dict[str, str]) -> dict[str, str]:
+    for key in PYTHON_STDIO:
+        monkeypatch.delenv(key, raising=False)
+    for key, value in caller.items():
+        monkeypatch.setenv(key, value)
+    return caller
+
+
+@CALLER_STDIO
+def test_run_keeps_non_ascii_python_stdout(caller_stdio: dict[str, str]) -> None:
+    code = f"print({NON_ASCII!r})"
+
+    assert driver.run([sys.executable, "-c", code]) == NON_ASCII
+    # Set for the child only: the caller's environment is as it was.
+    assert {key: os.environ[key] for key in PYTHON_STDIO if key in os.environ} == caller_stdio
+
+
+@CALLER_STDIO
+def test_run_keeps_non_ascii_python_stderr_in_its_error(caller_stdio: dict[str, str]) -> None:
+    code = f"import sys; sys.exit({NON_ASCII!r})"
+
+    with pytest.raises(driver.DriverError) as failure:
+        driver.run([sys.executable, "-c", code])
+
+    assert str(failure.value).endswith(f"failed (1): {NON_ASCII}")
+
+
+def test_run_shows_bytes_that_are_not_utf8() -> None:
+    code = "import sys; sys.stdout.buffer.write(b'ok \\xe9\\xff')"
+
+    assert driver.run([sys.executable, "-c", code]) == "ok \\xe9\\xff"
+
+
+def test_isolated_env_sets_python_child_stdio_to_utf8(tmp_path: Path) -> None:
+    base = {"PATH": "/bin", "PYTHONIOENCODING": "cp1252"}
+
+    env = driver.isolated_env(base, tmp_path)
+
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert base["PYTHONIOENCODING"] == "cp1252"
+
+
+@pytest.mark.parametrize(
+    "caller", [{}, {"PYTHONUTF8": "1"}, {"PYTHONIOENCODING": "cp1252"}], ids=str
+)
+def test_hub_log_is_read_in_the_encoding_the_hub_writes(
+    tmp_path: Path, normal: dict[str, str], caller: dict[str, str]
+) -> None:
+    # The hub prints its state directory, under the clone, to its stdout log.
+    env = {key: value for key, value in normal.items() if key not in PYTHON_STDIO} | caller
+    temp = tmp_path / f"driver {NON_ASCII}"
+    temp.mkdir()
+    clone = temp / "sandbox"
+    init_checkout(clone)
+    hub = driver.IsolatedHub(clone, temp, driver.isolated_env(env, temp), driver.free_port())
+
+    with hub:
+        hub.start()
+        assert NON_ASCII in hub.facts.state_dir
+        assert Path(hub.facts.state_dir).is_relative_to(temp)
+        assert NON_ASCII.encode() in hub.stdout_log.read_bytes()
+        status = hub.run("status")
+        assert status.returncode == 0, status.stderr
+        assert NON_ASCII in status.stdout
+
+    assert hub.facts.stopped
+
+
 @pytest.mark.skipif(
     sys.platform == "win32" or getattr(os, "geteuid")() == 0,  # noqa: B009 (mypy on Windows)
     reason="needs POSIX permissions that bind root",

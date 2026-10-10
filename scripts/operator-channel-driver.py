@@ -109,6 +109,23 @@ class RpcRefused(RuntimeError):
         self.message = message
 
 
+# -- child output ------------------------------------------------------------
+
+# Every captured child writes UTF-8, which is how the script reads it. gh and
+# Git already do; a Python child (`robomate`, the sandbox's tests) writes its
+# stdio in the locale code page once redirected on Windows, unless told (#164).
+# Set per child, never in the caller's environment.
+CHILD_ENCODING = {"PYTHONIOENCODING": "utf-8"}
+# A byte that is not UTF-8 after all stays visible as `\xNN` in a diagnostic.
+DECODE_ERRORS = "backslashreplace"
+
+
+def child_env(base: Mapping[str, str]) -> dict[str, str]:
+    """`base` with Python child stdio set to the encoding the script reads."""
+
+    return dict(base) | CHILD_ENCODING
+
+
 # -- isolation ---------------------------------------------------------------
 
 
@@ -126,7 +143,7 @@ def isolated_env(base: Mapping[str, str], temp: Path) -> dict[str, str]:
     caller's hub.
     """
 
-    env = {key: value for key, value in base.items() if not _inherited_selector(key)}
+    env = child_env({key: value for key, value in base.items() if not _inherited_selector(key)})
     state = temp / "state"
     env.update(
         {
@@ -228,7 +245,7 @@ class IsolatedHub:
         self.env = env
         self.facts = HubFacts(clone=str(clone), temp_dir=str(temp), port=port)
         self.robomate = robomate_executable()
-        self.process: subprocess.Popen[str] | None = None
+        self.process: subprocess.Popen[bytes] | None = None
         self.endpoint: HubEndpoint | None = None
         self.stdout_log = temp / "hub-stdout.log"
         self.stderr_log = temp / "hub-stderr.log"
@@ -240,11 +257,10 @@ class IsolatedHub:
         self.stop()
 
     def start(self, timeout_s: float = 60) -> HubEndpoint:
-        # Files, not pipes: nothing reads the hub's output while it runs.
-        with (
-            open(self.stdout_log, "w", encoding="utf-8") as out,
-            open(self.stderr_log, "w", encoding="utf-8") as err,
-        ):
+        # Files, not pipes: nothing reads the hub's output while it runs. The
+        # hub writes them through its own stdio, so they are opened as bytes:
+        # their encoding is the child's, which `self.env` sets (#164).
+        with open(self.stdout_log, "wb") as out, open(self.stderr_log, "wb") as err:
             self.process = subprocess.Popen(
                 [str(self.robomate), "up", "--port", str(self.facts.port)],
                 cwd=self.clone,
@@ -252,18 +268,19 @@ class IsolatedHub:
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=err,
-                text=True,
             )
         deadline = time.monotonic() + timeout_s
         printed: dict[str, str] = {}
         while "ROBOMATE_TOKEN_FILE" not in printed:
             if self.process.poll() is not None:
-                err = self.stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+                err = self.stderr_log.read_text(encoding="utf-8", errors=DECODE_ERRORS).strip()
                 raise DriverError(f"hub exited early: {err}")
             if time.monotonic() > deadline:
                 raise DriverError("hub did not start")
             time.sleep(0.1)
-            for line in self.stdout_log.read_text(encoding="utf-8", errors="replace").splitlines():
+            for line in self.stdout_log.read_text(
+                encoding="utf-8", errors=DECODE_ERRORS
+            ).splitlines():
                 key, sep, value = line.partition("=")
                 if sep and key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN_FILE"):
                     printed[key] = value.strip()
@@ -314,7 +331,7 @@ class IsolatedHub:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace",
+            errors=DECODE_ERRORS,
             timeout=60,
         )
 
@@ -401,12 +418,12 @@ def operator_ls(environ: Mapping[str, str], hub: HubFacts, cwd: Path) -> dict[st
     listing = subprocess.run(
         [str(robomate_executable()), "ls", "--json"],
         cwd=cwd,
-        env=dict(environ),
+        env=child_env(environ),
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        errors=DECODE_ERRORS,
         timeout=60,
     )
     if listing.returncode != 0:
@@ -502,12 +519,13 @@ def run(args: Sequence[str], cwd: Path | None = None, input_text: str | None = N
     completed = subprocess.run(
         list(args),
         cwd=cwd,
+        env=child_env(os.environ),
         input=input_text,
         stdin=None if input_text is not None else subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        errors=DECODE_ERRORS,
         check=False,
     )
     if completed.returncode != 0:
