@@ -113,8 +113,9 @@ its worker `busy`, and the workflow status unchanged throughout.
 1. Mid-workflow (a worker busy, Alice holding `wait_for_event`), kill only her
    harness child, never the launcher: `kill -TERM "$ALICE_PID"` (Windows:
    `Stop-Process -Id PID`). Note the UTC time.
-2. Within `--resume-delay-s` (5 s) the launcher logs `exit` then `resume` with
-   the same `conversation_id` (`tail -3 "$RUN/alice-sessions.jsonl"`).
+2. Within `--resume-delay-s` (5 s) the launcher logs `exit`, then `wait` with
+   `delay_s` and `next_attempt`, then `resume` with the same `conversation_id`
+   (`tail -4 "$RUN/alice-sessions.jsonl"`).
 3. A new RPC session supersedes the old one:
    `q "SELECT ts, actor, session FROM rpc_audit WHERE method = 'session.supersede'"`.
 4. Her first substantive call after the takeover is `get_state`:

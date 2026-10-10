@@ -1,4 +1,4 @@
-"""The Claude Code worker launcher resumes a worker that exits before release (#115)."""
+"""The Claude Code worker launcher resumes a worker that exits before release (#115, #158)."""
 
 from __future__ import annotations
 
@@ -49,29 +49,35 @@ def fake_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_on: st
     return fake
 
 
-def launch(tmp_path: Path, fake: Path, max_resumes: int = 2) -> int:
-    return int(
-        CLAUDE_WORKER.main(
-            [
-                "--agent",
-                "bob",
-                "--telemetry",
-                str(tmp_path / "bob-telemetry.jsonl"),
-                "--sessions",
-                str(tmp_path / "bob-sessions.jsonl"),
-                "--prompt",
-                "Read bob.prompt.md and follow the instructions in it",
-                "--max-resumes",
-                str(max_resumes),
-                "--resume-delay-s",
-                "0",
-                sys.executable,
-                str(fake),
-                "--model",
-                "opus",
-            ]
-        )
-    )
+def launch(
+    tmp_path: Path,
+    fake: Path,
+    max_resumes: int | None = 2,
+    extra: list[str] | None = None,
+) -> int:
+    argv = [
+        "--agent",
+        "bob",
+        "--telemetry",
+        str(tmp_path / "bob-telemetry.jsonl"),
+        "--sessions",
+        str(tmp_path / "bob-sessions.jsonl"),
+        "--prompt",
+        "Read bob.prompt.md and follow the instructions in it",
+        "--resume-delay-s",
+        "0",
+        *(extra or []),
+        sys.executable,
+        str(fake),
+        "--model",
+        "opus",
+    ]
+    if max_resumes is not None:
+        argv[argv.index("--resume-delay-s") : argv.index("--resume-delay-s")] = [
+            "--max-resumes",
+            str(max_resumes),
+        ]
+    return int(CLAUDE_WORKER.main(argv))
 
 
 def jsonl(path: Path) -> list[Any]:
@@ -110,9 +116,12 @@ def test_a_worker_that_exits_before_release_resumes_the_same_conversation(
     assert [(r["event"], r["resumes"], r.get("released")) for r in sessions] == [
         ("start", 0, None),
         ("exit", 0, False),
+        ("wait", 1, None),
         ("resume", 1, None),
         ("exit", 1, True),
     ]
+    assert sessions[2]["delay_s"] == 0
+    assert sessions[2]["next_attempt"]
     assert {r["session_id"] for r in sessions} == {session_id}
     assert {r["agent"] for r in sessions} == {"bob"}
     assert sessions[1]["exit_code"] == 3
@@ -125,7 +134,9 @@ def test_resumes_stop_at_the_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     launches = jsonl(tmp_path / "argv.jsonl")
     assert ["--resume" in argv for argv in launches] == [False, True, True]
-    assert jsonl(tmp_path / "bob-sessions.jsonl")[-1] | {"timestamp": None} == {
+    records = jsonl(tmp_path / "bob-sessions.jsonl")
+    last_exit = [r for r in records if r["event"] == "exit"][-1]
+    assert last_exit | {"timestamp": None} == {
         "timestamp": None,
         "agent": "bob",
         "event": "exit",
@@ -133,7 +144,9 @@ def test_resumes_stop_at_the_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         "resumes": 2,
         "exit_code": 3,
         "released": False,
+        "run_duration_s": last_exit["run_duration_s"],
     }
+    assert records[-1]["event"] == "stop" and records[-1]["reason"] == "resumes_spent"
 
 
 def test_a_released_worker_is_not_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,3 +180,186 @@ def test_the_claude_command_is_required() -> None:
         ]
     )
     assert args.command == ["claude", "--prompt", "x"]
+
+
+# -- backoff (#158) -------------------------------------------------------------
+
+
+class FakeClock:
+    """A controllable ``time.monotonic``/``time.sleep`` pair for the launcher."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+        monkeypatch.setattr(CLAUDE_WORKER.time, "monotonic", self.monotonic)
+        monkeypatch.setattr(CLAUDE_WORKER.time, "sleep", self.sleep)
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_backoff_delay_doubles_then_repeats_at_the_cap() -> None:
+    backoff = CLAUDE_WORKER.backoff_delay
+    assert [backoff(5.0, 20.0, n) for n in range(5)] == [5.0, 10.0, 20.0, 20.0, 20.0]
+    assert backoff(5.0, 1800.0, 8) == 1280.0
+    assert backoff(5.0, 1800.0, 9) == 1800.0
+    assert backoff(5.0, 1800.0, 40) == 1800.0
+    assert backoff(0.0, 1800.0, 3) == 0.0
+
+
+def test_waits_double_until_the_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = fake_harness(tmp_path, monkeypatch, release_on="")
+    clock = FakeClock(monkeypatch)
+
+    assert (
+        launch(
+            tmp_path,
+            fake,
+            max_resumes=4,
+            extra=["--resume-delay-s", "5", "--resume-max-delay-s", "12"],
+        )
+        == 1
+    )
+
+    assert clock.sleeps == [5.0, 10.0, 12.0, 12.0]
+    waits = [r for r in jsonl(tmp_path / "bob-sessions.jsonl") if r["event"] == "wait"]
+    assert [w["delay_s"] for w in waits] == [5.0, 10.0, 12.0, 12.0]
+    assert all(w["next_attempt"] for w in waits)
+
+
+def test_a_further_wait_past_the_time_budget_stops_instead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_harness(tmp_path, monkeypatch, release_on="")
+    clock = FakeClock(monkeypatch)
+
+    assert (
+        launch(
+            tmp_path,
+            fake,
+            max_resumes=None,
+            extra=["--resume-delay-s", "5", "--resume-total-s", "12"],
+        )
+        == 1
+    )
+
+    # The first wait (5 s) fits in the 12 s budget; the doubled second (10 s)
+    # would exceed it, so the launcher stops instead.
+    assert clock.sleeps == [5.0]
+    records = jsonl(tmp_path / "bob-sessions.jsonl")
+    assert records[-1]["event"] == "stop"
+    assert records[-1]["reason"] == "time_budget_spent"
+    assert len(jsonl(tmp_path / "argv.jsonl")) == 2
+
+
+def test_a_long_run_starts_a_new_series_at_the_short_delay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_harness(tmp_path, monkeypatch, release_on="")
+    clock = FakeClock(monkeypatch)
+    real_run = CLAUDE_WORKER.subprocess.run
+    calls = 0
+
+    def run(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        result = real_run(*args, **kwargs)
+        if calls == 2:
+            # The second harness run lasts 60 s of launcher time, after one
+            # quick failure; the fake clock is frozen while the subprocess
+            # runs, so advance it here.
+            clock.now += 60.0
+        return result
+
+    monkeypatch.setattr(CLAUDE_WORKER.subprocess, "run", run)
+
+    assert (
+        launch(
+            tmp_path,
+            fake,
+            max_resumes=3,
+            extra=[
+                "--resume-delay-s",
+                "5",
+                "--resume-series-reset-s",
+                "30",
+            ],
+        )
+        == 1
+    )
+
+    records = jsonl(tmp_path / "bob-sessions.jsonl")
+    assert [r["event"] for r in records if r["event"] == "series_reset"]
+    waits = [r for r in records if r["event"] == "wait"]
+    # 5 s, then the long run resets the series back to 5 s, then 10 s.
+    assert [w["delay_s"] for w in waits] == [5.0, 5.0, 10.0]
+
+
+def test_sigint_during_a_long_wait_stops_without_another_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = fake_harness(tmp_path, monkeypatch, release_on="")
+
+    def sleep(_: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(CLAUDE_WORKER.time, "sleep", sleep)
+
+    assert launch(tmp_path, fake, max_resumes=None) == 130
+    assert len(jsonl(tmp_path / "argv.jsonl")) == 1
+    records = jsonl(tmp_path / "bob-sessions.jsonl")
+    assert records[-1]["event"] == "wait"
+    assert not [r for r in records if r["event"] == "stop"]
+
+
+def test_negative_backoff_options_are_refused() -> None:
+    base = ["--agent", "bob", "--telemetry", "t", "--sessions", "s", "--prompt", "p"]
+    for flag in (
+        "--resume-max-delay-s",
+        "--resume-total-s",
+        "--resume-series-reset-s",
+    ):
+        with pytest.raises(SystemExit):
+            CLAUDE_WORKER.parse_args([*base, flag, "-1", "claude"])
+    with pytest.raises(SystemExit):
+        CLAUDE_WORKER.parse_args([*base, "--max-resumes", "-2", "claude"])
+
+
+def test_healthy_running_time_does_not_spend_the_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: a first early exit after longer than --resume-total-s still resumes."""
+    fake = fake_harness(tmp_path, monkeypatch, release_on="")
+    clock = FakeClock(monkeypatch)
+    real_run = CLAUDE_WORKER.subprocess.run
+    calls = 0
+
+    def run(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        result = real_run(*args, **kwargs)
+        if calls == 1:
+            # The first run is healthy for 60 s, past the 20 s budget; the
+            # fake clock is frozen while the subprocess runs.
+            clock.now += 60.0
+        return result
+
+    monkeypatch.setattr(CLAUDE_WORKER.subprocess, "run", run)
+
+    assert (
+        launch(
+            tmp_path,
+            fake,
+            max_resumes=2,
+            extra=["--resume-delay-s", "5", "--resume-total-s", "20"],
+        )
+        == 1
+    )
+
+    records = jsonl(tmp_path / "bob-sessions.jsonl")
+    assert records[-1]["event"] == "stop" and records[-1]["reason"] == "resumes_spent"
+    assert [r["delay_s"] for r in records if r["event"] == "wait"] == [5.0, 10.0]

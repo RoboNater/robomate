@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a headless Alice, resuming the same conversation until her workflow is done (#146).
+"""Run a headless Alice, resuming the same conversation until her workflow is done (#146, #158).
 
 A headless orchestrator (``claude -p``, ``codex exec``, ``opencode run``,
 ``agy -p``) exits when the model ends its turn, and some models end it early
@@ -16,9 +16,16 @@ This launcher is Alice's counterpart of ``claude-worker.py`` (#115):
    and ``hub.status``, pinned to the hub and workflow it first saw. It never
    opens an orchestrator session, reads ``.robomate/``, or changes hub state.
 4. A ``done`` workflow ends it successfully. ``active`` or ``escalated`` resumes
-   the same conversation after ``--resume-delay-s``, at most ``--max-resumes``
-   times, with one fixed continuation prompt that carries no state and no
-   operator decision. ``paused`` stops it until the operator resumes by hand.
+   the same conversation with one fixed continuation prompt that carries no
+   state and no operator decision, backing off between resumes (#158): the wait
+   doubles from ``--resume-delay-s`` up to ``--resume-max-delay-s`` (about 30
+   min), then repeats at the cap. A run lasting ``--resume-series-reset-s``
+   starts a new series at the short delay. Resumes stop after
+   ``--resume-total-s`` (about 12 h) since the first exit of the current
+   series, or after ``--max-resumes`` when given
+   (by default no count limit). ``paused`` stops it until the operator resumes
+   by hand. Healthy running time before that first exit never spends the
+   budget, and a series reset refills it.
 
 It stops, without launching again, when it cannot tell what happened: the hub
 stays unreadable or reports another hub or workflow after ``--read-retries``
@@ -26,10 +33,10 @@ reads, the workflow was never initialized, or the conversation ID never
 appeared. It does not watch a harness that keeps running; a stalled harness is
 #144's warning, and stopping it stays with the operator.
 
-Each launch, exit, conversation ID and stop reason is appended to
+Each launch, wait, exit, conversation ID and stop reason is appended to
 ``--sessions`` as one JSON line, without the token or any command line.
 Ctrl-C or SIGTERM stops the current harness child, launches nothing more, and
-exits 130.
+exits 130. A long backoff wait is interruptible: Ctrl-C stops promptly.
 
 ``prepare-run.py`` writes the call into ``start-alice`` and ``resume-alice``.
 It runs this file with the run's own interpreter, so the standard library only.
@@ -41,8 +48,9 @@ arguments, which this launcher adds::
         --sessions RUN/alice-sessions.jsonl --prompt RUN/alice.prompt.md \\
         -- opencode run --auto --title 'alice my-run'
 
-Exit codes: 0 done; 1 resumes spent; 2 usage; 3 hub unreadable or a different
-hub or workflow; 4 nothing safe to resume (no workflow, no conversation ID);
+Exit codes: 0 done; 1 resumes spent (count or time budget); 2 usage;
+3 hub unreadable or a different hub or workflow;
+4 nothing safe to resume (no workflow, no conversation ID);
 5 paused; 130 interrupted.
 """
 
@@ -61,12 +69,15 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
-DEFAULT_MAX_RESUMES = 5
+DEFAULT_MAX_RESUMES: int | None = None
 DEFAULT_RESUME_DELAY_S = 5.0
+DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
+DEFAULT_RESUME_TOTAL_S = 12 * 60 * 60.0
+DEFAULT_RESUME_SERIES_RESET_S = 5 * 60.0
 DEFAULT_READ_RETRIES = 5
 DEFAULT_READ_RETRY_DELAY_S = 2.0
 HUB_TIMEOUT_S = 10.0
@@ -176,6 +187,23 @@ def log_session(path: Path, **fields: object) -> None:
 
 def say(message: str) -> None:
     print(f"alice-launcher: {message}", file=sys.stderr, flush=True)
+
+
+def backoff_delay(initial_s: float, cap_s: float, failures_in_series: int) -> float:
+    """The wait before the next resume: doubling from ``initial_s`` to ``cap_s`` (#158).
+
+    Keep in sync with the copy in scripts/claude-worker.py: each script must
+    stay standalone (standard library only), so the helper is duplicated.
+    """
+    if not initial_s > 0:
+        return 0.0
+    if failures_in_series >= 30:
+        return cap_s
+    return min(initial_s * (2.0**failures_in_series), cap_s)
+
+
+def retry_at_iso(delay_s: float) -> str:
+    return (datetime.now(UTC) + timedelta(seconds=max(0.0, delay_s))).isoformat(timespec="seconds")
 
 
 # -- hub reads ------------------------------------------------------------------
@@ -416,7 +444,7 @@ class Launcher:
                 f"the workflow is paused; not restarting Alice while it is. Resume by hand "
                 f"with resume-alice {self.conversation} when the operator is ready.",
             )
-        if resumes >= self.args.max_resumes:
+        if self.args.max_resumes is not None and resumes >= self.args.max_resumes:
             raise Stop(
                 EXIT_RESUMES_SPENT,
                 "resumes_spent",
@@ -460,19 +488,77 @@ class Launcher:
             )
             action = "start"
         resumes = 0
+        failures_in_series = 0
+        # The budget anchor: the first exit of the current series. Healthy
+        # running time before it never spends the budget, and a series reset
+        # refills it (r1-1: anchoring at launcher start stopped long-lived
+        # launchers cold).
+        series_start: float | None = None
         while True:
+            run_start = time.monotonic()
             exit_code = self.run_child(launch, action, resumes)
+            run_duration = time.monotonic() - run_start
             self.log("exit", resumes=resumes, exit_code=exit_code)
             if self.interrupted:
                 raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
             if self.resumable(exit_code, resumes) == "done":
                 return EXIT_DONE
+            if run_duration >= self.args.resume_series_reset_s and (failures_in_series or resumes):
+                failures_in_series = 0
+                series_start = time.monotonic()
+                self.log(
+                    "series_reset",
+                    resumes=resumes,
+                    run_duration_s=round(run_duration, 3),
+                )
+                say(
+                    f"ran {run_duration:.0f} s, starting a new backoff series "
+                    f"at {self.args.resume_delay_s:g} s"
+                )
+            delay = backoff_delay(
+                self.args.resume_delay_s, self.args.resume_max_delay_s, failures_in_series
+            )
+            if series_start is None:
+                series_start = time.monotonic()
+            elapsed = time.monotonic() - series_start
+            if elapsed >= self.args.resume_total_s or elapsed + delay > self.args.resume_total_s:
+                self.log(
+                    "stop",
+                    reason="time_budget_spent",
+                    resumes=resumes,
+                    elapsed_s=round(elapsed, 3),
+                )
+                raise Stop(
+                    EXIT_RESUMES_SPENT,
+                    "time_budget_spent",
+                    f"the harness exited (code {exit_code}) and the resume time budget "
+                    f"of {self.args.resume_total_s:g} s is spent after {resumes} "
+                    f"automatic resume(s). Take a before-snapshot with "
+                    "`robomate status --snapshot` in the target repository, then "
+                    f"resume by hand with resume-alice {self.conversation} "
+                    "(docs/development/agent-recovery.md).",
+                )
             resumes += 1
+            failures_in_series += 1
+            attempt_at = retry_at_iso(delay)
+            self.log(
+                "wait",
+                resumes=resumes,
+                delay_s=delay,
+                next_attempt=attempt_at,
+            )
+            count = (
+                f"{resumes}/{self.args.max_resumes}"
+                if self.args.max_resumes is not None
+                else f"{resumes}"
+            )
             say(
                 f"harness exited (code {exit_code}); resuming"
-                f" ({resumes}/{self.args.max_resumes}) in {self.args.resume_delay_s:g} s"
+                f" ({count}) in {delay:g} s at {attempt_at}"
             )
-            self.sleep(self.args.resume_delay_s)
+            # The existing sleep() raises Stop(130) when interrupted, so a
+            # long backoff wait stops the launcher promptly on Ctrl-C/SIGTERM.
+            self.sleep(delay)
             # The workflow may have been paused or finished during the delay,
             # or the hub replaced: decide again just before launching.
             if self.resumable(exit_code, resumes - 1) == "done":
@@ -508,8 +594,41 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--resume-prompt", type=Path, help="with --resume-session: the manual resume prompt"
     )
-    parser.add_argument("--max-resumes", type=int, default=DEFAULT_MAX_RESUMES)
-    parser.add_argument("--resume-delay-s", type=float, default=DEFAULT_RESUME_DELAY_S)
+    parser.add_argument(
+        "--max-resumes",
+        type=int,
+        default=DEFAULT_MAX_RESUMES,
+        help="stop after this many automatic resumes (default: no count limit, "
+        "--resume-total-s governs; 0 disables automatic resumes)",
+    )
+    parser.add_argument(
+        "--resume-delay-s",
+        type=float,
+        default=DEFAULT_RESUME_DELAY_S,
+        help="first wait between automatic resumes in seconds "
+        f"(default {DEFAULT_RESUME_DELAY_S:g}); doubles until --resume-max-delay-s",
+    )
+    parser.add_argument(
+        "--resume-max-delay-s",
+        type=float,
+        default=DEFAULT_RESUME_MAX_DELAY_S,
+        help="cap for the doubling wait in seconds "
+        f"(default {DEFAULT_RESUME_MAX_DELAY_S:g}, about 30 minutes)",
+    )
+    parser.add_argument(
+        "--resume-total-s",
+        type=float,
+        default=DEFAULT_RESUME_TOTAL_S,
+        help="stop automatic resumes after this much time in seconds since the first "
+        f"exit of the current series (default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
+    )
+    parser.add_argument(
+        "--resume-series-reset-s",
+        type=float,
+        default=DEFAULT_RESUME_SERIES_RESET_S,
+        help="a run lasting this long starts a new backoff series at the short delay "
+        f"(default {DEFAULT_RESUME_SERIES_RESET_S:g})",
+    )
     parser.add_argument("--read-retries", type=int, default=DEFAULT_READ_RETRIES)
     parser.add_argument("--read-retry-delay-s", type=float, default=DEFAULT_READ_RETRY_DELAY_S)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="the harness command, after --")
@@ -518,10 +637,16 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         args.command = args.command[1:]
     if not args.command:
         parser.error("the harness command is required after --")
-    if args.max_resumes < 0:
+    if args.max_resumes is not None and args.max_resumes < 0:
         parser.error("--max-resumes must not be negative (0 disables automatic resumes)")
     if not args.resume_delay_s >= 0:
         parser.error("--resume-delay-s must not be negative")
+    if not args.resume_max_delay_s >= 0:
+        parser.error("--resume-max-delay-s must not be negative")
+    if not args.resume_total_s >= 0:
+        parser.error("--resume-total-s must not be negative")
+    if not args.resume_series_reset_s >= 0:
+        parser.error("--resume-series-reset-s must not be negative")
     if args.read_retries < 1:
         parser.error("--read-retries must be at least 1")
     if not args.read_retry_delay_s >= 0:
