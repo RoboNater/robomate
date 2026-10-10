@@ -25,6 +25,7 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 SCRIPT = ROOT / "scripts/alice-launcher.py"
 SPEC = importlib.util.spec_from_file_location("agent_launcher", ROOT / "scripts/agent_launcher.py")
 assert SPEC and SPEC.loader
@@ -248,7 +249,7 @@ def test_resumes_are_bounded_and_exhaustion_exits_nonzero(
     assert len(launches(run_dir)) == 3
     assert sessions(run_dir)[-1]["reason"] == "resumes_spent"
     err = capsys.readouterr().err
-    assert "robomate status --snapshot" in err and "resume-alice" in err
+    assert "no arguments" in err and "resume-alice" in err
 
 
 def test_zero_max_resumes_disables_automatic_resumes(run_dir: Path, fake: Path) -> None:

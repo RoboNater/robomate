@@ -119,13 +119,19 @@ hub/workflow (3), missing workflow/ID or an attached predecessor (4), pause
 child. It checks status again after a backoff before launching a successor.
 
 When automatic attempts are spent, preserve the workspace and pending task,
-question/result, verify the old harness is gone, and take the operator's
-before-snapshot. Fill in `RUN_DIR/resume-<name>.prompt.md`, then run:
+question/result, verify the old harness is gone, then run the generated script
+on that agent's host with no arguments:
 
 ```sh
-"$RUN_DIR/resume-bob.sh" CONVERSATION_ID       # or resume-charlie.sh
-# Windows: & "$RUN_DIR/resume-bob.ps1" CONVERSATION_ID
+"$RUN_DIR/resume-bob.sh"                      # or resume-charlie.sh
+# Windows: & "$RUN_DIR/resume-bob.ps1"
 ```
+
+The script discovers the exact conversation ID in `<name>-sessions.jsonl`,
+checks the saved run identity, captures a current read-only hub snapshot, and
+writes `resume-<name>.prompt.md` automatically. See
+[Manual recovery controls](#manual-recovery-controls) for recommendations and
+fallbacks when prerequisites are missing.
 
 The generated resume repeats the start environment, config, working directory,
 model and effort. It starts the exact saved conversation with the manual prompt
@@ -139,7 +145,7 @@ without rerunning preparation, the operator can adapt the existing command to
 `--telemetry`, `--sessions`, `--resume-session` and `--resume-prompt`, then `--`
 and the unchanged harness flags (omit its old prompt/session flags).
 
-### Agent and harness coverage after #165
+### Agent and harness coverage after #173
 
 All auto-started pairs below have kickoff and hand-resume turn-end rules,
 automatic backoff, and a generated `resume-<name>.sh`/`.ps1` for hand recovery.
@@ -147,18 +153,18 @@ automatic backoff, and a generated `resume-<name>.sh`/`.ps1` for hand recovery.
 
 | Agent | Harness | Automatic launcher | Conversation ID location | Hand resume |
 | --- | --- | --- | --- | --- |
-| Alice | Claude Code | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (UUID) | `resume-alice ID` |
-| Alice | Codex | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (UUID) | `resume-alice ID` |
-| Alice | OpenCode | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-alice ID` |
-| Alice | AntiGravity | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-alice ID` |
-| Bob | Claude Code | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (UUID) | `resume-bob ID` |
-| Bob | Codex | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (UUID) | `resume-bob ID` |
-| Bob | OpenCode | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-bob ID` |
-| Bob | AntiGravity | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-bob ID` |
-| Charlie | Claude Code | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (UUID) | `resume-charlie ID` |
-| Charlie | Codex | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (UUID) | `resume-charlie ID` |
-| Charlie | OpenCode | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-charlie ID` |
-| Charlie | AntiGravity | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-charlie ID` |
+| Alice | Claude Code | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (UUID) | `resume-alice` |
+| Alice | Codex | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (UUID) | `resume-alice` |
+| Alice | OpenCode | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-alice` |
+| Alice | AntiGravity | `alice-launcher.py` | `alice-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-alice` |
+| Bob | Claude Code | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (UUID) | `resume-bob` |
+| Bob | Codex | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (UUID) | `resume-bob` |
+| Bob | OpenCode | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-bob` |
+| Bob | AntiGravity | `worker-launcher.py` | `bob-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-bob` |
+| Charlie | Claude Code | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (UUID) | `resume-charlie` |
+| Charlie | Codex | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (UUID) | `resume-charlie` |
+| Charlie | OpenCode | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (`ses_…`) | `resume-charlie` |
+| Charlie | AntiGravity | `worker-launcher.py` | `charlie-sessions.jsonl`, `conversation_id` (stream-json ID) | `resume-charlie` |
 
 These files live in the run directory on the host running that agent; remote
 workers use their worker-host run directory. IDs are distinct from the hub ID,
@@ -218,19 +224,20 @@ worker's `launch.agents.<worker>`. Every launch, wait, exit, conversation ID
 and stop reason is one line in `alice-sessions.jsonl`; the token and command
 lines are never logged.
 
-When the launcher has stopped, take a before-snapshot and resume by hand:
+When the launcher has stopped, resume the saved conversation:
 
 ```sh
-cd /absolute/path/to/my-run/hub-target          # the target clone running the hub
-uv run --project /absolute/path/to/robomate robomate status --snapshot \
-  --stopped-at 2026-10-08T12:34:56Z               # when you saw the old process stop
-"$RUN_DIR/resume-alice.sh" CONVERSATION_ID        # resume-alice.ps1 on Windows
+"$RUN_DIR/resume-alice.sh"                    # resume-alice.ps1 on Windows
 ```
 
-Paste the snapshot into `RUN_DIR/resume-alice.prompt.md` where it asks, first.
-`resume-alice` runs the same launcher with `--resume-session`: its first launch
-resumes the given conversation with that manual prompt, and later exits get a
-fresh budget of `--max-resumes` automatic resumes with the fixed continuation.
+The script captures the before-snapshot and constructs her prompt automatically.
+Alice can resume while an operator question is pending, so she can receive its
+answer and reconcile. Escalation stays in effect until the actual operator
+answer arrives.
+
+`resume-alice` runs the same launcher with `--recover`: its first launch resumes
+the saved conversation with the generated factual prompt. Later exits use a
+fresh automatic resume budget and the fixed continuation.
 It refuses to launch when the workflow is already done. Only `start-alice`
 sends the kickoff prompt; never rerun it to resume.
 
@@ -331,25 +338,107 @@ OPENCODE_CONFIG="$RUN_DIR/configs/alice.opencode.json" TMPDIR="$RUN_DIR/tmp/alic
   "Read $RUN_DIR/resume-alice.prompt.md and follow it"
 ```
 
-`prepare-run.py` generates that resume as `RUN_DIR/resume-<agent>.sh` (`.ps1`
-on Windows) with its matching `resume-<agent>.prompt.md`, for every agent on
-its configured harness; the generated resume prompt carries the same
-reconciliation checklist, with `<...>` placeholders for the operator's
-before-snapshot. Prefer the generated script over a hand-built command: it
-repeats the start script's directory, environment, and model/effort flags, but
-resumes the saved conversation instead of sending the kickoff prompt. It takes
-the conversation/session ID as its only argument:
+Prefer `RUN_DIR/resume-<agent>.sh` (`.ps1` on Windows) over a hand-built
+command: it preserves directory, environment, configuration/home, model and
+effort, discovers the saved conversation, and captures its recovery prompt.
+Do not rerun preparation or the kickoff script to recover an existing run.
+For runs created before #173, retain their original configuration and use the
+manual command above with a reviewed before-snapshot, or adapt their launcher
+command to `--recover --resume-prompt PATH` with the same run/session paths.
+
+### Manual recovery controls
+
+The ordinary command is `"$RUN_DIR/resume-alice.sh"`, `resume-bob.sh`, or
+`resume-charlie.sh`, with no arguments. Optional controls are forwarded to the
+shared recovery helper (the same options work after a PowerShell script path):
 
 ```sh
-./resume-alice.sh SES_ID        # or resume-alice.ps1 on Windows
+"$RUN_DIR/resume-bob.sh" --resume-session EXACT_ID
+"$RUN_DIR/resume-bob.sh" EXACT_ID             # positional shorthand retained
+"$RUN_DIR/resume-alice.sh" --stopped-at 2026-10-08T12:34:56Z
+"$RUN_DIR/resume-alice.sh" --force            # reconcile while keeping a pause
+"$RUN_DIR/resume-bob.sh" --force              # reconcile despite an open operator question
 ```
 
-Fill in the resume prompt first: for Alice, paste the output of
-`robomate status --snapshot --stopped-at <UTC time>` from the target clone
-(hub ID, workflow, her RPC session, open tasks, unacknowledged deliveries);
-for a worker, the `<...>` placeholders. Every generated resume prompt already
-names the real run directory. Verify the old harness process is gone before
-resuming.
+Essential checks cannot be overridden. A missing, ambiguous, invalid, or
+conflicting conversation ID requires inspection of the harness's session list
+in the original home/configuration, and an exact explicit ID. Known IDs may
+only be selected from this run's log. A missing hub/workflow pin requires
+independent verification and `--hub-id HUB_ID --workflow-id WORKFLOW_ID`.
+Explicit pins must agree with saved pins and the live snapshot. A changed or
+unreachable hub, absent workflow, missing configuration, changed workspace,
+completed workflow, or released worker refuses launch. Restore the original
+files/address/state, or ask Alice/operator whether separate fresh work is
+needed. Never initialize another workflow to make recovery pass.
+
+Start and resume launchers share an OS lock for the lifetime of the process.
+An existing launcher, a recorded predecessor PID still present without an
+exit, or an attached worker bridge refuses launch. Alice also refuses while
+her old RPC session has a live hold or a heartbeat less than 60 seconds old.
+Wait for detach/expiry, or have the operator inspect and stop its orphan bridge;
+then retry. No option bypasses these guards. Workers never stop predecessors.
+When no exit was recorded (including interactive runs), the operator must
+verify both old harness and launcher are stopped and add `--confirm-stopped`.
+That confirmation supplies no timestamp and cannot bypass a known attachment.
+
+Paused workflows and workers with open operator questions are advisory waits:
+the script names the question IDs and recommends `robomate answer`, or asks
+the operator to resume the paused workflow. `--force` permits reconciliation
+while preserving pause/escalation. It never answers questions, changes workflow
+status, grants authority, bypasses identity checks, or launches an attached
+predecessor. Alice's pending operator questions are allowed without `--force`;
+a worker's own pending `ask_alice` question can also be retried normally.
+
+The snapshot's `taken_at` records capture time. Process stop time comes from
+the recorded harness exit (`exited_at`, or an older exit record's timestamp),
+never a budget/stop record or the snapshot time. A timezone-qualified
+`--stopped-at` can supply known timing; future or malformed times refuse.
+Otherwise an unrecorded stop is explicitly **unknown**. Recovery appends the
+snapshot/stop metadata to the sessions log, and replaces the previous captured
+facts in the prompt. Hub text is marked as data, never instructions or approval.
+
+If logs are lost/corrupt, restore them where possible. After inspection, move a
+corrupt log aside rather than guessing from a partial record. With no saved
+metadata, the explicit fallback is:
+
+```sh
+"$RUN_DIR/resume-bob.sh" --resume-session EXACT_ID --hub-id HUB_ID \
+  --workflow-id WORKFLOW_ID --confirm-stopped
+```
+
+If the prompt or configuration is missing, restore the original run artifacts.
+If the manifest is absent, existing scripts and valid session pins can still
+recover; no new configuration is created. If scripts are also missing, retain
+the original model/config/workspace and use the documented per-harness resume
+forms after independent verification and a current snapshot. Do not replay
+kickoff or use a different conversation.
+
+`--no-auto-start` keeps interactive mode. The generated script applies the same
+guards and writes the prompt, then opens the original interactive CLI. Because
+interactive starts have no session capture, normally supply the explicit
+fallback above and read the printed prompt path in the resumed conversation
+before action. All four harnesses keep their original permission/model flags.
+Local scripts use Bash or native PowerShell; remote worker bundles use their
+host's Bash (Git Bash on Windows), native interpreter, token path, and workspace.
+
+Reviewer-runnable commands (fake CLIs and isolated HTTP stubs; no run hub):
+
+```sh
+uv run --locked pytest tests/test_prepare_run.py::test_start_and_resume_scripts_run_the_launcher_to_done -q
+uv run --locked pytest tests/test_agent_recovery.py -q
+uv run --locked pytest tests/test_prepare_run.py -k 'interactive_recovery or recovery_controls or remote_resume' -q
+uv run --locked pytest tests/test_alice_launcher.py tests/test_worker_launcher.py -q
+```
+
+The first executes zero-argument generated resumes for all 12 supervised
+agent/harness pairs and verifies configuration, workspace, model, effort and
+exact conversation. The second demonstrates identity/attachment refusals,
+recommendations, explicit fallback/timing controls, timestamps and permitted
+advisory overrides. The third exercises optional controls and interactive and
+remote wrappers. CI runs these on Linux and native Windows; path-rendering
+checks additionally cover remote Windows Git Bash. Real harness crash/resume,
+remote-host connectivity and orphan-bridge kill checks remain operator live
+validation; these tests do not start or stop any run agent.
 
 Never use `claude --continue` or `opencode --continue`: each picks the most
 recent conversation, which may be another agent's.
