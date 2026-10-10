@@ -47,15 +47,17 @@ class HubEndpoint:
 def _git(cwd: Path, *args: str) -> str:
     # stdin=DEVNULL: `robomate mcp` reaches this with stdin owned by MCP. A
     # child inheriting that pipe on Windows blocks until the next message (#65).
+    # Git prints paths as UTF-8 whatever the locale, which is CP1252 on Windows
+    # without Python's UTF-8 mode (#166). Only stdout is decoded.
     try:
-        return subprocess.check_output(
-            ["git", *args],
-            cwd=cwd,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
+        return (
+            subprocess.check_output(
+                ["git", *args], cwd=cwd, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            .decode("utf-8")
+            .strip()
+        )
+    except (OSError, UnicodeDecodeError, subprocess.CalledProcessError) as exc:
         raise DiscoveryError(f"cannot resolve repository with git {' '.join(args)}: {exc}") from exc
 
 
@@ -280,7 +282,8 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
             proc = subprocess.run(
                 ["glab", "auth", "status", f"--hostname={host}"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
                 timeout=2,
             )
@@ -298,7 +301,8 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
             proc = subprocess.run(
                 ["gh", "auth", "status", f"--hostname={host}"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdin=subprocess.DEVNULL,
                 timeout=2,
             )

@@ -38,8 +38,11 @@ def git(cwd: Path, *args: str) -> None:
 
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
-    root = tmp_path / "repo"
-    root.mkdir()
+    return init_repository(tmp_path / "repo")
+
+
+def init_repository(root: Path) -> Path:
+    root.mkdir(parents=True)
     git(root, "init", "-b", "main")
     git(root, "config", "user.name", "Test")
     git(root, "config", "user.email", "test@example.com")
@@ -64,6 +67,18 @@ def test_each_checkout_owns_its_hub_and_shares_the_common_dir(
     assert not is_linked_worktree(repository, common)
     assert is_linked_worktree(worktree, common)
     assert state_dir(worktree) != state_dir(repository)
+
+
+def test_checkout_under_a_non_ascii_path_resolves_to_its_actual_path(tmp_path: Path) -> None:
+    # Git prints paths as UTF-8; decoding them with the locale (CP1252 on
+    # Windows without UTF-8 mode) names a directory that does not exist (#166).
+    root = init_repository(tmp_path / "café" / "repo")
+    worktree = tmp_path / "café" / "linked é"
+    git(root, "worktree", "add", "-b", "linked", str(worktree))
+    common = root / ".git"
+    for cwd, owner in ((root, root), (worktree, worktree)):
+        assert resolve_checkout(cwd) == (owner, common)
+        assert resolve_repository(cwd).root == owner
 
 
 def test_linked_worktree_of_a_bare_repository_owns_a_hub(repository: Path, tmp_path: Path) -> None:

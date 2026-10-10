@@ -71,7 +71,7 @@ def _run_command(args: Sequence[str], input_text: str | None = None) -> str:
     completed = subprocess.run(
         list(args),
         input=input_text,
-        text=True,
+        encoding="utf-8",
         stdin=None if input_text is not None else subprocess.DEVNULL,
         capture_output=True,
         check=False,

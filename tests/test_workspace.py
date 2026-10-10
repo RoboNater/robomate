@@ -111,6 +111,26 @@ def test_workspace_configuration(repository: Path, tmp_path: Path) -> None:
         WorkerSettings.from_env(env)
 
 
+def test_workspace_under_a_non_ascii_path_is_accepted(tmp_path: Path) -> None:
+    # Git prints paths as UTF-8, whatever the locale (#166).
+    origin = tmp_path / "café" / "origin"
+    origin.mkdir(parents=True)
+    command("git", "init", "--initial-branch=main", str(origin))
+    bob = tmp_path / "café" / "bob é"
+    identity = bootstrap(origin, bob)
+    settings = WorkerSettings.from_env(
+        {
+            "HUB_URL": "http://hub",
+            "HUB_TOKEN": "test",
+            "AGENT_NAME": "bob",
+            "HUB_WORKSPACE": str(bob),
+        }
+    )
+    assert settings.workspace == bob
+    assert identity["path"] == str(bob)
+    assert settings.profile.workspace_id == identity["workspace_id"]
+
+
 @pytest.mark.parametrize("status", ["lost", "released"])
 def test_workspace_readmission_and_stale_heartbeat(store: HubStore, status: str) -> None:
     from agent_hub.database import database

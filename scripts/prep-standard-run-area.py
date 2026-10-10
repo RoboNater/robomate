@@ -181,7 +181,7 @@ def prepare(values: dict[str, Any], *, yes: bool) -> None:
             ["git", "-C", str(hub), "remote", "get-url", "origin"],
             check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
         ).stdout.strip()
         if origin != values["repository"]:
             raise ValueError(f"existing hub origin {origin!r} differs from repository")
