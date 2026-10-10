@@ -123,9 +123,8 @@ class WorkerLauncher(common.Launcher):
 
     def manual_resume_hint(self) -> str:
         return (
-            "Take a before-snapshot with `robomate status --snapshot` in the target "
-            f"repository, fill in resume-{self.agent}.prompt.md, then resume by hand "
-            f"with resume-{self.agent} {self.conversation or '(find the exact conversation ID)'}."
+            f"Run resume-{self.agent} with no arguments to capture the snapshot and "
+            "prepare recovery automatically; follow its prerequisite recommendations."
         )
 
     def resumable(self, exit_code: int, resumes: int) -> str:
@@ -178,7 +177,11 @@ class WorkerLauncher(common.Launcher):
                     "no_workflow",
                     "no workflow to resume. " + self.manual_resume_hint(),
                 )
-            if workflow is not None and workflow["status"] == "paused":
+            if (
+                workflow is not None
+                and workflow["status"] == "paused"
+                and not (resumes == 0 and self.args.recover and self.args.force)
+            ):
                 raise common.Stop(
                     common.EXIT_PAUSED,
                     "paused",
