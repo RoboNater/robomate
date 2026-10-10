@@ -366,3 +366,46 @@ def test_real_isolated_hub_pending_question_schema_and_recommendation(
     assert f'"question_id": {question}' in prompt
     assert hub_store.open_operator_questions()[0]["question_id"] == question
     assert hub_store.status_summary()["workflow"]["status"] == "escalated"
+
+
+def test_unavailable_hub_refuses_recovery_with_restore_recommendation(
+    recovery_args: argparse.Namespace,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class OfflineReader(RecoveryReader):
+        def call(self, method: str) -> dict[str, Any]:
+            raise ConnectionError("hub unavailable")
+
+    save_rows(recovery_args, [row("start", agent="alice"), row("exit", agent="alice")])
+    before = recovery_args.resume_prompt.read_text()
+    code = LAUNCHER.main(
+        [
+            "--recover",
+            "--harness",
+            "codex",
+            "--hub-url",
+            "http://unavailable",
+            "--token-file",
+            str(recovery_args.sessions.parent / "token"),
+            "--sessions",
+            str(recovery_args.sessions),
+            "--resume-prompt",
+            str(recovery_args.resume_prompt),
+            "--",
+            "must-never-launch-this-harness",
+        ],
+        OfflineReader(),
+    )
+    assert code == LAUNCHER.EXIT_HUB_UNREADABLE
+    error = capsys.readouterr().err
+    assert "hub unavailable" in error and "Restore" in error and "hub reachability" in error
+    assert recovery_args.resume_prompt.read_text() == before
+
+
+def test_budget_stop_timestamp_is_never_used_as_process_exit(
+    recovery_args: argparse.Namespace,
+) -> None:
+    save_rows(recovery_args, [row("manual_resume"), row("stop", reason="resumes_spent")])
+    recovery_args.confirm_stopped = True
+    _, prompt = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+    assert "unknown (not recorded)" in prompt
