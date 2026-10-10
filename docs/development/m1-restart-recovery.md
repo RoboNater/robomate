@@ -161,11 +161,12 @@ for the restart proof; Alice must reassign a new task for a new attempt.
     For an OpenCode Alice, the same checkpoint discipline applies with the
     harness's resume form (#94). `prepare-run.py` generates
     `RUN_DIR/resume-alice.sh` (`.ps1` on Windows) with its matching
-    `resume-alice.prompt.md`; prefer it over a hand-built command. It takes the
-    saved `ses_...` session ID as its only argument:
+    `resume-alice.prompt.md`; prefer it over a hand-built command. It discovers
+    the saved `ses_...` ID and captures the current snapshot automatically (#173).
+    An explicit ID remains available when saved metadata is missing:
 
     ```sh
-    ./resume-alice.sh SES_ID        # or resume-alice.ps1 on Windows
+    ./resume-alice.sh               # or resume-alice.ps1 on Windows; ID optional
     ```
 
     Find `SES_ID` by the stable session title `prepare-run.py` passed at

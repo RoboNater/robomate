@@ -53,7 +53,7 @@ $RUN_DIR/start-charlie.sh
 
 start-alice resumes Alice's conversation with a doubling delay until the resume time budget of 43200 s is spent, if her harness exits before the workflow is done; alice-sessions.jsonl records each launch, wait and her conversation ID.
 
-Resume scripts (after a harness crash, with the saved session ID):
+Resume scripts (after a harness exit; no arguments normally needed):
 $RUN_DIR/resume-alice.sh
 $RUN_DIR/resume-bob.sh
 $RUN_DIR/resume-charlie.sh

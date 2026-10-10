@@ -214,6 +214,7 @@ class Launcher:
         self.workflow_id: str | None = None
         self.conversation: str | None = None
         self.child: subprocess.Popen[str] | None = None
+        self.child_exit_at: str | None = None
         self.interrupted = False
         self.resume_deadline: float | None = None
 
@@ -318,6 +319,7 @@ class Launcher:
         relay = threading.Thread(target=self.relay, args=(self.child.stdout,), daemon=True)
         relay.start()
         code = self.child.wait()
+        self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")
         relay.join(RELAY_GRACE_S)
         self.child = None
         return code
@@ -404,9 +406,9 @@ class Launcher:
                 EXIT_RESUMES_SPENT,
                 "resumes_spent",
                 f"the harness exited (code {exit_code}) with the workflow {status} and the "
-                f"{self.args.max_resumes} automatic resume(s) are spent. Take a "
-                "before-snapshot with `robomate status --snapshot` in the target "
-                f"repository, then resume by hand with resume-{self.agent} {self.conversation} "
+                f"{self.args.max_resumes} automatic resume(s) are spent. Run "
+                f"resume-{self.agent} with no arguments to capture the snapshot and "
+                "prepare recovery automatically; follow its prerequisite recommendations. "
                 "(docs/development/agent-recovery.md).",
             )
         return "resume"
@@ -416,6 +418,18 @@ class Launcher:
         return True
 
     def run(self) -> int:
+        if self.args.recover:
+            from agent_recovery import prepare
+
+            self.conversation, _ = prepare(self.args, self.reader, self.agent)
+            self.args.resume_session = self.conversation
+            # Saved pins survive a new launcher process, including its first read.
+            from agent_recovery import pin, records
+
+            saved = records(self.args.sessions, self.agent, self.harness)
+            saved = [r for r in saved if r.get("conversation_id") in (None, self.conversation)]
+            self.hub_id = pin(saved, "hub_id", self.args.hub_id)
+            self.workflow_id = pin(saved, "workflow_id", self.args.workflow_id)
         manual = self.args.resume_session is not None
         workflow = self.read_hub()
         if manual:
@@ -430,6 +444,14 @@ class Launcher:
                 self.log("stop", reason="done", workflow_status="done", resumes=0)
                 say("the workflow is already done; nothing to resume")
                 return EXIT_DONE
+            if self.args.recover and workflow["status"] == "paused" and not self.args.force:
+                raise Stop(
+                    EXIT_PAUSED,
+                    "paused",
+                    "Workflow paused during recovery. Have the "
+                    "operator resume it, or retry with --force to reconcile "
+                    "while preserving pause.",
+                )
             self.conversation = self.args.resume_session.strip()
             # The operator's manual resume prompt, once; Codex reads it on stdin.
             text = (
@@ -459,7 +481,7 @@ class Launcher:
             run_start = time.monotonic()
             exit_code = self.run_child(launch, action, resumes)
             run_duration = time.monotonic() - run_start
-            self.log("exit", resumes=resumes, exit_code=exit_code)
+            self.log("exit", resumes=resumes, exit_code=exit_code, exited_at=self.child_exit_at)
             if self.interrupted:
                 raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
             if self.resumable(exit_code, resumes) == "done":
@@ -495,9 +517,9 @@ class Launcher:
                     "time_budget_spent",
                     f"the harness exited (code {exit_code}) and the resume time budget "
                     f"of {self.args.resume_total_s:g} s is spent after {resumes} "
-                    f"automatic resume(s). Take a before-snapshot with "
-                    "`robomate status --snapshot` in the target repository, then "
-                    f"resume by hand with resume-{self.agent} {self.conversation} "
+                    f"automatic resume(s). Run resume-{self.agent} with no arguments to "
+                    "capture the snapshot and prepare recovery automatically; "
+                    "follow its prerequisite recommendations. "
                     "(docs/development/agent-recovery.md).",
                 )
             resumes += 1
@@ -546,12 +568,17 @@ def _feed(stream: TextIO | None, text: str) -> None:
 
 
 def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Namespace:
+    from agent_recovery import add_options, split_controls
+
+    argv, controls = split_controls(argv)
+
     description = (
         "Resume a headless worker on any supported harness until release."
         if worker
         else "Run a headless Alice, resuming the same conversation until her workflow is done."
     )
     parser = argparse.ArgumentParser(description=description)
+    add_options(parser)
     if worker:
         parser.add_argument("--agent", required=True)
         parser.add_argument("--telemetry", type=Path, required=True)
@@ -610,6 +637,8 @@ def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Name
     parser.add_argument("--read-retry-delay-s", type=float, default=DEFAULT_READ_RETRY_DELAY_S)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="the harness command, after --")
     args = parser.parse_args(argv)
+    for key, value in controls.items():
+        setattr(args, key, value)
     if args.command[:1] == ["--"]:
         args.command = args.command[1:]
     if not args.command:
@@ -628,12 +657,14 @@ def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Name
         parser.error("--read-retries must be at least 1")
     if not args.read_retry_delay_s >= 0:
         parser.error("--read-retry-delay-s must not be negative")
+    if args.recover and args.resume_prompt is None:
+        parser.error("--recover needs --resume-prompt")
     if args.resume_session is not None:
         if not args.resume_session.strip():
             parser.error("--resume-session must name a conversation ID")
         if args.resume_prompt is None:
             parser.error("--resume-session needs --resume-prompt")
-    elif args.prompt is None:
+    elif args.prompt is None and not args.recover:
         parser.error("--prompt is required unless --resume-session is given")
     if worker:
         if not args.predecessor_wait_s >= 0:
@@ -654,14 +685,32 @@ def main(
     launcher = launcher_type(args, reader)
     previous = signal.signal(signal.SIGTERM, launcher.interrupt)
     try:
-        return launcher.run()
+        from agent_recovery import agent_lock
+
+        with agent_lock(args.sessions):
+            try:
+                return launcher.run()
+            except KeyboardInterrupt:
+                launcher.interrupted = True
+                launcher.stop_child(wait=True)
+                return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
+            except Stop as stop:
+                return _stopped(launcher, stop)
     except KeyboardInterrupt:
         launcher.interrupted = True
         launcher.stop_child(wait=True)
         return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
     except Stop as stop:
-        return _stopped(launcher, stop)
+        say(str(stop))
+        return stop.code
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        say(
+            f"Recovery/launch unavailable: {exc}. Restore the original run files and hub "
+            "reachability, then retry the resume script; do not replay kickoff."
+        )
+        return EXIT_HUB_UNREADABLE
     finally:
+        launcher.stop_child(wait=True)
         signal.signal(signal.SIGTERM, previous)
 
 

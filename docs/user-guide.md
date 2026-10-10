@@ -100,6 +100,15 @@ options such as merge method, harnesses, capabilities, and CI setting.
 
 The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and eleven enabled tools; a Codex worker gets seven worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`.
 
+When automatic recovery stops, run `"$RUN_DIR/resume-alice.sh"`,
+`resume-bob.sh`, or `resume-charlie.sh` on that agent's host with no arguments
+(`& "$RUN_DIR/resume-alice.ps1"` on Windows). The script discovers the saved
+conversation, captures the current hub before-snapshot and constructs the
+prompt while keeping the original workspace, configuration, model and effort.
+It explains missing prerequisites and how to retry. Optional `--resume-session`,
+`--stopped-at` and advisory-only `--force`, and interactive/missing-log fallbacks,
+are described in [manual recovery controls](development/agent-recovery.md#manual-recovery-controls).
+
 Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s configured SSH or HTTPS protocol. It checks `gh auth status`, the harness versions, the repository's merge setting, and the presence of CI workflows before creating the run. A local repository or `--skip-github-checks` skips the GitHub checks. It links Codex authentication into the run-local home and reports `codex login status`. A rerun with the same run directory preserves clean clones and their identity files; a dirty clone causes an actionable error. The start scripts quote paths with spaces or shell metacharacters and keep Codex sessions available for inspection.
 
 | Flag | Effect |

@@ -6,7 +6,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -2230,8 +2229,8 @@ def test_resume_lines_resume_each_harness_by_id(
         token_file=run_dir / "token",
     )
     text = "\n".join(lines)
-    assert "--resume-session" in text and '"$SESSION_ID"' in text
-    assert "usage: resume-bob.sh <conversation-id>" in text
+    assert "--recover" in text and '"$@"' in text
+    assert "set -- --resume-session" in text
     assert "bob.prompt.md" not in text.replace("resume-bob.prompt.md", "")
     if harness == "opencode":
         assert "--title" in text and "bob my run" in text
@@ -2254,12 +2253,13 @@ def test_resume_lines_windows_powershell(tmp_path: Path, monkeypatch: pytest.Mon
         True,
         tmp_dir=run_dir / "tmp" / "alice",
         title="alice run",
+        token_file=run_dir / "token",
     )
     text = "\n".join(lines)
     assert "$env:OPENCODE_CONFIG =" in text
-    assert "--session $SessionId" in text
+    assert "--recover" in text and "@ResumeArgs" in text
     assert "--title 'alice run'" in text
-    assert "resume-alice.ps1 <session-id>" in text
+    assert "exit $LASTEXITCODE" in text
     assert "alice.prompt.md" not in text.replace("resume-alice.prompt.md", "")
 
 
@@ -2276,7 +2276,7 @@ def test_worker_resume_uses_git_bash_spellings() -> None:
         token_file="C:/private/token",
     )
     assert lines[0] == "cd /c/Users/Bob/runs/step7/bob"
-    assert any('--resume-session "$SESSION_ID"' in line and "--title" in line for line in lines)
+    assert any("--recover" in line and '"$@"' in line and "--title" in line for line in lines)
     assert any("resume-bob.prompt.md" in line for line in lines)
 
 
@@ -2312,7 +2312,7 @@ def test_opencode_run_records_title_and_resume_artifacts(
         assert "--title" in start and f"{name} {slug}" in start
         resume = (run_dir / f"resume-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
         # Alice's launcher adds `--session` itself, from its --resume-session (#146).
-        assert "--resume-session" in resume
+        assert "--recover" in resume
         assert f"resume-{name}.prompt.md" in resume
         kickoff = f"Read {run_dir / f'{name}.prompt.md'} and follow the instructions in it"
         assert kickoff not in resume
@@ -2358,17 +2358,31 @@ class _StubHub(BaseHTTPRequestHandler):
 
     statuses: list[str] = []
     calls: list[tuple[str, str | None]] = []
+    current_status = "active"
 
     def do_POST(self) -> None:  # noqa: N802 - the stdlib's name
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.calls.append((body["method"], self.headers.get("X-Robomate-Session")))
         if body["method"] == "hub.info":
-            result: dict[str, Any] = {"hub_id": "hub-stub"}
+            result: dict[str, Any] = {"hub_id": "abc"}
+        elif body["method"] == "hub.questions":
+            result = {"questions": []}
+        elif body["method"] == "hub.snapshot":
+            result = {
+                "hub_id": "abc",
+                "taken_at": "2026-10-10T00:00:00Z",
+                "workflow": {"id": "wf-stub", "status": self.current_status},
+                "tasks": [],
+                "deliveries": [],
+                "queued_events": 0,
+            }
         else:
             status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+            type(self).current_status = status
             result = {
                 "workflow": {"id": "wf-stub", "status": status, "headline": "h"},
                 "agents": [],
+                "orchestrator_activity": {"holding": None, "heartbeat_age_s": None},
             }
         payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
         self.send_response(200)
@@ -2441,9 +2455,9 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
     # after the resume delay, then after its second exit; resume-alice reads
     # before its launch and after it.
     statuses = (
-        ["active"] * 3 + ["done", "escalated", "done"]
+        ["active"] * 3 + ["done", "escalated", "escalated", "done"]
         if agent == "alice"
-        else ["active"] * 5 + ["done", "escalated", "escalated", "done"]
+        else ["active"] * 5 + ["done", "escalated", "escalated", "escalated", "done"]
     )
     with stub_hub(*statuses) as url:
         run_dir, manifest = prepare(
@@ -2462,7 +2476,7 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
         run_script(run_dir / f"start-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         started = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         (base / "argv.jsonl").unlink()
-        run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env, "conv-given")
+        run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         resumed = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         # Bearer-only reads: the launcher never presents an orchestrator session.
         assert {session for _, session in _StubHub.calls} == {None}
@@ -2511,7 +2525,9 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
     kickoff = started[0]["stdin"] if harness == "codex" else started[0]["argv"][-1]
     assert kickoff != continuation and "RUN_DIR" not in kickoff
     # resume-alice resumes the conversation it is given, with the manual prompt.
-    assert len(resumed) == 1 and "conv-given" in resumed[0]["argv"]
+    assert len(resumed) == 1 and conversation in resumed[0]["argv"]
+    assert "Before-snapshot (facts" in prompt_body
+    assert "recorded harness exit" in prompt_body
     manual = resumed[0]["stdin"] if harness == "codex" else resumed[0]["argv"][-1]
     if harness == "codex":
         assert manual.startswith(f"# Resume {'Alice' if agent == 'alice' else agent}")
@@ -2529,6 +2545,114 @@ def test_no_auto_start_keeps_alice_interactive_without_the_launcher(
     for script in ("start-alice", "resume-alice"):
         assert "alice-launcher.py" not in (run_dir / f"{script}.{SCRIPT_SUFFIX}").read_text()
     assert "sessions" not in manifest["launch"]["agents"]["alice"]
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("agent", ["alice", "bob", "charlie"])
+def test_interactive_recovery_preserves_cli_with_explicit_missing_log_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    agent: str,
+) -> None:
+    """Run the actual guarded interactive wrapper on Linux/native PowerShell CI."""
+    bin_dir = tmp_path / "bin"
+    fake_cli(bin_dir, harness)
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_ARGV_LOG": str(tmp_path / "argv.jsonl"),
+    }
+    conversation = {
+        "claude-code": "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+        "codex": "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+        "opencode": "ses_7Fa9b2C",
+        "antigravity": "conv-1234abcd",
+    }[harness]
+    with stub_hub("active") as url:
+        run_dir, _ = prepare(
+            tmp_path,
+            monkeypatch,
+            test_hub_url=url,
+            auto_start=False,
+            **{f"{agent}_harness": harness, f"{agent}_model": "model-x"},
+        )
+        output = run_script(
+            run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}",
+            bin_dir,
+            env,
+            conversation,
+            "--workflow-id",
+            "wf-stub",
+            "--confirm-stopped",
+            "--stopped-at",
+            "2026-10-08T12:34:56Z",
+        )
+    run = json.loads((tmp_path / "argv.jsonl").read_text().strip())
+    assert conversation in run["argv"] and "model-x" in run["argv"]
+    assert "-p" not in run["argv"] and "exec" not in run["argv"]
+    assert "Interactive recovery" in output
+    prompt = (run_dir / f"resume-{agent}.prompt.md").read_text()
+    assert "operator-supplied" in prompt and "Before-snapshot" in prompt
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["local", "remote-bash"])
+@pytest.mark.parametrize("force", [False, True], ids=["refusal", "override"])
+def test_recovery_controls_refuse_pause_or_reconcile_with_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remote: bool,
+    force: bool,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    fake_cli(bin_dir, "codex")
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_ARGV_LOG": str(tmp_path / "argv.jsonl"),
+    }
+    with stub_hub("paused") as url:
+        run_dir, _ = prepare(tmp_path, monkeypatch, test_hub_url=url, bob_harness="codex")
+        controls = [
+            "--resume-session",
+            "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+            "--hub-id",
+            "abc",
+            "--workflow-id",
+            "wf-stub",
+            "--confirm-stopped",
+        ]
+        if force:
+            controls.append("--force")
+        script = run_dir / f"resume-bob.{SCRIPT_SUFFIX}"
+        if remote:
+            lines = PREPARE_RUN.worker_resume(
+                "bob",
+                "codex",
+                run_dir,
+                run_dir / "bob",
+                hub_url=url,
+                token_file=str(run_dir / "token"),
+            )
+            (run_dir / "token").write_text("stub-token\n")
+            script = run_dir / "remote-resume-bob.sh"
+            PREPARE_RUN.write_script(script, PREPARE_RUN.resume_script(lines))
+        shell = (
+            [importlib.import_module("agent_recovery").bash_executable()]
+            if remote or os.name != "nt"
+            else [
+                shutil.which("pwsh") or shutil.which("powershell") or "powershell",
+                "-NoProfile",
+                "-File",
+            ]
+        )
+        script_arg = PREPARE_RUN.git_bash_path(script) if remote else str(script)
+        completed = subprocess.run(
+            [*shell, script_arg, *controls], env=env, text=True, capture_output=True, timeout=30
+        )
+        # Force runs one reconciliation turn; automatic continuation then respects pause.
+        assert completed.returncode == 5, completed.stdout + completed.stderr
+        assert "paused" in completed.stderr.lower() and "operator" in completed.stderr
+        assert (tmp_path / "argv.jsonl").exists() == force
+        assert "--force" in completed.stderr or "Advisory override" in completed.stderr
 
 
 def test_stall_and_resume_options_reach_policy_and_scripts(
@@ -2601,40 +2725,12 @@ def test_every_resume_prompt_names_the_real_run_directory(
     assert "RUN_DIR" not in remote and "C:\\runs\\my run\\run.json" in remote
 
 
-def test_the_alice_resume_prompt_shows_the_snapshot_block_robomate_prints() -> None:
-    """The prompt's template and `robomate status --snapshot` agree line by line (#146)."""
-
-    from robomate.cli import render_snapshot
-
-    printed = render_snapshot(
-        {
-            "taken_at": "2026-10-08T12:00:00Z",
-            "stopped_at": "2026-10-08T11:59:00Z",
-            "hub_id": "h",
-            "workflow": {"id": "w", "status": "active"},
-            "orchestrator": {"name": "alice", "session": "s", "last_seen": "t"},
-            "tasks": [{"id": "t1", "assignee": "bob", "role": "implementer", "state": "working"}],
-            "deliveries": [
-                {
-                    "event_id": 7,
-                    "kind": "task_completed",
-                    "delivery_id": "d",
-                    "attempt": 1,
-                    "delivered_at": "a",
-                    "delivery_expires": "b",
-                }
-            ],
-            "queued_events": 0,
-        }
-    ).splitlines()
-    template = PREPARE_RUN.render_resume_prompt("alice", PurePosixPath("/r"))
-    block = template[template.index("Operator before-snapshot\n") :].splitlines()
-    assert len(block) == len(printed)
-    for shown, expected in zip(block, printed, strict=True):
-        # Each <placeholder> stands for one printed value.
-        pattern = re.escape(shown.replace(", or not supplied", ""))
-        pattern = re.sub(r"<[^>]*>", ".+?", pattern.replace("\\<", "<").replace("\\>", ">"))
-        assert re.fullmatch(pattern, expected), (shown, expected)
+def test_resume_templates_need_no_operator_paste_or_time_guess() -> None:
+    for name in ("alice", "bob", "charlie"):
+        template = PREPARE_RUN.render_resume_prompt(name, PurePosixPath("/r"))
+        assert "automatically" in template and "stop time may be unknown" in template
+        assert "<UTC TIME>" not in template and "<TASK ID>" not in template
+        assert "The operator pastes" not in template
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
