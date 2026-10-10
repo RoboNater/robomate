@@ -1301,6 +1301,7 @@ def interactive_recovery_lines(
         *(["--powershell"] if powershell else []),
         "--recovery-options",
         "@ResumeArgs" if powershell else '"$@"',
+        "--recovery-command",
     ]
     return [
         lines[0],

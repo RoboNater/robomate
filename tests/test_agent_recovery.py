@@ -6,6 +6,7 @@ import argparse
 import importlib
 import json
 import os
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -301,23 +302,80 @@ def test_concurrent_launcher_lock_cannot_be_overridden(recovery_args: argparse.N
         ["--harness", "opencode"],
         ["--sessions", "other.jsonl"],
         ["--", "other-command"],
+        ["--recovery-command", "--hub-url", "http://other"],
+        ["--recovery-command", "--", "evil"],
+        ["--recovery-command"],
     ],
 )
-def test_generated_controls_cannot_replace_the_pinned_run_or_command(control: list[str]) -> None:
+@pytest.mark.parametrize("interactive", [False, True])
+def test_generated_controls_cannot_replace_the_pinned_run_or_command(
+    control: list[str], interactive: bool
+) -> None:
     with pytest.raises(SystemExit) as error:
         RECOVERY.split_controls(
             [
                 "--harness",
                 "codex",
+                *(["--shell-command", "codex resume pinned-id"] if interactive else []),
                 "--recovery-options",
                 *control,
                 "--recovery-command",
-                "--",
-                "codex",
-                "exec",
+                *([] if interactive else ["--", "codex", "exec"]),
             ]
         )
     assert error.value.code == 2
+
+
+def test_live_pid_recommendation_never_tells_operator_to_stop_unrelated_process(
+    recovery_args: argparse.Namespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_rows(recovery_args, [row("start", pid=12345)])
+    recovery_args.force = True
+    recovery_args.confirm_stopped = True
+    monkeypatch.setattr(RECOVERY, "process_exists", lambda pid: True)
+    monkeypatch.setattr(RECOVERY, "process_name", lambda pid: "unrelated.exe")
+    reader = RecoveryReader()
+    with pytest.raises(LAUNCHER.Stop) as error:
+        RECOVERY.prepare(recovery_args, reader, "bob")
+    text = str(error.value)
+    assert "unrelated.exe" in text and "PIDs can be reused" in text
+    assert "stop it only if it is the old harness" in text
+    assert "preserve that process" in text and "move the stale sessions log aside" in text
+    assert "--resume-session, --hub-id, --workflow-id and --confirm-stopped" in text
+    assert reader.calls == []
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_process_name_is_display_only_and_queries_the_requested_pid(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    def query(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert kwargs == {"capture_output": True, "text": True, "timeout": 2}
+        if windows:
+            assert command == ["tasklist", "/FI", "PID eq 123", "/FO", "CSV", "/NH"]
+            output = '"other.exe","124","Console","1","1 K"\n"python.exe","123","Console","1","1 K"'
+        else:
+            assert command == ["ps", "-p", "123", "-o", "comm="]
+            output = "python\n"
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(RECOVERY.subprocess, "run", query)
+    assert RECOVERY.process_name(123, windows=windows) == ("python.exe" if windows else "python")
+
+
+def test_process_name_failure_does_not_disable_duplicate_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(*args: Any, **kwargs: Any) -> None:
+        raise OSError("process tool unavailable")
+
+    monkeypatch.setattr(RECOVERY.subprocess, "run", unavailable)
+    assert RECOVERY.process_name(123).startswith("unavailable;")
+
+
+def test_process_name_can_query_own_process() -> None:
+    assert not RECOVERY.process_name(os.getpid()).startswith("unavailable;")
 
 
 @pytest.mark.parametrize(

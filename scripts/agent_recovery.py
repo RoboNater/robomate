@@ -7,10 +7,12 @@ and the factual recovery prompt. No workflow mutation or agent authority here.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -87,7 +89,7 @@ def split_controls(argv: list[str] | None) -> tuple[list[str], dict[str, Any]]:
         return words, {}
     start = words.index("--recovery-options")
     end = (
-        words.index("--recovery-command", start)
+        len(words) - 1 - words[::-1].index("--recovery-command")
         if "--recovery-command" in words[start:]
         else len(words)
     )
@@ -275,9 +277,14 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
         if isinstance(pid, int) and process_exists(pid):
             refuse(
                 "predecessor",
-                f"Recorded predecessor PID {pid} still exists. Have the operator "
-                "inspect and stop that process, then retry. Neither --force nor "
-                "--confirm-stopped bypasses this.",
+                f"Recorded predecessor PID {pid} still exists "
+                f"(current process name: {process_name(pid)!r}). PIDs can be reused. "
+                "Verify its executable and start time before stopping anything; stop it "
+                "only if it is the old harness. If it is unrelated and both old harness "
+                "and launcher are confirmed stopped, preserve that process, move the "
+                "stale sessions log aside, and retry with --resume-session, --hub-id, "
+                "--workflow-id and --confirm-stopped. Neither --force nor "
+                "--confirm-stopped bypasses this PID guard.",
             )
     stop_time = (
         timestamp(args.stopped_at)
@@ -439,6 +446,28 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
         f"old process stop {stop_time or 'unknown'}. Prompt: {args.resume_prompt}"
     )
     return conversation, prompt
+
+
+def process_name(pid: int, *, windows: bool | None = None) -> str:
+    """Best-effort display only; a name never proves predecessor identity."""
+    windows = os.name == "nt" if windows is None else windows
+    command = (
+        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"]
+        if windows
+        else ["ps", "-p", str(pid), "-o", "comm="]
+    )
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=2)
+        if completed.returncode == 0:
+            if windows:
+                for row in csv.reader(completed.stdout.splitlines()):
+                    if len(row) >= 2 and row[1] == str(pid):
+                        return row[0][:256]
+            elif completed.stdout.strip():
+                return completed.stdout.strip()[:256]
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, csv.Error):
+        pass
+    return "unavailable; inspect with the operating system's process tools"
 
 
 def process_exists(pid: int) -> bool:

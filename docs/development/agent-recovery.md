@@ -381,6 +381,15 @@ When no exit was recorded (including interactive runs), the operator must
 verify both old harness and launcher are stopped and add `--confirm-stopped`.
 That confirmation supplies no timestamp and cannot bypass a known attachment.
 
+A recorded PID may have been reused after a reboot or a hard launcher exit.
+The refusal shows the current process name when available; that name alone
+does not prove identity. Check its executable and start time, and stop it only
+if it is the old harness. If it is unrelated and both old harness and launcher
+are confirmed stopped, leave it alone, preserve the stale sessions log by
+moving it aside, and use the explicit fallback below with the verified original
+conversation, hub and workflow IDs. The launcher lock and hub attachment checks
+still apply.
+
 Paused workflows and workers with open operator questions are advisory waits:
 the script names the question IDs and recommends `robomate answer`, or asks
 the operator to resume the paused workflow. `--force` permits reconciliation
