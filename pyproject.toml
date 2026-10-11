@@ -21,6 +21,11 @@ dev = [
 
 [tool.uv]
 package = false
+# The tested minimum: exclude-dependencies below needs a recent uv. CI pins the same version.
+required-version = ">=0.12.18"
+# #181: pywin32 bundles LGPL-2.1 adodbapi. packages/win32_compat provides the calls mcp makes.
+# Only uv installs from this workspace honour this; see packages/win32_compat/README.md.
+exclude-dependencies = ["pywin32"]
 
 [tool.uv.sources]
 agent-hub = { workspace = true }

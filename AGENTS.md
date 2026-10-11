@@ -32,6 +32,7 @@ packages/common/      agent_hub_common  — config, token, models, clock (shared
 packages/cli/         robomate          — operator CLI (up/down/status/ls/inbox/answer/mcp)
 packages/hub/         agent_hub         — HTTP A2A and RPC server + SQLite
 packages/worker_mcp/  worker_mcp        — MCP bridge for Alice and workers
+packages/win32_compat/ win32job etc.    — ctypes stand-in for the pywin32 calls mcp makes (#181)
 guides/               role guides the hub serves; forge/ holds forge appendices
 skills/, prompts/, runtimes/  Alice's skill, run prompts, harness configs (pre-M2 run path)
 tests/                one test_<module>.py per module, top-level
