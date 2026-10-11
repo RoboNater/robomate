@@ -10,17 +10,21 @@ running without a job.
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import gc
 import importlib.metadata
+import queue
 import subprocess
 import sys
 import sysconfig
+import threading
+import time
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import IO, Any, cast
 
 import pytest
 from mcp import ClientSession, StdioServerParameters
@@ -42,18 +46,27 @@ PYWIN32_FILES = (
 
 SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
 
-# A stdio MCP server that spawns a grandchild and reports both PIDs.
+# Bounds every wait on the MCP exchange, so a hang fails the test instead of stalling CI.
+DEADLINE = 60
+
+# A stdio MCP server that spawns a grandchild and reports both PIDs: first to the
+# file named by its argument, before any MCP traffic, so teardown can find them
+# even if the handshake never completes; then through the pids tool.
 SERVER = f"""
-import os, subprocess
+import os, subprocess, sys
 from mcp.server.fastmcp import FastMCP
 
 grandchild = subprocess.Popen({SLEEPER!r})
+pids_text = f"{{os.getpid()}} {{grandchild.pid}}"
+with open(sys.argv[1] + ".tmp", "w", encoding="utf-8") as pids_file:
+    pids_file.write(pids_text)
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
 app = FastMCP("win32-compat")
 
 
 @app.tool()
 def pids() -> str:
-    return f"{{os.getpid()}} {{grandchild.pid}}"
+    return pids_text
 
 
 app.run()
@@ -68,7 +81,7 @@ from mcp.client.stdio import stdio_client
 
 
 async def main() -> None:
-    params = StdioServerParameters(command=sys.executable, args=[sys.argv[1]])
+    params = StdioServerParameters(command=sys.executable, args=sys.argv[1:])
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         result = await session.call_tool("pids", {})
@@ -92,6 +105,12 @@ def test_lockfile_excludes_pywin32() -> None:
         assert "pywin32" not in dependencies, name
 
 
+def test_compat_package_carries_the_repository_license() -> None:
+    # Compared as text, so a checkout's line endings don't matter.
+    copy = (ROOT / "packages" / "win32_compat" / "LICENSE").read_text(encoding="utf-8")
+    assert copy == (ROOT / "LICENSE").read_text(encoding="utf-8")
+
+
 def test_environment_has_no_pywin32() -> None:
     with pytest.raises(importlib.metadata.PackageNotFoundError):
         importlib.metadata.distribution("pywin32")
@@ -102,7 +121,7 @@ def test_environment_has_no_pywin32() -> None:
 
 def test_win32_modules_are_the_compat_package() -> None:
     if sys.platform != "win32":  # in the body, so mypy skips the rest off Windows
-        pytest.skip("robomate-win32-compat is installed on Windows only")
+        pytest.skip("mcp imports these modules on Windows only")
     import _robomate_win32
     import pywintypes
     import win32api
@@ -118,7 +137,7 @@ def test_win32_modules_are_the_compat_package() -> None:
 
 def test_job_limit_structure_matches_the_win32_layout() -> None:
     if sys.platform != "win32":
-        pytest.skip("robomate-win32-compat is installed on Windows only")
+        pytest.skip("kernel32 is Windows only")
     import _robomate_win32
 
     # sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION): 144 on 64-bit Windows, 112 on 32-bit.
@@ -128,7 +147,7 @@ def test_job_limit_structure_matches_the_win32_layout() -> None:
 
 def test_job_limits_round_trip() -> None:
     if sys.platform != "win32":
-        pytest.skip("robomate-win32-compat is installed on Windows only")
+        pytest.skip("kernel32 is Windows only")
     import pywintypes
     import win32api
     import win32job
@@ -152,7 +171,7 @@ def test_job_limits_round_trip() -> None:
 
 def test_win32_errors_carry_code_function_and_message() -> None:
     if sys.platform != "win32":
-        pytest.skip("robomate-win32-compat is installed on Windows only")
+        pytest.skip("kernel32 is Windows only")
     import pywintypes
     import win32api
     import win32con
@@ -247,17 +266,24 @@ def test_abrupt_client_death_kills_server_and_grandchild(
     server_script.write_text(SERVER, encoding="utf-8")
     client_script = tmp_path / "client.py"
     client_script.write_text(CLIENT, encoding="utf-8")
-    client = processes.spawn(
-        [sys.executable, str(client_script), str(server_script)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    pids_path = tmp_path / "pids.txt"
+    stderr_path = tmp_path / "client-stderr.txt"
+    # A file, not a pipe: the server inherits the client's stderr and outlives it
+    # if the job fails, and an orphan holding a pipe would block reading it.
+    with stderr_path.open("w", encoding="utf-8") as stderr:
+        client = processes.spawn(
+            [sys.executable, str(client_script), str(server_script), str(pids_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            text=True,
+        )
     assert client.stdin is not None and client.stdout is not None
-    server_pid, grandchild_pid = map(int, client.stdout.readline().split())
-    server = processes.watch(server_pid)
-    grandchild = processes.watch(grandchild_pid)
+    server, grandchild = processes.watch_pids_file(pids_path, DEADLINE)
+
+    line = _readline_within(client.stdout, DEADLINE)
+    diagnostics = stderr_path.read_text(encoding="utf-8", errors="replace")
+    assert line == f"{server.pid} {grandchild.pid}\n", diagnostics
     assert not grandchild.exited_within(0.2)
 
     client.stdin.write("\n")
@@ -274,19 +300,34 @@ async def test_normal_shutdown_kills_the_grandchild_on_collection(
         pytest.skip("Windows Job Objects")
     server_script = tmp_path / "server.py"
     server_script.write_text(SERVER, encoding="utf-8")
-    params = StdioServerParameters(command=sys.executable, args=[str(server_script)])
-    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
-        await session.initialize()
-        result = await session.call_tool("pids", {})
-        content = result.content[0]
-        assert isinstance(content, TextContent)
-        _, grandchild_pid = map(int, content.text.split())
-        grandchild = processes.watch(grandchild_pid)
+    pids_path = tmp_path / "pids.txt"
+    params = StdioServerParameters(
+        command=sys.executable, args=[str(server_script), str(pids_path)]
+    )
+    async with asyncio.timeout(DEADLINE):
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            # Watched before the handshake, so teardown can stop them if it hangs.
+            _, grandchild = await asyncio.to_thread(processes.watch_pids_file, pids_path, DEADLINE)
+            await session.initialize()
+            result = await session.call_tool("pids", {})
+            content = result.content[0]
+            assert isinstance(content, TextContent)
+            assert int(content.text.split()[1]) == grandchild.pid
 
     # mcp closes the job only when it has to terminate the server. After a clean
     # exit, collecting the process object closes the job, as pywin32's PyHANDLE does.
     gc.collect()
     assert grandchild.exited_within(10)
+
+
+def _readline_within(stream: IO[str], seconds: float) -> str:
+    """Read a line, or fail after `seconds`; teardown's kill ends the read."""
+    lines: queue.Queue[str] = queue.Queue()
+    threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True).start()
+    try:
+        return lines.get(timeout=seconds)
+    except queue.Empty:
+        raise TimeoutError(f"no line within {seconds} s") from None
 
 
 SYNCHRONIZE = 0x00100000
@@ -354,6 +395,16 @@ class _Processes:
         watched = _Watched(pid)
         self.watched.append(watched)
         return watched
+
+    def watch_pids_file(self, path: Path, seconds: float) -> tuple[_Watched, _Watched]:
+        """Watch the server and grandchild a SERVER script reports in its PID file."""
+        deadline = time.monotonic() + seconds
+        while not path.exists():
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"no PID file at {path} within {seconds} s")
+            time.sleep(0.05)
+        server_pid, grandchild_pid = map(int, path.read_text(encoding="utf-8").split())
+        return self.watch(server_pid), self.watch(grandchild_pid)
 
     def cleanup(self) -> None:
         for watched in self.watched:

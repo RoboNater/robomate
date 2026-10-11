@@ -24,8 +24,14 @@ collection to close the job after a normal shutdown.
 - `uv.lock` has no `pywin32` package; its manifest records `excludes = ["pywin32"]`.
 - The installed environment has no `pywin32` distribution and no `adodbapi`.
 - `mcp`'s own metadata still declares `Requires-Dist: pywin32; sys_platform == 'win32'`.
-  A scanner that reads installed metadata may report that requirement. It is
-  satisfied by this package, not by pywin32; this README is the explanation.
+  uv deliberately leaves that requirement unmet. This package does not satisfy
+  it, since it is a different distribution; it supplies the modules and calls
+  `mcp` imports. Tools that check declared requirements will report pywin32 as
+  missing: on Windows, `uv pip check` exits 1, reporting that `mcp` requires
+  `pywin32>=310` but it's not installed. That is expected under this
+  arrangement, and this README is the explanation.
+- This package is MIT; its `LICENSE` is a copy of the repository's, and both the
+  wheel and the sdist carry it.
 
 ## Limits
 
