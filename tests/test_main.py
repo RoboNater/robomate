@@ -1,5 +1,6 @@
 """The legacy hub command is HTTP-only and survives MCP stdin EOF."""
 
+import io
 import json
 import os
 import signal
@@ -9,13 +10,39 @@ import subprocess
 import sys
 import time
 import urllib.request
+from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import uvicorn
 from agent_hub import main
 from agent_hub.rpc_errors import OPERATOR_REQUIRED
-from agent_hub_common import SCHEMA_VERSION, MetaKeys
+from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
+
+
+def test_hub_entry_point_escapes_unencodable_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = replace(HubSettings.from_env({}), port=0)
+    monkeypatch.setattr(HubSettings, "from_env", lambda: settings)
+
+    async def serve(
+        settings: HubSettings,
+        sockets: list[socket.socket],
+        hub_info: Mapping[str, Any],
+        on_started: Callable[[], None],
+    ) -> None:
+        print("drivér → ā", flush=True)
+
+    monkeypatch.setattr(main, "serve_http", serve)
+    with (
+        io.BytesIO() as buffer,
+        io.TextIOWrapper(buffer, encoding="cp1252", newline="\n") as stdout,
+    ):
+        monkeypatch.setattr(sys, "stdout", stdout)
+        main.main()
+        assert stdout.encoding == "cp1252"
+        assert buffer.getvalue() == b"driv\xe9r \\u2192 \\u0101\n"
 
 
 def _request(

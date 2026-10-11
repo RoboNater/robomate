@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import errno
-import io
 import json
 import logging
 import os
@@ -62,6 +61,7 @@ from agent_hub_common.registry import (
 from agent_hub_common.registry import (
     forget as forget_entry,
 )
+from agent_hub_common.stdio import escape_unencodable_output
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
@@ -166,6 +166,7 @@ def _hub_lock(checkout: Path) -> Iterator[None]:
 
 
 async def _up(args: argparse.Namespace) -> None:
+    escape_unencodable_output()
     repo = resolve_repository(Path.cwd(), probe_cli=args.forge is None)
     if args.forge:
         repo = replace(repo, forge=args.forge)
@@ -886,13 +887,6 @@ def _printable(text: str) -> str:
     )
 
 
-def _escape_unencodable_output() -> None:
-    # Agent text can hold characters a Windows code page cannot encode once
-    # stdout is redirected; escape them rather than fail mid-listing.
-    if isinstance(sys.stdout, io.TextIOWrapper):
-        sys.stdout.reconfigure(errors="backslashreplace")
-
-
 def _open_questions(url: str, token: str) -> list[dict[str, Any]]:
     questions = _rpc(url, token, "hub.questions").get("questions")
     if not isinstance(questions, list):
@@ -903,7 +897,7 @@ def _open_questions(url: str, token: str) -> list[dict[str, Any]]:
 def _inbox(as_json: bool, selector: str | None) -> None:
     """List the questions the orchestrator is waiting on the operator to answer."""
 
-    _escape_unencodable_output()
+    escape_unencodable_output()
     endpoint, _ = _connect(selector)
     questions = _open_questions(endpoint.url, endpoint.token)
     if as_json:
@@ -931,7 +925,7 @@ def _answer(question_id: int, text: str | None, option: int | None, selector: st
 
     if (text is None) == (option is None):
         raise ValueError("give either an answer text or --option N, exactly one")
-    _escape_unencodable_output()
+    escape_unencodable_output()
     endpoint, _ = _connect(selector)
     operator_token = read_token_file(operator_token_path(), "operator token")
     if option is not None:

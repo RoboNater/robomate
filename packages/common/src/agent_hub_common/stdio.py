@@ -1,11 +1,18 @@
-"""Standard stream management for MCP processes."""
+"""Standard stream management for console and MCP processes."""
 
 from __future__ import annotations
 
+import io
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from typing import TextIO
+
+
+def escape_unencodable_output() -> None:
+    """Escape text a redirected console stream's encoding cannot represent."""
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(errors="backslashreplace")
 
 
 @contextmanager
