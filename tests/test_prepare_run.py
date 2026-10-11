@@ -190,11 +190,14 @@ def test_codex_alice_uses_orchestrator_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from agent_hub.orchestrator import OPERATIONS
+
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex")
     config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
     server = config["mcp_servers"]["robomate"]
     assert server["args"][-3:] == ["mcp", "--role", "orchestrator"]
     assert set(server["enabled_tools"]) == set(PREPARE_RUN.ALICE_TOOLS)
+    assert set(server["enabled_tools"]) == set(OPERATIONS)
 
 
 def test_missing_or_different_hub_is_rejected(
