@@ -8,6 +8,7 @@ dependencies = [
     "agent-hub-common",
     "fastapi>=0.115,<1",
     "mcp>=1.26,<2",
+    "robomate-win32-compat; sys_platform == 'win32'",
     "uvicorn>=0.34,<1",
 ]
 
@@ -23,3 +24,4 @@ packages = ["src/agent_hub"]
 
 [tool.uv.sources]
 agent-hub-common = { workspace = true }
+robomate-win32-compat = { workspace = true }

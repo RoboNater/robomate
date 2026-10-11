@@ -9,6 +9,7 @@ dependencies = [
     "agent-hub",
     "httpx>=0.27,<1",
     "mcp>=1.26,<2",
+    "robomate-win32-compat; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -24,3 +25,4 @@ packages = ["src/worker_mcp"]
 [tool.uv.sources]
 agent-hub-common = { workspace = true }
 agent-hub = { workspace = true }
+robomate-win32-compat = { workspace = true }
