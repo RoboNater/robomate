@@ -16,10 +16,10 @@ import httpx
 import pytest
 from agent_hub.mcp import create_mcp
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, MergeGate, PrState
-from agent_hub.orchestrator import OPERATIONS, OrchestratorOps
+from agent_hub.orchestrator import CALLER, OPERATIONS, Caller, OrchestratorOps
 from agent_hub.store import MAX_CHECK_NAME_CHARS, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, TaskState
-from conftest import rpc
+from conftest import SESSION, rpc
 from fastapi import FastAPI
 from mcp import ClientSession
 from mcp.shared.memory import create_connected_server_and_client_session
@@ -104,7 +104,7 @@ def test_operations_are_exactly_the_public_methods() -> None:
     }
 
     assert public == set(OPERATIONS)
-    assert len(OPERATIONS) == 11
+    assert len(OPERATIONS) == 12
 
 
 # -- parity: the same operation over stdio MCP and over /rpc -----------------
@@ -226,6 +226,19 @@ async def ask_user_too_large(store: HubStore) -> dict[str, Any]:
     return {"question": "x" * MAX_MESSAGE_PART_BYTES}
 
 
+async def withdraw_question(store: HubStore) -> dict[str, Any]:
+    checked_in(store, "bob")
+    task = store.assign_task("bob", "implementer", "Fix", "Do it")
+    # Match the caller used by both parity transports.
+    question_id = store.ask_user(
+        "Wait?", None, actor="alice", session=SESSION, waiting_on_task_id=task.id
+    )
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, "Done")
+    with sqlite3.connect(store.path) as connection:
+        event_id = connection.execute("SELECT MAX(id) FROM event").fetchone()[0]
+    return {"question_id": question_id, "reason": "Task done", "event_id": event_id}
+
+
 Prepare = Callable[[HubStore], Any]
 OK, FAILS = False, True
 # (operation, prepare, whether it fails): every operation succeeds at least
@@ -250,6 +263,7 @@ CASES: list[tuple[str, Prepare, bool]] = [
     ("log_decision", log_decision, OK),
     ("ask_user", ask_user, OK),
     ("ask_user", ask_user_too_large, FAILS),
+    ("withdraw_question", withdraw_question, OK),
 ]
 
 
@@ -282,8 +296,12 @@ async def alice_mcp(app: FastAPI, hub_store: HubStore) -> AsyncIterator[ClientSe
     gate = cast(MergeGate, StubGate())
     cast(OrchestratorOps, app.state.orchestrator).gate = gate
     server = create_mcp(hub_store, gate=gate)
-    async with create_connected_server_and_client_session(server._mcp_server) as session:
-        yield session
+    token = CALLER.set(Caller("alice", SESSION))
+    try:
+        async with create_connected_server_and_client_session(server._mcp_server) as session:
+            yield session
+    finally:
+        CALLER.reset(token)
 
 
 def snapshot(path: Path) -> sqlite3.Connection:

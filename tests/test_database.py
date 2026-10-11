@@ -11,7 +11,7 @@ from agent_hub.database import (
     database,
     initialize_database,
 )
-from agent_hub.store import HubStore
+from agent_hub.store import ConflictError, HubStore
 from agent_hub_common import (
     UNKNOWN,
     AgentProfile,
@@ -58,6 +58,37 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SHIPPED_VERSIONS = sorted(
     int(path.stem.removeprefix("schema_v")) for path in FIXTURES.glob("schema_v*.sql")
 )
+
+
+def test_v17_questions_preserve_answers_and_cannot_be_withdrawn(tmp_path: Path) -> None:
+    path = tmp_path / "v17.db"
+    _legacy_database(path, 17)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, created)"
+            " VALUES ('wf', 'Goal', 'escalated', 'now')"
+        )
+        connection.execute(
+            "INSERT INTO operator_question (workflow_id, asked, actor, session, question)"
+            " VALUES ('wf', 'now', 'alice', 's1', 'Wait?')"
+        )
+        connection.execute(
+            "INSERT INTO operator_question (workflow_id, asked, actor, question, answer,"
+            " answered, answered_by, resumed_by)"
+            " VALUES ('wf', 'then', 'alice', 'Merge?', 'yes', 'now', 'operator', 42)"
+        )
+    initialize_database(path)
+    initialize_database(path)
+    store = HubStore(path)
+    assert store.operator_answer(1)["status"] == "unanswered"
+    assert store.operator_answer(2)["answer"] == "yes"
+    assert store.status_summary()["operator_questions"] == 1
+    with pytest.raises(ConflictError, match="only task-wait"):
+        store.withdraw_question(1, "Moot", 1, actor="alice", session="s1")
+    with database(path) as connection:
+        row = connection.execute("SELECT * FROM operator_question WHERE id = 2").fetchone()
+        assert row["resumed_by"] == 42 and row["answered_by"] == "operator"
+        assert row["withdrawn"] is None and row["waiting_on_task_id"] is None
 
 
 def _legacy_database(path: Path, version: int) -> None:
@@ -945,7 +976,7 @@ def test_migration_from_v16_adds_stall_episodes_and_the_stalled_event_kind(
     store = HubStore(path)
     event = store.append_event(EventKind.AGENT_STALLED, {"agent": "bob"})
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 17
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 18
         kinds = connection.execute("SELECT id, kind FROM event ORDER BY id").fetchall()
         assert connection.execute("SELECT COUNT(*) FROM stall_episode").fetchone()[0] == 0
     assert [tuple(row) for row in kinds] == [(1, "task_completed"), (2, "agent_stalled")]

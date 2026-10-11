@@ -138,7 +138,8 @@ def create_worker_mcp(
         """Read an operator question and its answer straight from the hub.
 
         Returns {question_id, question, status, answer, answered}; status is
-        answered or unanswered. Use it to check an operator decision you are told of.
+        answered, unanswered or withdrawn. Only answered confirms an operator
+        decision; withdrawn grants no authority.
         """
         resolved = await resolve()
         return await invoke(

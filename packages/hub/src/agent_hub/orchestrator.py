@@ -35,6 +35,7 @@ OPERATIONS = (
     "set_workflow_status",
     "log_decision",
     "ask_user",
+    "withdraw_question",
 )
 
 
@@ -55,7 +56,7 @@ CALLER: ContextVar[Caller | None] = ContextVar("robomate_caller", default=None)
 
 
 class OrchestratorOps:
-    """The eleven orchestrator operations over one store and merge gate."""
+    """The orchestrator operations over one store and merge gate."""
 
     def __init__(
         self, store: HubStore, gate: ForgeGate | None = None, *, caller: Caller | None = None
@@ -196,14 +197,42 @@ class OrchestratorOps:
             )
         }
 
-    async def ask_user(self, question: str, options: list[str] | None = None) -> dict[str, int]:
+    async def ask_user(
+        self,
+        question: str,
+        options: list[str] | None = None,
+        waiting_on_task_id: str | None = None,
+    ) -> dict[str, int]:
         """Ask the operator a question and set the workflow to escalated.
 
         The answer arrives as a user_answered event naming the question_id.
         Ask again while escalated to add another question.
+        Bind waiting_on_task_id only for a wait/cancel/reassign question about
+        that unfinished task, never for restricted-action authorization.
         """
         caller = self._caller()
         question_id = self.store.ask_user(
-            question, options, actor=caller.actor, session=caller.session
+            question,
+            options,
+            actor=caller.actor,
+            session=caller.session,
+            waiting_on_task_id=waiting_on_task_id,
         )
         return {"question_id": question_id}
+
+    async def withdraw_question(
+        self,
+        question_id: Annotated[int, Field(gt=0)],
+        reason: str,
+        event_id: Annotated[int, Field(gt=0)],
+    ) -> dict[str, Any]:
+        """Withdraw your session's task-wait question after the task completes.
+
+        Cite its later task_completed event and explain why no decision remains.
+        Never withdraw a question still needing operator authority. This gives
+        no operator answer; resume explicitly when no questions remain open.
+        """
+        caller = self._caller()
+        return self.store.withdraw_question(
+            question_id, reason, event_id, actor=caller.actor, session=caller.session
+        )

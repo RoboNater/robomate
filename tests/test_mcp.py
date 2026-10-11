@@ -21,6 +21,7 @@ TOOLS = {
     "set_workflow_status",
     "log_decision",
     "ask_user",
+    "withdraw_question",
     "check_merge_gate",
 }
 

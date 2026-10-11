@@ -570,6 +570,20 @@ routine close-out. Asking in chat is no longer an escalation path: only an answe
 `robomate answer` is an operator decision. The inbox makes a headless orchestrator possible and
 is the channel a future dashboard uses.
 
+For a question solely about waiting for, canceling or reassigning an unfinished
+task, `ask_user` may also carry `waiting_on_task_id`. It records that task and
+the current event-id boundary. `withdraw_question(question_id, reason, event_id)`
+lets the asking actor/session close that question only after a later matching
+`task_completed` event and a completed task. DB schema v18 retains the withdrawal
+time, actor/session, reason and settling event; its answer fields stay NULL.
+The inbox and status count only questions neither answered nor withdrawn.
+`hub.operator_answer` reports `status: withdrawn`, never operator authority;
+`hub.answer` refuses a withdrawn question. The workflow remains escalated until
+explicitly resumed with no questions open, and the resume decision distinguishes
+operator answers from withdrawals. Authority questions must never carry a task-wait
+binding or be withdrawn to bypass review, CI or operator-only actions (#131/#132).
+Legacy questions and another session's questions still require an operator answer.
+
 ### 7.5 Resume (#18, reduced; #19)
 - **Hub restart:** `robomate up` in the owning checkout reuses the hub's state, `hub_id`, name,
   and port. Bridges reconnect with backoff under the same
@@ -602,9 +616,10 @@ the token budget (§11); list-changed per-role surfaces are an open decision (§
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role; refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
-| `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed; `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row names the questions answered, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
+| `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed; `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
 | `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
-| `ask_user(question, options?)` | orchestrator | **new** (#129): holds the question, sets `escalated` with an attributed decision row, returns `question_id`; asking again while escalated adds a question |
+| `ask_user(question, options?, waiting_on_task_id?)` | orchestrator | Holds the question, sets `escalated` with an attributed decision row, returns `question_id`; optional task-wait binding allows withdrawal on later completion (#171) |
+| `withdraw_question(question_id, reason, event_id)` | orchestrator | Closes the asking session's bound task-wait question on a later matching completion event, preserving withdrawal provenance without operator authority; resume remains explicit (#171) |
 | `robomate inbox [--json]` | operator (CLI, not MCP) | **new** (#130): lists open questions (id, time, asking actor, question, options) from `hub.questions` |
 | `robomate answer <id> <text>` / `--option N` | operator (CLI, not MCP) | **new** (#130): answers one question through `hub.answer` with the operator credential and prints a confirmation; `robomate status` shows the open-question count |
 

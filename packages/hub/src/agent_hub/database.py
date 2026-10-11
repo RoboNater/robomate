@@ -19,6 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v18 is #171's task-wait question binding and withdrawal provenance.
 # v17 is #144's `stall_episode` table and the `agent_stalled` event kind.
 # v16 is #132's `operator_question.resumed_by`, the decision that ended a
 # question's escalation. v15 is #129's `operator_question` table and the `user_answered` event kind.
@@ -31,7 +32,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 class DatabaseVersionError(RuntimeError):
@@ -221,6 +222,13 @@ CREATE TABLE IF NOT EXISTS operator_question (
     answered TEXT,
     answered_by TEXT,
     resumed_by INTEGER,
+    waiting_on_task_id TEXT,
+    asked_after_event_id INTEGER NOT NULL DEFAULT 0,
+    withdrawn TEXT,
+    withdrawn_by TEXT,
+    withdrawn_session TEXT,
+    withdrawal_reason TEXT,
+    settling_event_id INTEGER,
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
@@ -327,7 +335,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v16 -> v17).
+        # (any of v1-v17 -> v18).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -343,6 +351,7 @@ def initialize_database(path: Path) -> None:
         _migrate_operator_question(connection)
         _migrate_question_resumed_by(connection)
         _migrate_stall_episode(connection)
+        _migrate_question_withdrawal(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -356,6 +365,22 @@ def initialize_database(path: Path) -> None:
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate_question_withdrawal(connection: sqlite3.Connection) -> None:
+    # Legacy questions have no task binding and cannot be withdrawn.
+    columns = _columns(connection, "operator_question")
+    for name, spec in {
+        "waiting_on_task_id": "TEXT",
+        "asked_after_event_id": "INTEGER NOT NULL DEFAULT 0",
+        "withdrawn": "TEXT",
+        "withdrawn_by": "TEXT",
+        "withdrawn_session": "TEXT",
+        "withdrawal_reason": "TEXT",
+        "settling_event_id": "INTEGER",
+    }.items():
+        if name not in columns:
+            connection.execute(f"ALTER TABLE operator_question ADD COLUMN {name} {spec}")
 
 
 def _migrate_agent_profile(connection: sqlite3.Connection) -> None:

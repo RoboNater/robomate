@@ -576,7 +576,8 @@ class HubStore:
             )
             operator_questions = int(
                 connection.execute(
-                    "SELECT COUNT(*) AS n FROM operator_question WHERE answered IS NULL"
+                    "SELECT COUNT(*) AS n FROM operator_question"
+                    " WHERE answered IS NULL AND withdrawn IS NULL"
                 ).fetchone()["n"]
             )
         return {
@@ -664,7 +665,7 @@ class HubStore:
         actor and session name the caller (#128): the orchestrator's, or
         `operator` with no session. Only `ask_user` escalates, and the
         workflow leaves escalation only once no operator question is open
-        (#132); the decision row then names the questions answered.
+        (#132); the decision row then distinguishes answers from withdrawals.
         """
         if status == WorkflowStatus.ESCALATED:
             raise ValueError(
@@ -688,7 +689,7 @@ class HubStore:
                         f"workflow is escalated with open operator questions {_ids(open_ids)}; "
                         "wait for their user_answered events before changing its status"
                     )
-                # Every question is answered, so those this decision has not
+                # Every question is closed, so those this decision has not
                 # yet ended are the ones this escalation asked.
                 resumed = [
                     int(r["id"])
@@ -699,7 +700,21 @@ class HubStore:
                     )
                 ]
                 if resumed:
-                    rationale += f"; operator answered questions {_ids(resumed)}"
+                    answered = [
+                        int(r["id"])
+                        for r in connection.execute(
+                            "SELECT id FROM operator_question WHERE workflow_id = ?"
+                            " AND resumed_by IS NULL AND answered IS NOT NULL ORDER BY id",
+                            (workflow_id,),
+                        )
+                    ]
+                    withdrawn = [
+                        question_id for question_id in resumed if question_id not in answered
+                    ]
+                    if answered:
+                        rationale += f"; operator answered questions {_ids(answered)}"
+                    if withdrawn:
+                        rationale += f"; orchestrator withdrew questions {_ids(withdrawn)}"
             connection.execute(
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
@@ -741,7 +756,8 @@ class HubStore:
 
     def _open_question_ids(self, connection: Connection, workflow_id: str) -> list[int]:
         rows = connection.execute(
-            "SELECT id FROM operator_question WHERE workflow_id = ? AND answered IS NULL"
+            "SELECT id FROM operator_question WHERE workflow_id = ?"
+            " AND answered IS NULL AND withdrawn IS NULL"
             " ORDER BY id",
             (workflow_id,),
         )
@@ -771,7 +787,13 @@ class HubStore:
     # -- operator questions (#129) -------------------------------------------
 
     def ask_user(
-        self, question: str, options: Sequence[str] | None, *, actor: str, session: str | None
+        self,
+        question: str,
+        options: Sequence[str] | None,
+        *,
+        actor: str,
+        session: str | None,
+        waiting_on_task_id: str | None = None,
     ) -> int:
         """Hold a question for the operator and escalate the workflow.
 
@@ -791,11 +813,19 @@ class HubStore:
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             workflow_id = self._require_workflow(connection, "ask_user")
+            if waiting_on_task_id is not None:
+                task = self._require_open_task(connection, waiting_on_task_id)
+                if task.workflow_id != workflow_id:
+                    raise ConflictError("task belongs to another workflow")
+            event_boundary = connection.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM event"
+            ).fetchone()[0]
             now = self._now_iso()
             cursor = connection.execute(
                 "INSERT INTO operator_question"
-                " (workflow_id, asked, actor, session, question, options_json)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                " (workflow_id, asked, actor, session, question, options_json,"
+                " waiting_on_task_id, asked_after_event_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     workflow_id,
                     now,
@@ -803,6 +833,8 @@ class HubStore:
                     session,
                     question,
                     None if options is None else json.dumps(list(options)),
+                    waiting_on_task_id,
+                    event_boundary,
                 ),
             )
             question_id = int(cursor.lastrowid or 0)
@@ -824,13 +856,70 @@ class HubStore:
             )
         return question_id
 
+    def withdraw_question(
+        self, question_id: int, reason: str, event_id: int, *, actor: str, session: str | None
+    ) -> dict[str, Any]:
+        """Close a moot task-wait question without creating operator authority (#171)."""
+
+        if not reason.strip():
+            raise ValueError("reason must not be empty")
+        if _json_size_bytes(reason) > MAX_MESSAGE_PART_BYTES:
+            raise PayloadTooLargeError(f"reason exceeds maximum {MAX_MESSAGE_PART_BYTES} bytes")
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            question = connection.execute(
+                "SELECT * FROM operator_question WHERE id = ?", (question_id,)
+            ).fetchone()
+            if question is None:
+                raise NotFoundError(f"unknown operator question: {question_id}")
+            if question["actor"] != actor or question["session"] != session:
+                raise ConflictError("only the asking actor and session may withdraw a question")
+            if question["answered"] is not None or question["withdrawn"] is not None:
+                raise ConflictError(f"operator question {question_id} is already closed")
+            task_id = question["waiting_on_task_id"]
+            if task_id is None:
+                raise ConflictError(
+                    "only task-wait questions can be withdrawn; wait for the operator"
+                )
+            event = connection.execute("SELECT * FROM event WHERE id = ?", (event_id,)).fetchone()
+            if (
+                event is None
+                or event_id <= question["asked_after_event_id"]
+                or event["kind"] != EventKind.TASK_COMPLETED.value
+                or json.loads(event["payload_json"]).get("task_id") != task_id
+            ):
+                raise ConflictError(
+                    "withdrawal requires a later task_completed event for the waiting task"
+                )
+            task = self._require_task(connection, task_id)
+            if task.workflow_id != question["workflow_id"] or task.state != TaskState.COMPLETED:
+                raise ConflictError("the waiting task has not completed")
+            now = self._now_iso()
+            connection.execute(
+                "UPDATE operator_question SET withdrawn = ?, withdrawn_by = ?,"
+                " withdrawn_session = ?, withdrawal_reason = ?, settling_event_id = ? WHERE id = ?",
+                (now, actor, session, reason, event_id, question_id),
+            )
+            connection.execute(
+                "INSERT INTO decision (ts, summary, rationale, actor, session)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    now,
+                    f"Withdrew operator question {question_id}",
+                    f"Task {task_id} completed in event {event_id}; {reason}",
+                    actor,
+                    session,
+                ),
+            )
+        return {"question_id": question_id, "withdrawn": now, "event_id": event_id}
+
     def open_operator_questions(self) -> list[dict[str, Any]]:
         """The questions still waiting for the operator, oldest first."""
 
         with database(self.path) as connection:
             rows = connection.execute(
                 "SELECT id, asked, actor, question, options_json FROM operator_question"
-                " WHERE answered IS NULL ORDER BY id"
+                " WHERE answered IS NULL AND withdrawn IS NULL ORDER BY id"
             ).fetchall()
         return [
             {
@@ -844,22 +933,32 @@ class HubStore:
         ]
 
     def operator_answer(self, question_id: int) -> dict[str, Any]:
-        """One question with its answer, or `unanswered` while it waits."""
+        """One question's answer or unanswered/withdrawn status; withdrawal grants no authority."""
 
         with database(self.path) as connection:
             row = connection.execute(
-                "SELECT id, question, answer, answered FROM operator_question WHERE id = ?",
+                "SELECT id, question, answer, answered, withdrawn, withdrawal_reason,"
+                " settling_event_id FROM operator_question WHERE id = ?",
                 (question_id,),
             ).fetchone()
         if row is None:
             raise NotFoundError(f"unknown operator question: {question_id}")
-        return {
+        result = {
             "question_id": row["id"],
             "question": row["question"],
-            "status": "unanswered" if row["answered"] is None else "answered",
+            "status": "withdrawn"
+            if row["withdrawn"] is not None
+            else ("unanswered" if row["answered"] is None else "answered"),
             "answer": row["answer"],
             "answered": row["answered"],
         }
+        if row["withdrawn"] is not None:
+            result.update(
+                withdrawn=row["withdrawn"],
+                withdrawal_reason=row["withdrawal_reason"],
+                settling_event_id=row["settling_event_id"],
+            )
+        return result
 
     def answer_operator_question(self, question_id: int, answer: str) -> dict[str, Any]:
         """Record the operator's answer and queue `user_answered` for the orchestrator (#130).
@@ -880,12 +979,14 @@ class HubStore:
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT answered FROM operator_question WHERE id = ?", (question_id,)
+                "SELECT answered, withdrawn FROM operator_question WHERE id = ?", (question_id,)
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"unknown operator question: {question_id}")
             if row["answered"] is not None:
                 raise ConflictError(f"operator question {question_id} is already answered")
+            if row["withdrawn"] is not None:
+                raise ConflictError(f"operator question {question_id} is withdrawn")
             now = self._now_iso()
             connection.execute(
                 "UPDATE operator_question SET answer = ?, answered = ?, answered_by = ?"

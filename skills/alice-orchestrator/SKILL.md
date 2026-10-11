@@ -484,8 +484,13 @@ inputs, elapsed `max_wall_minutes`, or ambiguous resume state.
 
 Escalate only with `ask_user(question, options)`. It keeps the question, sets
 the workflow `escalated`, and returns the `question_id`. Ask one concrete
-question with a factual summary. Give two or three options, a one-sentence
-recommendation, and the exact worker prompt or action you will take if it is
+question with a factual summary. For a question solely about waiting for,
+canceling or reassigning an unfinished task, pass `waiting_on_task_id` to bind
+it to that task. Never bind a question seeking restricted-action authority:
+completion of work cannot authorize skipping review or CI, changing the
+approved head, or performing an operator-only action.
+Give two or three options, a one-sentence recommendation, and the exact
+worker prompt or action you will take if it is
 accepted so the operator can approve it in one word.
 
 Then keep calling `wait_for_event` until the `user_answered` event for that
@@ -493,6 +498,20 @@ Then keep calling `wait_for_event` until the `user_answered` event for that
 stop when the wall-time rail expires: that is itself an escalation. Handle and
 ack other events meanwhile, but do not release workers, advance the escalated
 route, or silently expand scope.
+
+If a later `task_completed` event settles a bound task-wait question and the
+remaining action is unambiguous under the existing scope and authority, call
+`withdraw_question(question_id, reason, event_id)` before resuming. For example,
+a completed implementer task settles whether to keep waiting or reassign it;
+continue through the normal review and CI gates. The tool accepts only the
+asking actor/session's question and a later completion event for its bound
+task. It records the reason and event without an operator answer. If any
+decision or operator authority is still needed, keep waiting for the answer;
+do not withdraw it. A withdrawn question grants no authority, and workers
+must never accept `status: withdrawn` as an operator answer. With no open
+questions, call `set_workflow_status(active, …)` and continue the normal route.
+Withdrawal does not resume automatically. On a new session, existing questions
+still need an operator answer.
 
 When the answer arrives, call `log_decision` citing the question id and the
 answer, then `set_workflow_status(active, …)` before executing the action the
