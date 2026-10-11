@@ -368,7 +368,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 11
+            assert len((await alice.list_tools()).tools) == 12
             assert len((await bob.list_tools()).tools) == 7
             created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
             assert created.structuredContent is not None

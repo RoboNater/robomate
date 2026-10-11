@@ -1670,7 +1670,7 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     assert manifest["providers"] == {"bob": "anthropic", "charlie": "google"}
     assert manifest["policy"]["role_policy"]["reviewer_harness_differs"] is True
 
-    # AntiGravity Alice has an isolated home with linked CLI auth, skill, and all 10 tools.
+    # AntiGravity Alice has an isolated home with linked CLI auth, skill, and all hub tools.
     alice_home = run_dir / "configs" / "alice-agy"
     assert (alice_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
     assert not (alice_home / ".ssh").exists()
