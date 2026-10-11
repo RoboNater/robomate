@@ -4,6 +4,11 @@
     "codex_auth": {
       "charlie": "codex: Logged in using ChatGPT"
     },
+    "credential_exposure": {
+      "codex/auth.json": {
+        "method": "absent"
+      }
+    },
     "gh_auth": "skipped",
     "merge": "skipped (local repository or --skip-github-checks)",
     "versions": {

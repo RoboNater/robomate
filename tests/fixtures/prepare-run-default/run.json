@@ -5,6 +5,11 @@
     "bob": "$RUN_DIR/configs/bob.mcp.json",
     "charlie": "$RUN_DIR/configs/codex/config.toml"
   },
+  "credential_exposure": {
+    "codex/auth.json": {
+      "method": "absent"
+    }
+  },
   "forge": "github",
   "harnesses": {
     "bob": "claude-code",

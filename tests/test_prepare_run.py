@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -29,6 +30,14 @@ assert SPEC and SPEC.loader
 PREPARE_RUN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE_RUN)
 RUN_COMMON = sys.modules["run_common"]
+
+
+class WindowsLinkError(OSError):
+    """A Windows error that remains typed on POSIX test runners."""
+
+    winerror: int
+
+
 _LAUNCHER_SPEC = importlib.util.spec_from_file_location(
     "alice_launcher", ROOT / "scripts/alice-launcher.py"
 )
@@ -40,6 +49,17 @@ _LAUNCHER_SPEC.loader.exec_module(ALICE_LAUNCHER)
 
 # A local run's start scripts are PowerShell on a Windows host, bash elsewhere.
 SCRIPT_SUFFIX = "ps1" if os.name == "nt" else "sh"
+
+
+@pytest.fixture(autouse=True)
+def isolated_credential_homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#179: every preparation test must stay away from operator credentials."""
+    for variable in ("CODEX_HOME", "AGY_HOME"):
+        home = tmp_path / variable.lower()
+        home.mkdir()
+        monkeypatch.setenv(variable, str(home))
+
+
 bash_launch_lines = pytest.mark.skipif(
     os.name == "nt",
     reason="a Windows host renders PowerShell launch lines "
@@ -1621,9 +1641,15 @@ def test_agy_home_links_cli_auth_without_operator_dotdirs(
     assert PREPARE_RUN.agy_login_status(unauthed).startswith("not logged in")
 
 
-def test_link_credential_reports_cross_volume_failure_actionably(
+@pytest.mark.parametrize(
+    ("winerror", "message"),
+    [(1314, "missing symlink privilege"), (1142, "hard-link limit reached"), (17, "cross-volume")],
+)
+def test_link_credential_fallback_and_accurate_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    winerror: int,
+    message: str,
 ) -> None:
     source = tmp_path / "source-token"
     source.write_text("secret\n")
@@ -1631,12 +1657,134 @@ def test_link_credential_reports_cross_volume_failure_actionably(
     target.parent.mkdir()
 
     def fail_link(*_args: Any, **_kwargs: Any) -> None:
-        raise OSError("cross-device link")
+        exc = WindowsLinkError("forced link failure")
+        exc.winerror = winerror
+        raise exc
 
     monkeypatch.setattr(Path, "symlink_to", fail_link)
     monkeypatch.setattr(os, "link", fail_link)
-    with pytest.raises(ValueError, match="place RUN_DIR on the drive holding AGY_HOME"):
+    with pytest.raises(ValueError, match=message) as error:
         RUN_COMMON.link_credential(source, target, "AGY_HOME")
+    assert f"WinError {winerror}" in str(error.value)
+    assert "--allow-credential-copy" in str(error.value)
+    assert not target.exists()
+    exposure = RUN_COMMON.link_credential(source, target, "AGY_HOME", allow_copy=True)
+    assert exposure["method"] == "copy"
+    assert message in exposure["hardlink_error"]
+    assert target.read_text() == source.read_text()
+    assert not target.samefile(source)
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_copy_failure_preserves_both_link_causes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.write_text("temporary test credential")
+    target = tmp_path / "target"
+
+    def fail_symlink(*args: Any, **kwargs: Any) -> None:
+        exc = WindowsLinkError("privilege unavailable")
+        exc.winerror = 1314
+        raise exc
+
+    def fail_hardlink(*args: Any, **kwargs: Any) -> None:
+        exc = WindowsLinkError("too many links")
+        exc.winerror = 1142
+        raise exc
+
+    def fail_copy(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError(13, "copy access denied")
+
+    monkeypatch.setattr(Path, "symlink_to", fail_symlink)
+    monkeypatch.setattr(os, "link", fail_hardlink)
+    monkeypatch.setattr(shutil, "copyfileobj", fail_copy)
+    with pytest.raises(ValueError) as error:
+        RUN_COMMON.link_credential(source, target, "CODEX_HOME", allow_copy=True)
+    assert "missing symlink privilege" in str(error.value)
+    assert "hard-link limit reached" in str(error.value)
+    assert "copy access denied" in str(error.value)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("code", [errno.EMLINK, errno.EXDEV, errno.EACCES])
+def test_posix_link_diagnostics(code: int) -> None:
+    expected = {
+        errno.EMLINK: "hard-link limit reached",
+        errno.EXDEV: "drive holding CODEX_HOME",
+        errno.EACCES: "check source and destination permissions",
+    }
+    detail = RUN_COMMON.credential_error(OSError(code, "synthetic failure"), "CODEX_HOME")
+    assert expected[code] in detail
+    assert f"errno {code}" in detail
+
+
+def test_hardlink_exposure_and_repreparation_preserve_login(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "auth.json"
+    source.write_text("synthetic login")
+    target = tmp_path / "run-auth.json"
+
+    def fail_symlink(*args: Any, **kwargs: Any) -> None:
+        exc = WindowsLinkError("no symlink privilege")
+        exc.winerror = 1314
+        raise exc
+
+    monkeypatch.setattr(Path, "symlink_to", fail_symlink)
+    exposure = RUN_COMMON.link_credential(source, target, "CODEX_HOME")
+    assert exposure["method"] == "hardlink"
+    assert "missing symlink privilege" in exposure["symlink_error"]
+    assert target.samefile(source)
+    assert RUN_COMMON.link_credential(source, target, "CODEX_HOME")["method"] == "hardlink"
+    target.unlink()
+    target.write_text("refreshed run login")
+    assert RUN_COMMON.link_credential(source, target, "CODEX_HOME")["method"] == "copy"
+    assert target.read_text() == "refreshed run login"
+
+
+def test_preparation_with_no_links_reports_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Native Windows acceptance uses only synthetic credentials and a fixture hub."""
+    (Path(os.environ["CODEX_HOME"]) / "auth.json").write_text("test credential")
+    agy = Path(os.environ["AGY_HOME"])
+    cli = agy / ".gemini/antigravity-cli"
+    cli.mkdir(parents=True)
+    for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
+        (cli / filename).write_text("test credential")
+    (agy / ".git-credentials").write_text("test credential")
+
+    def fail_symlink(*args: Any, **kwargs: Any) -> None:
+        exc = WindowsLinkError("forced missing privilege")
+        exc.winerror = 1314
+        raise exc
+
+    def fail_hardlink(*args: Any, **kwargs: Any) -> None:
+        exc = WindowsLinkError("forced link limit")
+        exc.winerror = 1142
+        raise exc
+
+    monkeypatch.setattr(Path, "symlink_to", fail_symlink)
+    monkeypatch.setattr(os, "link", fail_hardlink)
+    _, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness="codex",
+        bob_harness="antigravity",
+        allow_credential_copy=True,
+    )
+    exposures = manifest["credential_exposure"]
+    assert len(exposures) == 6
+    assert {entry["method"] for entry in exposures.values()} == {"copy"}
+    output = capsys.readouterr().out
+    assert '"credential_exposure"' in output and '"method": "copy"' in output
+    assert "test credential" not in output
 
 
 async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scripts(
