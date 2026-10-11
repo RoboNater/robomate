@@ -9,6 +9,7 @@ disturbances, and measurement stay in ``step6.py``.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import secrets
@@ -203,29 +204,98 @@ def link_or_copy(source: Path, destination: Path) -> None:
         shutil.copytree(source, destination)
 
 
-def link_credential(source: Path, target: Path, env_hint: str) -> None:
-    """Link ``source`` to ``target`` without copying it (symlink, then hard-link fallback)."""
-    if not source.exists() or target.exists():
-        return
+def credential_error(exc: OSError, env_hint: str) -> str:
+    """Explain link errors without assuming every failure is cross-volume."""
+    winerror = getattr(exc, "winerror", None)
+    code = f"WinError {winerror}" if winerror is not None else f"errno {exc.errno}"
+    if winerror == 1314:
+        remedy = "missing symlink privilege; enable Windows Developer Mode or use an elevated shell"
+    elif winerror == 1142 or exc.errno == errno.EMLINK:
+        remedy = "hard-link limit reached; remove unused run links or enable symlinks"
+    elif winerror == 17 or exc.errno == errno.EXDEV:
+        remedy = f"cross-volume link; place RUN_DIR on the drive holding {env_hint}"
+    elif exc.errno in (errno.EACCES, errno.EPERM) or winerror == 5:
+        remedy = "access denied; check source and destination permissions"
+    else:
+        remedy = "check filesystem link support and source/destination permissions"
+    return f"{code}: {exc.strerror or str(exc)} ({remedy})"
+
+
+def link_credential(
+    source: Path, target: Path, env_hint: str, *, allow_copy: bool = False
+) -> dict[str, str]:
+    """Expose a credential by link, or by an explicitly permitted private copy.
+
+    The returned metadata contains no source paths or contents. Copies and hard
+    links may diverge on token refresh; archive-run excludes all three methods.
+    """
+    if target.exists() or target.is_symlink():
+        if target.is_symlink():
+            return {"method": "symlink"}
+        if source.exists() and target.samefile(source):
+            return {"method": "hardlink"}
+        return {
+            "method": "copy",
+            "note": "existing run-local file; not refreshed from operator home",
+        }
+    if not source.exists():
+        return {"method": "absent"}
     try:
         target.symlink_to(source)
-    except OSError:
-        # Hard link: no extra copy of the credential and no symlink privilege.
+        return {"method": "symlink"}
+    except OSError as symlink_exc:
+        symlink_error = credential_error(symlink_exc, env_hint)
         try:
             os.link(source, target)
+            return {"method": "hardlink", "symlink_error": symlink_error}
         except OSError as exc:
-            raise ValueError(
-                f"cannot link {source} into {target.parent}; hard links need the same volume, "
-                f"so place RUN_DIR on the drive holding {env_hint}"
-            ) from exc
+            hardlink_error = credential_error(exc, env_hint)
+            detail = f"symlink: {symlink_error}; hard link: {hardlink_error}"
+            if not allow_copy:
+                raise ValueError(
+                    f"cannot expose {target.name}: {detail}; "
+                    "use --allow-credential-copy to permit a private copy fallback"
+                ) from exc
+            try:
+                # Exclusive creation prevents overwriting another file or following a link.
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    with os.fdopen(fd, "wb") as destination, source.open("rb") as origin:
+                        if os.name != "nt" and target.stat().st_mode & 0o077:
+                            raise PermissionError(
+                                errno.EACCES,
+                                "filesystem ignores mode 0600; "
+                                "use a filesystem with POSIX permissions",
+                            )
+                        shutil.copyfileobj(origin, destination)
+                except BaseException:
+                    target.unlink()
+                    raise
+            except OSError as copy_exc:
+                raise ValueError(
+                    f"cannot copy {target.name}: {credential_error(copy_exc, env_hint)}; {detail}"
+                ) from copy_exc
+            return {
+                "method": "copy",
+                "symlink_error": symlink_error,
+                "hardlink_error": hardlink_error,
+            }
 
 
-def codex_home(directory: Path, name: str) -> Path:
-    """Run-local CODEX_HOME that reuses login without copying it into a second file."""
+def codex_home(
+    directory: Path,
+    name: str,
+    *,
+    allow_copy: bool = False,
+    exposures: dict[str, Any] | None = None,
+) -> Path:
+    """Run-local CODEX_HOME with linked login or an opt-in copy fallback."""
     home = directory / name
     home.mkdir(exist_ok=True, mode=0o700)
     auth = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
-    link_credential(auth, home / "auth.json", "CODEX_HOME")
+    exposure = link_credential(auth, home / "auth.json", "CODEX_HOME", allow_copy=allow_copy)
+    if exposures is not None:
+        exposures[f"{name}/auth.json"] = exposure
     return home
 
 
@@ -234,15 +304,21 @@ def agy_mcp_path[P: PurePath](home: P) -> P:
     return home / ".gemini" / "config" / "mcp_config.json"
 
 
-def agy_home(directory: Path, name: str) -> Path:
-    """Run-local HOME/USERPROFILE for AntiGravity CLI (agy) that reuses login without copying.
+def agy_home(
+    directory: Path,
+    name: str,
+    *,
+    allow_copy: bool = False,
+    exposures: dict[str, Any] | None = None,
+) -> Path:
+    """Run-local HOME/USERPROFILE for AntiGravity with linked login or opt-in copies.
 
     Links ``antigravity-oauth-token`` (Linux), ``jetski_state.pbtxt``, and
     ``settings.json`` into ``.gemini/antigravity-cli``, plus ``.git-credentials``
     for HTTPS ``credential.helper store`` users. Operator dot-directories and
     ``.gitconfig`` stay in the real home (referenced via environment variables
-    in :func:`antigravity_launch`) so archiving the run directory never sweeps
-    up SSH keys or ``gh`` tokens.
+    in :func:`antigravity_launch`). Archive with archive-run.py to exclude the
+    exposed login files too, including hard links and copies.
     """
     home = directory / name
     cli_dir = home / ".gemini" / "antigravity-cli"
@@ -252,8 +328,19 @@ def agy_home(directory: Path, name: str) -> Path:
     source_home = Path(os.environ.get("AGY_HOME", str(Path.home())))
     source_cli = source_home / ".gemini" / "antigravity-cli"
     for filename in ("antigravity-oauth-token", "jetski_state.pbtxt", "settings.json"):
-        link_credential(source_cli / filename, cli_dir / filename, "AGY_HOME")
-    link_credential(source_home / ".git-credentials", home / ".git-credentials", "AGY_HOME")
+        exposure = link_credential(
+            source_cli / filename, cli_dir / filename, "AGY_HOME", allow_copy=allow_copy
+        )
+        if exposures is not None:
+            exposures[f"{name}/.gemini/antigravity-cli/{filename}"] = exposure
+    exposure = link_credential(
+        source_home / ".git-credentials",
+        home / ".git-credentials",
+        "AGY_HOME",
+        allow_copy=allow_copy,
+    )
+    if exposures is not None:
+        exposures[f"{name}/.git-credentials"] = exposure
     return home
 
 

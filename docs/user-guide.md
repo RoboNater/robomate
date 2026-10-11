@@ -53,6 +53,55 @@ Worker clones carry an owner-only `.git/robo-agents-workspace.json` identity. Ne
 
 ## Start the hub and prepare a run
 
+Run preparation exposes Codex's `auth.json` and AntiGravity's CLI login files
+and `.git-credentials` in isolated harness homes under `configs/`. It tries
+a symlink, then a hard link. On Windows, enabling Developer Mode permits
+symlinks without elevation and avoids accumulating hard links against NTFS's
+per-file link limit. A hard link also requires the source and run to be on
+the same volume. Preflight's `checks.credential_exposure` and `run.json` record
+each file's method (`symlink`, `hardlink`, `copy`, or `absent`) and link-failure
+causes and remedies, without credential contents or operator-home paths.
+
+If both link methods fail, pass **`--allow-credential-copy`** to
+`scripts/prepare-run.py` to opt into the supported copy fallback. This flag
+also works with `--worker-only` on the worker host; consent is local to that
+host, so pass it there separately. Copies are created exclusively with mode
+0600 on POSIX; on native Windows they inherit the run directory's ACL, as
+other generated private files do. Use a private run directory whose Windows
+ACL grants access only to the operator and trusted administrators. Preparation
+refuses a POSIX copy on a filesystem that ignores mode 0600.
+
+Copies are snapshots. Token refresh in a run does not update the operator's
+login. Hard links can also drift if a harness refresh replaces its login file
+by rename rather than rewriting it in place. Codex's refresh behavior has not
+been verified here. If a run's login expires, reauthenticate that isolated home
+or prepare a fresh run. Preparation reuses existing run-local files rather
+than overwriting a refreshed login. Remove copied credentials when retiring a
+run, after its agents have stopped; never remove the operator's source files.
+
+### Archive a stopped run
+
+Use the credential-excluding helper instead of archiving the entire directory
+with an unrestricted tar, zip, or directory copy:
+
+```sh
+uv run --locked python scripts/archive-run.py --run-dir /absolute/path/to/my-run --output /absolute/path/to/my-run.tar.gz
+tar -tzf /absolute/path/to/my-run.tar.gz
+```
+
+The same Python command works in native PowerShell with Windows paths. The
+output must be a new file outside the run. The helper excludes `auth.json`,
+`antigravity-oauth-token`, `jetski_state.pbtxt`, `.git-credentials`, and only
+the AntiGravity `.gemini/antigravity-cli/settings.json` path (Claude settings
+remain). It also excludes `.robomate` state, files named `token` or
+`operator-token`, and all symlinks. These exclusions apply equally to copies
+and hard links, including older runs. Credentials remain in the stopped run;
+after checking the archive, remove the retired run directory using your usual
+operator procedure. Logs and task data may still be sensitive: this local
+archive is not a scrubber for publishing run logs.
+
+### Prepare the run
+
 A hub belongs to the checkout where `robomate up` runs: a clone's main
 checkout or one of its linked worktrees. Until M2 supports sequential workflows
 in one hub, give each run a fresh checkout of the target repository. Keep it

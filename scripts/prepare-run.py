@@ -4,7 +4,7 @@
 Takes a target repository and a run directory and produces the layout the
 user guide describes: bootstrapped bob/charlie clones, a connection to an
 existing ``robomate up`` hub, rendered MCP configs from the ``runtimes/`` templates,
-a run-local Codex home with its auth link, rendered worker prompts, cheap
+a run-local Codex home with its exposed login, rendered worker prompts, cheap
 prerequisite checks, and one ``start-<agent>.sh`` script per agent plus the
 Alice kickoff prompt.
 
@@ -1747,10 +1747,14 @@ def write_worker_config(
     configs: Path,
     *,
     secret: bool = False,
+    allow_credential_copy: bool = False,
+    exposures: dict[str, Any] | None = None,
 ) -> Path:
     """Write ``name``'s worker MCP config under ``configs`` and return its path."""
     if harness == "codex":
-        home = codex_home(configs, codex_home_name(name))
+        home = codex_home(
+            configs, codex_home_name(name), allow_copy=allow_credential_copy, exposures=exposures
+        )
         worker_args = ["run", "--locked", "--project", root, "robomate", "mcp", "--role", "worker"]
         text = render_codex_config(env, worker_args)
         target = home / "config.toml"
@@ -1763,7 +1767,9 @@ def write_worker_config(
         mcp = render_opencode_config(env, root, model=model)
         target = configs / f"{name}.opencode.json"
     elif harness == "antigravity":
-        home = agy_home(configs, agy_home_name(name))
+        home = agy_home(
+            configs, agy_home_name(name), allow_copy=allow_credential_copy, exposures=exposures
+        )
         mcp = render_antigravity_mcp(env, root)
         target = agy_mcp_path(home)
     else:
@@ -1796,6 +1802,7 @@ def render_worker_bundle(
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
+    allow_credential_copy: bool = False,
 ) -> dict[str, Any]:
     """Render one worker's config, prompt and start script for the host that runs it.
 
@@ -1826,7 +1833,18 @@ def render_worker_bundle(
         (run_dir / f"{name}-telemetry.jsonl").as_posix(),
         hub_url,
     )
-    written = write_worker_config(name, harness, env, model, root.as_posix(), configs, secret=True)
+    exposures: dict[str, Any] = {}
+    written = write_worker_config(
+        name,
+        harness,
+        env,
+        model,
+        root.as_posix(),
+        configs,
+        secret=True,
+        allow_credential_copy=allow_credential_copy,
+        exposures=exposures,
+    )
     config = run_dir / written.relative_to(out_dir)
     (out_dir / f"{name}.prompt.md").write_text(
         render_worker_prompt(name) + prompt_sections(name, harness), encoding="utf-8"
@@ -1874,6 +1892,7 @@ def render_worker_bundle(
     )
     write_script(out_dir / f"resume-{name}.sh", start_script(resume))
     bundle = {
+        "credential_exposure": exposures,
         "config": config.as_posix(),
         "prompt": (run_dir / f"{name}.prompt.md").as_posix(),
         "launch": launch,
@@ -2017,6 +2036,7 @@ def prepare(
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
+    allow_credential_copy: bool = False,
 ) -> dict[str, Any]:
     if not (isinstance(stall_after_min, int | float) and 0 < stall_after_min < float("inf")):
         raise ValueError("--stall-after-min must be a positive number of minutes")
@@ -2346,6 +2366,7 @@ def prepare(
     ):
         raise ValueError("bob and charlie must have distinct workspace IDs")
 
+    exposures: dict[str, Any] = {}
     configs = run_dir / "configs"
     configs.mkdir(mode=0o700, exist_ok=True)
 
@@ -2381,7 +2402,16 @@ def prepare(
             network["hub_url"],
         )
         rendered_configs[name] = str(
-            write_worker_config(name, harness, env, models[name], str(ROOT), configs)
+            write_worker_config(
+                name,
+                harness,
+                env,
+                models[name],
+                str(ROOT),
+                configs,
+                allow_credential_copy=allow_credential_copy,
+                exposures=exposures,
+            )
         )
 
     hub_env = {
@@ -2400,7 +2430,9 @@ def prepare(
         "orchestrator",
     ]
     if alice_harness == "codex":
-        alice_home = codex_home(configs, codex_home_name("alice"))
+        alice_home = codex_home(
+            configs, codex_home_name("alice"), allow_copy=allow_credential_copy, exposures=exposures
+        )
         (alice_home / "skills").mkdir(exist_ok=True)
         link_or_copy(
             ROOT / "skills/alice-orchestrator", alice_home / "skills" / "alice-orchestrator"
@@ -2417,7 +2449,9 @@ def prepare(
             render_opencode_config(hub_env, model=alice_model, role="orchestrator"),
         )
     elif alice_harness == "antigravity":
-        alice_home = agy_home(configs, agy_home_name("alice"))
+        alice_home = agy_home(
+            configs, agy_home_name("alice"), allow_copy=allow_credential_copy, exposures=exposures
+        )
         skills_dir = alice_home / ".gemini" / "config" / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         link_or_copy(ROOT / "skills/alice-orchestrator", skills_dir / "alice-orchestrator")
@@ -2632,6 +2666,7 @@ def prepare(
             "resume_total_s": resume_total_s,
             "resume_series_reset_s": resume_series_reset_s,
         }
+    manifest["credential_exposure"] = exposures
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
@@ -2648,6 +2683,7 @@ def prepare(
 
     auth_key = "glab_auth" if forge == "gitlab" else "gh_auth"
     checks: dict[str, Any] = {
+        "credential_exposure": exposures,
         auth_key: "ok" if not skip_github_checks else "skipped",
         "versions": versions,
         "merge": merge_note,
@@ -2761,6 +2797,7 @@ def prepare_worker(
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
+    allow_credential_copy: bool = False,
 ) -> dict[str, Any]:
     """Render one remote worker on the host that runs it (``--worker-only``).
 
@@ -2813,6 +2850,7 @@ def prepare_worker(
         run_dir,
         effort,
         auto_start,
+        allow_credential_copy=allow_credential_copy,
         max_resumes=max_resumes,
         resume_delay_s=resume_delay_s,
         resume_max_delay_s=resume_max_delay_s,
@@ -2850,8 +2888,12 @@ def prepare_worker(
             },
         },
     }
+    manifest["credential_exposure"] = bundle["credential_exposure"]
     save(manifest_path, manifest)
-    checks: dict[str, Any] = {"versions": versions}
+    checks: dict[str, Any] = {
+        "versions": versions,
+        "credential_exposure": bundle["credential_exposure"],
+    }
     if harness == "codex":
         home_name = codex_home_name(name)
         checks["codex_auth"] = {
@@ -2906,6 +2948,12 @@ def main() -> None:
         help="text or Markdown statement of work used as Alice's goal (not with --issue)",
     )
     parser.add_argument("--account", default=None)
+    parser.add_argument(
+        "--allow-credential-copy",
+        action="store_true",
+        help="permit private credential copies if symlinks and hard links both fail; "
+        "exclude these from archives",
+    )
     parser.add_argument(
         "--roadmap",
         default=None,
@@ -3099,6 +3147,7 @@ def main() -> None:
                 resume_max_delay_s=args.resume_max_delay_s,
                 resume_total_s=args.resume_total_s,
                 resume_series_reset_s=args.resume_series_reset_s,
+                allow_credential_copy=args.allow_credential_copy,
             )
         except ValueError as exc:
             sys.exit(f"prepare-run: error: {exc}")
@@ -3145,6 +3194,7 @@ def main() -> None:
             resume_max_delay_s=args.resume_max_delay_s,
             resume_total_s=args.resume_total_s,
             resume_series_reset_s=args.resume_series_reset_s,
+            allow_credential_copy=args.allow_credential_copy,
         )
     except ValueError as exc:
         sys.exit(f"prepare-run: error: {exc}")
