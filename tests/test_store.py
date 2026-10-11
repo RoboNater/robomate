@@ -988,3 +988,141 @@ def test_decision_text_cannot_move_which_questions_a_resume_names(store: HubStor
     store.ask_user("Merge?", None, actor="alice", session=None)
     store.log_decision("Spoof", "Workflow status set to escalated", actor="alice", session=None)
     assert _resume(store, "Go") == "Workflow status set to active; operator answered questions 1"
+
+
+def _task_wait_question(store: HubStore) -> tuple[str, int]:
+    store.check_in("bob")
+    task_id = assign(store)
+    question_id = store.ask_user(
+        "Keep waiting or reassign?",
+        None,
+        actor="alice",
+        session="s1",
+        waiting_on_task_id=task_id,
+    )
+    return task_id, question_id
+
+
+def _complete_waiting_task(store: HubStore, task_id: str) -> int:
+    store.submit_result(task_id, "bob", TaskState.COMPLETED, "Done")
+    with database(store.path) as connection:
+        return int(connection.execute("SELECT MAX(id) FROM event").fetchone()[0])
+
+
+def test_withdrawal_retains_evidence_and_resumes_without_authority(store: HubStore) -> None:
+    # Completion and question may have identical timestamps; event ids order them.
+    store.clock = FakeClock()
+    task_id, question_id = _task_wait_question(store)
+    event_id = _complete_waiting_task(store, task_id)
+    store.withdraw_question(
+        question_id, "The task completed", event_id, actor="alice", session="s1"
+    )
+    assert store.open_operator_questions() == []
+    assert store.status_summary()["operator_questions"] == 0
+    answer = store.operator_answer(question_id)
+    assert answer["status"] == "withdrawn"
+    assert answer["answer"] is None and answer["answered"] is None
+    assert answer["settling_event_id"] == event_id
+    with pytest.raises(ConflictError, match="already closed"):
+        store.withdraw_question(question_id, "Again", event_id, actor="alice", session="s1")
+    with pytest.raises(ConflictError, match="withdrawn"):
+        store.answer_operator_question(question_id, "reassign")
+    with pytest.raises(ConflictError, match="escalated"):
+        store.refuse_while_escalated("check_merge_gate")
+    store.set_workflow_status(WorkflowStatus.ACTIVE, "Review result", actor="alice", session="s1")
+    store.refuse_while_escalated("check_merge_gate")
+    with database(store.path) as connection:
+        row = connection.execute("SELECT * FROM operator_question").fetchone()
+        assert (row["withdrawn_by"], row["withdrawn_session"], row["withdrawal_reason"]) == (
+            "alice",
+            "s1",
+            "The task completed",
+        )
+        assert row["withdrawn"] and row["resumed_by"]
+        decision = connection.execute(
+            "SELECT rationale FROM decision WHERE id = ?", (row["resumed_by"],)
+        ).fetchone()
+        assert decision[0] == "Workflow status set to active; orchestrator withdrew questions 1"
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM event WHERE kind = 'user_answered'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_evidence", ["missing", "old", "wrong_task", "wrong_kind", "unfinished"]
+)
+def test_withdrawal_rejects_unsettling_events(store: HubStore, bad_evidence: str) -> None:
+    store.check_in("bob")
+    task_id = assign(store)
+    old = store.append_event(EventKind.TASK_COMPLETED, {"task_id": task_id}).id
+    question_id = store.ask_user(
+        "Wait?", None, actor="alice", session="s1", waiting_on_task_id=task_id
+    )
+    event_id = old
+    if bad_evidence == "missing":
+        event_id = 999
+    elif bad_evidence != "old":
+        kind = EventKind.TASK_FAILED if bad_evidence == "wrong_kind" else EventKind.TASK_COMPLETED
+        event_id = store.append_event(
+            kind, {"task_id": "another" if bad_evidence == "wrong_task" else task_id}
+        ).id
+    if bad_evidence != "unfinished":
+        _complete_waiting_task(store, task_id)
+    with pytest.raises(ConflictError):
+        store.withdraw_question(question_id, "Moot", event_id, actor="alice", session="s1")
+    assert store.operator_answer(question_id)["status"] == "unanswered"
+    with database(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("actor,session", [("alice", "s2"), ("other", "s1")])
+def test_only_the_asking_session_can_withdraw(store: HubStore, actor: str, session: str) -> None:
+    task_id, question_id = _task_wait_question(store)
+    event_id = _complete_waiting_task(store, task_id)
+    with pytest.raises(ConflictError, match="asking actor and session"):
+        store.withdraw_question(question_id, "Moot", event_id, actor=actor, session=session)
+
+
+def test_withdrawal_does_not_clear_an_authority_question(store: HubStore) -> None:
+    task_id, question_id = _task_wait_question(store)
+    authority_id = store.ask_user("Skip CI?", None, actor="alice", session="s1")
+    event_id = _complete_waiting_task(store, task_id)
+    with pytest.raises(ConflictError, match="only task-wait"):
+        store.withdraw_question(authority_id, "Task done", event_id, actor="alice", session="s1")
+    store.withdraw_question(question_id, "Moot", event_id, actor="alice", session="s1")
+    with pytest.raises(ConflictError, match="open operator questions 2"):
+        store.set_workflow_status(WorkflowStatus.ACTIVE, "Go", actor="alice", session="s1")
+    store.answer_operator_question(authority_id, "No, run CI")
+    store.set_workflow_status(WorkflowStatus.ACTIVE, "Run CI", actor="alice", session="s1")
+    with database(store.path) as connection:
+        rationale = connection.execute(
+            "SELECT rationale FROM decision ORDER BY id DESC"
+        ).fetchone()[0]
+    assert (
+        rationale == "Workflow status set to active; operator answered questions 2;"
+        " orchestrator withdrew questions 1"
+    )
+
+
+def test_withdrawal_rejects_closed_questions_and_invalid_reasons(store: HubStore) -> None:
+    task_id, question_id = _task_wait_question(store)
+    event_id = _complete_waiting_task(store, task_id)
+    with pytest.raises(ValueError, match="empty"):
+        store.withdraw_question(question_id, " ", event_id, actor="alice", session="s1")
+    store.answer_operator_question(question_id, "wait")
+    with pytest.raises(ConflictError, match="already closed"):
+        store.withdraw_question(question_id, "Moot", event_id, actor="alice", session="s1")
+
+
+def test_task_wait_binding_requires_an_open_task(store: HubStore) -> None:
+    store.check_in("bob")
+    task_id = assign(store)
+    _complete_waiting_task(store, task_id)
+    for task in (task_id, "missing"):
+        with pytest.raises((ConflictError, NotFoundError)):
+            store.ask_user("Wait?", None, actor="alice", session="s1", waiting_on_task_id=task)
+    assert store.open_operator_questions() == []
+    assert store.get_state()["workflow"]["status"] == "active"

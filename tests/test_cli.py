@@ -20,7 +20,7 @@ import pytest
 import robomate.cli as cli
 from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
-from agent_hub_common import AgentProfile
+from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
 from agent_hub_common.discovery import read_hub_json, write_hub_json
 from agent_hub_common.registry import process_alive, register, registry_path
 from robomate.cli import _bind
@@ -980,6 +980,31 @@ def test_inbox_answer_and_status_serve_the_operator(
             {"question_id": 1, "answer": "wait"},
             {"question_id": 2, "answer": "needs-triage"},
         ]
+
+        # #171: a moot task-wait question disappears without an operator answer.
+        hub_store.check_in("bob")
+        hub_store.set_workflow_status(
+            WorkflowStatus.ACTIVE, "Continue", actor="alice", session="s1"
+        )
+        task = hub_store.assign_task("bob", "implementer", "Fix", "Do it")
+        question_id = hub_store.ask_user(
+            "Still waiting?", None, actor="alice", session="s1", waiting_on_task_id=task.id
+        )
+        assert [q["question_id"] for q in json.loads(robomate("inbox", "--json").stdout)] == [
+            question_id
+        ]
+        hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Done")
+        with database(database_path) as connection:
+            event_id = connection.execute("SELECT MAX(id) FROM event").fetchone()[0]
+        hub_store.withdraw_question(
+            question_id, "Task completed", event_id, actor="alice", session="s1"
+        )
+        assert robomate("inbox").stdout == "No open questions.\n"
+        assert json.loads(robomate("inbox", "--json").stdout) == []
+        assert json.loads(robomate("status", "--json").stdout)["operator_questions"] == 0
+        assert "Operator questions: 0\n" in robomate("status").stdout
+        late = robomate("answer", str(question_id), "reassign")
+        assert late.returncode == 1 and "withdrawn" in late.stderr
     finally:
         stop(root, env, process)
 

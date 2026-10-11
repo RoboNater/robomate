@@ -136,6 +136,7 @@ ALICE_TOOLS = [
     "set_workflow_status",
     "log_decision",
     "ask_user",
+    "withdraw_question",
 ]
 DEFAULT_HUB_HOST = "127.0.0.1"
 DEFAULT_HUB_PORT = 8420

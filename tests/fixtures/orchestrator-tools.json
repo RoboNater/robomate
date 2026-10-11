@@ -347,7 +347,7 @@
   },
   {
     "name": "ask_user",
-    "description": "Ask the operator a question and set the workflow to escalated.\n\n        The answer arrives as a user_answered event naming the question_id.\n        Ask again while escalated to add another question.\n        ",
+    "description": "Ask the operator a question and set the workflow to escalated.\n\n        The answer arrives as a user_answered event naming the question_id.\n        Ask again while escalated to add another question.\n        Bind waiting_on_task_id only for a wait/cancel/reassign question about\n        that unfinished task, never for restricted-action authorization.\n        ",
     "inputSchema": {
       "properties": {
         "question": {
@@ -368,6 +368,18 @@
           ],
           "default": null,
           "title": "Options"
+        },
+        "waiting_on_task_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Waiting On Task Id"
         }
       },
       "required": [
@@ -381,6 +393,40 @@
         "type": "integer"
       },
       "title": "ask_userDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "withdraw_question",
+    "description": "Withdraw your session's task-wait question after the task completes.\n\n        Cite its later task_completed event and explain why no decision remains.\n        Never withdraw a question still needing operator authority. This gives\n        no operator answer; resume explicitly when no questions remain open.\n        ",
+    "inputSchema": {
+      "properties": {
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "title": "Question Id",
+          "type": "integer"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "event_id": {
+          "exclusiveMinimum": 0,
+          "title": "Event Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "question_id",
+        "reason",
+        "event_id"
+      ],
+      "title": "withdraw_questionArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "withdraw_questionDictOutput",
       "type": "object"
     }
   }

@@ -17,6 +17,7 @@ import pytest
 from agent_hub.accounting import CallRecord
 from agent_hub.database import database
 from agent_hub.store import HubStore
+from agent_hub_common import TaskState
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub
 from fastapi import FastAPI
@@ -367,7 +368,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 11
+            assert len((await alice.list_tools()).tools) == 12
             assert len((await bob.list_tools()).tools) == 7
             created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
             assert created.structuredContent is not None
@@ -519,5 +520,27 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
 
                 with pytest.raises(ToolError, match="unknown operator question: 99"):
                     await _call(worker, "get_operator_answer", question_id=99)
+
+                await _call(alice, "set_workflow_status", status="active", summary="Answered")
+                hub_store.check_in("bob")
+                task = hub_store.assign_task("bob", "implementer", "Fix", "Do it")
+                bound = await _call(
+                    alice, "ask_user", question="Wait or reassign?", waiting_on_task_id=task.id
+                )
+                hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Done")
+                with database(hub_store.path) as connection:
+                    event_id = connection.execute("SELECT MAX(id) FROM event").fetchone()[0]
+                await _call(
+                    alice,
+                    "withdraw_question",
+                    question_id=bound["question_id"],
+                    reason="Task completed",
+                    event_id=event_id,
+                )
+                withdrawn = await _call(
+                    worker, "get_operator_answer", question_id=bound["question_id"]
+                )
+                assert withdrawn["status"] == "withdrawn" and withdrawn["answer"] is None
+                await _call(alice, "set_workflow_status", status="active", summary="Review result")
             finally:
                 await bridge.close()

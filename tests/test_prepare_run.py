@@ -190,11 +190,14 @@ def test_codex_alice_uses_orchestrator_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from agent_hub.orchestrator import OPERATIONS
+
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex")
     config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
     server = config["mcp_servers"]["robomate"]
     assert server["args"][-3:] == ["mcp", "--role", "orchestrator"]
     assert set(server["enabled_tools"]) == set(PREPARE_RUN.ALICE_TOOLS)
+    assert set(server["enabled_tools"]) == set(OPERATIONS)
 
 
 def test_missing_or_different_hub_is_rejected(
@@ -1667,7 +1670,7 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     assert manifest["providers"] == {"bob": "anthropic", "charlie": "google"}
     assert manifest["policy"]["role_policy"]["reviewer_harness_differs"] is True
 
-    # AntiGravity Alice has an isolated home with linked CLI auth, skill, and all 10 tools.
+    # AntiGravity Alice has an isolated home with linked CLI auth, skill, and all hub tools.
     alice_home = run_dir / "configs" / "alice-agy"
     assert (alice_home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token").exists()
     assert not (alice_home / ".ssh").exists()
