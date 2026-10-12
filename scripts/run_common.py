@@ -96,6 +96,11 @@ MODEL_FAMILIES = (
     ("ministral", "mistral"),
     ("pixtral", "mistral"),
     ("llama", "meta"),
+    ("muse-spark", "meta"),
+    ("nemotron", "nvidia"),
+    ("mimo", "xiaomi"),
+    ("longcat", "meituan"),
+    ("ling-", "inclusionai"),
 )
 
 
