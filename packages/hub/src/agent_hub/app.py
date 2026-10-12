@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from agent_hub_common import HubSettings, load_or_create_token, read_token_file
+from agent_hub_common.accounting import CallRecord
 from agent_hub_common.clock import utcnow_iso
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -17,7 +18,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .accounting import (
     A2ACall,
     CallAccounting,
-    CallRecord,
     a2a_tool,
     begin_a2a,
     counted_stream,

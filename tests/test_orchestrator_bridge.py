@@ -8,22 +8,24 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from importlib.metadata import requires
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from agent_hub.accounting import CallRecord
 from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
+from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.fastmcp.exceptions import ToolError
+from packaging.requirements import Requirement
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 from worker_mcp.orchestrator import (
@@ -115,6 +117,21 @@ async def test_tool_list_matches_legacy_fixture() -> None:
     fixture = Path(__file__).parent / "fixtures/orchestrator-tools.json"
     assert actual == json.loads(fixture.read_text(encoding="utf-8"))
     assert bridge._client is None  # Listing tools does not discover or connect.
+
+
+def test_worker_mcp_does_not_import_the_hub() -> None:
+    """#47: a worker-only install needs neither the agent-hub package nor its server."""
+
+    names = {Requirement(line).name for line in requires("worker-mcp") or []}
+    assert "agent-hub-common" in names and "agent-hub" not in names
+    script = (
+        "import sys, worker_mcp.main, worker_mcp.orchestrator, worker_mcp.tools\n"
+        "print(sorted(m for m in sys.modules if m.partition('.')[0] == 'agent_hub'))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True, timeout=60
+    )
+    assert result.stdout.strip() == "[]"
 
 
 async def test_discovery_failure_is_a_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:

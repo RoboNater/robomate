@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
-from agent_hub.accounting import CallRecord, hub_id
+from agent_hub_common.accounting import CallRecord, hub_id
 from agent_hub_common.clock import utcnow_iso
 
 MCP_METHODS = frozenset({"initialize", "tools/list", "ping", "resources/list", "prompts/list"})

@@ -16,9 +16,10 @@ import httpx
 import pytest
 from agent_hub.mcp import create_mcp
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, MergeGate, PrState
-from agent_hub.orchestrator import CALLER, OPERATIONS, Caller, OrchestratorOps
+from agent_hub.orchestrator import CALLER, Caller, OrchestratorOps
 from agent_hub.store import MAX_CHECK_NAME_CHARS, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, TaskState
+from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from conftest import SESSION, rpc
 from fastapi import FastAPI
 from mcp import ClientSession
@@ -96,15 +97,35 @@ async def test_the_tool_list_is_unchanged_by_the_move(tmp_path: Path) -> None:
     assert served == json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
-def test_operations_are_exactly_the_public_methods() -> None:
+@pytest.mark.parametrize("cls", [OrchestratorTools, OrchestratorOps])
+def test_operations_are_exactly_the_public_methods(cls: type) -> None:
     public = {
         name
-        for name, member in inspect.getmembers(OrchestratorOps, inspect.iscoroutinefunction)
+        for name, member in inspect.getmembers(cls, inspect.iscoroutinefunction)
         if not name.startswith("_")
     }
 
     assert public == set(OPERATIONS)
     assert len(OPERATIONS) == 12
+
+
+def test_the_hub_implements_every_shared_tool() -> None:
+    # #47: the signatures and descriptions live in agent_hub_common, and the
+    # hub overrides each one rather than inheriting its NotImplementedError.
+    for name in OPERATIONS:
+        method = OrchestratorOps.__dict__[name]
+        tool = getattr(OrchestratorTools, name)
+        assert inspect.signature(method) == inspect.signature(tool)
+        assert method.__doc__ == tool.__doc__
+
+
+def test_a_drifted_signature_is_refused_at_class_creation() -> None:
+    with pytest.raises(TypeError, match=r"Drifted.reply does not match its tool signature"):
+
+        class Drifted(OrchestratorTools):
+            # The drift under test is the very override mypy rejects.
+            async def reply(self, task_id: str, text: str) -> dict[str, bool]:  # type: ignore[override]
+                return {"ok": True}
 
 
 # -- parity: the same operation over stdio MCP and over /rpc -----------------
