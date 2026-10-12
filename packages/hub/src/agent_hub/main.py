@@ -13,6 +13,7 @@ from typing import Any
 
 import uvicorn
 from agent_hub_common import HubSettings
+from agent_hub_common.stdio import escape_unencodable_output
 
 from .app import create_app
 
@@ -88,6 +89,7 @@ class HubServer(uvicorn.Server):
 
 
 def main() -> None:
+    escape_unencodable_output()
     logging.basicConfig(level=logging.INFO)
     settings = HubSettings.from_env()
     with socket.socket(socket.AF_INET6 if ":" in settings.host else socket.AF_INET) as sock:

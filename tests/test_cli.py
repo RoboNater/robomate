@@ -1,6 +1,7 @@
 """End-to-end operator CLI tests in a disposable Git checkout."""
 
 import errno
+import io
 import json
 import os
 import queue
@@ -16,6 +17,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 import robomate.cli as cli
 from agent_hub.database import database, initialize_database
@@ -161,6 +163,56 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
         if first.poll() is None:
             first.terminate()
             first.wait(timeout=10)
+
+
+def test_up_redirected_output_escapes_unencodable_checkout(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    root, env = repository
+    root = root.parent / "drivér → ā"
+    init_checkout(root)
+    # Force the redirected Windows code page on every platform so CI also
+    # exercises this regression when its Python defaults to UTF-8.
+    env = {**env, "PYTHONIOENCODING": "cp1252:strict"}
+    with socket.socket() as available:
+        available.bind(("127.0.0.1", 0))
+        port = available.getsockname()[1]
+    process = start(root, env, "--port", str(port))
+    try:
+        info = await_hub(root, process)
+        # Startup metadata is written before the path output; wait for the last
+        # flushed line to establish that startup printing has finished.
+        output_path = Path(process._stdout_log)  # type: ignore[attr-defined]
+        for _ in range(200):
+            output = output_path.read_bytes().decode("cp1252")
+            if "ROBOMATE_TOKEN_FILE=" in output:
+                break
+            assert process.poll() is None, _hub_stderr(process)
+            time.sleep(0.05)
+        else:
+            raise AssertionError("startup output did not finish")
+        expected = str(root).encode("cp1252", errors="backslashreplace").decode("cp1252")
+        assert f"Hub checkout: {expected}" in output
+        assert "\\u2192" in output and "\\u0101" in output
+        with urllib.request.urlopen(f"{info['url']}/healthz", timeout=2) as response:
+            assert json.load(response)["status"] == "ok"
+    finally:
+        stop(root, env, process)
+
+
+def test_mcp_does_not_reconfigure_protocol_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    with io.BytesIO() as buffer, io.TextIOWrapper(buffer, encoding="cp1252") as stdout:
+        monkeypatch.setattr(sys, "stdout", stdout)
+        monkeypatch.setattr(sys, "argv", ["robomate", "mcp", "--role", "orchestrator"])
+
+        def run(function: object, args: object, protocol_stdout: object) -> None:
+            assert protocol_stdout is stdout
+            assert stdout.encoding == "cp1252" and stdout.errors == "strict"
+
+        monkeypatch.setattr(anyio, "run", run)
+        cli.main()
+        assert stdout.errors == "strict"
+        assert buffer.getvalue() == b""
 
 
 def _commit_and_add_worktrees(root: Path, *paths: Path) -> None:
