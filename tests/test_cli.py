@@ -66,6 +66,10 @@ def start(root: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
     (#121) and risk blocking the hub once the pipe buffer fills. Files remove
     both risks; use _hub_stdout/_hub_stderr to read them after exit.
     """
+    return _start_logged(root, env, [CLI, "up", *args])
+
+
+def _start_logged(root: Path, env: dict[str, str], argv: list[str]) -> subprocess.Popen[str]:
     xdg = env.get("XDG_STATE_HOME")
     parent = Path(xdg).parent if xdg else Path(tempfile.gettempdir())
     log_dir = Path(tempfile.mkdtemp(prefix="hub-logs-", dir=parent if parent.is_dir() else None))
@@ -73,7 +77,7 @@ def start(root: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
     stderr_path = log_dir / "stderr.log"
     with open(stdout_path, "w") as out, open(stderr_path, "w") as err:
         process = subprocess.Popen(
-            [CLI, "up", *args],
+            argv,
             cwd=root,
             env=env,
             text=True,
@@ -101,8 +105,31 @@ def _hub_stderr(process: subprocess.Popen[str]) -> str:
     return process.stderr.read()
 
 
-def await_hub(root: Path, process: subprocess.Popen[str]) -> dict[str, object]:
-    for _ in range(200):
+# `robomate up` takes about 3 s to record itself on a native Windows desktop,
+# mostly importing robomate.cli. Loaded hosted Windows runners have run past
+# the earlier 10 s budget with the hub still alive and nothing on stderr
+# (#197), so allow 30 s before calling it a failure.
+HUB_START_TIMEOUT_S = 30.0
+
+
+def _startup_diagnostics(root: Path, process: subprocess.Popen[str], elapsed: float) -> str:
+    """What a startup failure needs: process state, hub.json and the hub's output."""
+
+    returncode = process.poll()
+    state = "still running" if returncode is None else f"exited with {returncode}"
+    return (
+        f"after {elapsed:.1f}s the `robomate up` process (pid {process.pid}) is {state}\n"
+        f"hub.json: {read_hub_json(root)!r}\n"
+        f"--- hub stdout ---\n{_hub_stdout(process)}\n"
+        f"--- hub stderr ---\n{_hub_stderr(process)}"
+    )
+
+
+def await_hub(
+    root: Path, process: subprocess.Popen[str], timeout_s: float = HUB_START_TIMEOUT_S
+) -> dict[str, object]:
+    started = time.monotonic()
+    while (elapsed := time.monotonic() - started) < timeout_s:
         data = read_hub_json(root)
         pid = int((data or {}).get("pid") or 0)
         if data and pid:
@@ -114,22 +141,84 @@ def await_hub(root: Path, process: subprocess.Popen[str]) -> dict[str, object]:
                 # rather than the launcher PID tracked by Popen.
                 return data
         if process.poll() is not None:
-            raise AssertionError(f"hub exited early: {_hub_stderr(process)}")
+            raise AssertionError(
+                f"hub exited early\n{_startup_diagnostics(root, process, elapsed)}"
+            )
         time.sleep(0.05)
-    raise AssertionError("hub did not start")
+    raise AssertionError(f"hub did not start\n{_startup_diagnostics(root, process, elapsed)}")
 
 
 def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> None:
+    """Stop the hub with `robomate down`, asserting it shuts down cleanly.
+
+    Called from a `finally` while a test failure propagates, it still stops
+    the hub but must not replace that failure: a failed `down` (as after a
+    hub that never started, #197) becomes a note on the original exception.
+    """
+
+    pending = sys.exception()
     try:
         result = subprocess.run(
             [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=10
         )
         assert result.returncode == 0, result.stderr
         assert process.wait(timeout=10) == 0
+    except Exception as cleanup:
+        if pending is None:
+            raise
+        pending.add_note(f"cleanup `robomate down` in {root} also failed: {cleanup!r}")
     finally:
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=10)
+
+
+# Stands in for a hub that is alive but never records itself in hub.json.
+_SILENT_HUB = (
+    "import sys, time; print('hub stdout so far', flush=True); "
+    "print('hub stderr so far', file=sys.stderr, flush=True); time.sleep(60)"
+)
+
+
+def test_await_hub_timeout_reports_the_hub_output(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    root, env = repository
+    process = _start_logged(root, env, [sys.executable, "-c", _SILENT_HUB])
+    try:
+        deadline = time.monotonic() + 10
+        while "so far" not in _hub_stderr(process) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        with pytest.raises(AssertionError, match="hub did not start") as caught:
+            await_hub(root, process, timeout_s=0.2)
+        message = str(caught.value)
+        assert f"(pid {process.pid}) is still running" in message
+        assert "hub.json: None" in message
+        assert "hub stdout so far" in message and "hub stderr so far" in message
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+def test_stop_during_a_failure_keeps_that_failure(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    root, env = repository
+    process = _start_logged(root, env, [sys.executable, "-c", _SILENT_HUB])
+    with pytest.raises(AssertionError) as caught:
+        try:
+            raise AssertionError("hub did not start")
+        finally:
+            stop(root, env, process)
+    assert caught.value.args == ("hub did not start",)
+    assert process.poll() is not None
+    notes = getattr(caught.value, "__notes__", [])
+    assert len(notes) == 1 and "no hub is recorded" in notes[0]
+    # Without a failure in flight, the same failed `down` is the test's failure.
+    process = _start_logged(root, env, [sys.executable, "-c", _SILENT_HUB])
+    with pytest.raises(AssertionError, match="no hub is recorded"):
+        stop(root, env, process)
+    assert process.poll() is not None
 
 
 def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) -> None:
