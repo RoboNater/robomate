@@ -27,6 +27,8 @@ jobs:
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
       - run: uv run --locked pytest
+      # One collector covers both OSes and every locked matrix artifact.
+      - run: uv run --locked python scripts/dependency-licenses.py --check
 
   # The same steps on native Windows. It also holds the stdio regression for
   # #65, which cannot fail on Linux.
