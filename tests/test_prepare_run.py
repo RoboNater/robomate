@@ -1592,6 +1592,7 @@ def test_both_codex_workers_report_each_login(
         ("opencode", "opencode/mimo-v2.6-flash-free", None, "xiaomi"),
         ("opencode", "opencode/longcat-2.5-preview-free", None, "meituan"),
         ("opencode", "opencode/ling-3.0-flash-fin-free", None, "inclusionai"),
+        ("opencode", "opencode/lingma-x", None, "unknown"),
         ("opencode", "opencode/muse-spark-1.2", None, "meta"),
         ("opencode", "opencode/muse-spark-1.3", None, "meta"),
         ("opencode", "opencode/muse-spark-1.3-contributor-free", None, "meta"),

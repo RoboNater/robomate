@@ -368,10 +368,9 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   resolved from the model ID via `scripts/run_common.py:resolve_provider`: explicit
   `--<agent>-provider` first, then OpenRouter maker segments, then model-family prefixes
   (`nemotron` → `nvidia`, `mimo` → `xiaomi`, `longcat` → `meituan`, `ling-` → `inclusionai`,
-  `muse-spark` → `meta`, alongside the existing families), then `<maker>/<model>` maker
-  aliases, then harness defaults for
-  single-vendor harnesses, else `unknown`. Opaque house aliases that name no family
-  (e.g. `big-pickle`, `space-bunny-free`) stay `unknown` unless `--<agent>-provider` is passed,
+  `muse-spark` → `meta`, alongside the existing families), then `<maker>/<model>` maker aliases,
+  then harness defaults for single-vendor harnesses, else `unknown`. Opaque house aliases that
+  name no family (e.g. `big-pickle`, `space-bunny-free`) stay `unknown` unless `--<agent>-provider` is passed,
   so `reviewer_provider_differs` compares makers rather than routes.
 - **Role policy** (PoC `role_policy`) is still available and still defaults to
   `reviewer_harness_differs: true`; the orchestrator checks the joined pair against it at PLAN
