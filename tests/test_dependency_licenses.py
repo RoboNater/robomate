@@ -371,9 +371,10 @@ def test_modern_expression_conflict_cannot_be_overridden(fixture: Fixture) -> No
     assert fixture.update()
 
 
-def test_nonpermissive_bundled_component_needs_exception(fixture: Fixture) -> None:
+@pytest.mark.parametrize("component", ["MPL-2.0", "LicenseRef-Undetermined-Data"])
+def test_nonpermissive_bundled_component_needs_exception(fixture: Fixture, component: str) -> None:
     review = next(r for r in fixture.policy["review"] if r["name"] == "fixture")
-    review["components"] = ["MPL-2.0"]
+    review["components"] = [component]
     fixture.write_policy()
     assert fixture.update()
     review.update(exception=True, owner_approval="fixture owner decision")

@@ -102,9 +102,9 @@ markers, and every runtime/dev graph path are in
 | annotated-types | 0.8.0 | runtime | 2 / 2 | permissive |
 | anyio | 4.15.0 | dev, runtime | 2 / 2 | permissive |
 | attrs | 26.1.0 | runtime | 2 / 2 | permissive |
-| certifi | 2026.7.22 | dev, runtime | 2 / 2 | review required |
+| certifi | 2026.7.22 | dev, runtime | 2 / 2 | approved exception |
 | cffi | 2.1.1 | runtime | 19 / 75 | permissive |
-| charset-normalizer | 3.5.1 | runtime | 23 / 124 | review required |
+| charset-normalizer | 3.5.1 | runtime | 23 / 124 | approved exception |
 | click | 8.5.0 | runtime | 2 / 2 | permissive |
 | colorama | 0.4.6 | dev | 2 / 2 | permissive |
 | cryptography | 50.0.1 | runtime | 16 / 40 | permissive |
@@ -125,7 +125,7 @@ markers, and every runtime/dev graph path are in
 | mypy-extensions | 1.1.0 | dev | 2 / 2 | permissive |
 | mypy | 1.20.2 | dev | 14 / 30 | permissive |
 | packaging | 26.3 | dev | 2 / 2 | permissive |
-| pathspec | 1.1.1 | dev | 2 / 2 | review required |
+| pathspec | 1.1.1 | dev | 2 / 2 | approved exception |
 | pluggy | 1.6.0 | dev | 2 / 2 | permissive |
 | proto-plus | 1.28.4 | runtime | 2 / 2 | permissive |
 | protobuf | 7.36.1 | runtime | 4 / 8 | permissive |
@@ -168,7 +168,13 @@ claims. The inventory and evidence must not be edited by hand.
 ## Exceptions, exclusions and review records
 
 `certifi` (MPL-2.0) is a runtime exception via httpx; `pathspec` (MPL-2.0) is
-dev-only via mypy. Approval must name their exact evidence below before merge.
+dev-only via mypy. The repository owner approved the policy and both exceptions
+in operator question #1, answered 2026-10-12T00:40:18.892Z (verified through
+`get_operator_answer(1)`, status `answered`). The answer was: "Approve the
+policy and both certifi and pathspec MPL-2.0 exceptions". Their exact current
+versions and evidence are pinned in the review records below. Certifi supplies
+Mozilla's trust roots for runtime TLS verification; pathspec is used by mypy
+in the dev graph. Neither is a declared direct dependency of robomate.
 No approval is carried over from #181's preliminary audit. Each exception record
 binds the version, source, artifact matrix, metadata, dependency paths and notice
 digests via the exact package fingerprint. It has no implicit version range.
@@ -264,6 +270,7 @@ renewal_fingerprint = "8af950564399c92db92c0b7c284e62abe928656e196e1e2441e147278
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 exception = true
+owner_approval = "operator question #1, answered 2026-10-12T00:40:18.892Z; verified through get_operator_answer(1)"
 
 [[review]]
 name = "cffi"
@@ -284,6 +291,9 @@ renewal_fingerprint = "ff71cd1610c0180e7fbd30f4fbd2c3d099ff05ab5de0c53578a013785
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 components = ["LicenseRef-Undetermined-CC-BY-SA-Test-Data"]
+exception = true
+owner_approval = "operator question #2, answered 2026-10-12T00:40:56.105Z; verified through get_operator_answer(2)"
+exception_scope = "Only the 3.5.1 sdist bundled test data described by data/NOTICE.md; code and wheels remain MIT"
 
 [[review]]
 name = "click"
@@ -478,6 +488,7 @@ renewal_fingerprint = "ca3e6d7033c7cbe783801417788530e816028068cc1e87cb4b096113b
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 exception = true
+owner_approval = "operator question #1, answered 2026-10-12T00:40:18.892Z; verified through get_operator_answer(1)"
 
 [[review]]
 name = "pluggy"
@@ -748,10 +759,11 @@ review_date = "2026-10-11"
 
 2026-10-11 — Implementation agent bob on behalf of RoboNater reviewed the
 locked matrix notices (69 distinct notice contents) and metadata. 57 entries
-qualify as permissive; certifi and pathspec await owner exception references,
-and charset-normalizer remains review required for ambiguous CC-BY-SA/public
-domain test data in its sdist. Next full review: 2027-01-11 or milestone
-close-out, whichever comes first.
+qualify as permissive; certifi and pathspec are owner-approved exceptions
+(operator question #1). The additional charset-normalizer sdist test-data
+exception was approved in operator question #2. All 60 entries have inspected,
+reviewed evidence within the declared matrix. Next full review: 2027-01-11 or
+milestone close-out, whichever comes first.
 
 Bundle interpretations: librt and mypy include Python license terms and
 BSD-2-Clause base64 code; mypy additionally carries Apache/MIT typeshed and
@@ -767,8 +779,18 @@ charset-normalizer 3.5.1: `data/NOTICE.md` in its sdist describes 17 test files
 as either CC-BY-SA (no version stated) or public-domain archive data, without
 a file mapping. Its SHA256 is
 `0cb3efcfd8f7a02a337e98dc3de4b0b57424d7208a332b26e7deb8cb94c13922`.
-The code label MIT does not settle this evidence. It awaits an owner decision;
-no broad claim of permissive licensing is made for this sdist.
+The code label MIT does not settle this evidence. The repository owner approved
+an exact exception for these 3.5.1 sdist test files in operator question #2,
+answered 2026-10-12T00:40:56.105Z (verified through `get_operator_answer(2)`,
+status `answered`). The question named this notice digest. Rationale: the data
+is used for upstream tests and is not required to use the installed library;
+the approval retains inspection of the sdist rather than removing it from the
+matrix. The package fingerprint additionally pins the archive hash, metadata,
+notice paths and Windows/Linux variant set. The wheels and library code remain
+MIT; the exception does not assert that the test data is permissive or settle
+its undetermined CC-BY-SA version. Any changed version or evidence needs a new
+owner decision. This third exception was added after the initial two-package
+scope because artifact inspection found bundled evidence absent from metadata.
 
 ## Known limits
 
