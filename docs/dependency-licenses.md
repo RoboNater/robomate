@@ -98,7 +98,7 @@ licenses.
 ## Inventory (generated)
 
 <!-- generated-inventory -->
-Lock SHA256: `69606c2a79a43657ddf6e1c3bfd2412e17b9bb67c24b470826d10c3a299ac282`. Artifact and notice digests, metadata,
+Lock SHA256: `39715d39dc2efc286f6d84e5f2b2e7f58bcfb5dbe572f367b30dbc05d520c046`. Artifact and notice digests, metadata,
 markers, and every runtime/dev graph path are in
 [dependency-license-facts.json](dependency-license-facts.json).
 
@@ -211,107 +211,107 @@ next_review = "2027-01-11"
 name = "a2a-sdk"
 version = "0.3.26"
 expression = "Apache-2.0"
-fingerprint = "0a50a69a089e5f9e1be966f08411a4f6ddf8ec25c25201da09bebf45809f342e"
-renewal_fingerprint = "24022b539fcb35eb6c58cc9de50dca6c9f66e5c3aa27178dfb552e7c855a0034"
+fingerprint = "6027f6f3ae546e98935c556b0a63aab527bff57084ad7ca554bce97e65ffad81"
+renewal_fingerprint = "ad9f4d4e3b042619debb1fd836c47e835d4082ed153d63114c4dcb848b8b16bb"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "agent-hub-common"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "404b9ca5db24b8e139502032894c45e2bdb9fd43f520db8b32e2c8ea78627adb"
-renewal_fingerprint = "6751d3fd9e8c6ff5d5bf552e8d881c0603d251bec7bf649a67619eceb52a031a"
+fingerprint = "9026fe9adaf4ecd25627843ec4872092117e4d23bc7b9a53ca15a79240cea646"
+renewal_fingerprint = "9bef3b358dd595fa9e169befd923e9874c3fbc5f5b91bfe27d81067d53f9daaa"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "agent-hub"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "e20187117a83df643ca74254473654c240a2e5986d1ce5ebfc599d4c0285da68"
-renewal_fingerprint = "b9ae7539f9bb7a567743966ed0ef4467dac2dc7db676dee0441cc6f0e87386e5"
+fingerprint = "2bea10884f3ca95ecef353a5b9abff232cedce4e74f041fcceb0bc004bfa5490"
+renewal_fingerprint = "56d324b708b00450c7c7f072e8c72a51988674e936fa381e843a77a588d28c37"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "annotated-doc"
 version = "0.0.5"
 expression = "MIT"
-fingerprint = "85167ff41b74abdae96c82976603e4aa303c564a4bbd1c1d59be82e2e63ef671"
-renewal_fingerprint = "b849ffa56531e73b21d32f5695ad9045c38b8c03e6867d88198bb90455be7858"
+fingerprint = "74421575b7c313e20821c38ed1290ec3db72be1107b5a27941f906b354967300"
+renewal_fingerprint = "c63a5cedccd48c8f37c3af8d21acbb5dae9ee688b994a6fa1fd2f25f4e84a3b2"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "annotated-types"
 version = "0.8.0"
 expression = "MIT"
-fingerprint = "4af43abf30cc937c6397f845e7617a366502a25f90301ae27e05069f4a585c0e"
-renewal_fingerprint = "10a41b43be4e596ec524a7e9f9dc52dcbfb88056d02d1b953d0b484ef2b5248b"
+fingerprint = "6c8230079aff9d81971b422a5918695e5ada85e1f4668f91f9f772ac4966c038"
+renewal_fingerprint = "9e4640a1edbe744d1fe6d99bce561f0a29d65278207754dd17f7ab5a3ae67cb5"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "anyio"
 version = "4.15.0"
 expression = "MIT"
-fingerprint = "7a6afa441a99076edabc1d7c90a955993c8f007221dfcfce8e9067924b0cfba9"
-renewal_fingerprint = "d17b1a71d99d717a13840ab3e46f4a936e4a5dfca6e521d13d82884945254e1d"
+fingerprint = "dcabfb793a287a552a940f54148fba7ac931bcf1016a5e54b9c0bcdd56549c4c"
+renewal_fingerprint = "0456b1603b3d6f9a104c228ee3cc143a82e482ad87c2bb05ef2d4c0fc3224fb9"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "attrs"
 version = "26.1.0"
 expression = "MIT"
-fingerprint = "4af26fb082dc159be5f987ad02500e1da8e76cff90c3fabef9f46237b2d799d9"
-renewal_fingerprint = "635e4b9a37b79cc6220201ab577ae6db278fe04be722307a32182235bc778265"
+fingerprint = "9d28df9005318429a9753d4e2bd97fa20c7d0b9f8ba4f180caee7a9158e70654"
+renewal_fingerprint = "e49424a545a98b22d023e533b84bd5ee5dc7428e615ccf50538ad078175cb510"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "certifi"
 version = "2026.7.22"
 expression = "MPL-2.0"
-fingerprint = "4d2dd0950a981807e9e74cdca8f7e16e8e3e59eb47c8dcbddb6154183da2727c"
-renewal_fingerprint = "d4230eae29f35b46ef12813cdd08edf4ce03827f995dbbe41571ef8a28ac7de4"
+fingerprint = "e93700a455bc5ec09b52902ab432b50f02148899cdde943bfb55e3222d4a921d"
+renewal_fingerprint = "4736dcd6639d807e724a09542bd083b3d9ce2dbff6ab41b355457d7df3693803"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 exception = true
-owner_approval = "operator question #1, answered 2026-10-12T00:40:18.892Z; verified through get_operator_answer(1)"
+owner_approval = "operator question #1, answered 2026-10-12T00:40:18.892Z; verified through get_operator_answer(1); reachability refresh approved in operator question #6, answered 2026-10-12T10:18:50.929Z; verified through get_operator_answer(6)"
 
 [[review]]
 name = "cffi"
 version = "2.1.1"
 expression = "MIT-0"
-fingerprint = "482cf489cdc5d0ec2a8b06e3c18d5994ac522a5d00cffaab1478a4a41b472aa3"
-renewal_fingerprint = "5e264df5cd8042b1a9877eed9a486b95aebeea45f7428a1d17fe5221d46e5657"
+fingerprint = "b432027972fdb09146ff1c744bec624851ad5c5bf6c7c841b847094625a64a1a"
+renewal_fingerprint = "0f410336ad1dbfa219cedf1bc756800ea7db11d4d6ae10bada0848dd8dba170a"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 components = ["MIT"]
 
 [[review]]
 name = "charset-normalizer"
 version = "3.5.1"
 expression = "MIT"
-fingerprint = "47d137f0e02220e885905adb3bb45453d97fcf511c77de30aa14b4693032caf3"
-renewal_fingerprint = "35dde133e72303e56b680befcdc96040f7fe259bd55368e5b7abb7d5509ad922"
+fingerprint = "b37bc59a780eec5678df6a0a909aab91b7feb5b073fbefa68eeaffffe412f3e6"
+renewal_fingerprint = "0825dabe22d504313660ae717c8290ae80449ed30b3f1a2ced36c52604e06c36"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 components = ["LicenseRef-Undetermined-CC-BY-SA-Test-Data"]
 exception = true
-owner_approval = "operator question #2, answered 2026-10-12T00:40:56.105Z; verified through get_operator_answer(2)"
+owner_approval = "operator question #2, answered 2026-10-12T00:40:56.105Z; verified through get_operator_answer(2); reachability refresh approved in operator question #6, answered 2026-10-12T10:18:50.929Z; verified through get_operator_answer(6)"
 exception_scope = "Only the 3.5.1 sdist bundled test data described by data/NOTICE.md; code and wheels remain MIT"
 
 [[review]]
 name = "click"
 version = "8.5.0"
 expression = "BSD-3-Clause"
-fingerprint = "88098bd747bd8c48713a3d31a2efaab0450f710bc3b12d9ee8ab121d1ec2486b"
-renewal_fingerprint = "00faeb75806e69a6de756ca67e9c7467abc8839d6b94be872a39593892aa8673"
+fingerprint = "70a6eb2400c37a94309ab3a03427815c15783219b6e238bdc60104104f586cdc"
+renewal_fingerprint = "497ed9e5bf5496d846b3cec6948b5baf32ace6e6bc2f533d03321aa54791089b"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "colorama"
@@ -326,92 +326,92 @@ review_date = "2026-10-11"
 name = "cryptography"
 version = "50.0.1"
 expression = "Apache-2.0 OR BSD-3-Clause"
-fingerprint = "e7b29ffad63060ce073de2e914d0cdace060babd138da3bb3c2ef2f3b9ee389a"
-renewal_fingerprint = "cd36842d6e8179072f03490eaa5a175c6ea57885b5a81b149003c332ab803792"
+fingerprint = "e4433214b68e94e8601cfff54943c9e86c20a6281440d3f325f2ab3311d263e8"
+renewal_fingerprint = "82501305e660db90f6c1d26bd812a4fb45205321113c8937e2562d7d68877ba2"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 or_choices = ["Apache-2.0"]
 
 [[review]]
 name = "fastapi"
 version = "0.141.1"
 expression = "MIT"
-fingerprint = "6783bc65e2fc85f7e779ffbdd43edf8284d6e3ed6daed0a406c6e0a61e388f6d"
-renewal_fingerprint = "bd2acb52bb4ea5cb4fd9a69f3ff527a4e1970d28102dd8c4fbb982c75c80ba94"
+fingerprint = "81ec15bcdb8d3c0b551fe315232b69467c40f361a4e13cfc3a5c33d9fd888606"
+renewal_fingerprint = "ce310bdf732c5b51c3f51670df24aea7c0315601a51cb2371894b74814d7be0a"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "google-api-core"
 version = "2.34.0"
 expression = "Apache-2.0"
-fingerprint = "b0c3e006807b40d20c8028df061de7fcb8562d474eba30665e19358bb72f88d4"
-renewal_fingerprint = "e89e98cef715dbca123c2f7be28b841106ba78807cf8ec14bf6cbad457976efa"
+fingerprint = "6f46d2390c2f45cfef3359c061d0a58f027c772feef5974f8d165e15918dfe17"
+renewal_fingerprint = "8c368d3cb893cb9ccaa68039714c9038a70db196cd778d05dc148384a9e09179"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "google-auth"
 version = "2.57.0"
 expression = "Apache-2.0"
-fingerprint = "3b80f982b62c3abc043748775a53a4e14e98ea3236c89fffa5241d8f9a88ab26"
-renewal_fingerprint = "d6a3921312e980294b4ebbcad64619d18e587bdf483c602ec7f550cacb9092f0"
+fingerprint = "caa2faa3910ab8cf50be23b601601973a5b774dd43e4cb06cc8e532682cebc4e"
+renewal_fingerprint = "83eb80a3962db661cd24fcb79261b94065bdfa85207fe18aa425469e2fd7c142"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "googleapis-common-protos"
 version = "1.75.2"
 expression = "Apache-2.0"
-fingerprint = "87223bee0402d2be5613e9e3817d6e55ae4612bd586b317a7fba4aada354ca03"
-renewal_fingerprint = "84eb8b0b189b758933c6a056737253698fba708ab974dca19f0025dc2277bac8"
+fingerprint = "5fdc5b66e8ced86a00eba0d76f37f8bb635948cc89dec40b7b19987c9f801410"
+renewal_fingerprint = "6f9053520cb148d9b42e618577c8891eebb80b2931c4f6e6b9395d347fbc3aa8"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "h11"
 version = "0.16.0"
 expression = "MIT"
-fingerprint = "84d705040306d903fa443b9a193b0e782c662335c8a0fddd1720a427c290286f"
-renewal_fingerprint = "4fc9952688a5294fd8bfcabd830eb093441c0cfaee2f2f0e1a8549f7789c0506"
+fingerprint = "508b92b23b1ddb4578881e1339b761cc48ec4a3b93618ac501d87f84913bc61a"
+renewal_fingerprint = "7d14e887760c7c4ac5b13c5b91d4f2331b329fbb5a8cacb2ea3efa1423fc84c5"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "httpcore"
 version = "1.0.9"
 expression = "BSD-3-Clause"
-fingerprint = "ace939da8c85e0772426b5600b2e78a756c9e85176bbc4639e1388120a9b9c97"
-renewal_fingerprint = "918fbe842194276673858bba3d049c741fb87df3f13bfbf190b3ed78181bcc7a"
+fingerprint = "23cf4b355b3dcc6579cb7ab49ff5d39dc3dc6220fe1a191c662d5be848b2cc2b"
+renewal_fingerprint = "78dd7f39b48e4b447e6395cca009133acf95e114b2acf83f0479d5aface55723"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "httpx-sse"
 version = "0.4.3"
 expression = "MIT"
-fingerprint = "7b98861e9b17ea16c81b1a47dc94c422344ece3e25bded6983da42df0acdd437"
-renewal_fingerprint = "81f0b163d4c0bb304bb0d6e2cd658e9e56560c0e3e0b6a40f734cfea30c0ec84"
+fingerprint = "7148e28c9dbe54637b59793205c8084dd45d2b2a36a913b0f6750fcfb9260a8b"
+renewal_fingerprint = "297d8a555d9d3d021294d4b42c1924e296f1566cfac3a06672e7f05e84d69f54"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "httpx"
 version = "0.28.1"
 expression = "BSD-3-Clause"
-fingerprint = "dd8f6697bdaf408df9431403b6d2602762a2c89685e6c0b0047d11fdf8e60fb7"
-renewal_fingerprint = "004de98b8167b9d4b623c9fde058af06470bc9fb302d33bc464c71774b5ff2f4"
+fingerprint = "89c2e1dd135671993e6cef3f119b2cbcaa7badfd463cbd28ab15a25b9f9a7a38"
+renewal_fingerprint = "d6736dc12850502f6b08eb379f9653b0a0bf68ad23ed7995ec2a3df0ac5dca89"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "idna"
 version = "3.19"
 expression = "BSD-3-Clause"
-fingerprint = "112fb50e6a6a213e43fd418dae859d1ba2cdfc9329e0b475c82ba5c367136748"
-renewal_fingerprint = "21d83568f6207663e47252e96289cee13c20245c40611b5d0301ca15eb29b7eb"
+fingerprint = "0a14aefa817bf1a22e7d538d642f0d5ab1f74f533d908628fce677049d821618"
+renewal_fingerprint = "ba76f16b019572ed5100d2bb675038bbfa1c1a52ac27902c3a910b67c5d3ba5c"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "iniconfig"
@@ -426,19 +426,19 @@ review_date = "2026-10-11"
 name = "jsonschema-specifications"
 version = "2025.9.1"
 expression = "MIT"
-fingerprint = "c3e927aa08569da642841e04ecb212ea96b03cb8bae8c9863e5f11aa407b7bcb"
-renewal_fingerprint = "7ac0fce7bd91169c0003fb473f4c9c572f0a68abbce64cac63d8cbd62396d9ea"
+fingerprint = "346aea36772fc14daa3984024870ee271b769e0c77066bdf8e9254e2b0a7840c"
+renewal_fingerprint = "ebc7ca0155beb656c560a227cce36dc9b2dc2535b2338f5ff79d67e06ba3cf9f"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "jsonschema"
 version = "4.26.0"
 expression = "MIT"
-fingerprint = "85dc1c2acb936e90b5a665d0c57f095919103d979c722744884d8f0eb027bfd9"
-renewal_fingerprint = "ce91fe0a1258e99ff42687e861ddafdfb3d54bc936807d7e5df21e2c4c0441f5"
+fingerprint = "a764857fe831f39fe0d30fc055c106ba334a1d76972f899b81c4399c1ef67909"
+renewal_fingerprint = "0dbcae75e975ed05fa70801de7c9842eeaa4e12753101239961db79a64451ec1"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "librt"
@@ -454,10 +454,10 @@ components = ["Python-2.0", "BSD-2-Clause"]
 name = "mcp"
 version = "1.29.1"
 expression = "MIT"
-fingerprint = "578334ec0fa3cdc230505e43e99044c8cbb1f90f7139e6984cb65742b2db65b1"
-renewal_fingerprint = "8190d82ae01e0dc7cff33315c00a2a462dbc3016318c59d7a1241e4c98acc9e8"
+fingerprint = "5eabd04444834a03a3c672e3bf5ca47359ba37cf7d9beda419f85aa680a1c52e"
+renewal_fingerprint = "cad4dcf33649a3537f5aac461a5063179b852abfc4ae22ebfdbdde6a10797994"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "mypy-extensions"
@@ -512,73 +512,73 @@ review_date = "2026-10-11"
 name = "proto-plus"
 version = "1.28.4"
 expression = "Apache-2.0"
-fingerprint = "8e94a15a5727d795b410930edb240c78c071c9e72d41d9924aed336a5c52762a"
-renewal_fingerprint = "e2e5675331d04baea00a10def1aa39e0768bdcf74bf72892b905e449e428a555"
+fingerprint = "233f4d4cf232d996e21ae9e4328d0f49bb5fe241dadd8b5250ec5f41f9fa2c85"
+renewal_fingerprint = "29698af479f72ada503384310da2ad59a2c7b6a76d947afd788bf2adafda165a"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "protobuf"
 version = "7.36.1"
 expression = "BSD-3-Clause"
-fingerprint = "78cd3b47928f14d6a3727f457472aeb2213e6e9668c5a92380dc9cac83b89b23"
-renewal_fingerprint = "ee8aef83875b20a809dbdddf91dba0e6e6e01985fd2575e3c49d02e53fa63e97"
+fingerprint = "b2f3f92d6926535b128293f424112c2697d5111903bbcc2a9cbca91f455e89c9"
+renewal_fingerprint = "b0690e28b7a99b61cbfc7b0348a6bdb4178aa68eb8c98d8a1cbee06a039a9ac7"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pyasn1-modules"
 version = "0.4.2"
 expression = "BSD-2-Clause"
-fingerprint = "2138a9455a5fef951733123c6b1376cc4873d791927791aee958473dc77c2787"
-renewal_fingerprint = "7eed209e877ee335dd8445e86674e6b101f36c43e54a77293304dcad1eb3a95c"
+fingerprint = "9320d9d3b7e095f475261c6f4f08295cdce470ffaf56fc3719142fa79fee9be9"
+renewal_fingerprint = "c1870396d2f875592503cb917ea3ebca6e5cc07229e34a2abe7ac9c7b0d146e2"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pyasn1"
 version = "0.6.4"
 expression = "BSD-2-Clause"
-fingerprint = "07bb2f8a66e0093a6775affe18261de1f9504693a626b4dff8ba42995ee3c71f"
-renewal_fingerprint = "ac5fe226f9788a605cf5d68cf1ccd74c3033207bd004cb31347a7db923adbf66"
+fingerprint = "c9f49f2864ccb630ab0ad3d9fd2a90fad4206dceedd6339bbd13dcfbc816f49e"
+renewal_fingerprint = "e7cd9ab32824077d20b744a3c53e322e4f1dccd79b7e3d566ecca86c343b8332"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pycparser"
 version = "3.0"
 expression = "BSD-3-Clause"
-fingerprint = "059ce1aefb7ea1970e9baf8b7c1f16b943fdcba44bcff11ff31b271cfd0b4dc7"
-renewal_fingerprint = "6e605ce4fa612df59f9d9a54841520bfeae840c37604ba423e29d31c40e22396"
+fingerprint = "a6447109816c383da98eeec50660da00efac592cb91b82efea807c48a119ac2c"
+renewal_fingerprint = "d48d95ab6097a800bb3a4c46588d45b1c42ca3109689ea5ecd07e4b38bcc7a36"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pydantic-core"
 version = "2.46.5"
 expression = "MIT"
-fingerprint = "346518a2e1831e804c291ac3d49a5ecbfc1596a00909d1bbb5a71d65bb360c68"
-renewal_fingerprint = "9ee0f2ebea3511dfaa3d6b5c1b6774d0964687bf7dfb6a581fc2bd80fa448202"
+fingerprint = "a42d73358a81db902b88c9ce41d341bd1933c31b10d85517c03eab8978fe0a82"
+renewal_fingerprint = "692346305707498aeb77dcd887c96da4c95dc213b767f69fca138194800cdb58"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pydantic-settings"
 version = "2.15.0"
 expression = "MIT"
-fingerprint = "a69267a3760fa0e902779460392193c2acad7772ee744d8238c205d840e108d6"
-renewal_fingerprint = "c38e9aaadb826ba7b8e2244528fe03a37790ea79092bc4cb9f7c5e13898c3723"
+fingerprint = "b075f12a38a5fdff2dd38817351832a0aabb652f1ce65c504dc57b124e5adc21"
+renewal_fingerprint = "a4a5d6cfdbb3aaf1e64d1236f9e088a5e475ffb5f019272df8d59b5e6d26bb78"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pydantic"
 version = "2.13.5"
 expression = "MIT"
-fingerprint = "414120d2b5352054df35dc460a49d64f44c838d0c7a3dc27beb81d53cf3748bb"
-renewal_fingerprint = "c0a61686df9d402ad4c6fb3e88ba1249e1516a88050de375cde1a08579c54ce5"
+fingerprint = "188c7607b9317d6b1ee5f2797f3984e47f296c8ad35f080edccb3de12933a971"
+renewal_fingerprint = "d382cbf236faf08e22598914d727d6c3161703732698ec1a1f0bb0fe00621c8a"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pygments"
@@ -593,10 +593,10 @@ review_date = "2026-10-11"
 name = "pyjwt"
 version = "2.15.0"
 expression = "MIT"
-fingerprint = "59256ec6d64b8851f99b8cabd5e31c1c34f782f8a0aae7750c9f998b98d7412c"
-renewal_fingerprint = "94e464368f23e3f3a3622d3c1bbdf6e470882a8aaa1746ed4731a0a03e79bc78"
+fingerprint = "c5bb0349628328fbc068e4459dd8b72dae623144640e7ca04a9b92a2c3fc8e77"
+renewal_fingerprint = "59d05a03eac73371495a2bbf477e88a5987a97ae8167f76c0499c61acfea9355"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "pytest-asyncio"
@@ -620,37 +620,37 @@ review_date = "2026-10-11"
 name = "python-dotenv"
 version = "1.2.3"
 expression = "BSD-3-Clause"
-fingerprint = "4d60946a57d7c8d072faa658f79caa6513b029155b11f9e4f507d2f4e50a3970"
-renewal_fingerprint = "ce0c2e0d707acce0dd39da92eee46886dc663ec56e51e80c74d6985822bcac04"
+fingerprint = "a3895f7ab8e6fd9d8cc12587bccac688a17063adda8dddd3969fa6e7c4b48daa"
+renewal_fingerprint = "34c2220296cea192063e3a20ea90b3432811610570cf5c545463d150d152609f"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "python-multipart"
 version = "0.0.32"
 expression = "Apache-2.0"
-fingerprint = "f8e5d26cd1da2ba018a2c26e7bf856548cce2a96fdc285d043499fd8b04ab3bf"
-renewal_fingerprint = "a1858e37cb1d387eb543c565ed284aca31675a5c6d59897c3744c968fd99b953"
+fingerprint = "404ec939f9c767adbdb1846bb653fe5cc9d8fd21e459b12e29365f87534cc535"
+renewal_fingerprint = "e29de5f4e5c3791b6fdd8887d96ebeccacb32657c1821506e6042df8f42a969e"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "referencing"
 version = "0.37.0"
 expression = "MIT"
-fingerprint = "ceee46321b5edbfabadbfa4f6b0b47fbb4db79ac87fb33af47c79861ddfdca71"
-renewal_fingerprint = "a10cd19e765738d0db1b642aa6d9e076271a40c15ad9c50e0a98e3a55ba9281a"
+fingerprint = "b9ad346b176cb046796f8aae4e5b7fb522160d3b01eceee12a753750e46c951a"
+renewal_fingerprint = "05b8f44d1988837405fdbac17717525fa3ead2f38bc406c53a407d42f28db83c"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "requests"
 version = "2.34.2"
 expression = "Apache-2.0"
-fingerprint = "42432796cc86995a99ba67460d36d21950e5286b2815bb5f19865744f509e131"
-renewal_fingerprint = "9e5b2777e91f27cecfaaa97c575d002f575607b7ef4306781772b244a8859342"
+fingerprint = "2434177193d588cb8022c75333ab25ddf621be0b623613c45562274ce9a2fbfd"
+renewal_fingerprint = "2776d8a42a3bdf7576ec9ec2a10fe538489f3a74f037abca109fa3029b721faf"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "robomate-cli"
@@ -665,10 +665,10 @@ review_date = "2026-10-11"
 name = "robomate-win32-compat"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "0aaa8b0c69f7474d071ad73fa1fc7caf1682bf982e824d46f31f6d5f56b10836"
-renewal_fingerprint = "a43825ec700d42d25b9932be25d4bfce99720e800cac275e313bb616fefadc72"
+fingerprint = "6aee2bba0ef5a9e22403a48adea1c51ea7adbedcb5d8707d5e132b77e7768702"
+renewal_fingerprint = "6b680fab44fe94613752c132ad7e18b8fc8b68a4797a5d57072a0a4819b7e4c1"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "robomate"
@@ -683,10 +683,10 @@ review_date = "2026-10-11"
 name = "rpds-py"
 version = "2026.6.3"
 expression = "MIT"
-fingerprint = "62a7915abd5ae36b730fc032ddf4ed804574e42b28ca2b88e1c9eb9281a28480"
-renewal_fingerprint = "c3617b813917a5a9bbb5bed972b629d69fcbbb0154eec71af3a0250c22bc2437"
+fingerprint = "3d6dccf564bec865c5212cb38c379b1dda1f015769cf78c41b11f33207e585cb"
+renewal_fingerprint = "0046e96fe031a6301804276ff5ac56ad28db99f7eb834436f0b49e6e24529cf5"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "ruff"
@@ -703,68 +703,80 @@ or_choices = ["MIT"]
 name = "sse-starlette"
 version = "3.4.8"
 expression = "BSD-3-Clause"
-fingerprint = "a44793fc70821cfb86b86b964468c5502f60155b05c84b86afba8853191c91c8"
-renewal_fingerprint = "74acadcfc61cd143ef43f9487edc01f05e7ed2acd3280c8a55ff89e67116724e"
+fingerprint = "159df081e6bb81538c6b9346ac615234b17a68f885d6e106e2763e626f73e721"
+renewal_fingerprint = "091874603fa7b57b118fc53ba2967077fd807cd80563525f457ace11c4fd8426"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "starlette"
 version = "1.6.0"
 expression = "BSD-3-Clause"
-fingerprint = "dd9c92fe129f885394216d02e3589f93e2bebe6565f0723bc285e31d477fb410"
-renewal_fingerprint = "8321ed461bcc2802d05743481d0734ba2c7965b9256eabe2e6b2f437aa754cf8"
+fingerprint = "ddeb0e26ebe2c2ddf4a61da7daa8ef170a4aa13781287cbe7aef1b5ed1bbec67"
+renewal_fingerprint = "67b35e7625587002aee44b340b4aebfe55bc51d2ffe48a10c4f5d30b78553c29"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "typing-extensions"
 version = "4.16.0"
 expression = "PSF-2.0"
-fingerprint = "5399ea9caa58574bcd9b631cff1f868d480b48a3aedf97aa4faf474c2b7bc378"
-renewal_fingerprint = "5b346c04087078e6cdf0ba2f86a6e079298c161c9d1b7738e6223ef0ef9b77e2"
+fingerprint = "274d4cf1f4e26b9896f9c99490c1d4a6beeba4cf27a2986ffe686dd55f4d12e6"
+renewal_fingerprint = "6078008d5f4f8176612dc0e7235c43ee1bf5c6cb0d95466baa1153988a48b799"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 components = ["Python-2.0", "0BSD"]
 
 [[review]]
 name = "typing-inspection"
 version = "0.4.4"
 expression = "MIT"
-fingerprint = "c43e44716c8b39190686e3f9bfd9b936bab9d6cd184c3a8d01893f9f0335ab1b"
-renewal_fingerprint = "73da283cca5e096784a695b3a25159637faa5c12542872962460a97ed9819f57"
+fingerprint = "c0f3b67d074f45e3cafdefb63df52fc966b990e461d0f7d95c448aa62fe8646e"
+renewal_fingerprint = "0fdcbdfe78f551c6839fd2d8f23b245c78be4241170e7775a32c48ce4d65c982"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "urllib3"
 version = "2.8.0"
 expression = "MIT"
-fingerprint = "b637589a4fedc8f6730bedc97d86b230352ed69d6078524a14260e5246b4ebe5"
-renewal_fingerprint = "342a0ded8ecb3bd867ad3aa5611279ef13af112a6842aa4ae4947987726e8930"
+fingerprint = "15d31cb49f799adb2533e67a92af53ce60aa0920a968cb12df72183d9a780044"
+renewal_fingerprint = "6b2dfea24b2efd49b8343b30642e03f6b977130b0a7097f00754b55a354bf2bc"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "uvicorn"
 version = "0.52.4"
 expression = "BSD-3-Clause"
-fingerprint = "3b3142466cd79bf2f5bc4094334c15f2e831d7353d197e13c5dabca855484849"
-renewal_fingerprint = "4238ac294ab86afcad5977f1864d4ab96b6af4db87368f1f532c93afbddcaacc"
+fingerprint = "af8fe3a2e0364e4856cf97737c1d52ae9ef8e288326660613358a36989f50eb1"
+renewal_fingerprint = "70ca98d517f122a6bafdf2dcfc0794bf11d40f2818271e1dbbc6d393105628b5"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 
 [[review]]
 name = "worker-mcp"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "185aa435438ab5ebda4a31982195228682c053b0fff608944949359ad074d462"
-renewal_fingerprint = "a9fbe0866ed7fe386a84df68cd5f71bacb71d83f46b56eec39a083c6770ce0d4"
+fingerprint = "536299c3989dce5fd86ac1d3fa0ad6d7a096a176514361b8fb0a955f6038cba6"
+renewal_fingerprint = "f9ff7e50062d975f5703ab2c8bb81b63b0c5fbb80f81e7198f8a5228e6eb1f77"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-12"
 ```
 
 ## Review log
+
+2026-10-12 — Rebase review by worker bob: main #196 moves pydantic into
+common and removes worker-to-hub dependency paths. Reviewed all 46 changed
+records against the approved inventory: all 60 package identities and
+versions, registry archive hashes, metadata and notices remain unchanged.
+Workspace license declarations and notice hashes also remain unchanged;
+only dependency metadata and reachability differ. Updated reviewed
+fingerprints for those graph changes. Certifi loses 20 paths and
+charset-normalizer loses four; neither exception gains a path. Pathspec
+is unchanged. The owner approved the exception fingerprint refresh under
+existing approvals #1/#2 in operator question #6, status `answered`,
+2026-10-12T10:18:50.929Z (verified through `get_operator_answer(6)`).
 
 2026-10-11 — Implementation agent bob on behalf of RoboNater reviewed the
 locked matrix notices (69 distinct notice contents) and metadata. 57 entries
