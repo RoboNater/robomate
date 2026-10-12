@@ -100,7 +100,7 @@ MODEL_FAMILIES = (
     ("nemotron", "nvidia"),
     ("mimo", "xiaomi"),
     ("longcat", "meituan"),
-    ("ling", "inclusionai"),
+    ("ling-", "inclusionai"),
 )
 
 
