@@ -976,7 +976,7 @@ def test_migration_from_v16_adds_stall_episodes_and_the_stalled_event_kind(
     store = HubStore(path)
     event = store.append_event(EventKind.AGENT_STALLED, {"agent": "bob"})
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 18
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 19
         kinds = connection.execute("SELECT id, kind FROM event ORDER BY id").fetchall()
         assert connection.execute("SELECT COUNT(*) FROM stall_episode").fetchone()[0] == 0
     assert [tuple(row) for row in kinds] == [(1, "task_completed"), (2, "agent_stalled")]
@@ -1007,3 +1007,21 @@ def test_call_log_accepts_only_known_boundaries(tmp_path: Path) -> None:
             "INSERT INTO call_log (boundary, actor, tool, outcome, bytes_in, bytes_out,"
             " started, finished) VALUES ('smtp', 'bob', 'x', 'ok', 1, 1, 't', 't')"
         )
+
+
+def test_v18_migration_preserves_delivery_and_admits_host_pause(tmp_path: Path) -> None:
+    path = tmp_path / "v18.db"
+    _legacy_database(path, 18)
+    with database(path) as connection:
+        connection.execute(
+            "INSERT INTO event (kind, payload_json, ts, state, delivery_id, delivery_attempts,"
+            " delivered_at, delivery_expires) VALUES ('agent_lost', '{}', '2026-10-01',"
+            " 'delivered', 'delivery-1', 2, '2026-10-01', '2026-10-02')"
+        )
+        before = tuple(connection.execute("SELECT * FROM event").fetchone())
+    initialize_database(path)
+    initialize_database(path)
+    with database(path) as connection:
+        assert tuple(connection.execute("SELECT * FROM event").fetchone()) == before
+    store = HubStore(path)
+    assert store.append_event(EventKind.HOST_PAUSED, {"grace_s": 180}).id == 2

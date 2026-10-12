@@ -78,6 +78,7 @@ class EventKind(StrEnum):
     # A worker stopped making hub calls or task progress while its bridge
     # kept heartbeating (#144); one per stall episode, never a lifecycle change.
     AGENT_STALLED = "agent_stalled"
+    HOST_PAUSED = "host_paused"
 
 
 class TaskRole(StrEnum):

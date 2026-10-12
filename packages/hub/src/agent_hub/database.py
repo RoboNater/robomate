@@ -19,6 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v19 is #19's `host_paused` event kind (event CHECK rebuilt on migration).
 # v18 is #171's task-wait question binding and withdrawal provenance.
 # v17 is #144's `stall_episode` table and the `agent_stalled` event kind.
 # v16 is #132's `operator_question.resumed_by`, the decision that ended a
@@ -32,7 +33,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 class DatabaseVersionError(RuntimeError):
@@ -335,7 +336,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v17 -> v18).
+        # (any of v1-v18 -> v19).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)

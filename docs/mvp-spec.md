@@ -600,7 +600,15 @@ Legacy questions and another session's questions still require an operator answe
 - **Orchestrator restart:** join as orchestrator → re-briefing in the join response; the guide's
   "On resume" procedure (PoC skill) reconciles with the forge before acting.
 - **Host standby (#19):** the sweeper detects a wall-clock jump against the monotonic clock and
-  grants a grace window before declaring anyone lost.
+  grants a grace window before declaring anyone lost, expiring task/event leases, or
+  reporting stalls. A forward wall/monotonic discrepancy over 5 seconds, or a gap
+  between sweeps longer than `HUB_LOST_AFTER_S` on both clocks, queues a durable
+  `host_paused` diagnostic and logs it to stderr. The latter also covers hosts whose
+  monotonic clock advances during sleep. Grace lasts `HUB_LOST_AFTER_S` on the
+  monotonic clock from detection; another detected pause restarts it. Heartbeats
+  remain accepted throughout; overdue leases and silent workers are assessed again
+  after grace. Queued events remain deliverable. This is an in-process safeguard,
+  not restart reconciliation. See [host standby checks](development/host-standby.md).
 - **Tests:** the existing crash-point harness at component level, plus one live kill/restart of
   each component in the MVP acceptance runs.
 
