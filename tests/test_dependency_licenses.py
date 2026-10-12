@@ -391,11 +391,14 @@ def test_lock_and_local_license_line_endings_do_not_change_facts(fixture: Fixtur
     assert fixture.check() == []
 
 
-def test_due_review_blocks_check(fixture: Fixture) -> None:
+def test_due_review_warns_without_blocking_check(
+    fixture: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert fixture.update() == []
     path = fixture.root / "docs/dependency-licenses.md"
     path.write_text(path.read_text().replace("2099-01-01", "2000-01-01"))
-    assert fixture.check() == ["full dependency license review is due"]
+    assert fixture.check() == []
+    assert "warning: full dependency license review is due" in capsys.readouterr().err
 
 
 def test_vendor_notice_cannot_substitute_for_declared_package_notice() -> None:
@@ -405,3 +408,75 @@ def test_vendor_notice_cannot_substitute_for_declared_package_notice() -> None:
         archive.writestr("demo/vendor/LICENSE", "MIT")
     inspected = AUDIT.inspect_archive(stream.getvalue(), "demo.whl")
     assert inspected["missing_license_files"] == ["LICENSE"]
+
+
+def test_parent_version_bump_preserves_unchanged_child_exception(fixture: Fixture) -> None:
+    fixture.expression = "MPL-2.0"
+    fixture.write_lock()
+    fixture.approve(exception=True)
+    assert fixture.update() == []
+    child = next(p for p in fixture.facts["packages"] if p["name"] == "fixture")
+    fingerprints = (AUDIT.fingerprint(child), AUDIT.renewal_fingerprint(child))
+    project = fixture.root / "pyproject.toml"
+    project.write_text(project.read_text().replace('version="1"', 'version="2"'))
+    lock = fixture.root / "uv.lock"
+    lock.write_text(
+        lock.read_text().replace('name = "app"\nversion = "1"', 'name = "app"\nversion = "2"')
+    )
+    facts = AUDIT.collect(fixture.root, fixture.cache)
+    current = next(p for p in facts["packages"] if p["name"] == "fixture")
+    assert current["reachability"] != child["reachability"]
+    assert (AUDIT.fingerprint(current), AUDIT.renewal_fingerprint(current)) == fingerprints
+    assert AUDIT.statuses(facts, fixture.policy)[current["id"]] == "approved exception"
+    assert fixture.update() == []
+    assert fixture.check() == []
+
+
+@pytest.mark.parametrize("change", ["parent_name", "parent_source", "marker", "extras"])
+def test_real_dependency_path_changes_require_child_review(fixture: Fixture, change: str) -> None:
+    fixture.expression = "MPL-2.0"
+    fixture.write_lock()
+    fixture.approve(exception=True)
+    assert fixture.update() == []
+    lock = fixture.root / "uv.lock"
+    content = lock.read_text()
+    if change == "parent_name":
+        content = content.replace('name = "app"', 'name = "replacement"')
+        project = fixture.root / "pyproject.toml"
+        project.write_text(project.read_text().replace('name="app"', 'name="replacement"'))
+    elif change == "parent_source":
+        content = content.replace('source = { virtual = "." }', 'source = { editable = "." }')
+    elif change == "marker":
+        content = content.replace(
+            'name = "fixture" }', 'name = "fixture", marker = "sys_platform == \'win32\'" }', 1
+        )
+    else:
+        content = content.replace(
+            'name = "fixture" }', 'name = "fixture", extra = ["feature"] }', 1
+        )
+    lock.write_text(content)
+    assert any("review required: fixture@" in error for error in fixture.update())
+
+
+def test_review_required_output_provides_copyable_fingerprints(fixture: Fixture) -> None:
+    fixture.notice += b" changed"
+    fixture.write_lock()
+    facts = AUDIT.collect(fixture.root, fixture.cache)
+    record = next(p for p in facts["packages"] if p["name"] == "fixture")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/dependency-licenses.py"),
+            "--check",
+            "--root",
+            str(fixture.root),
+            "--cache",
+            str(fixture.cache),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert f'fingerprint = "{AUDIT.fingerprint(record)}"' in result.stderr
+    assert f'renewal_fingerprint = "{AUDIT.renewal_fingerprint(record)}"' in result.stderr

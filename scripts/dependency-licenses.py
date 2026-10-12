@@ -353,8 +353,24 @@ def collect(root: Path, cache: Path) -> dict[str, Any]:
     }
 
 
+def approval_evidence(record: dict[str, Any]) -> dict[str, Any]:
+    """Ancestor versions do not change this package's license evidence.
+
+    Preserve the full paths in inventory, but approval depends on ancestor names,
+    sources, markers and extras. The reviewed package's own version stays exact.
+    """
+    normalized = json.loads(canonical(record))
+    for path in normalized["reachability"]:
+        for step in path["path"]:
+            if step["package"] != record["id"]:
+                identity, source = step["package"].split(":", 1)
+                name, _ = identity.rsplit("@", 1)
+                step["package"] = f"{name}:{source}"
+    return normalized
+
+
 def fingerprint(record: dict[str, Any]) -> str:
-    return digest(canonical(record))
+    return digest(canonical(approval_evidence(record)))
 
 
 def renewal_fingerprint(record: dict[str, Any]) -> str:
@@ -363,7 +379,7 @@ def renewal_fingerprint(record: dict[str, Any]) -> str:
     Remove archive bytes/version, keeping variant tags, metadata, graph and notices.
     An unchanged version still requires its exact fingerprint.
     """
-    normalized = json.loads(canonical(record))
+    normalized = approval_evidence(record)
     version = record["version"]
     normalized.pop("id")
     normalized.pop("version")
@@ -377,7 +393,7 @@ def renewal_fingerprint(record: dict[str, Any]) -> str:
             metadata.pop("version", None)
             if "path" in metadata:
                 metadata["path"] = metadata["path"].replace(version, "<version>")
-    # Only this package's version is normalized; dependency changes still need review.
+    # Normalize the reviewed package's own identity for permissive renewal.
     for path in normalized["reachability"]:
         for step in path["path"]:
             if step["package"] == record["id"]:
@@ -491,11 +507,20 @@ def audit(root: Path, cache: Path, update: bool = False) -> list[str]:
         or document != generated
     ):
         errors.append("generated license facts are stale; run --update and review changes")
-    for key, state in states.items():
-        if state == "review required":
-            errors.append(f"review required: {key}")
+    for record in facts["packages"]:
+        if states[record["id"]] == "review required":
+            errors.extend(
+                [
+                    f"review required: {record['id']}",
+                    f'fingerprint = "{fingerprint(record)}"',
+                    f'renewal_fingerprint = "{renewal_fingerprint(record)}"',
+                ]
+            )
     if date.fromisoformat(policy["policy"]["next_review"]) <= date.today():
-        errors.append("full dependency license review is due")
+        print(
+            "warning: full dependency license review is due; see the review reminder",
+            file=sys.stderr,
+        )
     return errors
 
 

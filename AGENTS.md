@@ -52,13 +52,17 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
 uv run --locked pytest
+uv run --locked python scripts/dependency-licenses.py --check
+uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/
 ```
 
 Don't pipe a check through `tail` or `head` to shorten it: the pipeline
 returns the last command's exit status, so a failing suite looks green. Use
 `set -o pipefail`, or redirect to a file and check `$?`.
 
-Verbatim what CI runs, in order, on both Linux and native Windows. `--locked`
+Verbatim what CI runs, in order, on both Linux and native Windows. The license
+audit covers the entire artifact matrix from either host and needs network
+access or its hash-verified `.cache/dependency-licenses/` artifact cache. `--locked`
 fails instead of silently relocking, so an error there means `pyproject.toml`
 and `uv.lock` disagree — resolve that with uv, never by hand-editing the
 lockfile.
