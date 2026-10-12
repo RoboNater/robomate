@@ -1,42 +1,27 @@
 """Alice's §4.2 operations, independent of the transport that carries them.
 
 The stdio MCP server (`agent_hub.mcp`) and the `/rpc` route (`agent_hub.rpc`)
-both call these methods. Each method's name, signature and docstring are its
-tool's name, argument schema and description, so edits here change what Alice
-sees and what her tool list costs (tests/fixtures/orchestrator-tools.json).
+both call these methods. Their names, signatures and docstrings, which are the
+tools' schemas, live in `agent_hub_common.orchestrator_tools` (#47).
 """
 
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from time import monotonic
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from agent_hub_common import TaskState, WorkflowStatus
-from pydantic import Field
+from agent_hub_common.orchestrator_tools import (
+    Lease,
+    OrchestratorTools,
+    PositiveId,
+    Sha,
+    Timeout,
+)
 
 from .merge_gate import ForgeGate, MergeGate
 from .rpc_errors import error_code
 from .store import HubStore
-
-Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
-Lease = Annotated[float, Field(gt=0, le=525600, allow_inf_nan=False)]
-Sha = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{40}$")]
-
-# Tool names in their listed order, which the tool list's bytes depend on.
-OPERATIONS = (
-    "get_state",
-    "initialize_workflow",
-    "wait_for_event",
-    "assign_task",
-    "check_merge_gate",
-    "reply",
-    "set_task_state",
-    "release_agent",
-    "set_workflow_status",
-    "log_decision",
-    "ask_user",
-    "withdraw_question",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +40,7 @@ OPERATOR = Caller("operator", None)
 CALLER: ContextVar[Caller | None] = ContextVar("robomate_caller", default=None)
 
 
-class OrchestratorOps:
+class OrchestratorOps(OrchestratorTools):
     """The orchestrator operations over one store and merge gate."""
 
     def __init__(
@@ -74,18 +59,11 @@ class OrchestratorOps:
         return caller
 
     async def get_state(self) -> dict[str, Any]:
-        """Read the workflow, agents and compact task summaries."""
         return self.store.get_state()
 
     async def initialize_workflow(
         self, goal: str, policy: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Persist the initial prompt's goal and policy, or confirm them on restart.
-
-        This must be Alice's first mutating call. Goal and policy are immutable;
-        use get_state to resume the stored workflow after a restart.
-        """
-
         workflow_id = self.store.initialize_workflow(goal, policy)
         workflow = self.store.get_state()["workflow"]
         return {"id": workflow_id, "goal": workflow["goal"], "policy": workflow["policy"]}
@@ -93,12 +71,6 @@ class OrchestratorOps:
     async def wait_for_event(
         self, timeout_s: Timeout = 100, ack: str | None = None
     ) -> dict[str, Any]:
-        """Wait for and lease the oldest event. On event=null, call again.
-
-        ack: the delivery_id of the event just handled. It still acks after
-        the delivery lease has expired, so a long action — merging, say — is
-        not redone once it has finished.
-        """
         event = await self.store.wait_for_event(timeout_s=timeout_s, ack=ack)
         return {"event": None if event is None else asdict(event)}
 
@@ -112,14 +84,6 @@ class OrchestratorOps:
         lease_min: Lease = 30,
         pr_head_sha: Sha | None = None,
     ) -> dict[str, Any]:
-        """Assign work to an idle worker and wake its pending NEXT.
-
-        Refused while the workflow is escalated.
-
-        event_id: the durable event whose handling causes this assignment.
-        role: implementer, reviewer or rebase — the guide the worker fetches.
-        pr_head_sha: the PR head a review or rebase is bound to.
-        """
         return asdict(
             self.store.assign_task(
                 agent,
@@ -133,14 +97,6 @@ class OrchestratorOps:
         )
 
     async def check_merge_gate(self, pr_url: str, expected_head_sha: Sha) -> dict[str, Any]:
-        """Read the PR's head, CI, base freshness and mergeability before merging.
-
-        expected_head_sha: the approved head — the reviewer's reviewed_head_sha,
-        or the head_sha of a rebase that reported no conflict_files.
-        Waits up to 60 s while CI or mergeability is still settling. Call it
-        immediately before merging; earlier results are advisory. Refused while
-        the workflow is escalated.
-        """
         self.store.refuse_while_escalated("check_merge_gate")
         started = monotonic()
         try:
@@ -162,26 +118,18 @@ class OrchestratorOps:
         return asdict(report)
 
     async def reply(self, task_id: str, text: str, message_id: int) -> dict[str, bool]:
-        """Answer the named worker question and return its task to working."""
         applied = self.store.reply(task_id, text, message_id=message_id)
         return {"ok": True, "applied": applied}
 
     async def set_task_state(
         self, task_id: str, state: Literal["canceled", "failed"], note: str
     ) -> dict[str, Any]:
-        """Cancel or fail an open task, retaining the note and freeing its worker."""
         return asdict(self.store.set_task_state(task_id, TaskState(state), note))
 
     async def release_agent(self, agent: str) -> dict[str, Any]:
-        """Release a worker; its next NEXT returns the release marker."""
         return asdict(self.store.release_agent(agent))
 
     async def set_workflow_status(self, status: WorkflowStatus, summary: str) -> dict[str, bool]:
-        """Set active/paused/done and save the summary in the audit log.
-
-        Escalate with ask_user. Leaving escalated is refused while any
-        operator question is open.
-        """
         caller = self._caller()
         self.store.set_workflow_status(status, summary, actor=caller.actor, session=caller.session)
         return {"ok": True}
@@ -189,7 +137,6 @@ class OrchestratorOps:
     async def log_decision(
         self, summary: str, rationale: str, key: str | None = None
     ) -> dict[str, int]:
-        """Append a durable audit entry explaining Alice's decision."""
         caller = self._caller()
         return {
             "id": self.store.log_decision(
@@ -203,13 +150,6 @@ class OrchestratorOps:
         options: list[str] | None = None,
         waiting_on_task_id: str | None = None,
     ) -> dict[str, int]:
-        """Ask the operator a question and set the workflow to escalated.
-
-        The answer arrives as a user_answered event naming the question_id.
-        Ask again while escalated to add another question.
-        Bind waiting_on_task_id only for a wait/cancel/reassign question about
-        that unfinished task, never for restricted-action authorization.
-        """
         caller = self._caller()
         question_id = self.store.ask_user(
             question,
@@ -222,16 +162,10 @@ class OrchestratorOps:
 
     async def withdraw_question(
         self,
-        question_id: Annotated[int, Field(gt=0)],
+        question_id: PositiveId,
         reason: str,
-        event_id: Annotated[int, Field(gt=0)],
+        event_id: PositiveId,
     ) -> dict[str, Any]:
-        """Withdraw your session's task-wait question after the task completes.
-
-        Cite its later task_completed event and explain why no decision remains.
-        Never withdraw a question still needing operator authority. This gives
-        no operator answer; resume explicitly when no questions remain open.
-        """
         caller = self._caller()
         return self.store.withdraw_question(
             question_id, reason, event_id, actor=caller.actor, session=caller.session
