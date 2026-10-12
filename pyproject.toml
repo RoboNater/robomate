@@ -2,6 +2,8 @@
 name = "robomate"
 version = "0.1.0"
 description = "Local hub that coordinates AI coding agents from issue to merged PR"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "agent-hub",
