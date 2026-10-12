@@ -210,7 +210,7 @@ def test_codex_alice_uses_orchestrator_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_hub.orchestrator import OPERATIONS
+    from agent_hub_common.orchestrator_tools import OPERATIONS
 
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex")
     config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
@@ -2433,7 +2433,7 @@ def test_worker_resume_uses_git_bash_spellings() -> None:
 
 def test_resume_prompts_use_role_specific_first_hub_call() -> None:
     """Alice resumes with get_state; workers check in (r1-1)."""
-    from agent_hub.orchestrator import OPERATIONS
+    from agent_hub_common.orchestrator_tools import OPERATIONS
 
     assert "check_in" not in OPERATIONS
     assert "check_in" in RUN_COMMON.TOOLS

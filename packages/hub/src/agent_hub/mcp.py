@@ -3,10 +3,11 @@
 The hub serves HTTP only. The live MCP transport is in worker_mcp.
 """
 
+from agent_hub_common.orchestrator_tools import OPERATIONS
 from mcp.server.fastmcp import FastMCP
 
 from .merge_gate import MergeGate
-from .orchestrator import OPERATIONS, Caller, OrchestratorOps
+from .orchestrator import Caller, OrchestratorOps
 from .store import HubStore
 
 

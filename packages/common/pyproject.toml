@@ -3,6 +3,9 @@ name = "agent-hub-common"
 version = "0.1.0"
 description = "Shared configuration and models for agent-hub"
 requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.11,<3",
+]
 
 [build-system]
 requires = ["hatchling"]

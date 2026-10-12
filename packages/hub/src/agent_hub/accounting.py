@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_hub_common import MetaKeys
+from agent_hub_common.accounting import CallRecord, hub_id
 from agent_hub_common.clock import utcnow_iso
 
 from .database import database
@@ -33,34 +33,6 @@ from .database import database
 logger = logging.getLogger(__name__)
 
 UNKNOWN_ACTOR = "unknown"
-
-# Hub identifiers are uuid4 hex; anything else is not one of ours and is
-# dropped rather than copied into the accounting.
-_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-
-
-def hub_id(value: Any) -> str | None:
-    """Return `value` if it is a hub-generated id, else None."""
-
-    return value if isinstance(value, str) and _ID_RE.fullmatch(value) else None
-
-
-@dataclass(slots=True)
-class CallRecord:
-    """One call's accounting: sizes and closed-set labels only."""
-
-    boundary: str
-    actor: str
-    tool: str
-    outcome: str
-    bytes_in: int
-    bytes_out: int
-    started: str
-    finished: str
-    status: int | None = None
-    content_bytes: int | None = None
-    repeat_bytes: int | None = None
-    task_id: str | None = None
 
 
 @dataclass(slots=True)
