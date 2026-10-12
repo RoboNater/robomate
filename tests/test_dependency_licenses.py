@@ -386,7 +386,8 @@ def test_lock_and_local_license_line_endings_do_not_change_facts(fixture: Fixtur
     assert fixture.update() == []
     for filename in ("uv.lock", "LICENSE"):
         path = fixture.root / filename
-        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        assert b"\r\r\n" not in path.read_bytes()
     assert fixture.check() == []
 
 
