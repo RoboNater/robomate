@@ -394,3 +394,12 @@ def test_due_review_blocks_check(fixture: Fixture) -> None:
     path = fixture.root / "docs/dependency-licenses.md"
     path.write_text(path.read_text().replace("2099-01-01", "2000-01-01"))
     assert fixture.check() == ["full dependency license review is due"]
+
+
+def test_vendor_notice_cannot_substitute_for_declared_package_notice() -> None:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("demo.dist-info/METADATA", "License-File: LICENSE\n")
+        archive.writestr("demo/vendor/LICENSE", "MIT")
+    inspected = AUDIT.inspect_archive(stream.getvalue(), "demo.whl")
+    assert inspected["missing_license_files"] == ["LICENSE"]

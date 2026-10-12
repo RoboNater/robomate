@@ -190,17 +190,23 @@ def inspect_archive(data: bytes, filename: str) -> dict[str, Any]:
         for path in names:
             if path.rsplit("/", 1)[-1] in {"METADATA", "PKG-INFO"}:
                 inspect(path, read(path))
-        declared = {entry for m in metadata for entry in m["license_files"]}
+        declared: dict[str, set[str]] = {}
+        for record in metadata:
+            directory = record["path"].rsplit("/", 1)[0]
+            for entry in record["license_files"]:
+                if filename.endswith(".whl"):
+                    # PEP 639 and the earlier setuptools dist-info convention.
+                    candidates = {f"{directory}/licenses/{entry}", f"{directory}/{entry}"}
+                else:
+                    candidates = {f"{record['path'].split('/')[0]}/{entry}"}
+                declared.setdefault(entry, set()).update(candidates)
+        selected = set().union(*declared.values()) if declared else set()
         for path in names:
-            if NOTICE.match(path.rsplit("/", 1)[-1]) or any(
-                path == entry or path.endswith("/" + entry) for entry in declared
-            ):
+            if NOTICE.match(path.rsplit("/", 1)[-1]) or path in selected:
                 inspect(path, read(path))
         found = {n["path"] for n in notices}
         missing.extend(
-            entry
-            for entry in sorted(declared)
-            if not any(path == entry or path.endswith("/" + entry) for path in found)
+            entry for entry, candidates in sorted(declared.items()) if not found & candidates
         )
 
     missing: list[str] = []
