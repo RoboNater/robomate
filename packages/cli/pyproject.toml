@@ -2,6 +2,8 @@
 name = "robomate-cli"
 version = "0.1.0"
 description = "Operator CLI for per-repository robomate hubs"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = ["agent-hub", "agent-hub-common", "worker-mcp"]
 

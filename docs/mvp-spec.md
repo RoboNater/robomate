@@ -924,6 +924,7 @@ worktrees. M4 depends on M2.
 | Close-out | Hub-built `closeout` task with a validated typed result; `done` requires merge state per `deliver` and a completed close-out; run report replaces reading agent chat; `robomate abandon` is the operator's no-delivery exit. No general obligation ledger in the MVP |
 | Orchestrator mode | Interactive or headless; both supported via the inbox |
 | Users | Single operator; per-hub shared token plus the operator credential; loopback default |
+| Dependency licensing | Direct dependencies must be permissively licensed; the goal covers the entire resolved tree. Exceptions need owner approval. Authoritative policy: [dependency-licenses.md](dependency-licenses.md) (#191) |
 | Name | `robomate` for repository, distribution, CLI, MCP server, and skill; no shipped short alias |
 
 ---

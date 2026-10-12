@@ -1,0 +1,43 @@
+name: Dependency license review reminder
+
+on:
+  schedule:
+    - cron: "23 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const document = fs.readFileSync('docs/dependency-licenses.md', 'utf8');
+            const decisions = document.split('<!-- license-decisions -->')[1];
+            const match = decisions?.match(/next_review = "(\d{4}-\d{2}-\d{2})"/);
+            if (!match) throw new Error('Missing next dependency license review date');
+            const due = match[1];
+            const today = new Date().toISOString().slice(0, 10);
+            if (today < due) return;
+            const title = `Dependency license review due (${due})`;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo, state: 'open', per_page: 100
+            });
+            if (issues.some(issue => !issue.pull_request && issue.title === title)) return;
+            await github.rest.issues.create({
+              ...context.repo, title,
+              body: 'The quarterly dependency license review is due. Re-read new or changed ' +
+                'artifact notices, regenerate evidence, record the reviewer and result, and ' +
+                'set the next review date in docs/dependency-licenses.md. The repository ' +
+                'owner approves exceptions before merge. Also review at milestone close-out.\n\n' +
+                'Run `uv run --locked python scripts/dependency-licenses.py --update` and ' +
+                '`uv run --locked python scripts/dependency-licenses.py --check`.\n\n' +
+                'Policy: https://github.com/' + context.repo.owner + '/' + context.repo.repo +
+                '/blob/main/docs/dependency-licenses.md'
+            });
