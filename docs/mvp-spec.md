@@ -364,6 +364,14 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   `capabilities`, `host`, `os`, `workspace_id`. `harness` is written by `robomate install` into the
   static MCP entry (`robomate mcp --harness opencode`); `model` and `effort` are declared by the
   agent or pinned by the operator in `config.toml`. Unknown stays `unknown`.
+  `provider` records model-maker lineage (who trained the model, not which gateway served it),
+  resolved from the model ID via `scripts/run_common.py:resolve_provider`: explicit
+  `--<agent>-provider` first, then OpenRouter maker segments, then model-family prefixes
+  (`nemotron` → `nvidia`, `mimo` → `xiaomi`, `longcat` → `meituan`, `ling` → `inclusionai`,
+  `muse-spark` → `meta`, alongside the existing families), then harness defaults for
+  single-vendor harnesses, else `unknown`. Opaque house aliases that name no family
+  (e.g. `big-pickle`, `space-bunny-free`) stay `unknown` unless `--<agent>-provider` is passed,
+  so `reviewer_provider_differs` compares makers rather than routes.
 - **Role policy** (PoC `role_policy`) is still available and still defaults to
   `reviewer_harness_differs: true`; the orchestrator checks the joined pair against it at PLAN
   and escalates on violation. Any harness/model/effort may hold any role; guidelines on what
