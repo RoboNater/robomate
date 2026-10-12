@@ -125,6 +125,10 @@ wake a waiter on the other.
 
 ## Changing things
 
+A new or upgraded dependency must meet the policy in
+[`docs/dependency-licenses.md`](docs/dependency-licenses.md); an exception needs
+the owner's approval before merge.
+
 Keep work scoped to the assigned task and report unrelated findings
 separately. An issue that changes behaviour names, under Tests, the commands a
 reviewer will run to see it work — not only the properties that must hold — so
