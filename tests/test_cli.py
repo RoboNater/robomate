@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -148,6 +148,40 @@ def await_hub(
             )
         time.sleep(0.05)
     raise AssertionError(f"hub did not start\n{_startup_diagnostics(root, process, elapsed)}")
+
+
+def await_registry(
+    env: dict[str, str],
+    matches: Callable[[list[dict[str, Any]]], bool],
+    timeout_s: float = 10.0,
+) -> list[dict[str, Any]]:
+    """Poll hubs.json until its entries satisfy `matches`, and return them (#180).
+
+    `robomate up` writes hub.json before it registers in hubs.json, so
+    await_hub can return first. A read that meets `robomate`'s os.replace of
+    hubs.json fails on Windows with a sharing violation (EACCES) that clears
+    within milliseconds; retry it like any other not-yet state.
+    """
+
+    path = registry_path(env)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        entries: list[dict[str, Any]] | None
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            entries = []
+        except PermissionError:
+            if sys.platform != "win32":
+                raise
+            entries = None
+        if entries is not None and matches(entries):
+            return entries
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"{path} did not reach the expected entries; last read {entries!r}"
+            )
+        time.sleep(0.05)
 
 
 @contextmanager
@@ -588,8 +622,11 @@ def test_legacy_hub_keeps_its_state_and_gets_a_name(
         info = await_hub(root, process)
         assert (info["hub_id"], info["port"], info["name"]) == ("legacy-id", port, "repo")
         assert (root / ".robomate" / "token").read_text() == "legacy-token\n"
-        entries = json.loads(registry_path(env).read_text())
-        assert [(e["hub_id"], e["name"]) for e in entries] == [("legacy-id", "repo")]
+        expected = [("legacy-id", "repo")]
+        entries = await_registry(
+            env, lambda found: [(e["hub_id"], e.get("name")) for e in found] == expected
+        )
+        assert [(e["hub_id"], e["name"]) for e in entries] == expected
     finally:
         stop(root, env, process)
 
@@ -710,12 +747,9 @@ def test_isolated_smoke_hub_leaves_the_machine_state_untouched(
         info = await_hub(root, process)
         registry = registry_path(env)
         assert registry.is_relative_to(smoke)
-        # hub.json is written just before the registry entry.
-        for _ in range(200):
-            if registry.exists():
-                break
-            time.sleep(0.05)
-        assert [entry["hub_id"] for entry in json.loads(registry.read_text())] == [info["hub_id"]]
+        expected = [info["hub_id"]]
+        entries = await_registry(env, lambda found: [e["hub_id"] for e in found] == expected)
+        assert [entry["hub_id"] for entry in entries] == expected
         assert (smoke / "operator-token").exists()
         stop(root, env, process)
     finally:
@@ -1631,7 +1665,8 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
         assert any(str(root) in line and str(first_info["url"]) in line for line in lines)
         assert any(str(other) in line and str(second_info["url"]) in line for line in lines)
         assert all("agents 0" in line and "workflow none" in line for line in lines)
-        assert "stale" not in registry_path(env).read_text()
+        entries = await_registry(env, lambda found: all(e["hub_id"] != "stale" for e in found))
+        assert "stale" not in [e["hub_id"] for e in entries]
         result = subprocess.run(
             [CLI, "ls", "--json"], cwd=root, env=env, text=True, capture_output=True, timeout=10
         )

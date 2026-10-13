@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from .sharing import SHARING_RETRY_DELAYS_S, retry_sharing_violation
+
 
 class RegistryError(RuntimeError):
     """The registry could not be read or updated safely."""
@@ -79,9 +81,19 @@ def _locked(path: Path) -> Iterator[None]:
         lock.unlink(missing_ok=True)
 
 
+# The registry lock serializes robomate's own readers and writers, but not a
+# process that opens hubs.json without it: a scanner (antivirus, indexer), a
+# tool, or a test. On Windows that makes a read or os.replace fail with a
+# transient sharing violation, as #103 and #114 found for hub.json (#180).
+# Retry briefly with the same delays; a file that stays locked still fails.
+_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
+
+
 def _read(path: Path) -> list[dict[str, Any]]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(
+            retry_sharing_violation(lambda: path.read_text(encoding="utf-8"), _RETRY_DELAYS_S)
+        )
     except FileNotFoundError:
         return []
     except (OSError, ValueError) as exc:
@@ -99,7 +111,7 @@ def _write(path: Path, entries: list[dict[str, Any]]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        retry_sharing_violation(lambda: os.replace(temporary, path), _RETRY_DELAYS_S)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
