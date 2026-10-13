@@ -67,9 +67,9 @@ fails instead of silently relocking, so an error there means `pyproject.toml`
 and `uv.lock` disagree — resolve that with uv, never by hand-editing the
 lockfile.
 
-pytest treats `DeprecationWarning` and `PendingDeprecationWarning` attributed
-to our packages and tests as errors; deprecations attributed to third-party
-code remain warnings (#123). Attribution follows the warning's `stacklevel`.
+pytest treats `DeprecationWarning` and `PendingDeprecationWarning` from all
+modules as errors, with targeted, documented exceptions (#127 / #123 option 3).
+`StarletteDeprecationWarning` inherits `UserWarning` and remains report-only.
 `ResourceWarning` is outside this policy (see #121). Any
 `filterwarnings` `ignore`, in config or a test marker, must be targeted and
 have a comment naming the issue that tracks it.
