@@ -3,7 +3,9 @@
 import ctypes
 import os
 import sys
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 from agent_hub_common import registry
@@ -167,3 +169,105 @@ def test_operator_token_lives_beside_the_registry_unless_overridden(tmp_path: Pa
     assert operator_token_path({**env, "ROBOMATE_OPERATOR_TOKEN_FILE": " "}) == (
         registry_path(env).with_name("operator-token")
     )
+
+
+@pytest.mark.parametrize("denials", [2, 3])
+def test_registry_read_retries_transient_permission_error(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch, denials: int
+) -> None:
+    # Two retries are allowed: two denials recover, a third is reported (#180).
+    register(_entry(tmp_path, "a", "wt-a"), env)
+    monkeypatch.setattr("agent_hub_common.registry._RETRY_DELAYS_S", (0.0, 0.0))
+    path = registry_path(env)
+    real_read_text = Path.read_text
+    attempts = 0
+
+    def flaky_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        nonlocal attempts
+        if self == path:
+            attempts += 1
+            if attempts <= denials:
+                raise PermissionError(13, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    if denials < 3:
+        assert [x["hub_id"] for x in registry._read(path)] == ["a"]
+    else:
+        with pytest.raises(RegistryError, match="Permission denied"):
+            registry._read(path)
+    assert attempts == min(denials + 1, 3)
+
+
+@pytest.mark.parametrize("denials", [2, 3])
+def test_registry_write_retries_transient_permission_error(
+    tmp_path: Path, env: dict[str, str], monkeypatch: pytest.MonkeyPatch, denials: int
+) -> None:
+    # Two retries are allowed: two denials recover, a third is reported (#180).
+    register(_entry(tmp_path, "a", "wt-a"), env)
+    second = _entry(tmp_path, "b", "wt-b")  # writes hub.json, so before the patch
+    monkeypatch.setattr("agent_hub_common.registry._RETRY_DELAYS_S", (0.0, 0.0))
+    path = registry_path(env)
+    real_replace = os.replace
+    attempts = 0
+
+    def flaky_replace(src: Any, dst: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= denials:
+            raise PermissionError(13, "Permission denied", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("agent_hub_common.registry.os.replace", flaky_replace)
+    if denials < 3:
+        register(second, env)
+        assert [x["hub_id"] for x in registry._read(path)] == ["a", "b"]
+    else:
+        with pytest.raises(PermissionError, match="Permission denied"):
+            register(second, env)
+        assert [x["hub_id"] for x in registry._read(path)] == ["a"]
+    assert attempts == min(denials + 1, 3)
+    # Neither the temporary file nor the lock is left behind.
+    assert sorted(p.name for p in path.parent.iterdir()) == ["hubs.json"]
+
+
+def test_registry_read_survives_windows_sharing_violation(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    # The #180 race: os.replace (or a scanner) holds hubs.json with DELETE
+    # access, and Python's open() lacks FILE_SHARE_DELETE, so a read fails
+    # with EACCES until that handle closes.
+    if sys.platform != "win32":  # in the body, so mypy skips the rest off Windows
+        pytest.skip("Windows share-mode semantics")
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    delete, share_all, open_existing = 0x00010000, 0x7, 3
+
+    register(_entry(tmp_path, "a", "wt-a"), env)
+    path = registry_path(env)
+    handle = kernel32.CreateFileW(str(path), delete, share_all, None, open_existing, 0, None)
+    assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
+    try:
+        with pytest.raises(PermissionError):
+            path.read_text(encoding="utf-8")
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+    timer = threading.Timer(0.05, kernel32.CloseHandle, (handle,))
+    timer.start()
+    try:
+        assert [x["hub_id"] for x in registry._read(path)] == ["a"]
+    finally:
+        timer.join()

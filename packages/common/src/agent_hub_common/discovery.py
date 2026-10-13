@@ -13,15 +13,15 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
-import time
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from .sharing import SHARING_RETRY_DELAYS_S, retry_sharing_violation
 
 
 class DiscoveryError(RuntimeError):
@@ -320,24 +320,19 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
 # without FILE_SHARE_DELETE, fails with a transient sharing violation that the
 # C runtime reports as EACCES (#103). Retry briefly; a file that stays
 # unreadable still raises DiscoveryError.
-_READ_RETRY_DELAYS_S = (0.01, 0.02, 0.05, 0.1, 0.2, 0.2) if sys.platform == "win32" else ()
+_READ_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
 
 
 def read_hub_json(root: Path) -> dict[str, Any] | None:
     path = state_dir(root) / "hub.json"
-    for delay in (*_READ_RETRY_DELAYS_S, None):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return None
-        except PermissionError as exc:
-            if delay is None:
-                raise DiscoveryError(f"cannot read {path}: {exc}") from exc
-            time.sleep(delay)
-            continue
-        except (OSError, ValueError) as exc:
-            raise DiscoveryError(f"cannot read {path}: {exc}") from exc
-        break
+    try:
+        text = retry_sharing_violation(
+            lambda: path.read_text(encoding="utf-8"), _READ_RETRY_DELAYS_S
+        )
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise DiscoveryError(f"cannot read {path}: {exc}") from exc
     try:
         value = json.loads(text)
     except ValueError as exc:
@@ -350,9 +345,9 @@ def read_hub_json(root: Path) -> dict[str, Any] | None:
 # On Windows, os.replace cannot replace a destination that another process
 # holds open without FILE_SHARE_DELETE, and Python's open() never passes that
 # flag, so a concurrent reader (robomate status/down/discover) can cause a
-# transient PermissionError (winerror 5) (#114). Retry briefly, mirroring
-# _READ_RETRY_DELAYS_S.
-_WRITE_RETRY_DELAYS_S = (0.01, 0.02, 0.05, 0.1, 0.2, 0.2) if sys.platform == "win32" else ()
+# transient PermissionError (winerror 5) (#114). Retry briefly, with the same
+# delays as reads.
+_WRITE_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
 
 
 def write_hub_json(root: Path, value: Mapping[str, Any]) -> None:
@@ -365,14 +360,9 @@ def write_hub_json(root: Path, value: Mapping[str, Any]) -> None:
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        for delay in (*_WRITE_RETRY_DELAYS_S, None):
-            try:
-                os.replace(temporary, directory / "hub.json")
-                break
-            except PermissionError:
-                if delay is None:
-                    raise
-                time.sleep(delay)
+        retry_sharing_violation(
+            lambda: os.replace(temporary, directory / "hub.json"), _WRITE_RETRY_DELAYS_S
+        )
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

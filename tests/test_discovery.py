@@ -325,7 +325,7 @@ def test_hub_json_invalid_content_is_not_retried(
     (repository / ".robomate/hub.json").write_text("[1]")
     with pytest.raises(DiscoveryError, match="invalid hub metadata"):
         read_hub_json(repository)
-    monkeypatch.setattr("agent_hub_common.discovery.time.sleep", pytest.fail)
+    monkeypatch.setattr("agent_hub_common.sharing.time.sleep", pytest.fail)
     for content in (b"{not json", b"\xff"):
         (repository / ".robomate/hub.json").write_bytes(content)
         with pytest.raises(DiscoveryError, match="cannot read"):
