@@ -87,6 +87,6 @@ async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(store: H
     current = store.agent_by_name(agent.name)
     assert current is not None and current.status.value == "busy"
     current_task = store.get_task(task.id)
-    assert current_task is not None and current_task.lease_expires == task.lease_expires
+    assert current_task is not None and current_task.lease_expires != task.lease_expires
     assert store.stall_episodes() == []
     assert store.next_event() is None

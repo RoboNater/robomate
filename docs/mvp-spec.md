@@ -607,7 +607,9 @@ Legacy questions and another session's questions still require an operator answe
   monotonic clock advances during sleep. Grace lasts `HUB_LOST_AFTER_S` on the
   monotonic clock from detection; another detected pause restarts it. Heartbeats
   remain accepted throughout; overdue leases and silent workers are assessed again
-  after grace. Queued events remain deliverable. This is an in-process safeguard,
+  after grace. Task leases that were live before a clock jump and their renewal-cap
+  anchors shift by the detected pause, preserving the maximum active duration.
+  Queued events remain deliverable. This is an in-process safeguard,
   not restart reconciliation. See [host standby checks](development/host-standby.md).
 - **Tests:** the existing crash-point harness at component level, plus one live kill/restart of
   each component in the MVP acceptance runs.

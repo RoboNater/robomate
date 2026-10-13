@@ -244,6 +244,9 @@ Handle events as follows:
   `lease_expired` or `agent_lost` follows if it has really stopped. If the
   stall blocks the workflow, escalate with `ask_user`. One event arrives per
   stall episode.
+- `host_paused`: log the clock evidence and tell the operator the detected gap
+  and grace duration. Let workers resume heartbeating during grace; inspect any
+  later loss or lease expiry against the pause record before routing recovery.
 
 ### On resume
 

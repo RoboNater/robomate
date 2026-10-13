@@ -13,10 +13,23 @@ redeliveries, and suppresses stall assessments. New queued events still reach
 Alice. Existing stall episodes remain unchanged. A repeated pause restarts
 grace. When grace ends, ordinary checks resume: a worker that heartbeats is
 live; a silent worker is lost; an overdue task lease is reported to Alice and
-an overdue event delivery becomes eligible for redelivery. Grace does not
-extend task lease limits or renew an already expired task lease. The pause
-event includes the two elapsed times, their difference and the grace length;
+an overdue event delivery becomes eligible for redelivery. Task leases that
+were live before a forward jump are shifted by the wall/monotonic discrepancy.
+Their durable renewal-cap anchor shifts by the same amount, so
+`max_task_lease_min` still bounds active time. On a long gap with matching clocks,
+the whole gap is conservatively excluded, bounded by each task's age. Already
+expired leases and tasks created after a wall-clock jump are not extended.
+The lease shifts and pause event commit together. Resumed heartbeats can renew
+these leases normally, including after the original wall-clock cap has passed.
+The pause event includes the two elapsed times, their difference, the grace
+length, the lease shift and how many task leases were shifted;
 the hub also logs that payload to stderr.
+
+Stall ages still include the pause after grace ends; excluding it is tracked
+in [#202](https://github.com/RoboNater/robomate/issues/202). Recovery when a
+still-running bridge already receives rejected heartbeats is tracked in
+[#203](https://github.com/RoboNater/robomate/issues/203). Alice's orchestrator
+skill explains how to handle `host_paused` and inspect later loss/expiry.
 
 Detection starts with the first sweep of this hub process. A restart has no
 previous in-memory clock sample; crash/restart reconciliation remains #18.

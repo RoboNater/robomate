@@ -1023,5 +1023,19 @@ def test_v18_migration_preserves_delivery_and_admits_host_pause(tmp_path: Path) 
     initialize_database(path)
     with database(path) as connection:
         assert tuple(connection.execute("SELECT * FROM event").fetchone()) == before
+        assert "lease_clock_shift_s" in _table_columns(path, "task")
     store = HubStore(path)
     assert store.append_event(EventKind.HOST_PAUSED, {"grace_s": 180}).id == 2
+
+
+def test_v18_task_migration_starts_with_zero_pause_offset(tmp_path: Path) -> None:
+    path = tmp_path / "v18-tasks.db"
+    _legacy_database(path, 18)
+    _populate(path, 18)
+    with database(path) as connection:
+        before = connection.execute("SELECT lease_expires FROM task").fetchone()[0]
+    initialize_database(path)
+    with database(path) as connection:
+        row = connection.execute("SELECT lease_expires, lease_clock_shift_s FROM task").fetchone()
+        assert row["lease_expires"] == before
+        assert row["lease_clock_shift_s"] == 0

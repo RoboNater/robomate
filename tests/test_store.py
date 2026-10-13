@@ -1172,7 +1172,9 @@ def test_pause_is_durable_and_grants_one_grace_window(
     assert "Host pause/clock jump detected" in caplog.text
     current_task = store.get_task(task.id)
     current_agent = store.agent_by_name("bob")
-    assert current_task is not None and current_task.lease_expires == task.lease_expires
+    assert current_task is not None and current_task.lease_expires == to_iso(
+        clocks.now + timedelta(seconds=50)
+    )
     assert current_agent is not None and current_agent.status is AgentStatus.BUSY
     with database(store.path) as connection:
         assert (
@@ -1201,24 +1203,100 @@ def test_pause_is_durable_and_grants_one_grace_window(
     assert store.sweep(180) == []
 
 
+@pytest.mark.parametrize("monotonic_seconds", [10, 600])
 def test_heartbeat_during_grace_keeps_worker_and_task_live(
-    pause_store: tuple[HubStore, PauseClocks],
+    pause_store: tuple[HubStore, PauseClocks], monotonic_seconds: float
 ) -> None:
     store, clocks = pause_store
     task = store.assign_task("bob", "implementer", "Fix", "Work", lease_min=1)
-    clocks.step(600, monotonic_seconds=10)
+    clocks.step(600, monotonic_seconds=monotonic_seconds)
     store.sweep(180)
-    clocks.step(170)
-    assert store.heartbeat("bob", "bob-1", task.id)
-    clocks.step(10)
-    # The task lease is still reported once after grace; it does not fail work.
-    assert [e.kind for e in store.sweep(180)] == [EventKind.LEASE_EXPIRED]
+    for _ in range(6):
+        clocks.step(30)
+        assert store.heartbeat("bob", "bob-1", task.id)
+        assert store.sweep(180) == []
     current_agent = store.agent_by_name("bob")
     current_task = store.get_task(task.id)
     assert current_agent is not None and current_agent.status is AgentStatus.BUSY
     assert current_task is not None and current_task.state is TaskState.SUBMITTED
-    clocks.step(170)
+    assert current_task.lease_expires == to_iso(clocks.now + timedelta(minutes=1))
+    clocks.step(60)
+    assert [e.kind for e in store.sweep(180)] == [EventKind.LEASE_EXPIRED]
+    clocks.step(120)
     assert [e.kind for e in store.sweep(180)] == [EventKind.AGENT_LOST]
+
+
+def test_pause_offset_preserves_the_active_renewal_cap_across_store_restart(
+    pause_store: tuple[HubStore, PauseClocks],
+) -> None:
+    store, clocks = pause_store
+    task = store.assign_task("bob", "implementer", "Fix", "Work", lease_min=1)
+    clocks.step(4 * 3600, monotonic_seconds=10)
+    store.sweep(180)
+    restarted = HubStore(store.path, clock=clocks, monotonic_clock=clocks.monotonic)
+    for _ in range(6):
+        clocks.step(30)
+        assert restarted.heartbeat("bob", "bob-1", task.id, max_task_lease_min=4)
+        assert store.sweep(180) == []
+    current = store.get_task(task.id)
+    assert current is not None
+    # Of the four-minute active cap, ten seconds passed before detection and
+    # 180 since wake. Only 50 seconds remain, despite the four-hour wall jump.
+    assert current.lease_expires == to_iso(clocks.now + timedelta(seconds=50))
+    clocks.step(50)
+    assert [e.kind for e in store.sweep(180)] == [EventKind.LEASE_EXPIRED]
+
+
+def test_pause_does_not_extend_already_expired_or_newly_created_tasks(
+    pause_store: tuple[HubStore, PauseClocks],
+) -> None:
+    store, clocks = pause_store
+    expired = store.assign_task("bob", "implementer", "Old", "Work", lease_min=-1)
+    store.check_in("charlie", worker_instance_id="charlie-1")
+    clocks.step(3600, monotonic_seconds=10)
+    fresh = store.assign_task("charlie", "implementer", "New", "Work")
+    event = store.sweep(180)[0]
+    assert event.payload["shifted_task_leases"] == 0
+    for before in (expired, fresh):
+        after = store.get_task(before.id)
+        assert after is not None and after.lease_expires == before.lease_expires
+
+
+def test_pause_event_and_lease_shift_roll_back_together(
+    pause_store: tuple[HubStore, PauseClocks], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, clocks = pause_store
+    task = store.assign_task("bob", "implementer", "Fix", "Work", lease_min=1)
+    clocks.step(3600, monotonic_seconds=10)
+    original = HubStore._add_event
+
+    def fail_pause(self: HubStore, connection: Connection, kind: EventKind, payload: object) -> int:
+        if kind is EventKind.HOST_PAUSED:
+            raise RuntimeError("injected pause event write failure")
+        raise AssertionError("unexpected event")
+
+    monkeypatch.setattr(HubStore, "_add_event", fail_pause)
+    with pytest.raises(RuntimeError, match="injected pause event write failure"):
+        store.sweep(180)
+    current = store.get_task(task.id)
+    assert current is not None and current.lease_expires == task.lease_expires
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT lease_clock_shift_s FROM task WHERE id = ?", (task.id,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM event WHERE kind = 'host_paused'").fetchone()[
+                0
+            ]
+            == 0
+        )
+    monkeypatch.setattr(HubStore, "_add_event", original)
+    event = store.sweep(180)[0]
+    assert event.kind is EventKind.HOST_PAUSED
+    assert event.payload["shifted_task_leases"] == 1
 
 
 @pytest.mark.parametrize("monotonic_seconds,reason", [(10, "clock_jump"), (3600, "sweep_gap")])

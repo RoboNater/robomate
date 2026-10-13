@@ -1326,7 +1326,14 @@ class HubStore:
             cap_minutes = max_task_lease_min or self._max_task_lease_min(
                 connection, task.workflow_id
             )
-            cap = _parse_timestamp(task.created) + timedelta(minutes=cap_minutes)
+            clock_shift = float(
+                connection.execute(
+                    "SELECT lease_clock_shift_s FROM task WHERE id = ?", (task.id,)
+                ).fetchone()["lease_clock_shift_s"]
+            )
+            cap = _parse_timestamp(task.created) + timedelta(
+                minutes=cap_minutes, seconds=clock_shift
+            )
             # An already-expired lease stays expired even if the sweeper has not
             # observed it yet. The next pass will emit its one durable event.
             if current_expiry <= now:
@@ -2300,9 +2307,36 @@ class HubStore:
         sweep_gap = wall_elapsed > lost_after_s and mono_elapsed > lost_after_s
         if not clock_jump and not sweep_gap:
             return None
-        event = self.append_event(
-            EventKind.HOST_PAUSED,
-            {
+        pause_s = jump if clock_jump else wall_elapsed
+        # For a wall jump, matching monotonic progress was active time. A
+        # long gap on both clocks has no such measurement: conservatively
+        # treat that gap as paused, bounded by each task's age.
+        pause_start = now - timedelta(seconds=pause_s)
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, created, lease_expires FROM task"
+                f" WHERE state IN ({_placeholders(OPEN_STATES)})"
+                " AND lease_expires > ?",
+                (*(state.value for state in OPEN_STATES), to_iso(pause_start)),
+            ).fetchall()
+            shifted = 0
+            for row in rows:
+                created = _parse_timestamp(row["created"])
+                # A task created after the clock jumped never saw the pause.
+                if clock_jump and created > pause_start:
+                    continue
+                shift_s = min(pause_s, max(0.0, (now - created).total_seconds()))
+                if shift_s <= 0:
+                    continue
+                expires = _parse_timestamp(row["lease_expires"]) + timedelta(seconds=shift_s)
+                connection.execute(
+                    "UPDATE task SET lease_expires = ?,"
+                    " lease_clock_shift_s = lease_clock_shift_s + ?, updated = ? WHERE id = ?",
+                    (to_iso(expires), shift_s, to_iso(now), row["id"]),
+                )
+                shifted += 1
+            payload = {
                 "reason": "clock_jump" if clock_jump else "sweep_gap",
                 "previous_sweep_at": to_iso(previous[0]),
                 "detected_at": to_iso(now),
@@ -2310,12 +2344,18 @@ class HubStore:
                 "monotonic_elapsed_s": mono_elapsed,
                 "clock_jump_s": jump,
                 "grace_s": lost_after_s,
-            },
-        )
+                "lease_shift_s": pause_s,
+                "shifted_task_leases": shifted,
+            }
+            event_id = self._add_event(connection, EventKind.HOST_PAUSED, payload)
+            event = _event(
+                connection.execute("SELECT * FROM event WHERE id = ?", (event_id,)).fetchone()
+            )
         # Publish the baseline only after the durable event commits, so a
         # failed write is retried instead of silently losing the diagnostic.
         self._sweep_sample = (now, mono)
         self._resume_grace_until = mono + lost_after_s
+        self.signals.notify(EVENT_KEY)
         logger.warning("Host pause/clock jump detected: %s", event.payload)
         return event
 

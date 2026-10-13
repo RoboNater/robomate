@@ -19,7 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
-# v19 is #19's `host_paused` event kind (event CHECK rebuilt on migration).
+# v19 is #19's `host_paused` event kind and task lease clock-shift accounting.
 # v18 is #171's task-wait question binding and withdrawal provenance.
 # v17 is #144's `stall_episode` table and the `agent_stalled` event kind.
 # v16 is #132's `operator_question.resumed_by`, the decision that ended a
@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS task (
     state TEXT NOT NULL CHECK (state IN ({_sql_values(TaskState)})),
     lease_expires TEXT,
     lease_duration_s REAL NOT NULL DEFAULT 1800,
+    lease_clock_shift_s REAL NOT NULL DEFAULT 0,
     result_json TEXT,
     created TEXT NOT NULL,
     updated TEXT NOT NULL,
@@ -353,6 +354,7 @@ def initialize_database(path: Path) -> None:
         _migrate_question_resumed_by(connection)
         _migrate_stall_episode(connection)
         _migrate_question_withdrawal(connection)
+        _migrate_lease_clock_shift(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -362,6 +364,15 @@ def initialize_database(path: Path) -> None:
     _rebuild_drifted_tables(path)
     with database(path) as connection:
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:
+    """Exclude detected pauses from a task's bounded renewal time (#19, v19)."""
+
+    if "lease_clock_shift_s" not in _columns(connection, "task"):
+        connection.execute(
+            "ALTER TABLE task ADD COLUMN lease_clock_shift_s REAL NOT NULL DEFAULT 0"
+        )
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
