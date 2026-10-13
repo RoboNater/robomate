@@ -97,14 +97,12 @@ def _bind(
     """Bind the pinned or saved port, or the first free one from the base not in `avoid`."""
 
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    base = DEFAULT_BASE_PORT if port is not None else _first_free_base()
     if port is not None:
         ports: Iterator[int] = iter([port])
-        base = DEFAULT_BASE_PORT
     else:
-        base = _first_free_base()
         ports = (p for p in range(base, 65536) if p not in avoid)
     for candidate in ports:
-        assert candidate is not None
         sock = socket.socket(family, socket.SOCK_STREAM)
         if os.name != "nt":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
