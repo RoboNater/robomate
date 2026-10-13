@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from agent_hub.store import EventRecord, HubStore
@@ -59,3 +60,33 @@ async def test_stopping_the_loop_leaves_no_task_running(store: HubStore) -> None
     await stop_sweeper(sweeper)
 
     assert sweeper.cancelled()
+
+
+async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(store: HubStore) -> None:
+    wall = [datetime(2026, 10, 12, tzinfo=UTC)]
+    mono = [100.0]
+    store.clock = lambda: wall[0]
+    store.monotonic_clock = lambda: mono[0]
+    agent = store.check_in("bob", worker_instance_id="bob-1")
+    store.note_worker_call("bob", "bob-1", "check_in")
+    task = store.assign_task("bob", "implementer", "Fix", "Work", lease_min=1)
+    await drain(store)
+    assert store.sweep(180) == []
+    wall[0] += timedelta(hours=4)
+    mono[0] += 10
+
+    sweeper = start_sweeper(store, interval_s=0.01, lost_after_s=180)
+    try:
+        # Waiting polls the inbox, so detection can precede the loop itself.
+        event = await store.wait_for_event(2.0)
+        await asyncio.sleep(0.05)
+    finally:
+        await stop_sweeper(sweeper)
+
+    assert event is not None and event.kind is EventKind.HOST_PAUSED
+    current = store.agent_by_name(agent.name)
+    assert current is not None and current.status.value == "busy"
+    current_task = store.get_task(task.id)
+    assert current_task is not None and current_task.lease_expires != task.lease_expires
+    assert store.stall_episodes() == []
+    assert store.next_event() is None
