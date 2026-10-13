@@ -144,6 +144,38 @@ async def test_hub_status_is_compact_and_reports_open_work(
     )
 
 
+async def test_a_bridge_heartbeating_after_done_reads_as_finished_not_active(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#95: heartbeats keep the bridge connected but are never her activity."""
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": "http://hub.test",
+        "default_branch": "main",
+    }
+    await call(client, "initialize_workflow", goal="Ship it")
+    await call(client, "set_workflow_status", status="done", summary="Merged")
+    for _ in range(3):
+        assert (await call(client, "hub.heartbeat"))["result"] == {"ok": True}
+    result = (await call(client, "hub.status"))["result"]
+    # The legacy session block is unchanged: `last_seen` is bridge liveness.
+    assert set(result["orchestrator"]) == {"name", "session", "last_seen"}
+    alice = result["orchestrator_activity"]
+    assert alice["state"] == "finished" and alice["bridge"] == "connected"
+    assert alice["last_call"] == "set_workflow_status" and alice["last_call_restored"] is False
+    assert alice["last_call_actor"] == "alice" and alice["last_call_at"]
+    assert alice["stalled"] is False and alice["suppressed"] == "workflow_done"
+    with database(hub_store.path) as connection:
+        row = connection.execute(
+            "SELECT actor, session, kind FROM orchestrator_last_call"
+        ).fetchone()
+    assert tuple(row) == ("alice", SESSION, "set_workflow_status")
+
+
 async def test_hub_status_shows_known_review_pr_and_head(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:

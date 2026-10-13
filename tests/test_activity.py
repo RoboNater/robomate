@@ -353,6 +353,124 @@ def test_paused_workflows_suspend_and_resume_restarts_the_clocks(
     assert assessed(hub, "bob")["reasons"] == [NO_TASK_PROGRESS]
 
 
+# -- orchestrator state and bridge (#95) -----------------------------------------------
+
+
+def test_heartbeats_after_done_move_the_bridge_but_not_her_activity(
+    hub: HubStore, clock: FakeClock
+) -> None:
+    orchestrate(hub, "set_workflow_status")
+    hub.set_workflow_status(WorkflowStatus.DONE, "Merged", actor="alice", session=SESSION)
+    for _ in range(44):
+        clock.advance(seconds=30)
+        hub.note_orchestrator_heartbeat(SESSION)
+    state = alice(hub)
+    assert state["state"] == "finished" and state["suppressed"] == "workflow_done"
+    assert state["bridge"] == "connected" and state["bridge_age_s"] == 0
+    assert state["heartbeat_age_s"] == 0
+    assert state["last_call"] == "set_workflow_status" and state["last_call_age_s"] == 22 * 60
+    assert state["last_call_at"] == "2026-10-08T12:00:00.000Z"
+    assert state["last_call_actor"] == "alice" and state["last_call_restored"] is False
+
+
+def test_alice_is_active_then_holding_then_idle_with_a_live_bridge(
+    hub: HubStore, clock: FakeClock
+) -> None:
+    orchestrate(hub, "assign_task")
+    assert alice(hub)["state"] == "active"
+    with hub.orchestrator_call(SESSION, "wait_for_event", 100):
+        clock.advance(seconds=60)
+        held = alice(hub)
+    assert held["state"] == "holding" and held["holding"] == "wait_for_event"
+    for _ in range(5):
+        clock.advance(seconds=30)
+        hub.note_orchestrator_heartbeat(SESSION)
+    idle = alice(hub)
+    assert idle["state"] == "idle" and idle["bridge"] == "connected"
+    assert idle["last_call_age_s"] == 150 and not idle["stalled"]
+
+
+def test_a_bridge_that_stops_heartbeating_is_disconnected(hub: HubStore, clock: FakeClock) -> None:
+    orchestrate(hub)
+    hub.note_orchestrator_heartbeat(SESSION)
+    clock.advance(seconds=90)
+    assert alice(hub)["bridge"] == "connected"
+    clock.advance(seconds=1)
+    state = alice(hub)
+    assert state["bridge"] == "disconnected" and state["bridge_age_s"] == 91
+
+
+def test_a_paused_workflow_pauses_alice(hub: HubStore) -> None:
+    orchestrate(hub)
+    hub.set_workflow_status(WorkflowStatus.PAUSED, "Hold", actor="alice", session=SESSION)
+    assert alice(hub)["state"] == "paused"
+
+
+def test_no_session_and_no_persisted_call_is_not_seen(hub: HubStore) -> None:
+    state = alice(hub)
+    assert state["state"] == "not_seen" and state["bridge"] == "not_seen"
+    assert state["last_call"] is None and state["last_call_at"] is None
+
+
+def test_her_last_call_survives_a_hub_restart_without_moving_silence(
+    tmp_path: Path, clock: FakeClock
+) -> None:
+    path = tmp_path / "hub.db"
+    first = make_store(path, clock)
+    orchestrate(first, "set_workflow_status")
+    first.set_workflow_status(WorkflowStatus.DONE, "Merged", actor="alice", session=SESSION)
+    clock.advance(minutes=22)
+
+    restarted = HubStore(path, clock=clock)
+    restarted.activity.mark_started(clock())
+    state = alice(restarted)
+    assert state["last_call"] == "set_workflow_status" and state["last_call_age_s"] == 22 * 60
+    assert state["last_call_at"] == "2026-10-08T12:00:00.000Z"
+    assert state["last_call_actor"] == "alice" and state["last_call_restored"] is True
+    assert state["silence_s"] == 0 and state["session"] is None
+    assert state["state"] == "finished" and state["bridge"] == "not_seen"
+
+    # Her bridge keeps heartbeating into the new process: connected, still idle.
+    restarted.note_orchestrator_session("alice", SESSION)
+    restarted.note_orchestrator_heartbeat(SESSION)
+    state = alice(restarted)
+    assert state["bridge"] == "connected" and state["last_call_restored"] is True
+    restarted.set_workflow_status(WorkflowStatus.ACTIVE, "Reopen", actor="operator", session=None)
+    assert alice(restarted)["state"] == "idle"
+
+    # A call in this process replaces the persisted one.
+    clock.advance(seconds=5)
+    with restarted.orchestrator_call(SESSION, "get_state", 75):
+        pass
+    state = alice(restarted)
+    assert state["last_call_restored"] is False and state["last_call_age_s"] == 0
+    with database(path) as connection:
+        row = connection.execute("SELECT * FROM orchestrator_last_call").fetchone()
+    assert (row["actor"], row["session"], row["kind"]) == ("alice", SESSION, "get_state")
+
+
+def test_a_superseded_session_persists_no_last_call(hub: HubStore, clock: FakeClock) -> None:
+    orchestrate(hub, session=SESSION)
+    orchestrate(hub, "assign_task", session=SESSION_2)
+    clock.advance(seconds=10)
+    with hub.orchestrator_call(SESSION, "get_state", 75):
+        pass
+    with database(hub.path) as connection:
+        row = connection.execute("SELECT session, kind, ts FROM orchestrator_last_call").fetchone()
+    assert tuple(row) == (SESSION_2, "assign_task", "2026-10-08T12:00:00.000Z")
+
+
+def test_a_failed_persist_does_not_fail_the_call(
+    hub: HubStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    with database(hub.path) as connection:
+        connection.execute("DROP TABLE orchestrator_last_call")
+    orchestrate(hub, "assign_task")
+    record = hub.activity.orchestrator()
+    assert record is not None and record.last_call_kind == "assign_task"
+    assert "Could not persist the orchestrator's last call" in caplog.text
+
+
 # -- sweep and episodes ----------------------------------------------------------------
 
 

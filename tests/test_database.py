@@ -976,12 +976,34 @@ def test_migration_from_v16_adds_stall_episodes_and_the_stalled_event_kind(
     store = HubStore(path)
     event = store.append_event(EventKind.AGENT_STALLED, {"agent": "bob"})
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 19
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         kinds = connection.execute("SELECT id, kind FROM event ORDER BY id").fetchall()
         assert connection.execute("SELECT COUNT(*) FROM stall_episode").fetchone()[0] == 0
     assert [tuple(row) for row in kinds] == [(1, "task_completed"), (2, "agent_stalled")]
     assert event.id == 2
     assert store.stall_episodes() == []
+
+
+def test_migration_from_v19_adds_an_empty_orchestrator_last_call(tmp_path: Path) -> None:
+    """#95's v20: no last call was persisted before, so status starts with none."""
+
+    path = tmp_path / "v19.db"
+    _legacy_database(path, 19)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, policy_json, created)"
+            " VALUES ('wf', 'Goal', 'done', '{}', '2026-10-01T00:00:00Z')"
+        )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert connection.execute("SELECT COUNT(*) FROM orchestrator_last_call").fetchone()[0] == 0
+    alice = HubStore(path).status_summary()["orchestrator_activity"]
+    assert alice["state"] == "finished" and alice["last_call"] is None
+    assert alice["last_call_at"] is None and alice["last_call_restored"] is False
 
 
 def test_a_null_declared_model_reads_as_unknown(tmp_path: Path) -> None:

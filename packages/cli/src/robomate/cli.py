@@ -705,6 +705,81 @@ def _stall_evidence(activity: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+_ORCHESTRATOR_STATE_LABELS = {
+    "finished": "finished",
+    "paused": "paused",
+    "active": "active",
+    "idle": "idle",
+    "not_seen": "not seen by this hub",
+}
+
+
+def _orchestrator_lines(status: dict[str, Any]) -> list[str]:
+    """The orchestrator's status lines: what she is doing apart from bridge liveness (#95).
+
+    `last_seen` moves with every bridge heartbeat, so it says only that the
+    bridge process is alive; a finished or idle Alice looked freshly seen.
+    The activity's state and last call say what she is doing, and the bridge
+    is reported beside them.
+    """
+
+    orchestrator = status["orchestrator"]
+    activity = status.get("orchestrator_activity")
+    if not isinstance(activity, dict) or "state" not in activity:
+        # A hub older than #95. An age, not the hub's UTC timestamp, which
+        # read as hours stale in other zones (#65).
+        if not orchestrator:
+            return ["Orchestrator: none"]
+        seen = datetime.fromisoformat(orchestrator["last_seen"])
+        return [
+            f"Orchestrator: {orchestrator['name']}  session {orchestrator['session']}"
+            f"  last seen {_age(datetime.now(UTC) - seen)} ago"
+        ]
+    name = (
+        orchestrator["name"]
+        if orchestrator
+        else activity.get("last_call_actor") or activity.get("actor")
+    )
+    if not name:
+        return ["Orchestrator: none"]
+    state = activity["state"]
+    hold = _seconds(activity.get("hold_age_s"))
+    if state == "holding":
+        label = f"waiting in {activity.get('holding')}" + (
+            f" {_age(hold)}" if hold is not None else ""
+        )
+    else:
+        label = _ORCHESTRATOR_STATE_LABELS.get(state, str(state))
+    call_age = _seconds(activity.get("last_call_age_s"))
+    if call_age is None:
+        call = "no hub call seen"
+    else:
+        notes = [activity.get("last_call") or "?"]
+        if activity.get("last_call_restored"):
+            notes.append("before hub restart")
+        call = f"last call {_age(call_age)} ago ({', '.join(notes)})"
+    bridge = activity.get("bridge")
+    bridge_age = _seconds(activity.get("bridge_age_s"))
+    if bridge == "connected":
+        context = ["bridge connected"]
+    elif bridge == "disconnected":
+        context = ["bridge disconnected"] + (
+            [f"last heard {_age(bridge_age)} ago"] if bridge_age is not None else []
+        )
+    else:
+        context = ["bridge not seen by this hub"]
+    workflow = status.get("workflow")
+    if workflow and workflow.get("status") != "active":
+        context.append(f"workflow {workflow['status']}")
+    open_tasks = len(status.get("tasks") or [])
+    if state == "idle" and open_tasks:
+        context.append(f"{open_tasks} open task{'s' if open_tasks != 1 else ''}")
+    lines = [f"Orchestrator: {name}  {label}  {call}  ({', '.join(context)})"]
+    session = orchestrator["session"] if orchestrator else None
+    lines.append(f"  session {session or 'none seen by this hub process'}")
+    return lines
+
+
 def _stopped_at(value: str | None) -> str | None:
     """Normalize an operator-supplied stop time to UTC ISO 8601, or refuse it."""
 
@@ -850,18 +925,8 @@ def _status(as_json: bool, selector: str | None) -> None:
         print(f"Workflow: {workflow['status']} — {workflow['headline'][:120]}")
     else:
         print("Workflow: none")
-    orchestrator = status["orchestrator"]
-    if orchestrator:
-        # An age, not the hub's UTC timestamp, which read as hours stale in
-        # other zones (#65). Alice is only seen per call, so gaps of about two
-        # minutes while she holds wait_for_event are normal.
-        seen = datetime.fromisoformat(orchestrator["last_seen"])
-        print(
-            f"Orchestrator: {orchestrator['name']}  session {orchestrator['session']}"
-            f"  last seen {_age(datetime.now(UTC) - seen)} ago"
-        )
-    else:
-        print("Orchestrator: none")
+    for line in _orchestrator_lines(status):
+        print(line)
     # Absent from a hub older than #144, which may still be running.
     stalled = False
     alice = status.get("orchestrator_activity")
