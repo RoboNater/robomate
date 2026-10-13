@@ -98,7 +98,7 @@ licenses.
 ## Inventory (generated)
 
 <!-- generated-inventory -->
-Lock SHA256: `39715d39dc2efc286f6d84e5f2b2e7f58bcfb5dbe572f367b30dbc05d520c046`. Artifact and notice digests, metadata,
+Lock SHA256: `3f6998a37512c81cb08fd6a0a2cbcdbf780f083e56671f2aac28efdb272cf4e3`. Artifact and notice digests, metadata,
 markers, and every runtime/dev graph path are in
 [dependency-license-facts.json](dependency-license-facts.json).
 
@@ -122,8 +122,11 @@ markers, and every runtime/dev graph path are in
 | google-auth | 2.57.0 | runtime | 2 / 2 | permissive |
 | googleapis-common-protos | 1.75.2 | runtime | 2 / 2 | permissive |
 | h11 | 0.16.0 | dev, runtime | 2 / 2 | permissive |
+| httpcore2 | 2.13.1 | dev | 2 / 2 | permissive |
 | httpcore | 1.0.9 | dev, runtime | 2 / 2 | permissive |
 | httpx-sse | 0.4.3 | runtime | 2 / 2 | permissive |
+| httpx2-jsfetch | 1.0 | dev | 2 / 2 | permissive |
+| httpx2 | 2.13.1 | dev | 2 / 2 | permissive |
 | httpx | 0.28.1 | dev, runtime | 2 / 2 | permissive |
 | idna | 3.19 | dev, runtime | 2 / 2 | permissive |
 | iniconfig | 2.3.0 | dev | 2 / 2 | permissive |
@@ -159,6 +162,7 @@ markers, and every runtime/dev graph path are in
 | ruff | 0.16.5 | dev | 4 / 18 | permissive |
 | sse-starlette | 3.4.8 | runtime | 2 / 2 | permissive |
 | starlette | 1.6.0 | runtime | 2 / 2 | permissive |
+| truststore | 0.10.5 | dev | 2 / 2 | permissive |
 | typing-extensions | 4.16.0 | dev, runtime | 2 / 2 | permissive |
 | typing-inspection | 0.4.4 | runtime | 2 / 2 | permissive |
 | urllib3 | 2.8.0 | runtime | 2 / 2 | permissive |
@@ -200,6 +204,15 @@ The allowlist includes [MIT No Attribution (MIT-0)](https://spdx.org/licenses/MI
 used by cffi, alongside the other recorded permissive licenses. Additions
 need review of their terms. Human decisions are stored in the following TOML
 block so the collector can verify them independently of generated facts.
+
+For #127, bob reviewed both locked archives for each new dev dependency:
+`httpx2` and `httpcore2` 2.13.1, `httpx2-jsfetch` 1.0 (conditional Emscripten
+edge, retained by the collector), and `truststore` 0.10.5. All notices agree
+with BSD-3-Clause for the first three and MIT for truststore; no bundled
+non-permissive notices or missing declared license files were found. Existing
+AnyIO, h11, idna and typing-extensions artifacts are unchanged; their renewed
+records cover only added dev reachability. The virtual root record covers the
+added dev dependency. Existing exception evidence is unchanged.
 
 <!-- license-decisions -->
 ```toml
@@ -256,10 +269,10 @@ review_date = "2026-10-12"
 name = "anyio"
 version = "4.15.0"
 expression = "MIT"
-fingerprint = "dcabfb793a287a552a940f54148fba7ac931bcf1016a5e54b9c0bcdd56549c4c"
-renewal_fingerprint = "0456b1603b3d6f9a104c228ee3cc143a82e482ad87c2bb05ef2d4c0fc3224fb9"
+fingerprint = "e3c0b2807f16000f0582991078b28563d765031735ce4db50d545a738e367f53"
+renewal_fingerprint = "9abb87e60ad5681dbfafe8c91c9837982540d6f186256764e8728c94ae3254fe"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-10-13"
 
 [[review]]
 name = "attrs"
@@ -372,10 +385,10 @@ review_date = "2026-10-12"
 name = "h11"
 version = "0.16.0"
 expression = "MIT"
-fingerprint = "508b92b23b1ddb4578881e1339b761cc48ec4a3b93618ac501d87f84913bc61a"
-renewal_fingerprint = "7d14e887760c7c4ac5b13c5b91d4f2331b329fbb5a8cacb2ea3efa1423fc84c5"
+fingerprint = "313a16ba212cc7fbd45ac82ef3fcd92aa91027466f183080625950b0a0d91457"
+renewal_fingerprint = "0e3725c1a471b4dc44db545ae44505361439bb95d21e583505ce372c7ddbebd3"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-10-13"
 
 [[review]]
 name = "httpcore"
@@ -408,10 +421,10 @@ review_date = "2026-10-12"
 name = "idna"
 version = "3.19"
 expression = "BSD-3-Clause"
-fingerprint = "0a14aefa817bf1a22e7d538d642f0d5ab1f74f533d908628fce677049d821618"
-renewal_fingerprint = "ba76f16b019572ed5100d2bb675038bbfa1c1a52ac27902c3a910b67c5d3ba5c"
+fingerprint = "2015b595ea96571a35b4398a2b33b0339023a809d82d7bd923958bacec9e5966"
+renewal_fingerprint = "9c987e7d58dc917a151cbf80616fb8dc57c189624a792fd087d2a3ff419f128f"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-10-13"
 
 [[review]]
 name = "iniconfig"
@@ -674,10 +687,10 @@ review_date = "2026-10-12"
 name = "robomate"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "b339d9452ab89b76beaadfc369e0514351ad22bd336c6e583b1e37f726d3ba9c"
-renewal_fingerprint = "7ad65681903a42987228ded78da3cf6de0a9f9060afe21d8f7aa95b9140177cc"
+fingerprint = "f9e683cee904aa0970661294dc46f56040d2a2cadf5ac812c8970eaf8bf4fa9b"
+renewal_fingerprint = "1e1987080320b6d45aaef67a3784fb8318a35000338cb026bc0516adab4fdfa6"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-11"
+review_date = "2026-10-13"
 
 [[review]]
 name = "rpds-py"
@@ -721,10 +734,10 @@ review_date = "2026-10-12"
 name = "typing-extensions"
 version = "4.16.0"
 expression = "PSF-2.0"
-fingerprint = "274d4cf1f4e26b9896f9c99490c1d4a6beeba4cf27a2986ffe686dd55f4d12e6"
-renewal_fingerprint = "6078008d5f4f8176612dc0e7235c43ee1bf5c6cb0d95466baa1153988a48b799"
+fingerprint = "adce733f05d5aa3cce77308c769ff3bd50646f672ae7ded6bf732c59c85cae7e"
+renewal_fingerprint = "133e7e4d5ba4ce643e252e53513f0ff48d5a95e028a4ff832232155559326705"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-10-13"
 components = ["Python-2.0", "0BSD"]
 
 [[review]]
@@ -762,6 +775,43 @@ fingerprint = "536299c3989dce5fd86ac1d3fa0ad6d7a096a176514361b8fb0a955f6038cba6"
 renewal_fingerprint = "f9ff7e50062d975f5703ab2c8bb81b63b0c5fbb80f81e7198f8a5228e6eb1f77"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-12"
+
+[[review]]
+name = "httpcore2"
+version = "2.13.1"
+expression = "BSD-3-Clause"
+fingerprint = "6e71e8b16a8f1c45fa3160594b2d25f5246b288649affb57907c5838b624809e"
+renewal_fingerprint = "89b53f64a20518c3a8afd55276c78113aff29533852b83cc052009bfc10c24e6"
+reviewer = "Implementation agent bob on behalf of RoboNater"
+review_date = "2026-10-13"
+
+[[review]]
+name = "httpx2-jsfetch"
+version = "1.0"
+expression = "BSD-3-Clause"
+fingerprint = "175b003cc9e7260ca3f4e4e34bbcd605fb5ef9c206bc7d95442dcb35e69b1129"
+renewal_fingerprint = "bb345ba9a6471c67164686579c821268841e7bbd77aed5446379692d3145b860"
+reviewer = "Implementation agent bob on behalf of RoboNater"
+review_date = "2026-10-13"
+
+[[review]]
+name = "httpx2"
+version = "2.13.1"
+expression = "BSD-3-Clause"
+fingerprint = "c82a1370544be2c93d9bfead758ea0968d6d39d96f57847d1b413145b2da6a30"
+renewal_fingerprint = "1680409141ae07e66843b5870516b95ac741f267de2d52818654da0c616c11c0"
+reviewer = "Implementation agent bob on behalf of RoboNater"
+review_date = "2026-10-13"
+
+[[review]]
+name = "truststore"
+version = "0.10.5"
+expression = "MIT"
+fingerprint = "95daa5d9e98024663130f0c8b6c55da1689a5abcbd7460e0a8a5913015e364a0"
+renewal_fingerprint = "e8b51dd26d1347c9915c294aae19b9db6c74ead09fbf5b9ebab883442a15916c"
+reviewer = "Implementation agent bob on behalf of RoboNater"
+review_date = "2026-10-13"
+
 ```
 
 ## Review log

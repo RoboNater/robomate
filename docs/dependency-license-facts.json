@@ -1,5 +1,5 @@
 {
-  "lock_sha256": "39715d39dc2efc286f6d84e5f2b2e7f58bcfb5dbe572f367b30dbc05d520c046",
+  "lock_sha256": "3f6998a37512c81cb08fd6a0a2cbcdbf780f083e56671f2aac28efdb272cf4e3",
   "matrix": {
     "artifacts": "all sdists and every compatible locked wheel; no environment sampling",
     "os": [
@@ -4248,6 +4248,26 @@
             {
               "extras": [],
               "marker": null,
+              "package": "anyio@4.15.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
               "package": "anyio@4.15.0:{\"registry\": \"https://pypi.org/simple\"}"
             }
           ]
@@ -16383,6 +16403,31 @@
           ]
         },
         {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
+              "package": "httpcore2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "h11@0.16.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
           "kind": "runtime",
           "path": [
             {
@@ -16755,6 +16800,155 @@
         "registry": "https://pypi.org/simple"
       },
       "version": "0.16.0"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "httpcore2-2.13.1.tar.gz",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Environment :: Web Environment",
+                "Framework :: AnyIO",
+                "Framework :: AsyncIO",
+                "Framework :: Trio",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: BSD License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Programming Language :: Python :: 3.15",
+                "Topic :: Internet :: WWW/HTTP"
+              ],
+              "license": null,
+              "license_expression": "BSD-3-Clause",
+              "license_files": [
+                "LICENSE.md"
+              ],
+              "name": "httpcore2",
+              "path": "httpcore2-2.13.1/PKG-INFO",
+              "requires_dist": [
+                "anyio<5.0,>=4.5.0; extra == 'asyncio'",
+                "h11>=0.16",
+                "h2<5,>=3; extra == 'http2'",
+                "socksio==1.*; extra == 'socks'",
+                "trio<1.0,>=0.34.0; extra == 'trio'",
+                "truststore>=0.10"
+              ],
+              "requires_python": ">=3.10",
+              "version": "2.13.1"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "httpcore2-2.13.1/LICENSE.md",
+              "sha256": "c4df125c807b0613501e943a5c92496dd11d2c16604ce396097a8dde396304d9"
+            }
+          ],
+          "sha256": "e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103",
+          "url": "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz"
+        },
+        {
+          "filename": "httpcore2-2.13.1-py3-none-any.whl",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Environment :: Web Environment",
+                "Framework :: AnyIO",
+                "Framework :: AsyncIO",
+                "Framework :: Trio",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: BSD License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Programming Language :: Python :: 3.15",
+                "Topic :: Internet :: WWW/HTTP"
+              ],
+              "license": null,
+              "license_expression": "BSD-3-Clause",
+              "license_files": [
+                "LICENSE.md"
+              ],
+              "name": "httpcore2",
+              "path": "httpcore2-2.13.1.dist-info/METADATA",
+              "requires_dist": [
+                "anyio<5.0,>=4.5.0; extra == 'asyncio'",
+                "h11>=0.16",
+                "h2<5,>=3; extra == 'http2'",
+                "socksio==1.*; extra == 'socks'",
+                "trio<1.0,>=0.34.0; extra == 'trio'",
+                "truststore>=0.10"
+              ],
+              "requires_python": ">=3.10",
+              "version": "2.13.1"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "httpcore2-2.13.1.dist-info/licenses/LICENSE.md",
+              "sha256": "c4df125c807b0613501e943a5c92496dd11d2c16604ce396097a8dde396304d9"
+            }
+          ],
+          "sha256": "e1e05d4f25f7d7d496bfb96748f6f4b67657b03da069b3a68c36069f3db73d0a",
+          "url": "https://files.pythonhosted.org/packages/09/ba/a4568248771ce81957bfb7cc600264a40fbcda092391ee1c415c50be4bea/httpcore2-2.13.1-py3-none-any.whl"
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "h11"
+        },
+        {
+          "name": "truststore"
+        }
+      ],
+      "dev_dependencies": {},
+      "id": "httpcore2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}",
+      "name": "httpcore2",
+      "optional_dependencies": {},
+      "reachability": [
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
+              "package": "httpcore2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        }
+      ],
+      "resolution_markers": [],
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "version": "2.13.1"
     },
     {
       "artifacts": [
@@ -18011,6 +18205,301 @@
         "registry": "https://pypi.org/simple"
       },
       "version": "0.4.3"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "httpx2_jsfetch-1.0.tar.gz",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 4 - Beta",
+                "Environment :: Web Environment",
+                "Framework :: AsyncIO",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: BSD License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Topic :: Internet :: WWW/HTTP"
+              ],
+              "license": null,
+              "license_expression": "BSD-3-Clause",
+              "license_files": [
+                "LICENSE.md"
+              ],
+              "name": "httpx2-jsfetch",
+              "path": "httpx2_jsfetch-1.0/PKG-INFO",
+              "requires_dist": [],
+              "requires_python": ">=3.12",
+              "version": "1.0"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "httpx2_jsfetch-1.0/LICENSE.md",
+              "sha256": "7e7d6dbaf7fe160d39fd6e84fd02c33cab96bcbea34d36998d545bceb4a19c30"
+            }
+          ],
+          "sha256": "70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60",
+          "url": "https://files.pythonhosted.org/packages/cd/c4/0e5636363151a2a1795e0a77617168b9ca438e1748ec05fc9b5687f93d64/httpx2_jsfetch-1.0.tar.gz"
+        },
+        {
+          "filename": "httpx2_jsfetch-1.0-py3-none-any.whl",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 4 - Beta",
+                "Environment :: Web Environment",
+                "Framework :: AsyncIO",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: BSD License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Topic :: Internet :: WWW/HTTP"
+              ],
+              "license": null,
+              "license_expression": "BSD-3-Clause",
+              "license_files": [
+                "LICENSE.md"
+              ],
+              "name": "httpx2-jsfetch",
+              "path": "httpx2_jsfetch-1.0.dist-info/METADATA",
+              "requires_dist": [],
+              "requires_python": ">=3.12",
+              "version": "1.0"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "httpx2_jsfetch-1.0.dist-info/licenses/LICENSE.md",
+              "sha256": "7e7d6dbaf7fe160d39fd6e84fd02c33cab96bcbea34d36998d545bceb4a19c30"
+            }
+          ],
+          "sha256": "cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32",
+          "url": "https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/httpx2_jsfetch-1.0-py3-none-any.whl"
+        }
+      ],
+      "dependencies": [],
+      "dev_dependencies": {},
+      "id": "httpx2-jsfetch@1.0:{\"registry\": \"https://pypi.org/simple\"}",
+      "name": "httpx2-jsfetch",
+      "optional_dependencies": {},
+      "reachability": [
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform == 'emscripten'",
+              "package": "httpx2-jsfetch@1.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        }
+      ],
+      "resolution_markers": [],
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "version": "1.0"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "httpx2-2.13.1.tar.gz",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Environment :: Web Environment",
+                "Framework :: AnyIO",
+                "Framework :: AsyncIO",
+                "Framework :: Trio",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: BSD License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Programming Language :: Python :: 3.15",
+                "Topic :: Internet :: WWW/HTTP"
+              ],
+              "license": null,
+              "license_expression": "BSD-3-Clause",
+              "license_files": [],
+              "name": "httpx2",
+              "path": "httpx2-2.13.1/PKG-INFO",
+              "requires_dist": [
+                "anyio>=4.10; sys_platform != 'emscripten'",
+                "backports-zstd>=1.0.0; (python_version <= '3.13') and extra == 'zstd'",
+                "brotli>=1.2.0; (platform_python_implementation == 'CPython') and extra == 'brotli'",
+                "brotlicffi>=1.2.0.2; (platform_python_implementation != 'CPython') and extra == 'brotli'",
+                "click>=8.4.2; extra == 'cli'",
+                "h2<5,>=3; extra == 'http2'",
+                "httpcore2==2.13.1; sys_platform != 'emscripten'",
+                "httpx2-jsfetch; sys_platform == 'emscripten' and python_version >= '3.12'",
+                "idna>=3.18",
+                "pygments==2.*; extra == 'cli'",
+                "rich<16,>=10; extra == 'cli'",
+                "socksio==1.*; extra == 'socks'",
+                "truststore>=0.10; sys_platform != 'emscripten'",
+                "typing-extensions>=4.5.0; python_version < '3.13'",
+                "wsproto>=1.2; extra == 'ws'"
+              ],
+              "requires_python": ">=3.10",
+              "version": "2.13.1"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "httpx2-2.13.1/LICENSE.md",
+              "sha256": "7e7d6dbaf7fe160d39fd6e84fd02c33cab96bcbea34d36998d545bceb4a19c30"
+            }
+          ],
+          "sha256": "e48744a19e3af5ee48313d0ce5fe941d5422fae5705ea922a4aabf94d7800dfa",
+          "url": "https://files.pythonhosted.org/packages/d5/44/474bef2a0e9d90f1715d32cb98b0738695ca17ba324095fb2497ed7fbd59/httpx2-2.13.1.tar.gz"
+        },
+        {
+          "filename": "httpx2-2.13.1-py3-none-any.whl",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Environment :: Web Environment",
+                "Framework :: AnyIO",
+                "Framework :: AsyncIO",
+                "Framework :: Trio",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: BSD License",
+                "Operating System :: OS Independent",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Programming Language :: Python :: 3.15",
+                "Topic :: Internet :: WWW/HTTP"
+              ],
+              "license": null,
+              "license_expression": "BSD-3-Clause",
+              "license_files": [
+                "LICENSE.md"
+              ],
+              "name": "httpx2",
+              "path": "httpx2-2.13.1.dist-info/METADATA",
+              "requires_dist": [
+                "anyio>=4.10; sys_platform != 'emscripten'",
+                "backports-zstd>=1.0.0; (python_version <= '3.13') and extra == 'zstd'",
+                "brotli>=1.2.0; (platform_python_implementation == 'CPython') and extra == 'brotli'",
+                "brotlicffi>=1.2.0.2; (platform_python_implementation != 'CPython') and extra == 'brotli'",
+                "click>=8.4.2; extra == 'cli'",
+                "h2<5,>=3; extra == 'http2'",
+                "httpcore2==2.13.1; sys_platform != 'emscripten'",
+                "httpx2-jsfetch; sys_platform == 'emscripten' and python_version >= '3.12'",
+                "idna>=3.18",
+                "pygments==2.*; extra == 'cli'",
+                "rich<16,>=10; extra == 'cli'",
+                "socksio==1.*; extra == 'socks'",
+                "truststore>=0.10; sys_platform != 'emscripten'",
+                "typing-extensions>=4.5.0; python_version < '3.13'",
+                "wsproto>=1.2; extra == 'ws'"
+              ],
+              "requires_python": ">=3.10",
+              "version": "2.13.1"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "httpx2-2.13.1.dist-info/licenses/LICENSE.md",
+              "sha256": "7e7d6dbaf7fe160d39fd6e84fd02c33cab96bcbea34d36998d545bceb4a19c30"
+            }
+          ],
+          "sha256": "6dff50fabc270ee5fd25d845d0b078ed20564579744d6d962850975996d2f9a4",
+          "url": "https://files.pythonhosted.org/packages/d8/9c/6fe8931fd9f381042a9e4c7d5a7b4cbf7016b252bec0c99a49fce42c3326/httpx2-2.13.1-py3-none-any.whl"
+        }
+      ],
+      "dependencies": [
+        {
+          "marker": "sys_platform != 'emscripten'",
+          "name": "anyio"
+        },
+        {
+          "marker": "sys_platform != 'emscripten'",
+          "name": "httpcore2"
+        },
+        {
+          "marker": "sys_platform == 'emscripten'",
+          "name": "httpx2-jsfetch"
+        },
+        {
+          "name": "idna"
+        },
+        {
+          "marker": "sys_platform != 'emscripten'",
+          "name": "truststore"
+        },
+        {
+          "marker": "python_full_version < '3.13'",
+          "name": "typing-extensions"
+        }
+      ],
+      "dev_dependencies": {},
+      "id": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}",
+      "name": "httpx2",
+      "optional_dependencies": {},
+      "reachability": [
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        }
+      ],
+      "resolution_markers": [],
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "version": "2.13.1"
     },
     {
       "artifacts": [
@@ -21095,6 +21584,51 @@
               "extras": [],
               "marker": null,
               "package": "httpx@0.28.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "idna@3.19:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
+              "package": "anyio@4.15.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "idna@3.19:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
             },
             {
               "extras": [],
@@ -36915,6 +37449,9 @@
             "name": "httpx"
           },
           {
+            "name": "httpx2"
+          },
+          {
             "name": "mypy"
           },
           {
@@ -40819,6 +41356,153 @@
         "registry": "https://pypi.org/simple"
       },
       "version": "1.6.0"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "truststore-0.10.5.tar.gz",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Intended Audience :: Developers",
+                "Operating System :: MacOS",
+                "Operating System :: Microsoft",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Programming Language :: Python :: 3.15",
+                "Programming Language :: Python :: Implementation :: CPython",
+                "Programming Language :: Python :: Implementation :: PyPy"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "truststore",
+              "path": "truststore-0.10.5/PKG-INFO",
+              "requires_dist": [],
+              "requires_python": ">= 3.10",
+              "version": "0.10.5"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "truststore-0.10.5/LICENSE",
+              "sha256": "33be7b7e8fa4fd19b1760e1a8ed8a668bdab852c91b692dd41424bcb725a9fca"
+            }
+          ],
+          "sha256": "30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd",
+          "url": "https://files.pythonhosted.org/packages/ee/9f/c5201d42a484c061e528825fc8e2d565f5abd50a4ced6fb7d29c4ec99b2b/truststore-0.10.5.tar.gz"
+        },
+        {
+          "filename": "truststore-0.10.5-py3-none-any.whl",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Intended Audience :: Developers",
+                "Operating System :: MacOS",
+                "Operating System :: Microsoft",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.14",
+                "Programming Language :: Python :: 3.15",
+                "Programming Language :: Python :: Implementation :: CPython",
+                "Programming Language :: Python :: Implementation :: PyPy"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "truststore",
+              "path": "truststore-0.10.5.dist-info/METADATA",
+              "requires_dist": [],
+              "requires_python": ">= 3.10",
+              "version": "0.10.5"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "truststore-0.10.5.dist-info/licenses/LICENSE",
+              "sha256": "33be7b7e8fa4fd19b1760e1a8ed8a668bdab852c91b692dd41424bcb725a9fca"
+            }
+          ],
+          "sha256": "9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c",
+          "url": "https://files.pythonhosted.org/packages/51/e9/3a7820be2bb0fe53b6bc9c3be26d3d1158004e4c3ab953aa6840b955b1e9/truststore-0.10.5-py3-none-any.whl"
+        }
+      ],
+      "dependencies": [],
+      "dev_dependencies": {},
+      "id": "truststore@0.10.5:{\"registry\": \"https://pypi.org/simple\"}",
+      "name": "truststore",
+      "optional_dependencies": {},
+      "reachability": [
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
+              "package": "httpcore2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "truststore@0.10.5:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
+              "package": "truststore@0.10.5:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        }
+      ],
+      "resolution_markers": [],
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "version": "0.10.5"
     },
     {
       "artifacts": [
@@ -47702,6 +48386,51 @@
             {
               "extras": [],
               "marker": "python_full_version < '3.15'",
+              "package": "typing-extensions@4.16.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform != 'emscripten'",
+              "package": "anyio@4.15.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "python_full_version < '3.15'",
+              "package": "typing-extensions@4.16.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "httpx2@2.13.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "python_full_version < '3.13'",
               "package": "typing-extensions@4.16.0:{\"registry\": \"https://pypi.org/simple\"}"
             }
           ]
