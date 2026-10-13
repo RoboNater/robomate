@@ -68,15 +68,41 @@ from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 VERSION = "0.1.0"
 
 
+DEFAULT_BASE_PORT = 8420
+
+
+def _first_free_base() -> int:
+    """Base of the first-free port scan (#198).
+
+    Production default is 8420. Tests set ROBOMATE_BASE_PORT to a reserved
+    high port block so the scan does not share 842x with other hubs or test
+    runs on the same host.
+    """
+
+    raw = os.environ.get("ROBOMATE_BASE_PORT", "").strip()
+    if not raw:
+        return DEFAULT_BASE_PORT
+    try:
+        base = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"ROBOMATE_BASE_PORT must be an integer, got {raw!r}") from exc
+    if not 1 <= base <= 65535:
+        raise RuntimeError(f"ROBOMATE_BASE_PORT must be between 1 and 65535, got {raw!r}")
+    return base
+
+
 def _bind(
     host: str, port: int | None, avoid: frozenset[int] = frozenset()
 ) -> tuple[socket.socket, int]:
-    """Bind the pinned or saved port, or the first free one from 8420 not in `avoid`."""
+    """Bind the pinned or saved port, or the first free one from the base not in `avoid`."""
 
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    ports = [port] if port is not None else (p for p in range(8420, 65536) if p not in avoid)
+    base = DEFAULT_BASE_PORT if port is not None else _first_free_base()
+    if port is not None:
+        ports: Iterator[int] = iter([port])
+    else:
+        ports = (p for p in range(base, 65536) if p not in avoid)
     for candidate in ports:
-        assert candidate is not None
         sock = socket.socket(family, socket.SOCK_STREAM)
         if os.name != "nt":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -90,7 +116,7 @@ def _bind(
                 raise RuntimeError(
                     f"port {candidate} is unavailable; choose --port: {exc}"
                 ) from exc
-    raise RuntimeError("no free port from 8420 upward")
+    raise RuntimeError(f"no free port from {base} upward")
 
 
 def _rpc(

@@ -382,6 +382,49 @@ def _cli(cwd: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProc
     )
 
 
+def _reserve_base_port_block(count: int = 8) -> int:
+    """Reserve a base port with `count` consecutive free ports (#198).
+
+    Binds and releases the block so the caller can hand the base to
+    `ROBOMATE_BASE_PORT`: the first-free scan then runs far above 842x, where
+    other hubs and test runs on a shared host cannot move the smallest free
+    port mid-test. Holding the block is not enough; it must be released before
+    `robomate up` binds it, so a retry loop re-probes until a free block is
+    found.
+    """
+
+    for _ in range(50):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("127.0.0.1", 0))
+            candidate = int(probe.getsockname()[1])
+        finally:
+            probe.close()
+        if candidate < 20000 or candidate > 65535 - count:
+            continue
+        held: list[socket.socket] = []
+        try:
+            for port in range(candidate, candidate + count):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                held.append(sock)
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    break
+            else:
+                return candidate
+        finally:
+            for sock in held:
+                sock.close()
+    raise AssertionError("could not reserve a free port block")
+
+
+def _env_with_isolated_base(env: dict[str, str]) -> dict[str, str]:
+    """Copy `env` with ROBOMATE_BASE_PORT set to a reserved block (#198)."""
+
+    return {**env, "ROBOMATE_BASE_PORT": str(_reserve_base_port_block())}
+
+
 def test_two_hubs_in_one_repository(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
@@ -735,6 +778,42 @@ def test_first_free_port_is_selected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("robomate.cli.socket.socket", lambda *_args: FakeSocket())
     _, port = _bind("127.0.0.1", None)
     assert (attempted, port) == ([8420, 8421], 8421)
+
+
+def test_first_free_base_port_env_sets_scan_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#198: ROBOMATE_BASE_PORT moves the first-free scan; default stays 8420."""
+
+    assert cli._first_free_base() == 8420
+    monkeypatch.setenv("ROBOMATE_BASE_PORT", "35000")
+    assert cli._first_free_base() == 35000
+    monkeypatch.setenv("ROBOMATE_BASE_PORT", "not-a-port")
+    with pytest.raises(RuntimeError, match="ROBOMATE_BASE_PORT must be an integer"):
+        cli._first_free_base()
+    monkeypatch.setenv("ROBOMATE_BASE_PORT", "0")
+    with pytest.raises(RuntimeError, match="ROBOMATE_BASE_PORT must be between"):
+        cli._first_free_base()
+
+
+def test_first_free_port_scan_starts_at_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempted: list[int] = []
+
+    class FakeSocket:
+        def setsockopt(self, *_args: object) -> None:
+            pass
+
+        def bind(self, address: tuple[str, int]) -> None:
+            attempted.append(address[1])
+
+        def listen(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("robomate.cli.socket.socket", lambda *_args: FakeSocket())
+    monkeypatch.setenv("ROBOMATE_BASE_PORT", "35000")
+    _, port = _bind("127.0.0.1", None)
+    assert (attempted, port) == ([35000], 35000)
 
 
 def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str]]) -> None:
@@ -1563,7 +1642,10 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
 ) -> None:
     """#159: forget a stopped hub; ls drops it, state stays, next up takes first free."""
 
-    root, env = repository
+    root, base_env = repository
+    # #198: scan a reserved high block so 842x churn from other hubs or test
+    # runs cannot move the smallest free port mid-test.
+    env = _env_with_isolated_base(base_env)
     wt_a, wt_b, wt_c = tmp_path / "wt-a", tmp_path / "wt-b", tmp_path / "wt-c"
     _commit_and_add_worktrees(root, wt_a, wt_b, wt_c)
     hub_a, hub_b = start(wt_a, env), start(wt_b, env)
@@ -1590,7 +1672,8 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
         assert "wt-a" not in rows and rows["wt-b"]["live"] is True
 
         # The freed port goes to the next hub that starts (it is the
-        # smallest free port: the other of 8420/8421 is still held live).
+        # smallest free port: the sibling's port is still held live, and the
+        # scan runs on an isolated block per #198).
         hub_c = start(wt_c, env)
         try:
             c = await_hub(wt_c, hub_c)
@@ -1623,7 +1706,10 @@ def test_forget_all_only_forgets_stopped_hubs(
 ) -> None:
     """#159: forget --all drops every stopped hub and keeps live ones and state."""
 
-    root, env = repository
+    root, base_env = repository
+    # #198: scan a reserved high block so 842x churn from other hubs or test
+    # runs cannot move the smallest free port mid-test.
+    env = _env_with_isolated_base(base_env)
     wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
     _commit_and_add_worktrees(root, wt_a, wt_b)
     hub_a, hub_b = start(wt_a, env), start(wt_b, env)
