@@ -13,9 +13,11 @@ import tempfile
 import threading
 import time
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -148,29 +150,40 @@ def await_hub(
     raise AssertionError(f"hub did not start\n{_startup_diagnostics(root, process, elapsed)}")
 
 
+@contextmanager
+def _cleanup_step(pending: BaseException | None, what: str) -> Iterator[None]:
+    """Raise a cleanup failure, or note it on the failure already propagating."""
+
+    try:
+        yield
+    except Exception as failure:
+        if pending is None:
+            raise
+        pending.add_note(f"cleanup {what} also failed: {failure!r}")
+
+
 def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> None:
     """Stop the hub with `robomate down`, asserting it shuts down cleanly.
 
     Called from a `finally` while a test failure propagates, it still stops
     the hub but must not replace that failure: a failed `down` (as after a
-    hub that never started, #197) becomes a note on the original exception.
+    hub that never started, #197) or a failed fallback termination becomes a
+    note on the original exception.
     """
 
     pending = sys.exception()
     try:
-        result = subprocess.run(
-            [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=10
-        )
-        assert result.returncode == 0, result.stderr
-        assert process.wait(timeout=10) == 0
-    except Exception as cleanup:
-        if pending is None:
-            raise
-        pending.add_note(f"cleanup `robomate down` in {root} also failed: {cleanup!r}")
+        with _cleanup_step(pending, f"`robomate down` in {root}"):
+            result = subprocess.run(
+                [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            )
+            assert result.returncode == 0, result.stderr
+            assert process.wait(timeout=10) == 0
     finally:
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=10)
+        with _cleanup_step(pending, f"terminating pid {process.pid}"):
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
 
 
 # Stands in for a hub that is alive but never records itself in hub.json.
@@ -200,10 +213,32 @@ def test_await_hub_timeout_reports_the_hub_output(
         process.wait(timeout=10)
 
 
+def _failed_down(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """`robomate down` for a hub that never recorded itself, without the CLI's import time."""
+
+    return subprocess.CompletedProcess(argv, 1, "", "robomate: no hub is recorded for checkout")
+
+
+class _UnstoppableHub:
+    """A hub process that survives terminate(): every wait times out."""
+
+    pid = 0
+
+    def poll(self) -> int | None:
+        return None
+
+    def terminate(self) -> None:
+        pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired("robomate up", timeout or 0)
+
+
 def test_stop_during_a_failure_keeps_that_failure(
-    repository: tuple[Path, dict[str, str]],
+    repository: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, env = repository
+    monkeypatch.setattr(subprocess, "run", _failed_down)
     process = _start_logged(root, env, [sys.executable, "-c", _SILENT_HUB])
     with pytest.raises(AssertionError) as caught:
         try:
@@ -219,6 +254,26 @@ def test_stop_during_a_failure_keeps_that_failure(
     with pytest.raises(AssertionError, match="no hub is recorded"):
         stop(root, env, process)
     assert process.poll() is not None
+
+
+def test_stop_during_a_failure_keeps_it_when_termination_fails(
+    repository: tuple[Path, dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, env = repository
+    monkeypatch.setattr(subprocess, "run", _failed_down)
+    process = cast(subprocess.Popen[str], _UnstoppableHub())
+    with pytest.raises(AssertionError) as caught:
+        try:
+            raise AssertionError("hub did not start")
+        finally:
+            stop(root, env, process)
+    assert caught.value.args == ("hub did not start",)
+    down, termination = caught.value.__notes__
+    assert "`robomate down`" in down and "no hub is recorded" in down
+    assert "terminating pid 0" in termination and "TimeoutExpired" in termination
+    # Without a failure in flight, the failed termination is not hidden.
+    with pytest.raises(subprocess.TimeoutExpired):
+        stop(root, env, process)
 
 
 def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) -> None:
