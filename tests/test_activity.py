@@ -41,7 +41,7 @@ def clock() -> FakeClock:
 
 def make_store(path: Path, clock: FakeClock, policy: dict[str, Any] | None = None) -> HubStore:
     initialize_database(path)
-    store = HubStore(path, clock=clock)
+    store = HubStore(path, clock=clock, monotonic_clock=lambda: clock.now.timestamp())
     store.activity.mark_started(clock())
     store.initialize_workflow(policy=policy)
     return store
@@ -165,7 +165,10 @@ def test_a_superseded_instance_neither_refreshes_nor_clears_the_current_one(
     hub.sweep(lost_after_s=180)
     new = worker(hub)
     assert new != old
-    clock.advance(minutes=21)
+    for _ in range(21):
+        clock.advance(minutes=1)
+        heartbeat(hub, "bob", new)
+        hub.sweep(lost_after_s=180)
     # The old instance's held call finally returns, long after it was replaced.
     hold.__exit__(None, None, None)
 
@@ -216,8 +219,9 @@ def test_released_and_lost_workers_are_never_stalled(hub: HubStore, clock: FakeC
     heartbeat(hub, "charlie", hub.agent_by_name("charlie").worker_instance_id)  # type: ignore[union-attr]
     hub.sweep(lost_after_s=180)  # bob is released, so never lost
     hub.check_in("dave")
-    clock.advance(minutes=4)
-    hub.sweep(lost_after_s=180)
+    for _ in range(4):
+        clock.advance(minutes=1)
+        hub.sweep(lost_after_s=180)
 
     agents = hub.assess_activity()["agents"]
     assert agents["bob"]["suppressed"] == "released" and not agents["bob"]["stalled"]
@@ -615,3 +619,56 @@ def test_status_lists_workers_that_checked_in_before_the_workflow(
     assert bob["name"] == "bob" and bob["stalled"] is False
     assert bob["activity"]["suppressed"] == "no_workflow"
     assert store.sweep_stalls() == [] and store.stall_episodes() == []
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_host_pause_grace_suppresses_worker_and_orchestrator_stalls(
+    hub: HubStore, clock: FakeClock, recover: bool
+) -> None:
+    mono = [100.0]
+    hub.monotonic_clock = lambda: mono[0]
+    instance = worker(hub)
+    task = hub.assign_task("bob", "implementer", "Fix", "Work")
+    orchestrate(hub)
+    assert hub.sweep(180) == []
+    clock.advance(hours=4)
+    mono[0] += 10
+    assert [e.kind for e in hub.sweep(180)] == [EventKind.HOST_PAUSED]
+    assert hub.sweep_stalls() == []
+    assert hub.stall_episodes() == []
+    for assessment in (assessed(hub, "bob"), alice(hub)):
+        assert not assessment["stalled"]
+        assert assessment["suppressed"] == "host_pause_grace"
+
+    clock.advance(seconds=179)
+    mono[0] += 179
+    if recover:
+        hub.note_worker_call("bob", instance, "report_progress")
+        hub.record_progress(task.id, "bob", "Tests running")
+        orchestrate(hub)
+        while (event := hub.next_event()) is not None:
+            assert hub.ack_event(event.delivery_id)
+    heartbeat(hub, "bob", instance)
+    assert hub.sweep_stalls() == []
+    clock.advance(seconds=1)
+    mono[0] += 1
+    events = hub.sweep_stalls()
+    assert [e.kind for e in events] == ([] if recover else [EventKind.AGENT_STALLED])
+    assert assessed(hub, "bob")["stalled"] is (not recover)
+    assert alice(hub)["stalled"] is (not recover)
+
+
+def test_pause_freezes_existing_stall_episode(hub: HubStore, clock: FakeClock) -> None:
+    mono = [100.0]
+    hub.monotonic_clock = lambda: mono[0]
+    worker(hub)
+    clock.advance(minutes=21)
+    mono[0] += 21 * 60
+    assert len(hub.sweep_stalls()) == 1
+    before = hub.stall_episodes()
+    hub.sweep(3600)
+    clock.advance(hours=4)
+    mono[0] += 10
+    hub.sweep(3600)
+    assert hub.sweep_stalls() == []
+    assert hub.stall_episodes() == before

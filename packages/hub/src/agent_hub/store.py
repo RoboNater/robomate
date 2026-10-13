@@ -68,6 +68,8 @@ STALL_EVENT_SAMPLE = 5
 DEFAULT_PROFILE = AgentProfile()
 LOST_REASON = "worker_lost"
 MAX_CHECK_NAME_CHARS = 256
+# Ignore small wall/monotonic differences from sampling and clock correction.
+CLOCK_JUMP_TOLERANCE_S = 5.0
 
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED)
 OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
@@ -406,6 +408,10 @@ class HubStore:
     default_event_lease_s: float = DEFAULT_EVENT_LEASE_S
     # Hub calls and holds per agent, in memory only (#144).
     activity: ActivityTracker = field(default_factory=ActivityTracker)
+    monotonic_clock: Callable[[], float] = monotonic
+    _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
+    _sweep_lost_after_s: float | None = field(default=None, init=False)
+    _resume_grace_until: float = field(default=0.0, init=False)
 
     def _now(self) -> datetime:
         return self.clock()
@@ -1320,7 +1326,14 @@ class HubStore:
             cap_minutes = max_task_lease_min or self._max_task_lease_min(
                 connection, task.workflow_id
             )
-            cap = _parse_timestamp(task.created) + timedelta(minutes=cap_minutes)
+            clock_shift = float(
+                connection.execute(
+                    "SELECT lease_clock_shift_s FROM task WHERE id = ?", (task.id,)
+                ).fetchone()["lease_clock_shift_s"]
+            )
+            cap = _parse_timestamp(task.created) + timedelta(
+                minutes=cap_minutes, seconds=clock_shift
+            )
             # An already-expired lease stays expired even if the sweeper has not
             # observed it yet. The next pass will emit its one durable event.
             if current_expiry <= now:
@@ -2095,6 +2108,9 @@ class HubStore:
 
         effective_lease_s = self.default_event_lease_s if lease_s is None else lease_s
         now_moment = self._now()
+        # An inbox read can win the scheduling race with the first wake sweep.
+        self._detect_pause(now_moment, self.monotonic_clock())
+        grace = self._resume_grace_remaining() > 0
         now = to_iso(now_moment)
         expires = to_iso(now_moment + timedelta(seconds=effective_lease_s))
         delivery_id = uuid4().hex
@@ -2103,11 +2119,11 @@ class HubStore:
                 """
                 SELECT * FROM event
                 WHERE state = 'queued'
-                   OR (state = 'delivered' AND delivery_expires <= ?)
+                   OR (state = 'delivered' AND delivery_expires <= ? AND ? = 0)
                 ORDER BY id ASC
                 LIMIT 1
                 """,
-                (now,),
+                (now, int(grace)),
             ).fetchone()
             if row is None:
                 return None
@@ -2169,6 +2185,7 @@ class HubStore:
 
     def _earliest_delivery_expires_s(self) -> float | None:
         now_moment = self._now()
+        self._detect_pause(now_moment, self.monotonic_clock())
         with database(self.path) as connection:
             row = connection.execute(
                 "SELECT MIN(delivery_expires) AS min_exp FROM event WHERE state = 'delivered'"
@@ -2177,7 +2194,7 @@ class HubStore:
                 return None
             min_exp = _parse_timestamp(row["min_exp"])
             delta = (min_exp - now_moment).total_seconds()
-            return max(0.01, delta)
+            return max(0.01, delta, self._resume_grace_remaining())
 
     async def _wait_for(
         self,
@@ -2266,6 +2283,82 @@ class HubStore:
 
     # -- sweeper ------------------------------------------------------------
 
+    def _resume_grace_remaining(self) -> float:
+        return max(0.0, self._resume_grace_until - self.monotonic_clock())
+
+    def _detect_pause(self, now: datetime, mono: float) -> EventRecord | None:
+        """Compare with the last sweep; record a discontinuity before any expiry.
+
+        WSL pauses leave monotonic time behind wall time. On hosts whose
+        monotonic clock counts sleep, a sweep gap longer than the loss window
+        is also suspect. The latter can be scheduler starvation; granting the
+        same bounded recovery window is safer than losing every worker.
+        No baseline survives a process restart (restart reconciliation is #18).
+        """
+
+        previous = self._sweep_sample
+        lost_after_s = self._sweep_lost_after_s
+        if previous is None or lost_after_s is None or lost_after_s <= 0:
+            return None
+        wall_elapsed = (now - previous[0]).total_seconds()
+        mono_elapsed = mono - previous[1]
+        jump = wall_elapsed - mono_elapsed
+        clock_jump = jump > CLOCK_JUMP_TOLERANCE_S
+        sweep_gap = wall_elapsed > lost_after_s and mono_elapsed > lost_after_s
+        if not clock_jump and not sweep_gap:
+            return None
+        pause_s = jump if clock_jump else wall_elapsed
+        # For a wall jump, matching monotonic progress was active time. A
+        # long gap on both clocks has no such measurement: conservatively
+        # treat that gap as paused, bounded by each task's age.
+        pause_start = now - timedelta(seconds=pause_s)
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, created, lease_expires FROM task"
+                f" WHERE state IN ({_placeholders(OPEN_STATES)})"
+                " AND lease_expires > ?",
+                (*(state.value for state in OPEN_STATES), to_iso(pause_start)),
+            ).fetchall()
+            shifted = 0
+            for row in rows:
+                created = _parse_timestamp(row["created"])
+                # A task created after the clock jumped never saw the pause.
+                if clock_jump and created > pause_start:
+                    continue
+                shift_s = min(pause_s, max(0.0, (now - created).total_seconds()))
+                if shift_s <= 0:
+                    continue
+                expires = _parse_timestamp(row["lease_expires"]) + timedelta(seconds=shift_s)
+                connection.execute(
+                    "UPDATE task SET lease_expires = ?,"
+                    " lease_clock_shift_s = lease_clock_shift_s + ?, updated = ? WHERE id = ?",
+                    (to_iso(expires), shift_s, to_iso(now), row["id"]),
+                )
+                shifted += 1
+            payload = {
+                "reason": "clock_jump" if clock_jump else "sweep_gap",
+                "previous_sweep_at": to_iso(previous[0]),
+                "detected_at": to_iso(now),
+                "wall_elapsed_s": wall_elapsed,
+                "monotonic_elapsed_s": mono_elapsed,
+                "clock_jump_s": jump,
+                "grace_s": lost_after_s,
+                "lease_shift_s": pause_s,
+                "shifted_task_leases": shifted,
+            }
+            event_id = self._add_event(connection, EventKind.HOST_PAUSED, payload)
+            event = _event(
+                connection.execute("SELECT * FROM event WHERE id = ?", (event_id,)).fetchone()
+            )
+        # Publish the baseline only after the durable event commits, so a
+        # failed write is retried instead of silently losing the diagnostic.
+        self._sweep_sample = (now, mono)
+        self._resume_grace_until = mono + lost_after_s
+        self.signals.notify(EVENT_KEY)
+        logger.warning("Host pause/clock jump detected: %s", event.payload)
+        return event
+
     def sweep(self, lost_after_s: float) -> list[EventRecord]:
         """Expire overdue leases and declare silent agents lost.
 
@@ -2273,6 +2366,12 @@ class HubStore:
         """
 
         now = self._now()
+        mono = self.monotonic_clock()
+        self._sweep_lost_after_s = lost_after_s
+        pause = self._detect_pause(now, mono)
+        self._sweep_sample = (now, mono)
+        if self._resume_grace_remaining() > 0:
+            return [] if pause is None else [pause]
         emitted: list[int] = []
         with database(self.path) as connection:
             emitted += self._expire_leases(connection, to_iso(now))
@@ -2474,6 +2573,8 @@ class HubStore:
             WorkflowStatus.DONE: "workflow_done",
             WorkflowStatus.PAUSED: "workflow_paused",
         }.get(status)
+        if suppressed is None and self._resume_grace_remaining() > 0:
+            suppressed = "host_pause_grace"
         orchestrator = self._assess_orchestrator(connection, now, threshold, suppressed)
         agents = {
             agent.name: self._assess_worker(connection, agent, now, threshold, suppressed)
@@ -2626,6 +2727,10 @@ class HubStore:
         """
 
         now = self._now()
+        self._detect_pause(now, self.monotonic_clock())
+        # Freeze episodes as well as new diagnostics during wake recovery.
+        if self._resume_grace_remaining() > 0:
+            return []
         now_iso = to_iso(now)
         first = not self.activity.reconciled
         emitted: list[int] = []
