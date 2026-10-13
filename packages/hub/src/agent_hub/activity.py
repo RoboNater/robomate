@@ -26,7 +26,13 @@ own start and knows no holds until the agents call again, so it never reports
 a hold it did not see, and reports silence or event backlog at the earliest one
 threshold after a restart. Task progress comes from durable messages, so a
 task already stale before the restart is reported at once. Stall episodes,
-which the operator report reads, are durable in `stall_episode`.
+which the operator report reads, are durable in `stall_episode`. The store
+also keeps the orchestrator's latest call in `orchestrator_last_call` (#95),
+but only so status can show it after a restart; it never moves a silence clock.
+
+Status qualifies the orchestrator with two values apart from the stall check
+(#95): what she is doing (`ORCHESTRATOR_STATES`), and whether her bridge is
+connected. A bridge heartbeat feeds only the second.
 """
 
 from __future__ import annotations
@@ -41,6 +47,27 @@ from itertools import count
 # whose client vanished is cleaned up when the server notices, which may be a
 # little after the deadline; past this, the hold is ignored.
 HOLD_GRACE_S = 30.0
+
+# A call this recent counts the orchestrator as active rather than idle. Her
+# loop re-enters wait_for_event as soon as it returns, so a longer gap means
+# she is doing something off the hub, or nothing.
+IDLE_AFTER_S = 120.0
+# A bridge heard from this recently is connected: three of its 30 s heartbeats.
+BRIDGE_CONNECTED_S = 90.0
+
+# The orchestrator's state in status (#95), stable strings. `finished` is her
+# end-of-run state, the counterpart of a worker's `released`: the workflow is
+# done, whatever her bridge is still doing.
+FINISHED = "finished"
+PAUSED = "paused"
+HOLDING = "holding"
+ACTIVE = "active"
+IDLE = "idle"
+NOT_SEEN = "not_seen"
+ORCHESTRATOR_STATES = (FINISHED, PAUSED, HOLDING, ACTIVE, IDLE, NOT_SEEN)
+# Bridge values: `not_seen` means no call or heartbeat reached this hub process.
+CONNECTED = "connected"
+DISCONNECTED = "disconnected"
 
 # Reasons, stable strings that status JSON, events and the report carry.
 NO_HUB_CALL = "no_hub_call"

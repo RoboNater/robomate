@@ -981,9 +981,12 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
         )
         assert result.returncode == 0, result.stderr
         assert "Workflow: active — Build issue #43" in result.stdout
-        assert re.search(
-            r"Orchestrator: alice  session \S+  last seen \d+s ago\n", result.stdout
-        ), result.stdout
+        # A heartbeat alone is bridge liveness, never activity (#95).
+        assert (
+            "Orchestrator: alice  idle  no hub call seen  (bridge connected, 1 open task)\n"
+            "  session 5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a\n"
+        ) in result.stdout, result.stdout
+        assert "last seen" not in result.stdout
         assert f"bob: codex / gpt-6-sol  alive  task {task.id}" in result.stdout
         assert "dave: unknown / unknown  released" in result.stdout
         assert f"{task.id}: implementer  bob  input-required" in result.stdout
@@ -1008,6 +1011,174 @@ def _rpc_as_alice(url: str, token: str, method: str) -> dict[str, Any]:
     with urllib.request.urlopen(request, timeout=10) as response:
         body: dict[str, Any] = json.load(response)
     return body
+
+
+def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_call(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#95: a done run's idle Alice reads finished, not freshly seen, across a restart."""
+
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    database_path = directory / "hub.db"
+    initialize_database(database_path)
+    # The previous hub process: Alice's close-out was her last call.
+    previous = HubStore(database_path)
+    previous.initialize_workflow("Build issue #95")
+    previous.note_orchestrator_session("alice", "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a")
+    with previous.orchestrator_call(
+        "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a", "set_workflow_status", 75
+    ):
+        previous.set_workflow_status(
+            WorkflowStatus.DONE,
+            "Merged",
+            actor="alice",
+            session="5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a",
+        )
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        token = (directory / "token").read_text().strip()
+
+        def status_text() -> str:
+            result = subprocess.run(
+                [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            )
+            assert result.returncode == 0, result.stderr
+            return result.stdout
+
+        out = status_text()
+        assert re.search(
+            r"Orchestrator: alice  finished  last call \d+s ago"
+            r" \(set_workflow_status, before hub restart\)"
+            r"  \(bridge not seen by this hub, workflow done\)\n"
+            r"  session none seen by this hub process\n",
+            out,
+        ), out
+        # Her bridge still heartbeats: connected, still finished.
+        assert _rpc_as_alice(str(info["url"]), token, "hub.heartbeat")["result"] == {"ok": True}
+        out = status_text()
+        assert re.search(
+            r"Orchestrator: alice  finished  last call \d+s ago"
+            r" \(set_workflow_status, before hub restart\)"
+            r"  \(bridge connected, workflow done\)\n"
+            r"  session 5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a\n",
+            out,
+        ), out
+        assert "last seen" not in out and "STALLED" not in out
+        status = json.loads(
+            subprocess.run(
+                [CLI, "status", "--json"],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            ).stdout
+        )
+        # Additive: the legacy session block is still there.
+        assert status["orchestrator"]["last_seen"]
+        alice = status["orchestrator_activity"]
+        assert (alice["state"], alice["bridge"], alice["last_call_restored"]) == (
+            "finished",
+            "connected",
+            True,
+        )
+    finally:
+        stop(root, env, process)
+
+
+def _activity(**fields: Any) -> dict[str, Any]:
+    return {
+        "state": "active",
+        "holding": None,
+        "hold_age_s": None,
+        "last_call": "get_state",
+        "last_call_age_s": 5.0,
+        "last_call_actor": "alice",
+        "last_call_restored": False,
+        "bridge": "connected",
+        "bridge_age_s": 5.0,
+        "actor": "alice",
+    } | fields
+
+
+def _with_alice(activity: dict[str, Any] | None, **status: Any) -> dict[str, Any]:
+    return {
+        "orchestrator": {"name": "alice", "session": "s-1", "last_seen": "2026-10-08T12:00:00Z"},
+        "orchestrator_activity": activity,
+        "workflow": {"status": "active"},
+        "tasks": [],
+    } | status
+
+
+@pytest.mark.parametrize(
+    ("status", "line"),
+    [
+        (
+            _with_alice(_activity()),
+            "Orchestrator: alice  active  last call 5s ago (get_state)  (bridge connected)",
+        ),
+        (
+            _with_alice(_activity(state="holding", holding="wait_for_event", hold_age_s=40.0)),
+            "Orchestrator: alice  waiting in wait_for_event 40s"
+            "  last call 5s ago (get_state)  (bridge connected)",
+        ),
+        (
+            _with_alice(
+                _activity(state="idle", last_call="assign_task", last_call_age_s=1320.0),
+                tasks=[{"id": "t1"}, {"id": "t2"}],
+            ),
+            "Orchestrator: alice  idle  last call 22m 0s ago (assign_task)"
+            "  (bridge connected, 2 open tasks)",
+        ),
+        (
+            _with_alice(
+                _activity(
+                    state="finished", last_call="set_workflow_status", last_call_age_s=1320.0
+                ),
+                workflow={"status": "done"},
+            ),
+            "Orchestrator: alice  finished  last call 22m 0s ago (set_workflow_status)"
+            "  (bridge connected, workflow done)",
+        ),
+        (
+            _with_alice(
+                _activity(state="idle", bridge="disconnected", bridge_age_s=600.0),
+                workflow={"status": "escalated"},
+            ),
+            "Orchestrator: alice  idle  last call 5s ago (get_state)"
+            "  (bridge disconnected, last heard 10m 0s ago, workflow escalated)",
+        ),
+    ],
+)
+def test_the_orchestrator_line_separates_her_activity_from_bridge_liveness(
+    status: dict[str, Any], line: str
+) -> None:
+    assert cli._orchestrator_lines(status) == [line, "  session s-1"]
+
+
+def test_the_orchestrator_line_falls_back_for_a_hub_older_than_95() -> None:
+    status = _with_alice({"stalled": False})
+    (line,) = cli._orchestrator_lines(status)
+    assert re.fullmatch(r"Orchestrator: alice  session s-1  last seen [\dhms ]+ ago", line), line
+    assert cli._orchestrator_lines(_with_alice(None, orchestrator=None)) == ["Orchestrator: none"]
+
+
+def test_no_orchestrator_at_all_reads_none() -> None:
+    status = _with_alice(
+        _activity(
+            state="not_seen",
+            last_call=None,
+            last_call_age_s=None,
+            last_call_actor=None,
+            actor=None,
+            bridge="not_seen",
+        ),
+        orchestrator=None,
+    )
+    assert cli._orchestrator_lines(status) == ["Orchestrator: none"]
 
 
 def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[str, str]]) -> None:
@@ -1035,7 +1206,8 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
         assert result.returncode == 0, result.stderr
         out = result.stdout
         assert re.search(
-            r"Orchestrator: alice .*\n  STALLED — no hub call for \d+s \(none seen\);"
+            r"Orchestrator: alice .*\n  session \S+\n"
+            r"  STALLED — no hub call for \d+s \(none seen\);"
             r" event 1 \(agent_checked_in\) queued \d+s undelivered; bridge heartbeat \d+s ago;"
             r" threshold 0s\n",
             out,

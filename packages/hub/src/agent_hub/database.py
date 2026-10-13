@@ -19,6 +19,9 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v20 is #95's `orchestrator_last_call`: one row, the orchestrator's latest
+# substantive `/rpc` call, so status can still say when Alice last did
+# anything after a hub restart.
 # v19 is #19's `host_paused` event kind and task lease clock-shift accounting.
 # v18 is #171's task-wait question binding and withdrawal provenance.
 # v17 is #144's `stall_episode` table and the `agent_stalled` event kind.
@@ -33,7 +36,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 class DatabaseVersionError(RuntimeError):
@@ -234,6 +237,14 @@ CREATE TABLE IF NOT EXISTS operator_question (
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS orchestrator_last_call (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    actor TEXT NOT NULL,
+    session TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ts TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS stall_episode (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workflow_id TEXT,
@@ -337,7 +348,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v18 -> v19).
+        # (any of v1-v19 -> v20).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -355,6 +366,7 @@ def initialize_database(path: Path) -> None:
         _migrate_stall_episode(connection)
         _migrate_question_withdrawal(connection)
         _migrate_lease_clock_shift(connection)
+        _migrate_orchestrator_last_call(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -373,6 +385,16 @@ def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE task ADD COLUMN lease_clock_shift_s REAL NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_orchestrator_last_call(connection: sqlite3.Connection) -> None:
+    """Add the orchestrator's persisted last call (#95, v20).
+
+    Nothing recorded it before v20, so the table starts empty and status
+    reports no last call until Alice next makes one.
+    """
+
+    connection.execute(_canonical_tables()["orchestrator_last_call"])
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:

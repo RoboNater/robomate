@@ -275,6 +275,22 @@ stall reaches only you, through status and the report. Done workflows and
 released or lost agents are never reported; a paused workflow suspends the
 check, and resuming it restarts every clock.
 
+The orchestrator line keeps Alice's activity and her bridge apart (#95), for
+example `Orchestrator: alice  finished  last call 22m 0s ago
+(set_workflow_status)  (bridge connected, workflow done)`. Her state is
+`finished` once the workflow is done, which is her end-of-run state, as
+`released` is a worker's; `paused` while it is paused; `waiting in <call>`
+while a call of hers is held; `active` within two minutes of her last call;
+otherwise `idle`, with the open-task count when there is work. The bridge is
+`connected` when the hub heard from it, heartbeats included, within 90 s. A
+heartbeat never counts as a call, so a finished run's idle Alice no longer
+looks freshly seen. Her last call is kept in the database, so after a hub
+restart status still shows it, marked `before hub restart`; it only informs
+the display, and the stall check still measures silence from the new hub's
+start. `--json` adds `state`, `bridge`, `bridge_age_s`, `last_call_at`,
+`last_call_actor` and `last_call_restored` to `orchestrator_activity` and
+leaves `orchestrator.last_seen`, which is bridge liveness, as it was.
+
 The threshold relates to the other limits like this: `HUB_LOST_AFTER_S` (180 s)
 catches a bridge that stopped; `stall_after_min` catches a live bridge whose
 harness stopped working; `max_task_lease_min` (120 minutes) caps one task

@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext, suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,9 +47,19 @@ from agent_hub_common import (
 from pydantic import ValidationError
 
 from .activity import (
+    ACTIVE,
+    BRIDGE_CONNECTED_S,
+    CONNECTED,
+    DISCONNECTED,
     EVENT_BACKLOG,
+    FINISHED,
+    HOLDING,
+    IDLE,
+    IDLE_AFTER_S,
     NO_HUB_CALL,
     NO_TASK_PROGRESS,
+    NOT_SEEN,
+    PAUSED,
     Activity,
     ActivityTracker,
 )
@@ -2506,12 +2516,53 @@ class HubStore:
     def note_orchestrator_heartbeat(self, session: str) -> None:
         self.activity.orchestrator_heartbeat(session, self._now())
 
-    def orchestrator_call(
-        self, session: str, kind: str, timeout_s: float
-    ) -> AbstractContextManager[None]:
-        """Count one orchestrator operation as activity, and hold while it runs."""
+    @contextmanager
+    def orchestrator_call(self, session: str, kind: str, timeout_s: float) -> Iterator[None]:
+        """Count one orchestrator operation as activity, and hold while it runs.
 
-        return self.activity.orchestrator_call(session, kind, timeout_s, self._now)
+        Its start and its return are also persisted as her last call (#95).
+        """
+
+        try:
+            with self.activity.orchestrator_call(session, kind, timeout_s, self._now):
+                self._persist_orchestrator_call(session)
+                yield
+        finally:
+            self._persist_orchestrator_call(session)
+
+    def _persist_orchestrator_call(self, session: str) -> None:
+        """Keep the current session's last call in `orchestrator_last_call` (#95).
+
+        Display only, so a failed write is logged rather than failing a call
+        the orchestrator has already made.
+        """
+
+        tracker = self.activity
+        record = tracker.orchestrator()
+        if (
+            record is None
+            or session != tracker.orchestrator_session
+            or tracker.orchestrator_actor is None
+            or record.last_call is None
+            or record.last_call_kind is None
+        ):
+            return
+        try:
+            with database(self.path) as connection:
+                connection.execute(
+                    "INSERT INTO orchestrator_last_call (id, actor, session, kind, ts)"
+                    " VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET"
+                    " actor = excluded.actor, session = excluded.session,"
+                    " kind = excluded.kind, ts = excluded.ts",
+                    (
+                        tracker.orchestrator_actor,
+                        session,
+                        record.last_call_kind,
+                        to_iso(record.last_call),
+                    ),
+                )
+        except Exception:
+            logger.exception("Could not persist the orchestrator's last call")
 
     def _stall_after_min(self, policy: Mapping[str, Any]) -> float:
         value = policy.get("stall_after_min", DEFAULT_STALL_AFTER_MIN)
@@ -2575,7 +2626,7 @@ class HubStore:
         }.get(status)
         if suppressed is None and self._resume_grace_remaining() > 0:
             suppressed = "host_pause_grace"
-        orchestrator = self._assess_orchestrator(connection, now, threshold, suppressed)
+        orchestrator = self._assess_orchestrator(connection, now, threshold, status, suppressed)
         agents = {
             agent.name: self._assess_worker(connection, agent, now, threshold, suppressed)
             for agent in (
@@ -2617,6 +2668,7 @@ class HubStore:
         connection: Connection,
         now: datetime,
         threshold: timedelta,
+        status: WorkflowStatus,
         suppressed: str | None,
     ) -> dict[str, Any]:
         tracker = self.activity
@@ -2643,6 +2695,41 @@ class HubStore:
         if suppressed is not None:
             reasons = []
         heartbeat = None if record is None else record.heartbeat
+        last_call = self._orchestrator_last_call(connection, record)
+        if last_call["last_call_restored"]:
+            # Silence still runs from this hub's start; only the display
+            # learns what she last did before the restart.
+            fields["last_call"] = last_call["kind"]
+            fields["last_call_age_s"] = _age_seconds(last_call["last_call_at"], now)
+        # Bridge liveness: anything this process heard from her session,
+        # heartbeats included. Activity is the last call alone.
+        heard = [
+            moment
+            for moment in (heartbeat, None if record is None else record.last_call)
+            if moment is not None
+        ]
+        bridge_age = None if not heard else max(0.0, (now - max(heard)).total_seconds())
+        if fields["holding"] is not None or (
+            bridge_age is not None and bridge_age <= BRIDGE_CONNECTED_S
+        ):
+            bridge = CONNECTED
+        elif record is None:
+            bridge = NOT_SEEN
+        else:
+            bridge = DISCONNECTED
+        call_age = fields["last_call_age_s"]
+        if status == WorkflowStatus.DONE:
+            state = FINISHED
+        elif status == WorkflowStatus.PAUSED:
+            state = PAUSED
+        elif fields["holding"] is not None:
+            state = HOLDING
+        elif call_age is not None and call_age <= IDLE_AFTER_S:
+            state = ACTIVE
+        elif call_age is None and record is None:
+            state = NOT_SEEN
+        else:
+            state = IDLE
         return {
             "actor": tracker.orchestrator_actor,
             "session": tracker.orchestrator_session,
@@ -2651,11 +2738,42 @@ class HubStore:
             "suppressed": suppressed,
             **fields,
             "heartbeat_age_s": None if heartbeat is None else _age_seconds(to_iso(heartbeat), now),
+            # Additive since #95.
+            "state": state,
+            "bridge": bridge,
+            "bridge_age_s": None if bridge_age is None else round(bridge_age, 1),
+            "last_call_at": last_call["last_call_at"],
+            "last_call_actor": last_call["actor"],
+            "last_call_restored": last_call["last_call_restored"],
             "unattempted_events": len(rows),
             "stale_events": [
                 {"id": row["id"], "kind": row["kind"], "age_s": _age_seconds(row["ts"], now)}
                 for row in backlog[:STALL_EVENT_SAMPLE]
             ],
+        }
+
+    def _orchestrator_last_call(
+        self, connection: Connection, record: Activity | None
+    ) -> dict[str, Any]:
+        """Her last call from this process's memory, else as a previous one persisted it."""
+
+        if record is not None and record.last_call is not None:
+            return {
+                "actor": self.activity.orchestrator_actor,
+                "kind": record.last_call_kind,
+                "last_call_at": to_iso(record.last_call),
+                "last_call_restored": False,
+            }
+        row = connection.execute(
+            "SELECT actor, kind, ts FROM orchestrator_last_call WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return {"actor": None, "kind": None, "last_call_at": None, "last_call_restored": False}
+        return {
+            "actor": row["actor"],
+            "kind": row["kind"],
+            "last_call_at": row["ts"],
+            "last_call_restored": True,
         }
 
     def _assess_worker(
