@@ -41,7 +41,7 @@ unmerged, and leftover findings are dispositioned without the operator chatting 
 restarts and laptop standby don't strand a run; token usage per run is measured and reduced.
 
 **Non-goals (MVP)**
-- Multiple users or teams; per-agent credentials; cloud-hosted harnesses (Devin, RooMote).
+- Multiple users or teams; per-agent credentials; cloud-hosted harnesses (Devin Cloud, RooMote).
 - Concurrent workflows in one hub (runs are sequential; a queue is in scope).
 - Hub-mediated forge operations. Agents run `gh`/`glab` themselves (§10).
 - Dashboard, epics/boards, assignment from a UI, a PM/lead agent (§16).
@@ -677,11 +677,20 @@ also present in every worktree automatically. `--scope user` is the recommended 
 Optional `--with-rules` adds a one-line rule/instructions file for harnesses that don't act on
 tool descriptions alone. `robomate install --list` shows harnesses, tiers, and scopes.
 
+For Devin, `robomate install devin --scope user|project` writes the static entry into
+the chosen scope's `mcp_config.json` ([MCP configuration](https://docs.devin.ai/cli/extensibility/mcp/configuration)).
+Devin Desktop's [Devin Local agent](https://docs.devin.ai/desktop/devin-local.md) reads
+the user-scope file, so one user-scope install covers both the CLI and the IDE.
+Cascade is not a target unless certified separately.
+
 ### 9.2 Harness profiles
 Kept in robomate (versioned with it): `max_hold_s` (under the harness's tool-call limit — 100 s for
 Claude Code, which backgrounds calls at 120 s; ~280 s for Codex, whose observed limit is 300 s),
 config locations per scope, known grants (sandbox, auto-approve), whether a continuation
 supervisor exists, and notes. The hub clamps every hold to the joined agent's profile.
+Devin's profile records its user-scope locations (`~/.config/devin/mcp_config.json` on
+POSIX, `%APPDATA%\devin\mcp_config.json` on Windows) and project-scope location
+(`.devin/mcp_config.json`), as for other harnesses.
 
 ### 9.3 Certification — `robomate certify <harness>`
 Generalizes the Step 4B endurance gate (robo-agents #30; #13). `robomate certify` starts a throwaway hub on a
@@ -705,7 +714,8 @@ Results are summarized in `docs/harnesses.md`.
 |---|---|---|
 | MVP | Claude Code, Codex, OpenCode, AntiGravity | certified |
 | MVP if certified | Cline | IDE turn-ending is the risk; "not listening" + nudge is the fallback |
-| Post-MVP | Devin, RooMote | cloud-hosted: need an internet-reachable hub, per-agent auth, TLS |
+| MVP if certified | Devin (CLI, and Devin Desktop's Devin Local agent) | certified; Devin Desktop shares Cline's IDE turn-ending risk; "not listening" + nudge is the fallback |
+| Post-MVP | Devin Cloud, RooMote | cloud-hosted: need an internet-reachable hub, per-agent auth, TLS |
 
 Continuation: CLI harnesses that end turns get a thin, policy-free supervisor where one exists
 (PoC `supervise-claude-code.sh`); others rely on "not listening" detection and a nudge.
@@ -885,7 +895,7 @@ itself.
 | M1 | Standalone hub + `robomate` CLI | `robomate up/down/status/ls`, `.robomate/` layout, registry, port reuse; orchestrator JSON-RPC route; `robomate mcp` bridge for all roles (existing tool names) with heartbeat and discovery; accounting on (#7); fix flaky tests (#6) | A real run completes with the hub from `robomate up`, and the orchestrator's session is restarted mid-run without disturbing workers |
 | Pre-M2 | Checkout-scoped hubs: identity, discovery, lifecycle | The checkout owns its hub, bare-repository layouts included; hub names; per-hub registry entries, `up.lock`, and port; discovery without silent attach and an explicit hub selector for the CLI; legacy hubs keep their state (§4). State stays in the checkout's `.robomate/`, reached through one resolver | Two hubs from two linked worktrees of one repository run at once with distinct names, state, and ports, and `robomate ls` shows both; stopping one leaves the other running; `down` and `status` in a checkout with no hub refuse and list both; a hub created before the change starts with its old state; the standard run path is unchanged |
 | M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated configs, no pasted launch prompts; the same again from a second worktree's hub while the first runs |
-| M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; one real run with a non-Claude orchestrator |
+| M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; Devin CLI certified, or attempted and recorded; Devin Desktop (Devin Local) attempted via `join` and recorded; one real run with a non-Claude orchestrator |
 | M4 | Close-out and resilience | `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
@@ -961,7 +971,7 @@ worktrees. M4 depends on M2.
   milestones, and labels (not a separate ticket store), with assignment to available agents.
 - **Lead / PM agent** (robo-agents #44): sequencing, reservations, collision detection, status
   and recommendations.
-- Multiple users; per-agent credentials; TLS; cloud harnesses (Devin, RooMote).
+- Multiple users; per-agent credentials; TLS; cloud harnesses (Devin Cloud, RooMote).
 - Concurrent workflows per hub; multiple reviewers per run; non-PR deliverables
   (robo-agents #102).
 - A general obligation ledger (robo-agents #100): owed work beyond findings and configured
