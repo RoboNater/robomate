@@ -777,6 +777,62 @@ def test_recorded_busy_port_is_refused(repository: tuple[Path, dict[str, str]]) 
     assert str(port) in result.stderr and "--port" in result.stderr
 
 
+def test_recorded_busy_port_with_unsafe_operator_token_file_prefers_token_diagnostic(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#192: an unsafe token path wins over an occupied saved or requested port."""
+
+    root, env = repository
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = occupied.getsockname()[1]
+        write_hub_json(root, {"port": port, "hub_id": "old"})
+        # A valid token location still reports the occupied port.
+        busy_saved = subprocess.run(
+            [CLI, "up"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        )
+        assert busy_saved.returncode == 1
+        assert str(port) in busy_saved.stderr and "--port" in busy_saved.stderr
+        busy_explicit = subprocess.run(
+            [CLI, "up", "--port", str(port)],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert busy_explicit.returncode == 1
+        assert str(port) in busy_explicit.stderr and "--port" in busy_explicit.stderr
+        # An unsafe path inside the repository or its hub state is refused with
+        # the token-path diagnostic even though the saved port is occupied, and
+        # no operator credential is created there.
+        for inside in (root / "operator-token", root / ".robomate" / "operator-token"):
+            result = subprocess.run(
+                [CLI, "up"],
+                cwd=root,
+                env={**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(inside)},
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            assert result.returncode == 1
+            assert "must not be inside the repository" in result.stderr
+            assert not inside.exists()
+        # The same holds for an explicitly requested occupied port.
+        explicit_unsafe = subprocess.run(
+            [CLI, "up", "--port", str(port)],
+            cwd=root,
+            env={**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(root / "operator-token")},
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        assert explicit_unsafe.returncode == 1
+        assert "must not be inside the repository" in explicit_unsafe.stderr
+        assert not (root / "operator-token").exists()
+
+
 def test_stale_hub_metadata_is_reused(repository: tuple[Path, dict[str, str]]) -> None:
     root, env = repository
     with socket.socket() as available:
