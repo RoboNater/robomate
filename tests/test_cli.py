@@ -819,6 +819,7 @@ def test_recorded_busy_port_with_unsafe_operator_token_file_prefers_token_diagno
             assert result.returncode == 1
             assert "must not be inside the repository" in result.stderr
             assert not inside.exists()
+            assert str(inside) not in result.stdout + result.stderr
         # The same holds for an explicitly requested occupied port.
         explicit_unsafe = subprocess.run(
             [CLI, "up", "--port", str(port)],
@@ -831,6 +832,7 @@ def test_recorded_busy_port_with_unsafe_operator_token_file_prefers_token_diagno
         assert explicit_unsafe.returncode == 1
         assert "must not be inside the repository" in explicit_unsafe.stderr
         assert not (root / "operator-token").exists()
+        assert str(root / "operator-token") not in explicit_unsafe.stdout + explicit_unsafe.stderr
 
 
 def test_stale_hub_metadata_is_reused(repository: tuple[Path, dict[str, str]]) -> None:
