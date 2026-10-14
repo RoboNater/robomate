@@ -5,6 +5,7 @@ import io
 import json
 import os
 import queue
+import random
 import re
 import socket
 import subprocess
@@ -425,17 +426,15 @@ def _reserve_base_port_block(count: int = 8) -> int:
     port mid-test. Holding the block is not enough; it must be released before
     `robomate up` binds it, so a retry loop re-probes until a free block is
     found.
+
+    The block lies below the ephemeral ranges (Linux 32768+, Windows 49152+).
+    In them, another socket can take a port between this release and
+    `robomate up`'s bind; on Windows CI that bind then failed with WinError
+    10013 (#207).
     """
 
     for _ in range(50):
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            probe.bind(("127.0.0.1", 0))
-            candidate = int(probe.getsockname()[1])
-        finally:
-            probe.close()
-        if candidate < 20000 or candidate > 65535 - count:
-            continue
+        candidate = random.randrange(20000, 32768 - count)
         held: list[socket.socket] = []
         try:
             for port in range(candidate, candidate + count):
