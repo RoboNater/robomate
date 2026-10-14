@@ -327,6 +327,11 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         for item in hub_entries()
         if item.get("hub_id") != hub_id and (port := _entry_port(item)) is not None
     )
+    # Validate the operator-token path before binding (#192): an unsafe path
+    # inside the repository or hub state is refused with the token-path
+    # diagnostic even when the saved or requested port is occupied. Binding
+    # first would mask it with the port-unavailable diagnostic.
+    _validate_operator_token_path(operator_token_path(), repo)
     sock, port = _bind(
         args.bind, int(requested_port) if requested_port is not None else None, taken
     )
@@ -405,6 +410,25 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         sock.close()
 
 
+def _validate_operator_token_path(path: Path | None, repo: Repository) -> Path | None:
+    """Refuse an operator-token path inside the repository or hub state (#128, #192).
+
+    Pure validation without creating any credential, so `_run_up` can run it
+    before binding the port. The token and its path are never printed.
+    """
+
+    if path is None:
+        return None
+    resolved = path.resolve()
+    for place in (repo.root, state_dir(repo.root), repository_dir(repo.git_common_dir)):
+        if resolved.is_relative_to(place.resolve()):
+            raise RuntimeError(
+                f"the operator token file must not be inside the repository or the "
+                f"hub's state ({place})"
+            )
+    return resolved
+
+
 def _provision_operator_token(settings: HubSettings, repo: Repository) -> None:
     """Create the operator credential beside the machine registry (#128).
 
@@ -413,16 +437,9 @@ def _provision_operator_token(settings: HubSettings, repo: Repository) -> None:
     they must not hold. The token and its path are never printed.
     """
 
-    path = settings.operator_token_file
-    if path is None:
+    resolved = _validate_operator_token_path(settings.operator_token_file, repo)
+    if resolved is None:
         return
-    resolved = path.resolve()
-    for place in (repo.root, state_dir(repo.root), repository_dir(repo.git_common_dir)):
-        if resolved.is_relative_to(place.resolve()):
-            raise RuntimeError(
-                f"the operator token file must not be inside the repository or the "
-                f"hub's state ({place})"
-            )
     resolved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     load_or_create_token(None, resolved, label="operator token")
 
