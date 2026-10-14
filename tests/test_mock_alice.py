@@ -799,6 +799,7 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
     clock = MonotonicClock()
     event_lease_s = 60.0
     store = HubStore(db_path, clock=clock, default_event_lease_s=event_lease_s)
+    drive_timeout_s = 5.0
 
     async def run_worker() -> None:
         bob = store.check_in("bob", AgentProfile(harness="claude-code"))
@@ -813,7 +814,10 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
             TaskState.COMPLETED,
             "Recovered and finished",
         )
-        release = await store.await_assignment(bob.context_id, timeout_s=4.0)
+        # After a crash after reply, this wait spans the rest of the first
+        # drive and all of the second, in real time: _wait_for does not read
+        # the test clock (#207).
+        release = await store.await_assignment(bob.context_id, timeout_s=2 * drive_timeout_s)
         assert release is not None
 
     async with alice_backend(backend_kind, store) as backend:
@@ -824,7 +828,7 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
                     backend=backend,
                     expected_agent="bob",
                     role="implementer",
-                    timeout_s=5.0,
+                    timeout_s=drive_timeout_s,
                     expected_harness="claude-code",
                     crash_at=crash_at,
                 )
@@ -835,7 +839,7 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
                 backend=backend,
                 expected_agent="bob",
                 role="implementer",
-                timeout_s=5.0,
+                timeout_s=drive_timeout_s,
                 expected_harness="claude-code",
             )
             await worker_fut
