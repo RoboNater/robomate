@@ -367,12 +367,15 @@ def codex_mcp(
     return config
 
 
-def codex_sandbox() -> str:
+def codex_sandbox(writable_roots: tuple[str, ...] = ()) -> str:
     """Sandbox stanza every Codex home needs for GitHub and hub network access."""
     config = 'sandbox_mode = "workspace-write"\n'
     if os.name == "nt":
         config += '[windows]\nsandbox = "unelevated"\n'
-    return config + "[sandbox_workspace_write]\nnetwork_access = true\n"
+    config += "[sandbox_workspace_write]\nnetwork_access = true\n"
+    if writable_roots:
+        config += "writable_roots = " + json.dumps(writable_roots) + "\n"
+    return config
 
 
 def parse_harness_version(harness: str, output: str) -> str:
@@ -468,14 +471,16 @@ def render_claude_mcp(env: dict[str, str], root: str | None = None) -> dict[str,
     return template
 
 
-def render_codex_config(env: dict[str, str], worker_args: list[str]) -> str:
+def render_codex_config(
+    env: dict[str, str], worker_args: list[str], writable_roots: tuple[str, ...] = ()
+) -> str:
     """Render a run-local Codex ``config.toml``; asserts template tool parity."""
     import tomllib
 
     reference = tomllib.loads((ROOT / "runtimes/codex.config.toml").read_text(encoding="utf-8"))[
         "mcp_servers"
     ]["robomate"]
-    config = codex_sandbox() + codex_mcp("uv", worker_args, env, TOOLS, 330)
+    config = codex_sandbox(writable_roots) + codex_mcp("uv", worker_args, env, TOOLS, 330)
     if sorted(reference.get("tools", {})) != sorted(TOOLS):
         raise ValueError("runtimes/codex.config.toml tools drifted from the shared TOOLS list")
     return config
