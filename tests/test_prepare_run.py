@@ -260,6 +260,93 @@ def test_rerun_preserves_clones_and_external_token(
         assert not (run_dir / name / ".mcp.json").exists()
 
 
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+def test_closeout_reports_leave_custom_clones_clean_on_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    bob_dir = tmp_path / "custom-bob"
+    charlie_dir = tmp_path / "custom-charlie"
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness=harness,
+        bob_harness=harness,
+        charlie_harness=harness,
+        bob_dir=bob_dir,
+        charlie_dir=charlie_dir,
+    )
+    for name in ("alice", "bob", "charlie"):
+        report = run_dir / "closeout" / f"{name}.md"
+        prompt = (run_dir / f"{name}.prompt.md").read_text(encoding="utf-8")
+        assert f"`{report.as_posix()}`" in prompt
+        report.write_text(f"{name}: summary, outstanding items, lessons\n", encoding="utf-8")
+        if harness == "codex":
+            home = PREPARE_RUN.codex_home_name(name)
+            config = tomllib.loads((run_dir / "configs" / home / "config.toml").read_text())
+            assert config["sandbox_workspace_write"]["writable_roots"] == [
+                (run_dir / "closeout").as_posix()
+            ]
+    for clone in (bob_dir, charlie_dir):
+        status = subprocess.run(
+            ["git", "-C", str(clone), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
+    second = PREPARE_RUN.prepare(
+        str(tmp_path / "origin"),
+        run_dir,
+        issue=42,
+        account="tester",
+        hub_repo=tmp_path / "target",
+        alice_harness=harness,
+        bob_harness=harness,
+        charlie_harness=harness,
+        bob_dir=bob_dir,
+        charlie_dir=charlie_dir,
+    )
+    assert second["workspaces"] == manifest["workspaces"]
+    assert (run_dir / "closeout" / "bob.md").read_text().startswith("bob:")
+
+
+@pytest.mark.parametrize("parent", ["target", "worker"])
+def test_run_directory_cannot_put_reports_inside_a_configured_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parent: str
+) -> None:
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    run_dir = tmp_path / parent / "run"
+    with pytest.raises(ValueError, match="outside the hub checkout and worker clones"):
+        PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, bob_dir=tmp_path / "worker")
+    assert not run_dir.exists()
+
+
+def test_worker_only_rejects_run_directory_inside_its_clone(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="outside the worker clone"):
+        PREPARE_RUN.prepare_worker(
+            "bob",
+            "test-org/test-repo",
+            tmp_path / "worker" / "run",
+            "http://192.0.2.10:8420",
+            tmp_path / "token",
+            "claude-code",
+            worker_dir=tmp_path / "worker",
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may need Windows privileges")
+def test_closeout_directory_cannot_redirect_reports_into_a_clone(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    clone = tmp_path / "clone"
+    run_dir.mkdir()
+    clone.mkdir()
+    (run_dir / "closeout").symlink_to(clone, target_is_directory=True)
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        PREPARE_RUN.prepare_closeout_dir(run_dir)
+    assert list(clone.iterdir()) == []
+
+
 def test_existing_hub_workflow_requires_the_same_run_and_goal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1066,6 +1153,8 @@ def test_remote_worker_config_carries_windows_paths_and_a_private_token(
         out_dir,
     )
     written = out_dir / "configs/bob.mcp.json"
+    assert "`C:/Users/Bob/runs/step7/closeout/bob.md`" in (out_dir / "bob.prompt.md").read_text()
+    assert (out_dir / "closeout").is_dir()
     text = written.read_text()
     assert "\\\\" not in text
     bridge = json.loads(text)["mcpServers"]["robomate"]
@@ -1434,7 +1523,10 @@ def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
             assert f"--prompt {shlex.quote(str(run_dir / 'alice.prompt.md'))}" in command
         else:
             assert f"--prompt {shlex.quote(str(run_dir / f'{name}.prompt.md'))}" in command
-        assert f"`closeout-report-{name}.md`" in (run_dir / f"{name}.prompt.md").read_text()
+        assert (
+            f"`{(run_dir / 'closeout' / f'{name}.md').as_posix()}`"
+            in (run_dir / f"{name}.prompt.md").read_text()
+        )
     bob_env = json.loads((run_dir / "configs/bob.mcp.json").read_text())["mcpServers"]["robomate"][
         "env"
     ]
@@ -1953,6 +2045,11 @@ def test_worker_only_backoff_options_reach_script_and_manifest(
     ):
         assert flag in start
     agent = manifest["launch"]["agents"]["bob"]
+    assert (
+        f"`{(worker_run / 'closeout/bob.md').as_posix()}`"
+        in (worker_run / "bob.prompt.md").read_text()
+    )
+    assert (worker_run / "closeout").is_dir()
     assert agent["max_resumes"] == 7
     assert agent["resume_delay_s"] == 1.5
     assert agent["resume_max_delay_s"] == 60

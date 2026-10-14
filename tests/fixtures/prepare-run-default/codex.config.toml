@@ -1,6 +1,7 @@
 sandbox_mode = "workspace-write"
 [sandbox_workspace_write]
 network_access = true
+writable_roots = ["$RUN_DIR/closeout"]
 [mcp_servers.robomate]
 command = "uv"
 args = ["run", "--locked", "--project", "$ROOT", "robomate", "mcp", "--role", "worker"]
