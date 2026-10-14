@@ -25,7 +25,7 @@ import robomate.cli as cli
 from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
-from agent_hub_common.discovery import read_hub_json, write_hub_json
+from agent_hub_common.discovery import HubEndpoint, read_hub_json, write_hub_json
 from agent_hub_common.registry import process_alive, register, registry_path
 from robomate.cli import _bind
 
@@ -209,7 +209,7 @@ def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> Non
     try:
         with _cleanup_step(pending, f"`robomate down` in {root}"):
             result = subprocess.run(
-                [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+                [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=30
             )
             assert result.returncode == 0, result.stderr
             assert process.wait(timeout=10) == 0
@@ -953,6 +953,28 @@ def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> N
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=10)
+
+
+def test_down_tells_a_slow_hub_from_an_unreachable_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#207: a shutdown RPC that times out is not reported as an unreachable hub."""
+
+    monkeypatch.setattr(cli, "read_token_file", lambda _path, _label: "operator-token")
+    with socket.create_server(("127.0.0.1", 0)) as silent:
+        url = f"http://127.0.0.1:{silent.getsockname()[1]}"
+    monkeypatch.setattr(cli, "_connect", lambda _selector: (HubEndpoint(url, "t"), None))
+    # Nothing listens there now. Windows takes about 2 s to report a refused
+    # connection, so this runs with the real timeout.
+    with pytest.raises(RuntimeError, match="is not running$"):
+        cli._down(None)
+    monkeypatch.setattr(cli, "_RPC_TIMEOUT_S", 0.2)
+    with socket.create_server(("127.0.0.1", 0)) as silent:
+        # Accepts (into the backlog) but never answers, like a hub too busy to
+        # reply. The patched _connect reads `url` at call time.
+        url = f"http://127.0.0.1:{silent.getsockname()[1]}"
+        with pytest.raises(RuntimeError, match=r"did not answer shutdown within 0\.2 s$"):
+            cli._down(None)
 
 
 def test_status_from_nested_directory_and_worktree(

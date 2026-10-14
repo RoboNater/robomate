@@ -414,7 +414,9 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                     {
                         "task_id": assigned.structuredContent["id"],
                         "question": "Which?",
-                        "timeout_s": 5,
+                        # Covers starting a second bridge and replying through
+                        # it on a loaded runner; a reply returns early (#207).
+                        "timeout_s": 60,
                     },
                 )
             )
@@ -469,7 +471,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=30,
             )
             assert stopped.returncode == 0, stopped.stderr
             hub.wait(timeout=10)

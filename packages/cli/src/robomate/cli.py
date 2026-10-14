@@ -119,6 +119,19 @@ def _bind(
     raise RuntimeError(f"no free port from {base} upward")
 
 
+# Long enough for a loaded host (a CI runner mid-suite) to answer: at 2 s,
+# `down` and `answer` timed out against a live hub (#207).
+_RPC_TIMEOUT_S = 15.0
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """Whether a urllib failure is a timeout, not a refused or reset connection."""
+
+    if isinstance(exc, urllib.error.URLError):
+        return isinstance(exc.reason, TimeoutError)
+    return isinstance(exc, TimeoutError)
+
+
 def _rpc(
     url: str,
     token: str,
@@ -137,7 +150,7 @@ def _rpc(
         ).encode(),
         headers=headers,
     )
-    with urllib.request.urlopen(request, timeout=2) as response:
+    with urllib.request.urlopen(request, timeout=_RPC_TIMEOUT_S) as response:
         result: dict[str, Any] = json.load(response)
     if "error" in result:
         error = result["error"]
@@ -466,6 +479,12 @@ def _down(selector: str | None) -> None:
         ) from exc
     except (OSError, urllib.error.URLError) as exc:
         pid = int(hub.info.get("pid") or 0) if hub is not None else 0
+        if _timed_out(exc):
+            alive = f"; pid {pid} is still alive" if process_alive(pid) else ""
+            raise RuntimeError(
+                f"{label} at {endpoint.url} did not answer shutdown within "
+                f"{_RPC_TIMEOUT_S:g} s{alive}"
+            ) from exc
         if process_alive(pid):
             raise RuntimeError(
                 f"{label} at {endpoint.url} is unreachable; pid {pid} is still alive"
