@@ -47,7 +47,7 @@ EXIT_CANNOT_RESUME = 4
 EXIT_PAUSED = 5
 EXIT_INTERRUPTED = 130
 
-HARNESSES = ("claude-code", "codex", "opencode", "antigravity")
+HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
 # The one prompt every automatic resume sends (#146). Fixed text: it names no
 # state, snapshot, operator decision or approval, so it cannot be mistaken for
@@ -69,6 +69,10 @@ _OPENCODE_ID = re.compile(r'"sessionI[Dd]"\s*:\s*"(ses_[A-Za-z0-9]+)"')
 _AGY_ID = re.compile(
     r'"(?:conversation_?[iI][dD]|conversationID|session_?[iI][dD]|sessionID)"\s*:\s*"([^"\s]{6,128})"'
 )
+# Unverified until a live run (#224): Devin's print output has no documented
+# format, and a hub tool result relayed there can carry robomate's own
+# session_id, so only the top level of its ATIF export is trusted.
+_DEVIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}")
 
 
 class Stop(Exception):
@@ -101,6 +105,8 @@ def start_launch(harness: str, base: list[str], prompt: Path, session_id: str) -
         return Launch([*base, "-"], prompt.read_text(encoding="utf-8"))
     if harness == "opencode":
         return Launch([*base, "--format", "json", instruction(prompt)], None)
+    if harness == "devin":
+        return Launch([*base, "-p", instruction(prompt)], None)
     return Launch([*base, "--output-format", "stream-json", "-p", instruction(prompt)], None)
 
 
@@ -113,6 +119,8 @@ def resume_launch(harness: str, base: list[str], conversation: str, text: str) -
         return Launch([*base, "resume", conversation, "-"], text)
     if harness == "opencode":
         return Launch([*base, "--format", "json", "--session", conversation, text], None)
+    if harness == "devin":
+        return Launch([*base, "--resume", conversation, "-p", text], None)
     return Launch(
         [*base, "--conversation", conversation, "--output-format", "stream-json", "-p", text],
         None,
@@ -131,6 +139,28 @@ def conversation_in(harness: str, line: str) -> str | None:
     else:
         return None
     return match.group(1) if match else None
+
+
+def export_path(base: list[str]) -> Path | None:
+    """The file a Devin ``--export PATH`` in ``base`` writes after each turn."""
+
+    if "--export" not in base[:-1]:
+        return None
+    return Path(base[base.index("--export") + 1])
+
+
+def exported_conversation(base: list[str]) -> str | None:
+    """The session ID in the export a Devin launch wrote, if any."""
+
+    path = export_path(base)
+    if path is None:
+        return None
+    try:
+        export = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    found = export.get("session_id") if isinstance(export, dict) else None
+    return found if isinstance(found, str) and _DEVIN_ID.fullmatch(found) else None
 
 
 def log_session(path: Path, **fields: object) -> None:
@@ -324,6 +354,12 @@ class Launcher:
         self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")
         relay.join(RELAY_GRACE_S)
         self.child = None
+        if self.conversation is None and self.harness == "devin":
+            found = exported_conversation(self.base)
+            if found is not None:
+                self.conversation = found
+                self.log("conversation")
+                say(f"conversation {found}")
         return code
 
     def relay(self, stream: TextIO | None) -> None:
@@ -466,6 +502,10 @@ class Launcher:
         else:
             if self.harness == "claude-code":
                 self.conversation = str(uuid.uuid4())
+            stale = export_path(self.base) if self.harness == "devin" else None
+            if stale is not None:
+                # An earlier start's export must not name this start's session.
+                stale.unlink(missing_ok=True)
             launch = start_launch(
                 self.harness, self.base, self.args.prompt, self.conversation or ""
             )

@@ -125,6 +125,7 @@ def validate(values: dict[str, Any], *, preparing: bool) -> None:
             "opencode",
             "antigravity",
             "agy",
+            "devin",
         ):
             raise ValueError(f"invalid {name}_harness")
     if not preparing:

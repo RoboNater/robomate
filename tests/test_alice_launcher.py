@@ -41,6 +41,7 @@ IDS = {
     "codex": CODEX_ID,
     "opencode": "ses_7Fa9b2C",
     "antigravity": "conv-1234abcd",
+    "devin": "brisk-otter",
 }
 # What each harness prints that carries its conversation ID.
 ID_LINES = {
@@ -60,6 +61,11 @@ record = {
 }
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(record) + "\\n")
+export = os.environ.get("FAKE_EXPORT_ID")
+if export and "--export" in argv:
+    # Devin writes its ATIF export after each turn (#224).
+    with open(argv[argv.index("--export") + 1], "w", encoding="utf-8") as stream:
+        json.dump({"schema_version": "ATIF-v1.2", "session_id": export, "steps": []}, stream)
 line = os.environ.get("FAKE_ID_LINE")
 if line:
     print("starting up")
@@ -110,12 +116,15 @@ def fake(run_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("CODEX_HOME", str(run_dir / "codex home"))
     monkeypatch.setenv("OPENCODE_CONFIG", str(run_dir / "alice.opencode.json"))
     monkeypatch.delenv("FAKE_ID_LINE", raising=False)
+    monkeypatch.delenv("FAKE_EXPORT_ID", raising=False)
     return script
 
 
 def use_harness(harness: str, monkeypatch: pytest.MonkeyPatch) -> None:
     if harness in ID_LINES:
         monkeypatch.setenv("FAKE_ID_LINE", ID_LINES[harness])
+    elif harness == "devin":
+        monkeypatch.setenv("FAKE_EXPORT_ID", "brisk-otter")
 
 
 def args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:
@@ -139,6 +148,8 @@ def args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:
         "--model",
         "m-1",
         "--flag",
+        # Devin's session ID is read back from its export (#224).
+        *(["--export", str(run_dir / "devin-export.json")] if harness == "devin" else []),
     ]
 
 
@@ -163,7 +174,7 @@ def events(run_dir: Path) -> list[str]:
     return [record["event"] for record in sessions(run_dir)]
 
 
-@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
 def test_each_harness_resumes_its_own_conversation_until_done(
     run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, harness: str
 ) -> None:
@@ -187,7 +198,8 @@ def test_each_harness_resumes_its_own_conversation_until_done(
             "OPENCODE_CONFIG": str(run_dir / "alice.opencode.json"),
         }
     kickoff = f"Read {run_dir / 'alice.prompt.md'} and follow the instructions in it"
-    first, *resumed = (run["argv"][3:] for run in runs)
+    skip = 5 if harness == "devin" else 3
+    first, *resumed = (run["argv"][skip:] for run in runs)
     log = sessions(run_dir)
     conversation = log[-1]["conversation_id"]
     if harness == "claude-code":
@@ -200,6 +212,9 @@ def test_each_harness_resumes_its_own_conversation_until_done(
     elif harness == "opencode":
         assert first == ["--format", "json", kickoff]
         expected = ["--format", "json", "--session", conversation, LAUNCHER.CONTINUE_PROMPT]
+    elif harness == "devin":
+        assert first == ["-p", kickoff]
+        expected = ["--resume", conversation, "-p", LAUNCHER.CONTINUE_PROMPT]
     else:
         assert first == ["--output-format", "stream-json", "-p", kickoff]
         expected = [
@@ -287,6 +302,42 @@ def test_no_conversation_id_means_no_guessed_resume(
     assert sessions(run_dir)[-1]["reason"] == "no_conversation"
 
 
+def test_devin_session_id_comes_from_its_export_when_output_lacks_it(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#224: the launcher reads the ``--export`` file after the exit."""
+    export = run_dir / "devin-export.json"
+    # A relayed hub result naming robomate's own session is not Devin's.
+    monkeypatch.setenv("FAKE_ID_LINE", json.dumps({"session_id": "robomate-session"}))
+    monkeypatch.setenv("FAKE_EXPORT_ID", "calm-heron")
+    reader = ScriptedReader(wf("active"), wf("active"), wf("active"), wf("done"))
+    assert LAUNCHER.main(start_args(run_dir, fake, "devin"), reader) == 0
+    runs = launches(run_dir)
+    assert len(runs) == 2
+    assert runs[1]["argv"][-6:] == [
+        "--export",
+        str(export),
+        "--resume",
+        "calm-heron",
+        "-p",
+        LAUNCHER.CONTINUE_PROMPT,
+    ]
+    assert {r["conversation_id"] for r in sessions(run_dir)[1:]} == {"calm-heron"}
+
+
+def test_devin_never_resumes_a_stale_export_from_an_earlier_start(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    export = run_dir / "devin-export.json"
+    export.write_text(json.dumps({"session_id": "old-session"}), encoding="utf-8")
+    reader = ScriptedReader(wf("active"))
+    code = LAUNCHER.main(start_args(run_dir, fake, "devin"), reader)
+    assert code == LAUNCHER.EXIT_CANNOT_RESUME
+    assert len(launches(run_dir)) == 1
+    assert sessions(run_dir)[-1]["reason"] == "no_conversation"
+    assert not export.exists()
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -323,7 +374,7 @@ def test_an_unreachable_hub_before_the_first_launch_launches_nothing(
     assert code == LAUNCHER.EXIT_HUB_UNREADABLE and launches(run_dir) == []
 
 
-@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
 def test_a_manual_resume_uses_the_operator_prompt_once_then_the_continuation(
     run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, harness: str
 ) -> None:

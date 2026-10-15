@@ -18,8 +18,9 @@ Example:
 ``--work-file PATH`` replaces ``--issue N`` when the job is not exactly one
 issue: the file's text or Markdown statement of work becomes Alice's goal.
 
-Each agent runs under Claude Code, Codex, OpenCode, or AntiGravity
-(``--<agent>-harness claude|codex|opencode|antigravity``, case-insensitive),
+Each agent runs under Claude Code, Codex, OpenCode, AntiGravity, or Devin CLI
+(``--<agent>-harness claude|codex|opencode|antigravity|devin``, case-insensitive;
+Devin is a prototype pending a live run, #224),
 with an optional ``--<agent>-model`` and ``--<agent>-effort``
 passed through to its CLI unchecked. Start scripts hand each agent its prompt
 file (auto-start) unless ``--no-auto-start`` is given (#30). Any other harness
@@ -81,18 +82,21 @@ from run_common import (  # noqa: E402
     codex_home,
     codex_mcp,
     codex_sandbox,
+    devin_config_dir,
     link_or_copy,
     parse_github_slug,
     parse_harness_version,
     render_antigravity_mcp,
     render_claude_mcp,
     render_codex_config,
+    render_devin_mcp,
     render_opencode_config,
     render_worker_prompt,
     resolve_provider,
     run,
     run_output,
     save,
+    write_devin_config,
     write_private_text,
 )
 
@@ -113,6 +117,7 @@ HARNESS_NAMES = {
     "opencode": "opencode",
     "antigravity": "antigravity",
     "agy": "antigravity",
+    "devin": "devin",
 }
 WORKERS = ("bob", "charlie")
 AGENTS = ("alice", *WORKERS)
@@ -358,7 +363,7 @@ def harness_name(flag: str, value: str) -> str:
     if harness is None:
         raise ValueError(
             f"{flag} {value!r} is not yet supported by prepare-run; expected claude, "
-            "codex, opencode, or antigravity (assemble other topologies via the manual "
+            "codex, opencode, antigravity, or devin (assemble other topologies via the manual "
             "walkthrough in docs/user-guide.md)"
         )
     return harness
@@ -533,13 +538,24 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "codex": "Codex",
             "opencode": "OpenCode",
             "antigravity": "AntiGravity",
+            "devin": "Devin CLI",
         }.get(harness, harness)
         sections.append(
             f"{runtime_label} runtime note: if the alice-orchestrator skill is not already loaded, "
             f"read {skill} in full and follow it. Hub tools are the MCP server `robomate`."
         )
+    if harness == "devin":
+        # Devin's MCP tool-call timeout is not yet measured (#224): hold as briefly
+        # as Claude Code does until a live run finds the limit.
+        waits = "`wait_for_event`" if name == "alice" else "`await_assignment`"
+        sections.append(f"Use a 100 second wait time for all hub waits including {waits}.")
     if name != "alice" and harness != "claude-code":
-        mode = {"codex": "codex exec", "opencode": "opencode run", "antigravity": "agy -p"}[harness]
+        mode = {
+            "codex": "codex exec",
+            "opencode": "opencode run",
+            "antigravity": "agy -p",
+            "devin": "devin -p",
+        }[harness]
         sections.append(
             "Do not end your turn until `await_assignment` returns `release: true`. "
             f"In headless mode (`{mode}`), the process exits when your turn ends. "
@@ -606,6 +622,10 @@ def model_flags(
                 "(opencode run); omit --<agent>-effort with --no-auto-start"
             )
         flags += ["--variant", shell_word(effort, powershell)]
+    elif effort and harness == "devin":
+        raise ValueError(
+            "devin has no reasoning-effort flag; omit --<agent>-effort for a Devin agent"
+        )
     elif effort:
         flags += ["--effort", shell_word(effort, powershell)]
     return flags
@@ -775,6 +795,31 @@ def antigravity_launch(
     return [f"{env_prefix} {command}"]
 
 
+#: Headless Devin flags (#224): approve every tool, since the default mode
+#: prompts before each MCP call and ``-p`` cannot answer, and skip the
+#: workspace-trust prompt, which print mode cannot show either.
+DEVIN_HEADLESS = ["--permission-mode", "dangerous", "--respect-workspace-trust=false"]
+
+
+def devin_launch(
+    prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    powershell: bool = False,
+) -> list[str]:
+    """A ``devin`` launch from the agent's working directory.
+
+    Its MCP server and permissions are the local scope (``.devin/``) that
+    preparation wrote there. Auto-start runs ``devin -p`` on the prompt file;
+    without it, the interactive REPL keeps Devin's own approval prompts,
+    except for robomate's tools, which the local scope allows.
+    """
+    words = ["devin", *flags]
+    if auto_start:
+        words += [*DEVIN_HEADLESS, "-p", auto_start_instruction(prompt, powershell)]
+    return [" ".join(words)]
+
+
 def harness_launch(
     harness: str,
     config: str,
@@ -793,6 +838,8 @@ def harness_launch(
         return opencode_launch(config, prompt, flags, auto_start, title, powershell)
     if harness == "antigravity":
         return antigravity_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
+    if harness == "devin":
+        return devin_launch(prompt, flags, auto_start, powershell)
     return claude_launch(config, prompt, prompt_dir, flags, auto_start, powershell)
 
 
@@ -1182,6 +1229,31 @@ def antigravity_resume(
     return [f"{env_prefix} {command}"]
 
 
+def devin_resume(
+    resume_prompt: str,
+    flags: list[str],
+    auto_start: bool,
+    session_var: str,
+    powershell: bool = False,
+    *,
+    ask: bool = False,
+) -> list[str]:
+    """A manual Devin session resume by exact ID; never ``-c`` (#94, #224).
+
+    With ``ask`` (#221), ``agent-ask.py`` empties the local-scope server for
+    the session, so the hub tools are gone; Devin documents no fork option.
+    """
+    words = ["devin", *flags]
+    if auto_start:
+        words += DEVIN_HEADLESS
+    words += ["--resume", session_var]
+    if auto_start:
+        words += ["-p", auto_start_instruction(resume_prompt, powershell)]
+    if ask and not powershell:
+        words.insert(0, "exec")
+    return [" ".join(words)]
+
+
 def ask_lines(
     name: str,
     harness: str,
@@ -1200,7 +1272,7 @@ def ask_lines(
     def spelling(path: PurePath) -> str:
         return path.as_posix() if git_bash else str(path)
 
-    config = launch_config_path(harness, run_dir / "configs", name)
+    config = launch_config_path(harness, run_dir / "configs", name, workdir)
     temp = run_dir / "tmp" / name
     prefix = ["$ErrorActionPreference = 'Stop'" if powershell else "set -e"]
     prefix += [f"cd {shell_word(git_bash_path(workdir) if git_bash else str(workdir), powershell)}"]
@@ -1238,6 +1310,8 @@ def ask_lines(
             lines = antigravity_resume(
                 spelling(config), spelling(run_dir), "", flags, False, session, **options
             )
+        elif harness == "devin":
+            lines = devin_resume("", flags, False, session, powershell, ask=True)
         else:
             lines = claude_resume("", spelling(run_dir), "", flags, False, session, **options)
         return "\n".join([*prefix, *lines])
@@ -1261,7 +1335,7 @@ def ask_lines(
         "--shell-command",
         shell_word(command(False), powershell),
     ]
-    if harness != "antigravity":
+    if harness not in ("antigravity", "devin"):
         words += ["--fork-command", shell_word(command(True), powershell)]
     if powershell:
         words += ["--powershell"]
@@ -1342,6 +1416,8 @@ def resume_lines(
             session_var,
             powershell,
         )
+    elif harness == "devin":
+        lines = devin_resume(str(resume_prompt), flags, auto_start, session_var, powershell)
     else:
         lines = claude_resume(
             str(config),
@@ -1533,6 +1609,12 @@ def agent_launch_lines(
             base += ["--title", shell_word(title, powershell)]
     elif harness == "antigravity":
         base = ["agy", *flags, "--dangerously-skip-permissions", "--add-dir", prompt_dir]
+    elif harness == "devin":
+        # The ATIF export after each turn is where the launcher reads the
+        # session ID when Devin's output does not print it (#224).
+        export = prompt.parent / f"{worker or 'alice'}-devin-export.json"
+        base = ["devin", *flags, *DEVIN_HEADLESS]
+        base += ["--export", shell_word(spelling(export), powershell)]
     else:
         base = ["claude", *flags, "--permission-mode", "auto", "--strict-mcp-config"]
         base += ["--mcp-config", shell_word(spelling(config), powershell), "--add-dir", prompt_dir]
@@ -1646,8 +1728,17 @@ def agy_home_name(name: str) -> str:
     return f"{name}-agy"
 
 
-def launch_config_path(harness: str, configs: PurePath, name: str) -> PurePath:
-    """The config or isolated-home path passed to ``launch_lines`` for ``name``."""
+def launch_config_path(
+    harness: str, configs: PurePath, name: str, workdir: PurePath | None = None
+) -> PurePath:
+    """The config or isolated-home path passed to ``launch_lines`` for ``name``.
+
+    A Devin agent's config is the ``.devin`` local scope of its ``workdir``.
+    """
+    if harness == "devin":
+        if workdir is None:
+            raise ValueError("a Devin agent's config lives in its working directory")
+        return devin_config_dir(workdir)
     if harness == "codex":
         return configs / codex_home_name(name)
     if harness == "opencode":
@@ -1703,7 +1794,7 @@ def worker_launch(
         return agent_launch_lines(
             harness,
             workspace,
-            launch_config_path(harness, run_dir / "configs", name),
+            launch_config_path(harness, run_dir / "configs", name, workspace),
             prompt,
             hub_url,
             token_file,
@@ -1725,7 +1816,7 @@ def worker_launch(
         )
     lines = harness_launch(
         harness,
-        launch_config_path(harness, run_dir / "configs", name).as_posix(),
+        launch_config_path(harness, run_dir / "configs", name, workspace).as_posix(),
         (workspace / ".git").as_posix(),
         git_bash_path(prompt) if harness == "codex" else prompt.as_posix(),
         run_dir.as_posix(),
@@ -1779,7 +1870,7 @@ def worker_resume(
         return agent_launch_lines(
             harness,
             workspace,
-            launch_config_path(harness, run_dir / "configs", name),
+            launch_config_path(harness, run_dir / "configs", name, workspace),
             prompt,
             hub_url,
             token_file,
@@ -1802,7 +1893,7 @@ def worker_resume(
         )
     flags = model_flags(harness, model, effort, auto_start=auto_start)
     session_var = '"$SESSION_ID"'
-    config = launch_config_path(harness, run_dir / "configs", name).as_posix()
+    config = launch_config_path(harness, run_dir / "configs", name, workspace).as_posix()
     if harness == "codex":
         lines = codex_resume(
             config, (workspace / ".git").as_posix(), prompt_arg, flags, auto_start, session_var
@@ -1813,6 +1904,8 @@ def worker_resume(
         lines = antigravity_resume(
             config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var
         )
+    elif harness == "devin":
+        lines = devin_resume(prompt_arg, flags, auto_start, session_var)
     else:
         lines = claude_resume(
             config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var
@@ -1832,7 +1925,7 @@ def worker_resume(
         hub_url,
         token_file,
         [f"cd {shell_word(git_bash_path(workspace))}", *temp_lines, *lines],
-        config=launch_config_path(harness, run_dir / "configs", name),
+        config=launch_config_path(harness, run_dir / "configs", name, workspace),
         root=root,
         python=git_bash_path(PureWindowsPath(python)) if is_windows else python,
         powershell=False,
@@ -1883,7 +1976,18 @@ def write_worker_config(
     exposures: dict[str, Any] | None = None,
     report_dir: PurePath | None = None,
 ) -> Path:
-    """Write ``name``'s worker MCP config under ``configs`` and return its path."""
+    """Write ``name``'s worker MCP config under ``configs`` and return its path.
+
+    A Devin worker's goes in its clone's ``.devin`` local scope instead
+    (``HUB_WORKSPACE``), the only per-agent place Devin reads it from.
+    """
+    if harness == "devin":
+        devin_mcp = render_devin_mcp(env, root)
+        return write_devin_config(
+            Path(env["HUB_WORKSPACE"]),
+            devin_mcp,
+            (lambda path, value: write_secret(path, lambda p: save(p, value))) if secret else save,
+        )
     if harness == "codex":
         home = codex_home(
             configs, codex_home_name(name), allow_copy=allow_credential_copy, exposures=exposures
@@ -1981,7 +2085,11 @@ def render_worker_bundle(
         exposures=exposures,
         report_dir=run_dir / "closeout",
     )
-    config = run_dir / written.relative_to(out_dir)
+    config = (
+        devin_config_dir(workspace) / written.name
+        if harness == "devin"
+        else run_dir / written.relative_to(out_dir)
+    )
     (out_dir / f"{name}.prompt.md").write_text(
         render_worker_prompt(name) + prompt_sections(name, harness, run_dir), encoding="utf-8"
     )
@@ -2615,6 +2723,13 @@ def prepare(
             alice_config,
             render_antigravity_mcp(hub_env, tools=ALICE_TOOLS, role="orchestrator"),
         )
+    elif alice_harness == "devin":
+        alice_config = write_devin_config(
+            run_dir / "alice-runtime", render_devin_mcp(hub_env, role="orchestrator")
+        )
+        skills_dir = devin_config_dir(run_dir / "alice-runtime") / "skills"
+        skills_dir.mkdir(exist_ok=True)
+        link_or_copy(ROOT / "skills/alice-orchestrator", skills_dir / "alice-orchestrator")
     else:
         alice_config = configs / "alice.mcp.json"
         save(
@@ -2706,7 +2821,7 @@ def prepare(
     titles: dict[str, str] = {}
     for name in ("alice", *local):
         harness, model, effort = launch[name]
-        config = Path(launch_config_path(harness, configs, name))
+        config = Path(launch_config_path(harness, configs, name, workdirs[name]))
         title = opencode_title(name, run_dir) if harness == "opencode" else None
         if title is not None:
             titles[name] = title
@@ -3160,7 +3275,8 @@ def main() -> None:
             dest=f"{name}_harness",
             metavar="HARNESS",
             default=None,
-            help=f"claude, codex, opencode, or antigravity, case-insensitive (default: {default})",
+            help=f"claude, codex, opencode, antigravity, or devin, case-insensitive "
+            f"(default: {default})",
         )
     for name in AGENTS:
         pins = "" if name == "alice" else f"; also pins {name}'s HUB_MODEL"

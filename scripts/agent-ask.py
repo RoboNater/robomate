@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from typing import Any
 
 from agent_sessions import exact_id
 
@@ -57,15 +58,32 @@ def conversation(sessions: Path, agent: str, harness: str, supplied: str | None)
     return ids[-1]
 
 
+#: For harnesses without an MCP disable flag: the run-local MCP file under
+#: ``--config``, and what stands in for it while asking.
+SUPPRESSED_MCP: dict[str, tuple[str, dict[str, Any]]] = {
+    "antigravity": (".gemini/config/mcp_config.json", {"mcpServers": {}}),
+    # Devin's local scope in the agent's working directory (#224). Devin merges
+    # it with project and user scope, so an empty map would leave an inherited
+    # robomate server live; a disabled local entry of that name masks it.
+    "devin": (
+        "mcp_config.local.json",
+        {"mcpServers": {"robomate": {"command": "robomate-ask-disabled", "disabled": True}}},
+    ),
+}
+#: Display names for harnesses without a CLI fork option.
+NO_FORK = {"antigravity": "AntiGravity", "devin": "Devin CLI"}
+
+
 @contextmanager
-def suppress_mcp(home: Path) -> Iterator[None]:
-    """Temporarily suppress AntiGravity's run-home MCP, then restore exact bytes.
+def suppress_mcp(config: Path, replacement: dict[str, Any] | None = None) -> Iterator[None]:
+    """Temporarily replace a run-local MCP config file, then restore exact bytes.
+
+    ``replacement`` defaults to an empty server map.
 
     Operator decision, #221: keep the original HOME and conversation store.
     Exclusive backup creation prevents two asks from overwriting the saved config.
     A hard-kill backup is deliberately retained for explicit restoration.
     """
-    config = home / ".gemini/config/mcp_config.json"
     backup = config.with_name(config.name + ".ask-backup")
     try:
         fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -85,7 +103,7 @@ def suppress_mcp(home: Path) -> Iterator[None]:
         fd, name = tempfile.mkstemp(dir=config.parent, prefix=".ask-mcp-")
         temporary = Path(name)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump({"mcpServers": {}}, stream)
+            json.dump({"mcpServers": {}} if replacement is None else replacement, stream)
         os.replace(temporary, config)
         yield
     finally:
@@ -122,7 +140,8 @@ def main() -> int:
         command = args.shell_command
         if controls.fork:
             if not args.fork_command:
-                raise ValueError("AntiGravity has no CLI fork option; --fork is unavailable")
+                name = NO_FORK.get(args.harness, args.harness)
+                raise ValueError(f"{name} has no CLI fork option; --fork is unavailable")
             command = args.fork_command
         print(
             f"Ask {args.agent} ({args.harness}): conversation {selected}; "
@@ -140,7 +159,12 @@ def main() -> int:
             if shell is None:
                 raise OSError("Bash is unavailable")
             argv = [shell, "-c", command]
-        suppression = suppress_mcp(args.config) if args.harness == "antigravity" else nullcontext()
+        suppressed = SUPPRESSED_MCP.get(args.harness)
+        suppression = (
+            suppress_mcp(args.config / suppressed[0], suppressed[1])
+            if suppressed
+            else nullcontext()
+        )
         signals = [signal.SIGINT, signal.SIGTERM]
         if hasattr(signal, "SIGHUP"):
             signals.append(signal.SIGHUP)

@@ -122,12 +122,19 @@ def running_hub(
         PREPARE_RUN,
         "probe_versions",
         lambda _: (
-            {"claude": "2.1", "codex": "0.1", "opencode": "1.18.32", "agy": "1.2.7"},
+            {
+                "claude": "2.1",
+                "codex": "0.1",
+                "opencode": "1.18.32",
+                "agy": "1.2.7",
+                "devin": "devin 3000.11.3 (9c803229faa4)",
+            },
             {
                 "claude-code": "2.1",
                 "codex": "0.1",
                 "opencode": "1.18.32",
                 "antigravity": "1.2.7",
+                "devin": "3000.11.3",
             },
         ),
     )
@@ -262,7 +269,7 @@ def test_rerun_preserves_clones_and_external_token(
         assert not (run_dir / name / ".mcp.json").exists()
 
 
-@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
 def test_closeout_reports_leave_custom_clones_clean_on_rerun(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
 ) -> None:
@@ -1127,7 +1134,7 @@ def test_unsupported_harness_names_fail_before_any_artifact(
             value,
         ],
     )
-    with pytest.raises(SystemExit, match="expected claude, codex, opencode, or antigravity"):
+    with pytest.raises(SystemExit, match="expected claude, codex, opencode, antigravity, or devin"):
         PREPARE_RUN.main()
     assert not (tmp_path / "run").exists()
 
@@ -1697,6 +1704,12 @@ def test_both_codex_workers_report_each_login(
         ("antigravity", "", None, "unknown"),
         ("opencode", "opencode/big-pickle", "stealth-lab", "stealth-lab"),
         ("antigravity", "claude-sonnet-4-6", "custom-vendor", "custom-vendor"),
+        # Devin routes several makers' models and its own SWE models (#224).
+        ("devin", "swe-1.6-slow", None, "unknown"),
+        ("devin", "", None, "unknown"),
+        ("devin", "claude-opus-4.6", None, "anthropic"),
+        ("devin", "codex", None, "openai"),
+        ("devin", "swe-1.6-slow", "cognition", "cognition"),
     ],
 )
 def test_resolve_provider_records_model_maker_lineage(
@@ -2597,6 +2610,10 @@ stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 env = {k: os.environ.get(k) for k in ("CODEX_HOME", "OPENCODE_CONFIG", "HOME", "TMPDIR", "TEMP")}
 with open(os.environ["FAKE_ARGV_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps({"argv": argv, "stdin": stdin, "env": env, "cwd": os.getcwd()}) + "\\n")
+if "--export" in argv:
+    # Devin's ATIF export after each turn carries its session ID (#224).
+    with open(argv[argv.index("--export") + 1], "w", encoding="utf-8") as stream:
+        json.dump({"schema_version": "ATIF-v1.2", "session_id": "brisk-otter"}, stream)
 print(os.environ.get("FAKE_ID_LINE", ""), flush=True)
 """
 FAKE_ID_LINES = {
@@ -2604,12 +2621,14 @@ FAKE_ID_LINES = {
     "codex": "session id: 019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
     "opencode": json.dumps({"type": "step_start", "sessionID": "ses_7Fa9b2C"}),
     "antigravity": json.dumps({"type": "init", "conversation_id": "conv-1234abcd"}),
+    "devin": "",
 }
 CLI_NAMES = {
     "claude-code": "claude",
     "codex": "codex",
     "opencode": "opencode",
     "antigravity": "agy",
+    "devin": "devin",
 }
 
 
@@ -2695,7 +2714,7 @@ def fake_cli(bin_dir: Path, harness: str) -> None:
         cli.chmod(0o755)
 
 
-@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
 @pytest.mark.parametrize("agent", ["alice", "bob", "charlie"])
 def test_start_and_resume_scripts_run_the_launcher_to_done(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, agent: str
@@ -2727,7 +2746,7 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
             **{
                 f"{agent}_harness": harness,
                 f"{agent}_model": "model-x",
-                f"{agent}_effort": "high" if harness != "opencode" else "",
+                f"{agent}_effort": "high" if harness not in ("opencode", "devin") else "",
             },
             max_resumes=3,
             resume_delay_s=0,
@@ -2765,6 +2784,16 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
             assert Path(run["env"]["OPENCODE_CONFIG"]) == configs / f"{agent}.opencode.json"
         elif harness == "antigravity":
             assert Path(run["env"]["HOME"]) == configs / f"{agent}-agy"
+        elif harness == "devin":
+            # Its server is the local scope of the directory it starts in.
+            local = json.loads((Path(run["cwd"]) / ".devin/mcp_config.local.json").read_text())
+            role = "orchestrator" if agent == "alice" else "worker"
+            assert local["mcpServers"]["robomate"]["args"][-2:] == ["--role", role]
+            assert run["argv"][run["argv"].index("--permission-mode") + 1] == "dangerous"
+            export = Path(run["argv"][run["argv"].index("--export") + 1])
+            assert export == run_dir / f"{agent}-devin-export.json"
+    if harness == "devin":
+        assert conversation == "brisk-otter"
     for script in (f"start-{agent}", f"resume-{agent}"):
         body = (run_dir / f"{script}.{SCRIPT_SUFFIX}").read_text()
         assert ("alice-launcher.py" if agent == "alice" else "worker-launcher.py") in body
@@ -2807,7 +2836,7 @@ def test_no_auto_start_keeps_alice_interactive_without_the_launcher(
     assert "sessions" not in manifest["launch"]["agents"]["alice"]
 
 
-@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
 @pytest.mark.parametrize("agent", ["alice", "bob", "charlie"])
 def test_interactive_recovery_preserves_cli_with_explicit_missing_log_fallback(
     tmp_path: Path,
@@ -2827,6 +2856,7 @@ def test_interactive_recovery_preserves_cli_with_explicit_missing_log_fallback(
         "codex": "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
         "opencode": "ses_7Fa9b2C",
         "antigravity": "conv-1234abcd",
+        "devin": "brisk-otter",
     }[harness]
     with stub_hub("active") as url:
         run_dir, _ = prepare(
@@ -3033,14 +3063,14 @@ def test_ask_rendering(harness: str, powershell: bool, worker_only: bool) -> Non
             run,
             run / "bob",
             "model-x",
-            "high",
+            "" if harness == "devin" else "high",
             powershell=powershell,
             git_bash=worker_only and not powershell,
         )
     )
     assert "agent-ask.py" in body
     assert "bob-sessions.jsonl" in body
-    assert "model-x" in body and "high" in body
+    assert "model-x" in body and ("high" in body or harness == "devin")
     for absent in (
         "agent-recovery.py",
         "launcher.py",
@@ -3061,6 +3091,10 @@ def test_ask_rendering(harness: str, powershell: bool, worker_only: bool) -> Non
         assert "OPENCODE_CONFIG" in body and "OPENCODE_CONFIG_CONTENT" in body
         assert '"enabled": false' in body and '"variant": "high"' in body
         assert "--session" in body and "--fork" in body and "--auto" not in body
+    elif harness == "devin":
+        # agent-ask.py disables the local-scope server; Devin has no fork option.
+        assert "devin --model model-x --resume" in body and ".devin" in body
+        assert "--fork-command" not in body and "--export" not in body
     else:
         assert "USERPROFILE" in body and "HOME" in body and "--conversation" in body
         assert "--fork-command" not in body
@@ -3088,9 +3122,12 @@ keys = ("CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT",
         "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP")
 with open(os.environ["ASK_ARGV_LOG"], "a", encoding="utf-8") as f:
     config = Path(os.environ.get("HOME", ".")) / ".gemini/config/mcp_config.json"
+    local = Path(".devin/mcp_config.local.json")
     mcp = None
     if config.is_file() and "--conversation" in sys.argv:
         mcp = json.loads(config.read_text())
+    elif local.is_file() and "--resume" in sys.argv:
+        mcp = json.loads(local.read_text())
     f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "mcp": mcp,
                         "env": {k: os.environ.get(k) for k in keys}}) + "\\n")
 time.sleep(float(os.environ.get("ASK_SLEEP_S", "0")))
@@ -3134,6 +3171,8 @@ def test_ask_executes_without_hub_and_preserves_run_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, worker_only: bool
 ) -> None:
     env = ask_fake(tmp_path, harness)
+    effort = "" if harness == "devin" else "high"
+    suppressed = harness in ("antigravity", "devin")
     if worker_only:
         run_dir = tmp_path / "remote run"
         run_dir.mkdir()
@@ -3152,19 +3191,21 @@ def test_ask_executes_without_hub_and_preserves_run_log(
             run_dir,
             workdir,
             run_dir,
-            effort="high",
+            effort=effort,
         )
         script = run_dir / ("ask-bob.ps1" if os.name == "nt" else "ask-bob.sh")
         assert bundle["ask_script"] == (run_dir / "ask-bob.sh").as_posix()
     else:
         run_dir, _ = prepare(
-            tmp_path, monkeypatch, bob_harness=harness, bob_model="model-x", bob_effort="high"
+            tmp_path, monkeypatch, bob_harness=harness, bob_model="model-x", bob_effort=effort
         )
         workdir = run_dir / "bob"
         script = run_dir / f"ask-bob.{SCRIPT_SUFFIX}"
-    config = Path(PREPARE_RUN.launch_config_path(harness, run_dir / "configs", "bob"))
-    mcp = config / ".gemini/config/mcp_config.json"
-    original_mcp = mcp.read_bytes() if harness == "antigravity" else None
+    config = Path(PREPARE_RUN.launch_config_path(harness, run_dir / "configs", "bob", workdir))
+    mcp = config / (
+        "mcp_config.local.json" if harness == "devin" else ".gemini/config/mcp_config.json"
+    )
+    original_mcp = mcp.read_bytes() if suppressed else None
     ids = (
         ["ses_old123", "ses_new456"]
         if harness == "opencode"
@@ -3183,8 +3224,8 @@ def test_ask_executes_without_hub_and_preserves_run_log(
     result = execute_ask(script, env, ids[0])
     assert result.returncode == 0, result.stdout + result.stderr
     result = execute_ask(script, env, ids[0], "--fork")
-    assert (result.returncode == 2) if harness == "antigravity" else (result.returncode == 0)
-    if harness == "antigravity":
+    assert (result.returncode == 2) if suppressed else (result.returncode == 0)
+    if suppressed:
         assert "--fork is unavailable" in result.stderr
     result = execute_ask(script, env, "--last")
     assert result.returncode != 0
@@ -3192,7 +3233,7 @@ def test_ask_executes_without_hub_and_preserves_run_log(
     assert result.returncode == 2 and "Invalid conversation ID" in result.stderr
     assert sessions.read_text() == before
     recorded = [json.loads(line) for line in Path(env["ASK_ARGV_LOG"]).read_text().splitlines()]
-    assert len(recorded) == (2 if harness == "antigravity" else 3)
+    assert len(recorded) == (2 if suppressed else 3)
     assert ids[1] in recorded[0]["argv"] and ids[0] in recorded[1]["argv"]
     for run in recorded:
         assert Path(run["cwd"]).resolve() == workdir.resolve()
@@ -3221,13 +3262,16 @@ def test_ask_executes_without_hub_and_preserves_run_log(
             assert Path(run["env"]["HOME"]) == config
             assert Path(run["env"]["USERPROFILE"]) == config
             assert run["mcp"] == {"mcpServers": {}}
-    if harness == "antigravity":
+        elif harness == "devin":
+            # A disabled entry, not an empty map: Devin merges scopes (#224 r1-1).
+            assert run["mcp"]["mcpServers"]["robomate"]["disabled"] is True
+    if suppressed:
         assert mcp.read_bytes() == original_mcp
         result = execute_ask(script, env | {"ASK_EXIT_CODE": "7"})
         assert result.returncode == 7
         assert mcp.read_bytes() == original_mcp
         assert not mcp.with_name(mcp.name + ".ask-backup").exists()
-    if harness != "antigravity":
+    if not suppressed:
         assert (
             "fork"
             if harness == "codex"
@@ -3305,6 +3349,36 @@ def test_ask_hint_ends_every_resume_refusal(
     assert not Path(env["ASK_ARGV_LOG"]).exists()
 
 
+def test_ask_devin_masks_an_inherited_robomate_server(tmp_path: Path) -> None:
+    """#224 r1-1: Devin merges local, project and user scope by server name.
+
+    An empty local map left a project- or user-scope ``robomate`` live (shown
+    with ``devin mcp get robomate`` on 3000.11.3); a disabled local entry of
+    the same name masks it, and the original bytes come back afterwards.
+    """
+    spec = importlib.util.spec_from_file_location("agent_ask", ROOT / "scripts/agent-ask.py")
+    assert spec and spec.loader
+    ask = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ask)
+    scope = tmp_path / ".devin"
+    scope.mkdir()
+    inherited = {"robomate": {"command": "another-hub-bridge", "args": []}}
+    (scope / "mcp_config.json").write_text(json.dumps({"mcpServers": inherited}))
+    local = scope / "mcp_config.local.json"
+    original = b'{"mcpServers": {"robomate": {"command": "uv", "env": {"A": "b"}}}}\n'
+    local.write_bytes(original)
+    name, replacement = ask.SUPPRESSED_MCP["devin"]
+    assert name == local.name
+    with ask.suppress_mcp(local, replacement):
+        servers = json.loads(local.read_text())["mcpServers"]
+        # Devin resolves a server name from the most specific scope that has it.
+        effective = inherited | servers
+        assert effective["robomate"]["disabled"] is True
+        assert effective["robomate"]["command"] != "another-hub-bridge"
+    assert local.read_bytes() == original
+    assert not local.with_name(local.name + ".ask-backup").exists()
+
+
 def test_ask_antigravity_restores_mcp_on_interrupt_and_refuses_concurrent_swap(
     tmp_path: Path,
 ) -> None:
@@ -3316,11 +3390,11 @@ def test_ask_antigravity_restores_mcp_on_interrupt_and_refuses_concurrent_swap(
     config.parent.mkdir(parents=True)
     original = b'{"mcpServers": {"robomate": {"command": "must-not-run"}}}\n'
     config.write_bytes(original)
-    with pytest.raises(KeyboardInterrupt), ask.suppress_mcp(tmp_path):
+    with pytest.raises(KeyboardInterrupt), ask.suppress_mcp(config):
         assert json.loads(config.read_bytes()) == {"mcpServers": {}}
         with (
             pytest.raises(ValueError, match="An ask may still be running"),
-            ask.suppress_mcp(tmp_path),
+            ask.suppress_mcp(config),
         ):
             pytest.fail("concurrent ask must not replace the saved configuration")
         ask.interrupted(15, None)
@@ -3368,7 +3442,9 @@ def test_ask_does_not_launch_if_workdir_is_missing(tmp_path: Path) -> None:
     assert not Path(env["ASK_ARGV_LOG"]).exists()
 
 
-@pytest.mark.parametrize("harness", CLI_NAMES)
+# Devin writes its config into the real clone, so it is covered by
+# test_devin_worker_only_bundle_writes_the_clone_scope instead (#224).
+@pytest.mark.parametrize("harness", [name for name in CLI_NAMES if name != "devin"])
 def test_ask_worker_bundle_writes_bash_and_powershell_for_windows(
     tmp_path: Path,
     harness: str,
@@ -3499,3 +3575,128 @@ def test_ask_malformed_log_names_file_and_explicit_id_escape(tmp_path: Path, con
     result = execute_ask(script, env, "11111111-1111-1111-1111-111111111111")
     assert result.returncode == 0, result.stdout + result.stderr
     assert sessions.read_text() == contents
+
+
+def test_devin_version_is_the_word_after_its_name() -> None:
+    """#224: ``devin --version`` prints ``devin 3000.11.3 (9c803229faa4)``."""
+    output = "devin 3000.11.3 (9c803229faa4)"
+    assert RUN_COMMON.parse_harness_version("devin", output) == "3000.11.3"
+
+
+def test_devin_rejects_an_effort_it_has_no_flag_for() -> None:
+    with pytest.raises(ValueError, match="devin has no reasoning-effort flag"):
+        PREPARE_RUN.model_flags("devin", "swe-1.6-slow", "high")
+    assert PREPARE_RUN.model_flags("devin", "swe-1.6-slow", "") == ["--model", "swe-1.6-slow"]
+
+
+def test_devin_run_keeps_each_agents_server_in_its_own_local_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#224: no MCP-config flag, so each agent's ``.devin/`` holds its server."""
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness="devin",
+        bob_harness="devin",
+        charlie_harness="devin",
+        bob_model="swe-1.6-slow",
+    )
+    assert manifest["providers"]["bob"] == "unknown"
+    alice_scope = run_dir / "alice-runtime" / ".devin"
+    alice = json.loads((alice_scope / "mcp_config.local.json").read_text())
+    assert alice["mcpServers"]["robomate"]["args"][-3:] == ["mcp", "--role", "orchestrator"]
+    assert (alice_scope / "skills" / "alice-orchestrator" / "SKILL.md").exists()
+    for name in ("bob", "charlie"):
+        clone = Path(manifest["workspaces"][name]["path"])
+        scope = clone / ".devin"
+        server = json.loads((scope / "mcp_config.local.json").read_text())["mcpServers"]
+        assert set(server) == {"robomate"}
+        assert server["robomate"]["args"][-3:] == ["mcp", "--role", "worker"]
+        assert server["robomate"]["env"]["HUB_HARNESS"] == "devin"
+        assert server["robomate"]["env"]["HUB_HARNESS_VERSION"] == "3000.11.3"
+        assert server["robomate"]["env"]["AGENT_NAME"] == name
+        permissions = json.loads((scope / "config.local.json").read_text())
+        assert permissions == {"permissions": {"allow": ["mcp__robomate__*"]}}
+        assert manifest["configs"][name] == str(scope / "mcp_config.local.json")
+        exclude = (clone / ".git" / "info" / "exclude").read_text().splitlines()
+        assert exclude.count(".devin/mcp_config.local.json") == 1
+        assert exclude.count(".devin/config.local.json") == 1
+        status = subprocess.run(
+            ["git", "-C", str(clone), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
+        start = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text()
+        assert "worker-launcher.py" in start
+        assert "--permission-mode dangerous --respect-workspace-trust=false --export" in start
+        assert " -c " not in start and "--continue" not in start
+        prompt = (run_dir / f"{name}.prompt.md").read_text()
+        assert "Use a 100 second wait time" in prompt and "`devin -p`" in prompt
+    # A rerun appends no second exclude line.
+    PREPARE_RUN.prepare(
+        str(tmp_path / "origin"),
+        run_dir,
+        issue=42,
+        account="tester",
+        hub_repo=tmp_path / "target",
+        alice_harness="devin",
+        bob_harness="devin",
+        charlie_harness="devin",
+        bob_model="swe-1.6-slow",
+    )
+    clone = Path(manifest["workspaces"]["bob"]["path"])
+    exclude = (clone / ".git" / "info" / "exclude").read_text().splitlines()
+    assert exclude.count(".devin/mcp_config.local.json") == 1
+
+
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_devin_launch_and_resume_lines(tmp_path: Path, auto_start: bool) -> None:
+    run_dir = (tmp_path / "run").resolve()
+    workdir = run_dir / "bob"
+    prompt = run_dir / "bob.prompt.md"
+    config = workdir / ".devin"
+    lines = PREPARE_RUN.launch_lines(
+        "devin", workdir, config, prompt, workdir / ".git", "swe-1.6-slow", "", auto_start
+    )
+    command = lines[-1]
+    assert command.startswith("devin --model swe-1.6-slow")
+    if auto_start:
+        assert "--permission-mode dangerous --respect-workspace-trust=false -p" in command
+        assert f"Read {prompt} and follow the instructions in it" in command
+    else:
+        assert command == "devin --model swe-1.6-slow"
+    resume = PREPARE_RUN.devin_resume(
+        str(run_dir / "resume-bob.prompt.md"), ["--model", "swe-1.6-slow"], auto_start, "ID"
+    )
+    assert "--resume ID" in resume[0] and ("-p" in resume[0].split()) == auto_start
+
+
+def test_devin_worker_only_bundle_writes_the_clone_scope(tmp_path: Path) -> None:
+    clone = tmp_path / "bob"
+    subprocess.run(["git", "init", "-b", "main", str(clone)], check=True, capture_output=True)
+    out = tmp_path / "run"
+    bundle = PREPARE_RUN.render_worker_bundle(
+        "bob",
+        "devin",
+        "3000.11.3",
+        "unknown",
+        "swe-1.6-slow",
+        "",
+        "C:/private/token",
+        "http://172.26.115.68:8420",
+        PurePosixPath("/opt/robomate"),
+        PurePosixPath(out.as_posix()),
+        PurePosixPath(clone.as_posix()),
+        out,
+    )
+    assert bundle["config"] == f"{clone.as_posix()}/.devin/mcp_config.local.json"
+    server = json.loads((clone / ".devin/mcp_config.local.json").read_text())
+    assert server["mcpServers"]["robomate"]["env"]["ROBOMATE_TOKEN_FILE"] == "C:/private/token"
+    if os.name != "nt":
+        assert (clone / ".devin/mcp_config.local.json").stat().st_mode & 0o077 == 0
+    script = (out / "start-bob.sh").read_text(encoding="utf-8")
+    assert "worker-launcher.py" in script and "devin --model swe-1.6-slow" in script
+    resume = (out / "resume-bob.sh").read_text(encoding="utf-8")
+    assert "--recover" in resume

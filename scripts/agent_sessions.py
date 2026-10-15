@@ -11,6 +11,10 @@ def exact_id(harness: str, value: str) -> bool:
         )
     if harness == "opencode":
         return re.fullmatch(r"ses_[A-Za-z0-9]+", value) is not None
+    if harness == "devin":
+        # Documented examples are short names and hex prefixes (``brisk-otter``,
+        # ``abc12345``); the exact format awaits a live run (#224).
+        return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,127}", value) is not None
     return re.fullmatch(r'[^\s"]{6,128}', value) is not None and not value.startswith("-")
 
 

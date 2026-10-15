@@ -109,6 +109,7 @@ def test_zero_argument_preparation_captures_distinct_times_and_full_state(
         ("codex", CODEX_ID),
         ("opencode", "ses_ABC123"),
         ("antigravity", "conv-1234abcd"),
+        ("devin", "brisk-otter"),
     ],
 )
 @pytest.mark.parametrize("agent", ["alice", "bob", "charlie"])
@@ -469,7 +470,7 @@ def test_budget_stop_timestamp_is_never_used_as_process_exit(
     assert "unknown (not recorded)" in prompt
 
 
-@pytest.mark.parametrize("harness", ["codex", "antigravity"])
+@pytest.mark.parametrize("harness", ["codex", "antigravity", "devin"])
 def test_existing_home_without_mcp_configuration_refuses_recovery(
     recovery_args: argparse.Namespace,
     harness: str,
@@ -500,12 +501,16 @@ def test_windows_shell_selection_uses_git_bash_instead_of_wsl(
         RECOVERY.bash_executable(windows=True)
 
 
-def test_ask_backup_blocks_antigravity_recovery_before_hub_reads(
-    recovery_args: argparse.Namespace,
+@pytest.mark.parametrize(
+    "harness,config_file",
+    [("antigravity", ".gemini/config/mcp_config.json"), ("devin", "mcp_config.local.json")],
+)
+def test_ask_backup_blocks_recovery_before_hub_reads(
+    recovery_args: argparse.Namespace, harness: str, config_file: str
 ) -> None:
-    recovery_args.harness = "antigravity"
-    home = recovery_args.sessions.parent / "agy-home"
-    config = home / ".gemini/config/mcp_config.json"
+    recovery_args.harness = harness
+    home = recovery_args.sessions.parent / "config-home"
+    config = home / config_file
     config.parent.mkdir(parents=True)
     config.write_text('{"mcpServers": {}}')
     backup = config.with_name(config.name + ".ask-backup")
@@ -522,3 +527,19 @@ def test_ask_backup_blocks_antigravity_recovery_before_hub_reads(
     assert reader.calls == []
     assert backup.read_text() == original
     assert json.loads(config.read_text()) == {"mcpServers": {}}
+
+
+@pytest.mark.parametrize(
+    "value,exact",
+    [
+        ("brisk-otter", True),
+        ("abc12345", True),
+        ("-c", False),
+        ("--continue", False),
+        ("a b", False),
+        ("x", False),
+    ],
+)
+def test_devin_session_ids_are_names_never_flags(value: str, exact: bool) -> None:
+    """#224: documented IDs are short names or hex prefixes; never ``-c``."""
+    assert RECOVERY.exact_id("devin", value) is exact

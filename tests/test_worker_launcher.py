@@ -131,6 +131,7 @@ def test_stop_conditions_never_launch_a_successor(
         if harness == "claude-code":
             pytest.skip("Claude's conversation ID is chosen before launch")
         monkeypatch.setenv("FAKE_ID_LINE", "no conversation ID")
+        monkeypatch.delenv("FAKE_EXPORT_ID", raising=False)
         script += [wf()]
     extra = ["--prompt", str(run_dir / "alice.prompt.md"), "--predecessor-wait-s", "0"]
     if stop == "limit":
