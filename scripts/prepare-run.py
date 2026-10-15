@@ -1242,6 +1242,8 @@ def ask_lines(
             lines = claude_resume("", spelling(run_dir), "", flags, False, session, **options)
         return "\n".join([*prefix, *lines])
 
+    if git_bash and (run_dir.drive or os.name == "nt"):
+        python = git_bash_path(PureWindowsPath(python))
     words = [
         "&" if powershell else "exec",
         shell_word(python, powershell),

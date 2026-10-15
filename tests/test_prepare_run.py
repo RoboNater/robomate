@@ -3395,3 +3395,18 @@ def test_ask_worker_bundle_writes_bash_and_powershell_for_windows(
     assert "--powershell" in ps
     assert "C:/runs/remote questions/bob-sessions.jsonl" in bash
     assert "C:\\runs\\remote questions\\bob-sessions.jsonl" in ps
+
+
+def test_ask_git_bash_spells_windows_interpreter_path() -> None:
+    run_dir = PureWindowsPath("C:/runs/questions")
+    body = "\n".join(
+        PREPARE_RUN.ask_lines(
+            "bob",
+            "codex",
+            run_dir,
+            run_dir / "bob",
+            git_bash=True,
+            python="C:/Program Files/Python/python.exe",
+        )
+    )
+    assert "exec '/c/Program Files/Python/python.exe'" in body
