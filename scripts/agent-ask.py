@@ -57,15 +57,24 @@ def conversation(sessions: Path, agent: str, harness: str, supplied: str | None)
     return ids[-1]
 
 
+#: The run-local MCP file each harness without a disable flag reads, under ``--config``.
+SUPPRESSED_MCP = {
+    "antigravity": ".gemini/config/mcp_config.json",
+    # Devin's local scope in the agent's working directory (#224).
+    "devin": "mcp_config.local.json",
+}
+#: Display names for harnesses without a CLI fork option.
+NO_FORK = {"antigravity": "AntiGravity", "devin": "Devin CLI"}
+
+
 @contextmanager
-def suppress_mcp(home: Path) -> Iterator[None]:
-    """Temporarily suppress AntiGravity's run-home MCP, then restore exact bytes.
+def suppress_mcp(config: Path) -> Iterator[None]:
+    """Temporarily suppress a run-local MCP config file, then restore exact bytes.
 
     Operator decision, #221: keep the original HOME and conversation store.
     Exclusive backup creation prevents two asks from overwriting the saved config.
     A hard-kill backup is deliberately retained for explicit restoration.
     """
-    config = home / ".gemini/config/mcp_config.json"
     backup = config.with_name(config.name + ".ask-backup")
     try:
         fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -122,7 +131,8 @@ def main() -> int:
         command = args.shell_command
         if controls.fork:
             if not args.fork_command:
-                raise ValueError("AntiGravity has no CLI fork option; --fork is unavailable")
+                name = NO_FORK.get(args.harness, args.harness)
+                raise ValueError(f"{name} has no CLI fork option; --fork is unavailable")
             command = args.fork_command
         print(
             f"Ask {args.agent} ({args.harness}): conversation {selected}; "
@@ -140,7 +150,8 @@ def main() -> int:
             if shell is None:
                 raise OSError("Bash is unavailable")
             argv = [shell, "-c", command]
-        suppression = suppress_mcp(args.config) if args.harness == "antigravity" else nullcontext()
+        suppressed = SUPPRESSED_MCP.get(args.harness)
+        suppression = suppress_mcp(args.config / suppressed) if suppressed else nullcontext()
         signals = [signal.SIGINT, signal.SIGTERM]
         if hasattr(signal, "SIGHUP"):
             signals.append(signal.SIGHUP)

@@ -181,10 +181,12 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
             if args.harness == "codex"
             else config / ".gemini/config/mcp_config.json"
             if args.harness == "antigravity"
+            else config / "mcp_config.local.json"
+            if args.harness == "devin"
             else config
         )
         backup = config_file.with_name(config_file.name + ".ask-backup")
-        if args.harness == "antigravity" and backup.exists():
+        if args.harness in ("antigravity", "devin") and backup.exists():
             refuse(
                 "config",
                 f"An ask is running or left an unrestored MCP backup at {backup}. "

@@ -37,6 +37,7 @@ VERSION_COMMANDS = {
     "codex": "codex",
     "opencode": "opencode",
     "antigravity": "agy",
+    "devin": "devin",
     "gemini": "gemini",
 }
 
@@ -116,8 +117,8 @@ def resolve_provider(harness: str, model: str = "", provider: str | None = None)
     OpenCode) records the model's maker rather than the harness vendor or
     hosting route. Single-vendor harnesses (``claude-code``, ``codex``,
     ``gemini``) then fall back to :data:`PROVIDERS`, and multi-vendor harnesses
-    (``opencode``, ``antigravity``) fall back to ``unknown`` rather than
-    guessing.
+    (``opencode``, ``antigravity``, ``devin``) fall back to ``unknown`` rather
+    than guessing.
     """
     if provider:
         return provider
@@ -383,7 +384,12 @@ def parse_harness_version(harness: str, output: str) -> str:
     words = output.split()
     if not words:
         raise ValueError(f"{harness} reported an empty --version")
-    return words[-1] if harness == "codex" else words[0]
+    if harness == "codex":
+        return words[-1]
+    # ``devin 3000.11.3 (9c803229faa4)``: the version follows the program name.
+    if harness == "devin" and len(words) > 1 and words[0] == "devin":
+        return words[1]
+    return words[0]
 
 
 def probe_harness_version(harness: str) -> tuple[str, str]:
@@ -538,6 +544,69 @@ def render_antigravity_mcp(
         }
     )
     return template
+
+
+#: Devin CLI's local-scope files, beside the agent's working directory (#224).
+DEVIN_LOCAL_FILES = ("mcp_config.local.json", "config.local.json")
+
+
+def devin_config_dir[P: PurePath](workdir: P) -> P:
+    """The ``.devin`` directory a Devin agent started in ``workdir`` reads.
+
+    Devin CLI has no MCP-config flag, and on Windows its user scope
+    (``%APPDATA%\\devin``) cannot be redirected by the environment, so each
+    agent's server and permissions go in the local scope of its own working
+    directory. Devin finds that scope by walking up from its working
+    directory, stopping at a git root.
+    """
+    return workdir / ".devin"
+
+
+def render_devin_mcp(
+    env: dict[str, str], root: str | None = None, role: str = "worker"
+) -> dict[str, Any]:
+    """A Devin ``mcp_config.local.json`` running the robomate bridge for ``role``."""
+    directory = str(ROOT) if root is None else root
+    args = ["run", "--locked", "--project", directory, "robomate", "mcp", "--role", role]
+    return {"mcpServers": {"robomate": {"command": "uv", "args": args, "env": env}}}
+
+
+def render_devin_permissions() -> dict[str, Any]:
+    """A Devin ``config.local.json`` approving every robomate tool without a prompt.
+
+    Devin's default permission mode prompts before an MCP call. The start
+    scripts' ``--permission-mode dangerous`` approves everything in a
+    headless run; this rule keeps an interactive (``--no-auto-start``) agent
+    from prompting on each hub call.
+    """
+    return {"permissions": {"allow": ["mcp__robomate__*"]}}
+
+
+def write_devin_config(workdir: Path, mcp: dict[str, Any], write: Any = None) -> Path:
+    """Write ``workdir``'s Devin local scope and return the MCP config path.
+
+    A clone first gets both files in its ``info/exclude``, so ``git status``
+    stays empty and preparation can run again (#97). ``write(path, value)``
+    defaults to :func:`save`.
+    """
+    if (workdir / ".git").exists():
+        exclude = Path(run("git", "-C", workdir, "rev-parse", "--git-path", "info/exclude"))
+        if not exclude.is_absolute():
+            exclude = workdir / exclude
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        lines = text.splitlines()
+        missing = [f".devin/{name}" for name in DEVIN_LOCAL_FILES if f".devin/{name}" not in lines]
+        if missing:
+            prefix = "" if not text or text.endswith("\n") else "\n"
+            exclude.write_text(text + prefix + "\n".join(missing) + "\n", encoding="utf-8")
+    directory = devin_config_dir(workdir)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write = save if write is None else write
+    target = directory / DEVIN_LOCAL_FILES[0]
+    write(target, mcp)
+    write(directory / DEVIN_LOCAL_FILES[1], render_devin_permissions())
+    return target
 
 
 def render_worker_prompt(agent: str) -> str:

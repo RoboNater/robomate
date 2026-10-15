@@ -84,7 +84,8 @@ The PoC's design is in [`docs/poc-spec.md`](docs/poc-spec.md), its run evidence 
 - GitLab: the [feasibility study](docs/feasibility-and-impact-of-supporting-gitlab-centric-workflows.md)
   and the [investigation and prototype report](docs/gitlab-forge-support-investigation.md)
 - [Harness investigation](docs/harness-investigation-opencode-antigravity.md): OpenCode and
-  AntiGravity, for M3
+  AntiGravity, for M3; [Devin CLI](docs/harness-investigation-devin-cli.md), a prototype
+  pending a live run
 - [User guide](docs/user-guide.md): running a workflow today
 - [PoC spec](docs/poc-spec.md): the original design, frozen
 - [PoC README](docs/poc-readme.md): the PoC's README, as it stood at the move to robomate
