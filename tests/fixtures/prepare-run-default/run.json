@@ -21,6 +21,7 @@
   "launch": {
     "agents": {
       "alice": {
+        "ask_script": "$RUN_DIR/ask-alice.sh",
         "effort": "",
         "harness": "claude-code",
         "max_resumes": null,
@@ -35,6 +36,7 @@
         "sessions": "$RUN_DIR/alice-sessions.jsonl"
       },
       "bob": {
+        "ask_script": "$RUN_DIR/ask-bob.sh",
         "effort": "",
         "harness": "claude-code",
         "max_resumes": null,
@@ -49,6 +51,7 @@
         "sessions": "$RUN_DIR/bob-sessions.jsonl"
       },
       "charlie": {
+        "ask_script": "$RUN_DIR/ask-charlie.sh",
         "effort": "",
         "harness": "codex",
         "max_resumes": null,

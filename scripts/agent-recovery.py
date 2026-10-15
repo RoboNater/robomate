@@ -13,6 +13,7 @@ from pathlib import Path
 
 from agent_launcher import HARNESSES, HubReader, Stop, log_session, say
 from agent_recovery import add_options, agent_lock, bash_executable, prepare, split_controls
+from agent_sessions import ask_hint, ask_hint_from_args
 
 
 def main() -> int:
@@ -27,8 +28,14 @@ def main() -> int:
     parser.add_argument("--resume-session")
     parser.add_argument("--powershell", action="store_true")
     parser.add_argument("--shell-command", required=True)
-    argv, controls = split_controls(None)
-    args = parser.parse_args(argv)
+    try:
+        argv, controls = split_controls(None)
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        hint = ask_hint_from_args(sys.argv[1:])
+        if exc.code and hint:
+            say(hint)
+        raise
     for key, value in controls.items():
         setattr(args, key, value)
     try:
@@ -55,12 +62,14 @@ def main() -> int:
             return code
     except Stop as exc:
         say(str(exc))
+        say(ask_hint(args.sessions, args.agent))
         return exc.code
     except (OSError, ValueError, urllib.error.URLError) as exc:
         say(
             f"Recovery unavailable: {exc}. "
             "Restore the original run files/hub reachability and retry."
         )
+        say(ask_hint(args.sessions, args.agent))
         return 3
 
 

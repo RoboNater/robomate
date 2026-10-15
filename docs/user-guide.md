@@ -404,6 +404,61 @@ included in the run's report once its workflow has been initialized.
 
 ---
 
+## Ask an agent after the run
+
+Use the generated `ask-alice.sh`, `ask-bob.sh`, or `ask-charlie.sh` to reopen
+that agent's last conversation interactively, including after the hub is stopped:
+
+```bash
+"$RUN_DIR/ask-charlie.sh"
+"$RUN_DIR/ask-charlie.sh" 019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8 --fork
+```
+
+On native Windows use `& "$RUN_DIR/ask-charlie.ps1"` with the same arguments.
+Worker-only bundles include the worker's ask script on its own host. Windows
+preparation also writes the Bash version for Git Bash. These scripts accompany
+newly prepared runs; old run directories do not acquire them automatically.
+
+With no arguments, the script reads `<agent>-sessions.jsonl`, uses the latest
+recorded conversation ID, and prints other recorded IDs. An explicit ID as the
+first argument overrides discovery, including when an interactive run has no
+session log. IDs use the same exact syntax as recovery; session names, `--last`,
+and `--continue` are rejected. **Do not use Claude Code's `-c` to resume an ID**:
+it continues the most recent conversation in that directory and ignores the
+intended ID. The ask script uses `--resume ID` instead.
+
+Before launching, the script prints the agent, harness, conversation ID, working
+directory, and that hub tools are unavailable. It restores the run's working
+directory, temporary directory, isolated harness home/config, model and effort.
+It supplies no prompt, unattended permission flags, launcher, recovery guard, or
+hub connection. Ask questions at the harness's interactive prompt. Use
+`resume-<agent>` to continue hub work; use `ask-<agent>` after the run and after
+the original agent and launcher have exited.
+
+The script never appends to `<agent>-sessions.jsonl`. By default it resumes the
+original conversation, so questions become part of that harness transcript.
+Forking is opt-in to keep the default a direct reopening and behave consistently
+with AntiGravity, which has no CLI fork option. **Use `--fork` when preserving
+the original transcript matters**: Claude Code uses `--fork-session`, Codex uses
+`codex fork ID`, and OpenCode uses `--fork`. AntiGravity rejects `--fork` before
+launching; retain a transcript copy before asking there if needed.
+
+Hub MCP suppression is specific to the harness:
+
+| Harness | Ask configuration |
+|---|---|
+| Claude Code | `--strict-mcp-config` without `--mcp-config`. |
+| Codex | Same `CODEX_HOME`, with `-c mcp_servers.robomate.enabled=false` and interactive approvals. See the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). |
+| OpenCode | Same `OPENCODE_CONFIG`, with an [inline override](https://docs.opencode.ai/docs/config/#precedence-order) disabling `mcp.robomate` and requesting permissions. Effort is preserved as the build agent's `variant`, since the interactive CLI has no `--variant` flag. |
+| AntiGravity | Same `HOME`/`USERPROFILE`; temporarily replaces the run home's `.gemini/config/mcp_config.json` with an empty server map and restores the original bytes on exit, including harness errors and ordinary interrupts. |
+
+For AntiGravity, do not start recovery or another agent using that home while
+asking. A private `mcp_config.json.ask-backup` holds the original MCP config.
+A hard kill or power loss cannot run cleanup: after confirming the ask process
+has exited, restore that backup over `mcp_config.json` before using the home
+again. A second ask refuses while the backup exists. The script never changes
+the operator's global MCP configuration.
+
 ## Manual workspace bootstrap
 
 Each worker needs its own isolated, non-shallow git clone of your target repository.

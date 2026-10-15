@@ -10,7 +10,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log_session, say
+from agent_sessions import exact_id as exact_id
 
 
 @contextmanager
@@ -152,16 +152,6 @@ def records(path: Path, agent: str, harness: str) -> list[dict[str, Any]]:
             )
         rows.append(row)
     return rows
-
-
-def exact_id(harness: str, value: str) -> bool:
-    if harness in ("claude-code", "codex"):
-        return (
-            re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value) is not None
-        )
-    if harness == "opencode":
-        return re.fullmatch(r"ses_[A-Za-z0-9]+", value) is not None
-    return re.fullmatch(r'[^\s"]{6,128}', value) is not None and not value.startswith("-")
 
 
 def pin(rows: list[dict[str, Any]], key: str, supplied: str | None) -> str:
