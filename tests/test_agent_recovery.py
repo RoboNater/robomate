@@ -498,3 +498,27 @@ def test_windows_shell_selection_uses_git_bash_instead_of_wsl(
     bash.unlink()
     with pytest.raises(OSError, match="Git Bash is unavailable"):
         RECOVERY.bash_executable(windows=True)
+
+
+def test_ask_backup_blocks_antigravity_recovery_before_hub_reads(
+    recovery_args: argparse.Namespace,
+) -> None:
+    recovery_args.harness = "antigravity"
+    home = recovery_args.sessions.parent / "agy-home"
+    config = home / ".gemini/config/mcp_config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"mcpServers": {}}')
+    backup = config.with_name(config.name + ".ask-backup")
+    original = '{"mcpServers": {"robomate": {"command": "must-not-run"}}}'
+    backup.write_text(original)
+    recovery_args.recovery_config = home
+    recovery_args.force = True
+    reader = RecoveryReader()
+    with pytest.raises(LAUNCHER.Stop) as refused:
+        RECOVERY.prepare(recovery_args, reader, "bob")
+    assert refused.value.reason == "config"
+    assert str(backup) in str(refused.value)
+    assert "restore" in str(refused.value)
+    assert reader.calls == []
+    assert backup.read_text() == original
+    assert json.loads(config.read_text()) == {"mcpServers": {}}

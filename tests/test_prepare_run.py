@@ -9,9 +9,11 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -3080,7 +3082,7 @@ def test_ask_scripts_generated_for_every_local_agent(
         assert "agent-ask.py" in path.read_text()
 
 
-ASK_FAKE = """import json, os, sys
+ASK_FAKE = """import json, os, sys, time
 from pathlib import Path
 keys = ("CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT",
         "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP")
@@ -3091,6 +3093,7 @@ with open(os.environ["ASK_ARGV_LOG"], "a", encoding="utf-8") as f:
         mcp = json.loads(config.read_text())
     f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "mcp": mcp,
                         "env": {k: os.environ.get(k) for k in keys}}) + "\\n")
+time.sleep(float(os.environ.get("ASK_SLEEP_S", "0")))
 sys.exit(int(os.environ.get("ASK_EXIT_CODE", "0")))
 """
 
@@ -3410,3 +3413,80 @@ def test_ask_git_bash_spells_windows_interpreter_path() -> None:
         )
     )
     assert "exec '/c/Program Files/Python/python.exe'" in body
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX signal delivery; Windows console close is documented"
+)
+@pytest.mark.parametrize("signal_name", ["SIGINT", "SIGTERM", "SIGHUP"])
+def test_ask_antigravity_restores_mcp_after_process_signal(
+    tmp_path: Path, signal_name: str
+) -> None:
+    env = ask_fake(tmp_path, "antigravity") | {"ASK_SLEEP_S": "5"}
+    run_dir = tmp_path / "run"
+    workdir = run_dir / "bob"
+    workdir.mkdir(parents=True)
+    PREPARE_RUN.render_worker_bundle(
+        "bob",
+        "antigravity",
+        "1",
+        "provider",
+        "model-x",
+        "",
+        "absent-token",
+        "http://127.0.0.1:1",
+        ROOT,
+        run_dir,
+        workdir,
+        run_dir,
+    )
+    config = run_dir / "configs/bob-agy/.gemini/config/mcp_config.json"
+    original = config.read_bytes()
+    script = run_dir / "ask-bob.sh"
+    child = subprocess.Popen(
+        ["bash", str(script), "11111111-1111-1111-1111-111111111111"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not Path(env["ASK_ARGV_LOG"]).exists() and time.monotonic() < deadline:
+            assert child.poll() is None
+            time.sleep(0.02)
+        assert Path(env["ASK_ARGV_LOG"]).exists(), "fake harness never started"
+        assert json.loads(config.read_bytes()) == {"mcpServers": {}}
+        child.send_signal(getattr(signal, signal_name))
+        stdout, stderr = child.communicate(timeout=10)
+        assert child.returncode == 130, stdout + stderr
+        assert config.read_bytes() == original
+        assert not config.with_name(config.name + ".ask-backup").exists()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("contents", ['{"agent": "bob', '{"agent": "other"}'])
+def test_ask_malformed_log_names_file_and_explicit_id_escape(tmp_path: Path, contents: str) -> None:
+    env = ask_fake(tmp_path, "claude-code")
+    sessions = tmp_path / "bob-sessions.jsonl"
+    sessions.write_text(contents)
+    script = tmp_path / f"ask-bob.{SCRIPT_SUFFIX}"
+    PREPARE_RUN.write_script(
+        script,
+        PREPARE_RUN.start_script(
+            PREPARE_RUN.ask_lines(
+                "bob", "claude-code", tmp_path, tmp_path, powershell=os.name == "nt"
+            ),
+            os.name == "nt",
+        ),
+    )
+    result = execute_ask(script, env)
+    assert result.returncode == 2
+    assert str(sessions) in result.stderr and "explicit ID" in result.stderr
+    assert "Unterminated string" not in result.stderr
+    result = execute_ask(script, env, "11111111-1111-1111-1111-111111111111")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sessions.read_text() == contents

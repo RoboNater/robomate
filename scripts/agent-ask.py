@@ -30,9 +30,17 @@ def conversation(sessions: Path, agent: str, harness: str, supplied: str | None)
         lines = []
     ids: list[str] = []
     for line in lines:
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Session log {sessions} is malformed; supply an explicit ID to bypass discovery"
+            ) from exc
         if not isinstance(row, dict) or row.get("agent") != agent or row.get("harness") != harness:
-            raise ValueError(f"Session log {sessions} is malformed or belongs to another agent")
+            raise ValueError(
+                f"Session log {sessions} is malformed or belongs to another agent; "
+                "supply an explicit ID to bypass discovery"
+            )
         value = row.get("conversation_id")
         if value is None:
             continue
@@ -87,7 +95,7 @@ def suppress_mcp(home: Path) -> Iterator[None]:
 
 
 def interrupted(signum: int, frame: object) -> None:
-    """Unwind the config cleanup on SIGTERM as well as ordinary Ctrl-C."""
+    """Unwind config cleanup on termination, terminal hangup, and ordinary Ctrl-C."""
     raise KeyboardInterrupt
 
 
@@ -133,14 +141,18 @@ def main() -> int:
                 raise OSError("Bash is unavailable")
             argv = [shell, "-c", command]
         suppression = suppress_mcp(args.config) if args.harness == "antigravity" else nullcontext()
-        previous = signal.signal(signal.SIGTERM, interrupted)
+        signals = [signal.SIGTERM]
+        if hasattr(signal, "SIGHUP"):
+            signals.append(signal.SIGHUP)
+        previous = {sig: signal.signal(sig, interrupted) for sig in signals}
         try:
             with suppression:
                 return subprocess.call(argv, env=env)
         except KeyboardInterrupt:
             return 130
         finally:
-            signal.signal(signal.SIGTERM, previous)
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
     except (OSError, ValueError) as exc:
         print(f"Cannot ask {args.agent}: {exc}", file=sys.stderr)
         return 2

@@ -183,6 +183,13 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
             if args.harness == "antigravity"
             else config
         )
+        backup = config_file.with_name(config_file.name + ".ask-backup")
+        if args.harness == "antigravity" and backup.exists():
+            refuse(
+                "config",
+                f"An ask is running or left an unrestored MCP backup at {backup}. "
+                f"After that ask exits, restore the backup to {config_file} before recovery.",
+            )
         if not config.exists() or not config_file.is_file():
             refuse(
                 "config",

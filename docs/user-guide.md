@@ -454,9 +454,12 @@ Hub MCP suppression is specific to the harness:
 
 For AntiGravity, do not start recovery or another agent using that home while
 asking. A private `mcp_config.json.ask-backup` holds the original MCP config.
-A hard kill or power loss cannot run cleanup: after confirming the ask process
-has exited, restore that backup over `mcp_config.json` before using the home
-again. A second ask refuses while the backup exists. The script never changes
+Ctrl-C, SIGTERM, and POSIX SIGHUP (including terminal/SSH hangup) run cleanup.
+A hard kill, power loss, or native Windows console-window close
+(`CTRL_CLOSE_EVENT`, which this helper does not handle) cannot run cleanup:
+after confirming the ask process has exited, restore that backup over
+`mcp_config.json` before using the home again. Both another ask and guarded
+recovery refuse while the backup exists. The script never changes
 the operator's global MCP configuration.
 
 ## Manual workspace bootstrap
