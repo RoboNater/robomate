@@ -141,7 +141,7 @@ def main() -> int:
                 raise OSError("Bash is unavailable")
             argv = [shell, "-c", command]
         suppression = suppress_mcp(args.config) if args.harness == "antigravity" else nullcontext()
-        signals = [signal.SIGTERM]
+        signals = [signal.SIGINT, signal.SIGTERM]
         if hasattr(signal, "SIGHUP"):
             signals.append(signal.SIGHUP)
         previous = {sig: signal.signal(sig, interrupted) for sig in signals}

@@ -3444,7 +3444,16 @@ def test_ask_antigravity_restores_mcp_after_process_signal(
     original = config.read_bytes()
     script = run_dir / "ask-bob.sh"
     child = subprocess.Popen(
-        ["bash", str(script), "11111111-1111-1111-1111-111111111111"],
+        # A detached/nohup parent can ignore these signals. The helper must
+        # install its own handlers rather than depend on inherited defaults.
+        [
+            "bash",
+            "-c",
+            'trap "" INT HUP; exec bash "$@"',
+            "ask-test",
+            str(script),
+            "11111111-1111-1111-1111-111111111111",
+        ],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
