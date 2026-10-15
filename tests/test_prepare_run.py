@@ -3092,7 +3092,7 @@ def test_ask_rendering(harness: str, powershell: bool, worker_only: bool) -> Non
         assert '"enabled": false' in body and '"variant": "high"' in body
         assert "--session" in body and "--fork" in body and "--auto" not in body
     elif harness == "devin":
-        # agent-ask.py empties the local-scope server; Devin has no fork option.
+        # agent-ask.py disables the local-scope server; Devin has no fork option.
         assert "devin --model model-x --resume" in body and ".devin" in body
         assert "--fork-command" not in body and "--export" not in body
     else:
@@ -3263,7 +3263,8 @@ def test_ask_executes_without_hub_and_preserves_run_log(
             assert Path(run["env"]["USERPROFILE"]) == config
             assert run["mcp"] == {"mcpServers": {}}
         elif harness == "devin":
-            assert run["mcp"] == {"mcpServers": {}}
+            # A disabled entry, not an empty map: Devin merges scopes (#224 r1-1).
+            assert run["mcp"]["mcpServers"]["robomate"]["disabled"] is True
     if suppressed:
         assert mcp.read_bytes() == original_mcp
         result = execute_ask(script, env | {"ASK_EXIT_CODE": "7"})
@@ -3346,6 +3347,36 @@ def test_ask_hint_ends_every_resume_refusal(
     assert str(run_dir / "ask-bob.sh") in last
     assert last.endswith("(.ps1 on Windows); it doesn't need the hub.")
     assert not Path(env["ASK_ARGV_LOG"]).exists()
+
+
+def test_ask_devin_masks_an_inherited_robomate_server(tmp_path: Path) -> None:
+    """#224 r1-1: Devin merges local, project and user scope by server name.
+
+    An empty local map left a project- or user-scope ``robomate`` live (shown
+    with ``devin mcp get robomate`` on 3000.11.3); a disabled local entry of
+    the same name masks it, and the original bytes come back afterwards.
+    """
+    spec = importlib.util.spec_from_file_location("agent_ask", ROOT / "scripts/agent-ask.py")
+    assert spec and spec.loader
+    ask = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ask)
+    scope = tmp_path / ".devin"
+    scope.mkdir()
+    inherited = {"robomate": {"command": "another-hub-bridge", "args": []}}
+    (scope / "mcp_config.json").write_text(json.dumps({"mcpServers": inherited}))
+    local = scope / "mcp_config.local.json"
+    original = b'{"mcpServers": {"robomate": {"command": "uv", "env": {"A": "b"}}}}\n'
+    local.write_bytes(original)
+    name, replacement = ask.SUPPRESSED_MCP["devin"]
+    assert name == local.name
+    with ask.suppress_mcp(local, replacement):
+        servers = json.loads(local.read_text())["mcpServers"]
+        # Devin resolves a server name from the most specific scope that has it.
+        effective = inherited | servers
+        assert effective["robomate"]["disabled"] is True
+        assert effective["robomate"]["command"] != "another-hub-bridge"
+    assert local.read_bytes() == original
+    assert not local.with_name(local.name + ".ask-backup").exists()
 
 
 def test_ask_antigravity_restores_mcp_on_interrupt_and_refuses_concurrent_swap(

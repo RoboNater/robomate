@@ -256,7 +256,7 @@ spelling was checked to parse with `devin <flags> --version` on 3000.11.3.
 | `exact_id` | `[A-Za-z0-9][A-Za-z0-9._-]{2,127}`, matching the documented `brisk-otter` and `abc12345` forms and refusing `-c`. |
 | Recovery config check | `<workdir>/.devin/mcp_config.local.json` must exist. |
 | Interactive (`--no-auto-start`) | `devin [--model M]`; the hub tools are allowed by `config.local.json`, everything else keeps Devin's own prompts. |
-| Ask (`ask-<agent>`, #221) | `devin [--model M] --resume <id>` from the same working directory, with `agent-ask.py` swapping `.devin/mcp_config.local.json` for an empty server map and restoring it on exit, as for AntiGravity. No `--fork` (none documented). |
+| Ask (`ask-<agent>`, #221) | `devin [--model M] --resume <id>` from the same working directory, with `agent-ask.py` swapping `.devin/mcp_config.local.json` for a disabled `robomate` entry and restoring its exact bytes on exit. Devin merges scopes by server name, so an empty local map would leave a project- or user-scope `robomate` live; `devin mcp get robomate` showed the disabled local entry masking a project one (PR #234 r1-1). No `--fork` (none documented). |
 | Hold limit | Devin prompts say "Use a 100 second wait time for all hub waits", as for Claude Code, until §3 is measured. |
 | Provider | `devin` is not in `PROVIDERS`; `swe-1.6-slow` resolves to `unknown` (§7). |
 
