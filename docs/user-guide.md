@@ -440,8 +440,9 @@ original conversation, so questions become part of that harness transcript.
 Forking is opt-in to keep the default a direct reopening and behave consistently
 with AntiGravity, which has no CLI fork option. **Use `--fork` when preserving
 the original transcript matters**: Claude Code uses `--fork-session`, Codex uses
-`codex fork ID`, and OpenCode uses `--fork`. AntiGravity rejects `--fork` before
-launching; retain a transcript copy before asking there if needed.
+`codex fork ID`, and OpenCode uses `--fork`. AntiGravity and Devin CLI reject
+`--fork` before launching; retain a transcript copy before asking there if
+needed.
 
 Hub MCP suppression is specific to the harness:
 
@@ -451,9 +452,12 @@ Hub MCP suppression is specific to the harness:
 | Codex | Same `CODEX_HOME`, with `-c mcp_servers.robomate.enabled=false` and interactive approvals. See the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). |
 | OpenCode | Same `OPENCODE_CONFIG`, with an [inline override](https://docs.opencode.ai/docs/config/#precedence-order) disabling `mcp.robomate` and requesting permissions. Effort is preserved as the build agent's `variant`, since the interactive CLI has no `--variant` flag. |
 | AntiGravity | Same `HOME`/`USERPROFILE`; temporarily replaces the run home's `.gemini/config/mcp_config.json` with an empty server map and restores the original bytes on exit, including harness errors and ordinary interrupts. |
+| Devin CLI (prototype, #224) | Same working directory, `devin --resume ID` without `--permission-mode`; temporarily replaces the agent's `.devin/mcp_config.local.json` with an empty server map, restored as for AntiGravity. |
 
-For AntiGravity, do not start recovery or another agent using that home while
-asking. A private `mcp_config.json.ask-backup` holds the original MCP config.
+For AntiGravity and Devin CLI, do not start recovery or another agent using
+that home or working directory while asking. A private
+`mcp_config.json.ask-backup` (`mcp_config.local.json.ask-backup` for Devin)
+holds the original MCP config.
 Ctrl-C, SIGTERM, and POSIX SIGHUP (including terminal/SSH hangup) run cleanup.
 A hard kill, power loss, or native Windows console-window close
 (`CTRL_CLOSE_EVENT`, which this helper does not handle) cannot run cleanup:
