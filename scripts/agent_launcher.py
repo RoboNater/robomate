@@ -23,6 +23,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
+from agent_sessions import ask_hint, ask_hint_from_args
+
 DEFAULT_MAX_RESUMES: int | None = None
 DEFAULT_RESUME_DELAY_S = 5.0
 DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
@@ -681,7 +683,14 @@ def main(
     launcher_type: type[Launcher] = Launcher,
     worker: bool = False,
 ) -> int:
-    args = parse_args(argv, worker=worker)
+    try:
+        args = parse_args(argv, worker=worker)
+    except SystemExit as exc:
+        words = sys.argv[1:] if argv is None else argv
+        hint = ask_hint_from_args(words)
+        if exc.code and "--recover" in words and hint:
+            say(hint)
+        raise
     launcher = launcher_type(args, reader)
     previous = signal.signal(signal.SIGTERM, launcher.interrupt)
     try:
@@ -702,12 +711,16 @@ def main(
         return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
     except Stop as stop:
         say(str(stop))
+        if args.recover:
+            say(ask_hint(args.sessions, launcher.agent))
         return stop.code
     except (OSError, ValueError, urllib.error.URLError) as exc:
         say(
             f"Recovery/launch unavailable: {exc}. Restore the original run files and hub "
             "reachability, then retry the resume script; do not replay kickoff."
         )
+        if args.recover:
+            say(ask_hint(args.sessions, launcher.agent))
         return EXIT_HUB_UNREADABLE
     finally:
         launcher.stop_child(wait=True)
@@ -720,4 +733,6 @@ def _stopped(launcher: Launcher, stop: Stop) -> int:
         say("interrupted; stopped the harness this launcher started and launched nothing more")
     else:
         say(str(stop))
+    if launcher.args.recover:
+        say(ask_hint(launcher.args.sessions, launcher.agent))
     return stop.code

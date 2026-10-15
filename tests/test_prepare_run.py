@@ -9,9 +9,11 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -3014,3 +3016,486 @@ def test_supervised_local_windows_paths_keep_native_spelling(harness: str) -> No
     assert f"$env:TEMP = {PREPARE_RUN.shell_word(str(temp), powershell=True)}" in text
     assert f"$env:TMP = {PREPARE_RUN.shell_word(str(temp), powershell=True)}" in text
     assert "C:/Users/Bob" not in text
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+@pytest.mark.parametrize("powershell", [False, True])
+@pytest.mark.parametrize("worker_only", [False, True])
+def test_ask_rendering(harness: str, powershell: bool, worker_only: bool) -> None:
+    """All four adapters keep interactive forms across local and remote shells."""
+    run = (
+        PureWindowsPath("C:/runs/questions with space") if powershell else PurePosixPath("/runs/q")
+    )
+    body = "\n".join(
+        PREPARE_RUN.ask_lines(
+            "bob",
+            harness,
+            run,
+            run / "bob",
+            "model-x",
+            "high",
+            powershell=powershell,
+            git_bash=worker_only and not powershell,
+        )
+    )
+    assert "agent-ask.py" in body
+    assert "bob-sessions.jsonl" in body
+    assert "model-x" in body and "high" in body
+    for absent in (
+        "agent-recovery.py",
+        "launcher.py",
+        "--permission-mode",
+        "--approve-for-me",
+        "--dangerously-skip-permissions",
+        ".prompt.md",
+        "--mcp-config",
+    ):
+        assert absent not in body
+    assert "TEMP" in body if powershell else "TMPDIR" in body
+    if harness == "claude-code":
+        assert "--strict-mcp-config" in body and "--resume" in body and "--fork-session" in body
+    elif harness == "codex":
+        assert "codex resume" in body and "codex fork" in body
+        assert "mcp_servers.robomate.enabled=false" in body and "CODEX_HOME" in body
+    elif harness == "opencode":
+        assert "OPENCODE_CONFIG" in body and "OPENCODE_CONFIG_CONTENT" in body
+        assert '"enabled": false' in body and '"variant": "high"' in body
+        assert "--session" in body and "--fork" in body and "--auto" not in body
+    else:
+        assert "USERPROFILE" in body and "HOME" in body and "--conversation" in body
+        assert "--fork-command" not in body
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+def test_ask_scripts_generated_for_every_local_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        **{f"{agent}_harness": harness for agent in ("alice", "bob", "charlie")},
+    )
+    for agent in ("alice", "bob", "charlie"):
+        path = run_dir / f"ask-{agent}.{SCRIPT_SUFFIX}"
+        assert path.is_file()
+        assert manifest["launch"]["agents"][agent]["ask_script"] == str(path)
+        assert "agent-ask.py" in path.read_text()
+
+
+ASK_FAKE = """import json, os, sys, time
+from pathlib import Path
+keys = ("CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT",
+        "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP")
+with open(os.environ["ASK_ARGV_LOG"], "a", encoding="utf-8") as f:
+    config = Path(os.environ.get("HOME", ".")) / ".gemini/config/mcp_config.json"
+    mcp = None
+    if config.is_file() and "--conversation" in sys.argv:
+        mcp = json.loads(config.read_text())
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "mcp": mcp,
+                        "env": {k: os.environ.get(k) for k in keys}}) + "\\n")
+time.sleep(float(os.environ.get("ASK_SLEEP_S", "0")))
+sys.exit(int(os.environ.get("ASK_EXIT_CODE", "0")))
+"""
+
+
+def ask_fake(tmp_path: Path, harness: str) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "fake.py"
+    fake.write_text(ASK_FAKE)
+    name = CLI_NAMES[harness]
+    if os.name == "nt":
+        (bin_dir / f"{name}.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
+    else:
+        cli = bin_dir / name
+        cli.write_text(f"#!{sys.executable}\n{ASK_FAKE}")
+        cli.chmod(0o700)
+    return os.environ | {
+        "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+        "ASK_ARGV_LOG": str(tmp_path / "asked.jsonl"),
+        "ROBOMATE_HUB_URL": "http://127.0.0.1:1",
+        "ROBOMATE_TOKEN_FILE": str(tmp_path / "nonexistent-token"),
+    }
+
+
+def execute_ask(script: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    if script.suffix == ".ps1":
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        assert shell
+        command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+    else:
+        command = ["bash", str(script)]
+    return subprocess.run(command + list(args), env=env, capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+@pytest.mark.parametrize("worker_only", [False, True])
+def test_ask_executes_without_hub_and_preserves_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, worker_only: bool
+) -> None:
+    env = ask_fake(tmp_path, harness)
+    if worker_only:
+        run_dir = tmp_path / "remote run"
+        run_dir.mkdir()
+        workdir = run_dir / "bob"
+        workdir.mkdir()
+        bundle = PREPARE_RUN.render_worker_bundle(
+            "bob",
+            harness,
+            "1.2",
+            "provider",
+            "model-x",
+            "",
+            "absent-token",
+            "http://127.0.0.1:1",
+            ROOT,
+            run_dir,
+            workdir,
+            run_dir,
+            effort="high",
+        )
+        script = run_dir / ("ask-bob.ps1" if os.name == "nt" else "ask-bob.sh")
+        assert bundle["ask_script"] == (run_dir / "ask-bob.sh").as_posix()
+    else:
+        run_dir, _ = prepare(
+            tmp_path, monkeypatch, bob_harness=harness, bob_model="model-x", bob_effort="high"
+        )
+        workdir = run_dir / "bob"
+        script = run_dir / f"ask-bob.{SCRIPT_SUFFIX}"
+    config = Path(PREPARE_RUN.launch_config_path(harness, run_dir / "configs", "bob"))
+    mcp = config / ".gemini/config/mcp_config.json"
+    original_mcp = mcp.read_bytes() if harness == "antigravity" else None
+    ids = (
+        ["ses_old123", "ses_new456"]
+        if harness == "opencode"
+        else ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"]
+    )
+    sessions = run_dir / "bob-sessions.jsonl"
+    before = "".join(
+        json.dumps({"agent": "bob", "harness": harness, "conversation_id": id_}) + "\n"
+        for id_ in ids
+    )
+    sessions.write_text(before)
+    result = execute_ask(script, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ids[0] in result.stdout and ids[-1] in result.stdout
+    assert "hub tools are unavailable" in result.stdout and str(workdir) in result.stdout
+    result = execute_ask(script, env, ids[0])
+    assert result.returncode == 0, result.stdout + result.stderr
+    result = execute_ask(script, env, ids[0], "--fork")
+    assert (result.returncode == 2) if harness == "antigravity" else (result.returncode == 0)
+    if harness == "antigravity":
+        assert "--fork is unavailable" in result.stderr
+    result = execute_ask(script, env, "--last")
+    assert result.returncode != 0
+    result = execute_ask(script, env, "bad id")
+    assert result.returncode == 2 and "Invalid conversation ID" in result.stderr
+    assert sessions.read_text() == before
+    recorded = [json.loads(line) for line in Path(env["ASK_ARGV_LOG"]).read_text().splitlines()]
+    assert len(recorded) == (2 if harness == "antigravity" else 3)
+    assert ids[1] in recorded[0]["argv"] and ids[0] in recorded[1]["argv"]
+    for run in recorded:
+        assert Path(run["cwd"]).resolve() == workdir.resolve()
+        assert "model-x" in run["argv"]
+        assert Path(run["env"]["TEMP" if os.name == "nt" else "TMPDIR"]) == run_dir / "tmp/bob"
+        for absent in (
+            "-p",
+            "exec",
+            "run",
+            "--auto",
+            "--permission-mode",
+            "--approve-for-me",
+            "--dangerously-skip-permissions",
+            "--mcp-config",
+        ):
+            assert absent not in run["argv"]
+        if harness == "codex":
+            assert Path(run["env"]["CODEX_HOME"]) == config
+            assert "mcp_servers.robomate.enabled=false" in run["argv"]
+        elif harness == "opencode":
+            assert Path(run["env"]["OPENCODE_CONFIG"]) == config
+            inline = json.loads(run["env"]["OPENCODE_CONFIG_CONTENT"])
+            assert inline["mcp"]["robomate"]["enabled"] is False
+            assert inline["agent"]["build"]["variant"] == "high"
+        elif harness == "antigravity":
+            assert Path(run["env"]["HOME"]) == config
+            assert Path(run["env"]["USERPROFILE"]) == config
+            assert run["mcp"] == {"mcpServers": {}}
+    if harness == "antigravity":
+        assert mcp.read_bytes() == original_mcp
+        result = execute_ask(script, env | {"ASK_EXIT_CODE": "7"})
+        assert result.returncode == 7
+        assert mcp.read_bytes() == original_mcp
+        assert not mcp.with_name(mcp.name + ".ask-backup").exists()
+    if harness != "antigravity":
+        assert (
+            "fork"
+            if harness == "codex"
+            else "--fork-session"
+            if harness == "claude-code"
+            else "--fork"
+        ) in recorded[-1]["argv"]
+
+
+@pytest.mark.parametrize("auto_start", [False, True])
+@pytest.mark.parametrize("worker_only", [False, True])
+@pytest.mark.parametrize("reason", ["identity", "conversation", "hub_unreadable", "arguments"])
+def test_ask_hint_ends_every_resume_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auto_start: bool,
+    worker_only: bool,
+    reason: str,
+) -> None:
+    if worker_only and os.name == "nt":
+        pytest.skip("worker resume is a Git Bash script; tested by Bash on POSIX")
+    env = ask_fake(tmp_path, "claude-code")
+    if worker_only:
+        run_dir = tmp_path / "worker"
+        run_dir.mkdir()
+        workdir = run_dir / "bob"
+        workdir.mkdir()
+        PREPARE_RUN.render_worker_bundle(
+            "bob",
+            "claude-code",
+            "1",
+            "anthropic",
+            "",
+            "",
+            str(tmp_path / "token"),
+            "http://127.0.0.1:1",
+            ROOT,
+            run_dir,
+            workdir,
+            run_dir,
+            auto_start=auto_start,
+        )
+        script = run_dir / "resume-bob.sh"
+    else:
+        run_dir, _ = prepare(
+            tmp_path,
+            monkeypatch,
+            auto_start=auto_start,
+            test_hub_url="http://127.0.0.1:1",
+            bob_harness="claude-code",
+        )
+        script = run_dir / f"resume-bob.{SCRIPT_SUFFIX}"
+    (tmp_path / "token").write_text("fake-token")
+    row = {
+        "agent": "bob",
+        "harness": "claude-code",
+        "timestamp": "2026-10-10T00:00:00Z",
+        "conversation_id": "11111111-1111-1111-1111-111111111111",
+        "event": "exit",
+        "hub_id": "abc",
+        "workflow_id": "wf-test",
+    }
+    if reason == "identity":
+        del row["workflow_id"]
+    elif reason == "conversation":
+        row["conversation_id"] = "bad id"
+    (run_dir / "bob-sessions.jsonl").write_text(json.dumps(row) + "\n")
+    result = execute_ask(
+        script, env, *(["--not-a-recovery-option"] if reason == "arguments" else [])
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    last = result.stderr.splitlines()[-1]
+    assert str(run_dir / "ask-bob.sh") in last
+    assert last.endswith("(.ps1 on Windows); it doesn't need the hub.")
+    assert not Path(env["ASK_ARGV_LOG"]).exists()
+
+
+def test_ask_antigravity_restores_mcp_on_interrupt_and_refuses_concurrent_swap(
+    tmp_path: Path,
+) -> None:
+    spec = importlib.util.spec_from_file_location("agent_ask", ROOT / "scripts/agent-ask.py")
+    assert spec and spec.loader
+    ask = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ask)
+    config = tmp_path / ".gemini/config/mcp_config.json"
+    config.parent.mkdir(parents=True)
+    original = b'{"mcpServers": {"robomate": {"command": "must-not-run"}}}\n'
+    config.write_bytes(original)
+    with pytest.raises(KeyboardInterrupt), ask.suppress_mcp(tmp_path):
+        assert json.loads(config.read_bytes()) == {"mcpServers": {}}
+        with (
+            pytest.raises(ValueError, match="An ask may still be running"),
+            ask.suppress_mcp(tmp_path),
+        ):
+            pytest.fail("concurrent ask must not replace the saved configuration")
+        ask.interrupted(15, None)
+    assert config.read_bytes() == original
+    assert not config.with_name(config.name + ".ask-backup").exists()
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+def test_ask_explicit_id_works_without_session_log_or_recovery_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+) -> None:
+    env = ask_fake(tmp_path, harness)
+    run_dir, _ = prepare(tmp_path, monkeypatch, bob_harness=harness)
+    script = run_dir / f"ask-bob.{SCRIPT_SUFFIX}"
+    result = execute_ask(script, env)
+    assert result.returncode == 2 and "No saved conversation ID" in result.stderr
+    (run_dir / "bob-sessions.jsonl").write_text("not-json; deliberately unusable by recovery")
+    selected = (
+        "ses_explicit123" if harness == "opencode" else "11111111-1111-1111-1111-111111111111"
+    )
+    result = execute_ask(script, env, selected)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert selected in result.stdout
+    assert (run_dir / "bob-sessions.jsonl").read_text().startswith("not-json")
+
+
+def test_ask_does_not_launch_if_workdir_is_missing(tmp_path: Path) -> None:
+    env = ask_fake(tmp_path, "claude-code")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    script = run_dir / f"ask-bob.{SCRIPT_SUFFIX}"
+    PREPARE_RUN.write_script(
+        script,
+        PREPARE_RUN.start_script(
+            PREPARE_RUN.ask_lines(
+                "bob", "claude-code", run_dir, run_dir / "missing", powershell=os.name == "nt"
+            ),
+            os.name == "nt",
+        ),
+    )
+    result = execute_ask(script, env, "11111111-1111-1111-1111-111111111111")
+    assert result.returncode != 0
+    assert not Path(env["ASK_ARGV_LOG"]).exists()
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+def test_ask_worker_bundle_writes_bash_and_powershell_for_windows(
+    tmp_path: Path,
+    harness: str,
+) -> None:
+    run_dir = PureWindowsPath("C:/runs/remote questions")
+    PREPARE_RUN.render_worker_bundle(
+        "bob",
+        harness,
+        "1",
+        "provider",
+        "model-x",
+        "",
+        "C:/private/token",
+        "http://127.0.0.1:1",
+        PureWindowsPath("C:/robomate"),
+        run_dir,
+        run_dir / "bob",
+        tmp_path,
+        effort="high",
+    )
+    bash = (tmp_path / "ask-bob.sh").read_text()
+    ps = (tmp_path / "ask-bob.ps1").read_text()
+    argv = shlex.split("\n".join(bash.splitlines()[3:]))
+    command = argv[argv.index("--shell-command") + 1]
+    assert "cd '/c/runs/remote questions/bob'" in command
+    assert "--powershell" not in bash
+    assert "--powershell" in ps
+    assert "C:/runs/remote questions/bob-sessions.jsonl" in bash
+    assert "C:\\runs\\remote questions\\bob-sessions.jsonl" in ps
+
+
+def test_ask_git_bash_spells_windows_interpreter_path() -> None:
+    run_dir = PureWindowsPath("C:/runs/questions")
+    body = "\n".join(
+        PREPARE_RUN.ask_lines(
+            "bob",
+            "codex",
+            run_dir,
+            run_dir / "bob",
+            git_bash=True,
+            python="C:/Program Files/Python/python.exe",
+        )
+    )
+    assert "exec '/c/Program Files/Python/python.exe'" in body
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX signal delivery; Windows console close is documented"
+)
+@pytest.mark.parametrize("signal_name", ["SIGINT", "SIGTERM", "SIGHUP"])
+def test_ask_antigravity_restores_mcp_after_process_signal(
+    tmp_path: Path, signal_name: str
+) -> None:
+    env = ask_fake(tmp_path, "antigravity") | {"ASK_SLEEP_S": "5"}
+    run_dir = tmp_path / "run"
+    workdir = run_dir / "bob"
+    workdir.mkdir(parents=True)
+    PREPARE_RUN.render_worker_bundle(
+        "bob",
+        "antigravity",
+        "1",
+        "provider",
+        "model-x",
+        "",
+        "absent-token",
+        "http://127.0.0.1:1",
+        ROOT,
+        run_dir,
+        workdir,
+        run_dir,
+    )
+    config = run_dir / "configs/bob-agy/.gemini/config/mcp_config.json"
+    original = config.read_bytes()
+    script = run_dir / "ask-bob.sh"
+    child = subprocess.Popen(
+        # A detached/nohup parent can ignore these signals. The helper must
+        # install its own handlers rather than depend on inherited defaults.
+        [
+            "bash",
+            "-c",
+            'trap "" INT HUP; exec bash "$@"',
+            "ask-test",
+            str(script),
+            "11111111-1111-1111-1111-111111111111",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not Path(env["ASK_ARGV_LOG"]).exists() and time.monotonic() < deadline:
+            assert child.poll() is None
+            time.sleep(0.02)
+        assert Path(env["ASK_ARGV_LOG"]).exists(), "fake harness never started"
+        assert json.loads(config.read_bytes()) == {"mcpServers": {}}
+        child.send_signal(getattr(signal, signal_name))
+        stdout, stderr = child.communicate(timeout=10)
+        assert child.returncode == 130, stdout + stderr
+        assert config.read_bytes() == original
+        assert not config.with_name(config.name + ".ask-backup").exists()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("contents", ['{"agent": "bob', '{"agent": "other"}'])
+def test_ask_malformed_log_names_file_and_explicit_id_escape(tmp_path: Path, contents: str) -> None:
+    env = ask_fake(tmp_path, "claude-code")
+    sessions = tmp_path / "bob-sessions.jsonl"
+    sessions.write_text(contents)
+    script = tmp_path / f"ask-bob.{SCRIPT_SUFFIX}"
+    PREPARE_RUN.write_script(
+        script,
+        PREPARE_RUN.start_script(
+            PREPARE_RUN.ask_lines(
+                "bob", "claude-code", tmp_path, tmp_path, powershell=os.name == "nt"
+            ),
+            os.name == "nt",
+        ),
+    )
+    result = execute_ask(script, env)
+    assert result.returncode == 2
+    assert str(sessions) in result.stderr and "explicit ID" in result.stderr
+    assert "Unterminated string" not in result.stderr
+    result = execute_ask(script, env, "11111111-1111-1111-1111-111111111111")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert sessions.read_text() == contents

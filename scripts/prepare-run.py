@@ -1021,6 +1021,9 @@ def claude_resume(
     auto_start: bool,
     session_var: str,
     powershell: bool = False,
+    *,
+    ask: bool = False,
+    fork: bool = False,
 ) -> list[str]:
     """A manual ``claude --resume`` one-liner for a crashed session (#94).
 
@@ -1031,10 +1034,12 @@ def claude_resume(
     words = ["claude", *flags]
     if auto_start:
         words += ["--permission-mode", "auto"]
+    words += ["--strict-mcp-config"]
+    if not ask:
+        words += ["--mcp-config", shell_word(config, powershell)]
+    if fork:
+        words += ["--fork-session"]
     words += [
-        "--strict-mcp-config",
-        "--mcp-config",
-        shell_word(config, powershell),
         "--add-dir",
         shell_word(prompt_dir, powershell),
         "--resume",
@@ -1042,6 +1047,8 @@ def claude_resume(
     ]
     if auto_start:
         words += ["-p", auto_start_instruction(resume_prompt, powershell)]
+    if ask and not powershell:
+        words.insert(0, "exec")
     return [" ".join(words)]
 
 
@@ -1053,6 +1060,9 @@ def codex_resume(
     auto_start: bool,
     session_var: str,
     powershell: bool = False,
+    *,
+    ask: bool = False,
+    fork: bool = False,
 ) -> list[str]:
     """A manual Codex conversation resume; auto-start pipes the resume prompt (#94)."""
     home_word = shell_word(home, powershell)
@@ -1071,7 +1081,14 @@ def codex_resume(
                 f"Get-Content -Raw {prompt_word} | {command}",
             ]
         return [f"CODEX_HOME={home_word} {command} < {prompt_word}"]
-    words = ["codex", "resume", "--approve-for-me", *flags, session_var]
+    words = ["codex", "fork" if fork else "resume"]
+    if ask:
+        words += ["-c", "mcp_servers.robomate.enabled=false", "-a", "on-request"]
+    else:
+        words += ["--approve-for-me"]
+    words += [*flags, session_var]
+    if ask and not powershell:
+        words.insert(0, "exec")
     command = " ".join(words)
     if powershell:
         return [f"$env:CODEX_HOME = {home_word}", command]
@@ -1086,6 +1103,9 @@ def opencode_resume(
     session_var: str,
     title: str | None = None,
     powershell: bool = False,
+    *,
+    ask: bool = False,
+    fork: bool = False,
 ) -> list[str]:
     """A manual OpenCode session resume by ``ses_...`` ID; never ``--continue`` (#94)."""
     if auto_start:
@@ -1095,8 +1115,12 @@ def opencode_resume(
         words += ["--session", session_var, auto_start_instruction(resume_prompt, powershell)]
         command = " ".join(words)
     else:
-        words = ["opencode", "--auto", *flags, "--session", session_var]
+        words = ["opencode", *([] if ask else ["--auto"]), *flags, "--session", session_var]
+        if fork:
+            words += ["--fork"]
         command = " ".join(words)
+    if ask and not powershell:
+        command = "exec " + command
     config_word = shell_word(config, powershell)
     if powershell:
         return [f"$env:OPENCODE_CONFIG = {config_word}", command]
@@ -1111,12 +1135,15 @@ def antigravity_resume(
     auto_start: bool,
     session_var: str,
     powershell: bool = False,
+    *,
+    ask: bool = False,
+    fork: bool = False,
 ) -> list[str]:
     """A manual AntiGravity conversation resume by conversation ID (#94)."""
     words = [
         "agy",
         *flags,
-        "--dangerously-skip-permissions",
+        *([] if ask else ["--dangerously-skip-permissions"]),
         "--add-dir",
         shell_word(prompt_dir, powershell),
         "--conversation",
@@ -1124,6 +1151,8 @@ def antigravity_resume(
     ]
     if auto_start:
         words += ["-p", auto_start_instruction(resume_prompt, powershell)]
+    if ask and not powershell:
+        words.insert(0, "exec")
     command = " ".join(words)
     home_word = shell_word(home, powershell)
     if powershell:
@@ -1151,6 +1180,93 @@ def antigravity_resume(
             f"HOME={home_word} USERPROFILE={home_word}"
         )
     return [f"{env_prefix} {command}"]
+
+
+def ask_lines(
+    name: str,
+    harness: str,
+    run_dir: PurePath,
+    workdir: PurePath,
+    model: str = "",
+    effort: str = "",
+    *,
+    powershell: bool = False,
+    git_bash: bool = False,
+    root: PurePath = ROOT,
+    python: str = sys.executable,
+) -> list[str]:
+    """Hub-free interactive questions, using the same homes and resume adapters (#221)."""
+
+    def spelling(path: PurePath) -> str:
+        return path.as_posix() if git_bash else str(path)
+
+    config = launch_config_path(harness, run_dir / "configs", name)
+    temp = run_dir / "tmp" / name
+    prefix = ["$ErrorActionPreference = 'Stop'" if powershell else "set -e"]
+    prefix += [f"cd {shell_word(git_bash_path(workdir) if git_bash else str(workdir), powershell)}"]
+    if powershell:
+        prefix += [f"$env:{key} = {shell_word(spelling(temp), True)}" for key in ("TEMP", "TMP")]
+    else:
+        prefix += [f"export TMPDIR={shell_word(git_bash_path(temp) if git_bash else str(temp))}"]
+        if run_dir.drive or os.name == "nt":
+            prefix += [f"export {key}={shell_word(spelling(temp))}" for key in ("TEMP", "TMP")]
+    flags = model_flags(harness, model, "" if harness == "opencode" else effort, powershell, False)
+    if harness == "opencode":
+        # Inline config wins over custom/project config. Keep OPENCODE_CONFIG
+        # pointing to the run's file, but disable its bridge and unattended access.
+        overrides: dict[str, Any] = {
+            "mcp": {"robomate": {"enabled": False}},
+            "permission": {"*": "ask", "external_directory": "ask"},
+        }
+        if effort:
+            overrides["agent"] = {"build": {"variant": effort}}
+        content = shell_word(json.dumps(overrides), powershell)
+        prefix += [
+            f"$env:OPENCODE_CONFIG_CONTENT = {content}"
+            if powershell
+            else f"export OPENCODE_CONFIG_CONTENT={content}"
+        ]
+    session = "$env:ROBOMATE_ASK_SESSION_ID" if powershell else '"$ROBOMATE_ASK_SESSION_ID"'
+
+    def command(fork: bool) -> str:
+        options = {"powershell": powershell, "ask": True, "fork": fork}
+        if harness == "codex":
+            lines = codex_resume(spelling(config), None, "", flags, False, session, **options)
+        elif harness == "opencode":
+            lines = opencode_resume(spelling(config), "", flags, False, session, **options)
+        elif harness == "antigravity":
+            lines = antigravity_resume(
+                spelling(config), spelling(run_dir), "", flags, False, session, **options
+            )
+        else:
+            lines = claude_resume("", spelling(run_dir), "", flags, False, session, **options)
+        return "\n".join([*prefix, *lines])
+
+    if git_bash and (run_dir.drive or os.name == "nt"):
+        python = git_bash_path(PureWindowsPath(python))
+    words = [
+        "&" if powershell else "exec",
+        shell_word(python, powershell),
+        shell_word(spelling(root / "scripts/agent-ask.py"), powershell),
+        "--agent",
+        name,
+        "--harness",
+        harness,
+        "--sessions",
+        shell_word(spelling(run_dir / f"{name}-sessions.jsonl"), powershell),
+        "--workdir",
+        shell_word(spelling(workdir), powershell),
+        "--config",
+        shell_word(spelling(config), powershell),
+        "--shell-command",
+        shell_word(command(False), powershell),
+    ]
+    if harness != "antigravity":
+        words += ["--fork-command", shell_word(command(True), powershell)]
+    if powershell:
+        words += ["--powershell"]
+    words += ["--", "@args" if powershell else '"$@"']
+    return [" ".join(words), *(["exit $LASTEXITCODE"] if powershell else [])]
 
 
 def resume_lines(
@@ -1911,6 +2027,18 @@ def render_worker_bundle(
         resume_series_reset_s=resume_series_reset_s,
     )
     write_script(out_dir / f"resume-{name}.sh", start_script(resume))
+    ask = ask_lines(name, harness, run_dir, workspace, model, effort, root=root, git_bash=True)
+    write_script(out_dir / f"ask-{name}.sh", start_script(ask))
+    if run_dir.drive or os.name == "nt":
+        write_script(
+            out_dir / f"ask-{name}.ps1",
+            start_script(
+                ask_lines(
+                    name, harness, run_dir, workspace, model, effort, root=root, powershell=True
+                ),
+                True,
+            ),
+        )
     bundle = {
         "credential_exposure": exposures,
         "config": config.as_posix(),
@@ -1920,6 +2048,7 @@ def render_worker_bundle(
         "resume_prompt": (run_dir / f"resume-{name}.prompt.md").as_posix(),
         "resume_launch": resume,
         "resume_script": (run_dir / f"resume-{name}.sh").as_posix(),
+        "ask_script": (run_dir / f"ask-{name}.sh").as_posix(),
     }
     if title is not None:
         bundle["title"] = title
@@ -2572,6 +2701,7 @@ def prepare(
     suffix = "ps1" if os.name == "nt" else "sh"
     scripts: dict[str, str] = {}
     resume_scripts: dict[str, str] = {}
+    ask_scripts: dict[str, str] = {}
     resume_prompts: dict[str, str] = {}
     titles: dict[str, str] = {}
     for name in ("alice", *local):
@@ -2656,6 +2786,30 @@ def prepare(
         resume_path = run_dir / f"resume-{name}.{suffix}"
         write_script(resume_path, resume_script(resume, os.name == "nt"))
         resume_scripts[name] = str(resume_path)
+        ask_path = run_dir / f"ask-{name}.{suffix}"
+        write_script(
+            ask_path,
+            start_script(
+                ask_lines(
+                    name,
+                    harness,
+                    run_dir,
+                    workdirs[name],
+                    model,
+                    effort,
+                    powershell=os.name == "nt",
+                ),
+                os.name == "nt",
+            ),
+        )
+        if os.name == "nt":
+            write_script(
+                run_dir / f"ask-{name}.sh",
+                start_script(
+                    ask_lines(name, harness, run_dir, workdirs[name], model, effort, git_bash=True)
+                ),
+            )
+        ask_scripts[name] = str(ask_path)
     manifest["launch"] = {
         "auto_start": auto_start,
         "agents": {
@@ -2665,6 +2819,7 @@ def prepare(
                 "effort": launch[name][2],
                 "script": scripts[name],
                 "resume_script": resume_scripts[name],
+                "ask_script": ask_scripts[name],
                 "resume_prompt": resume_prompts[name],
             }
             | ({"title": titles[name]} if name in titles else {})
@@ -2734,6 +2889,7 @@ def prepare(
         "workspaces": {name: workspaces[name]["path"] for name in local},
         "configs": {"alice": str(alice_config), **rendered_configs},
         "prompts": {name: str(run_dir / f"{name}.prompt.md") for name in ("alice", *local)},
+        "ask_scripts": ask_scripts,
         "start_scripts": scripts,
         "resume_scripts": resume_scripts,
         "resume_prompts": resume_prompts,
@@ -2763,6 +2919,9 @@ def prepare(
         print(f"\n{resume_note}")
     print("\nResume scripts (after a harness exit; no arguments normally needed):")
     for script in resume_scripts.values():
+        print(script)
+    print("\nAsk scripts (interactive questions after the run; no hub needed):")
+    for script in ask_scripts.values():
         print(script)
     if remote_worker is not None:
         print(remote_note(remote_worker))
@@ -2908,6 +3067,7 @@ def prepare_worker(
                     "effort": effort,
                     "script": bundle["script"],
                     "resume_script": bundle["resume_script"],
+                    "ask_script": bundle["ask_script"],
                     "resume_prompt": bundle["resume_prompt"],
                 }
                 | ({"title": bundle["title"]} if "title" in bundle else {})
@@ -2946,6 +3106,7 @@ def prepare_worker(
                 "config": bundle["config"],
                 "prompt": bundle["prompt"],
                 "start_script": bundle["script"],
+                "ask_script": bundle["ask_script"],
                 "checks": checks,
             },
             indent=2,
@@ -2957,6 +3118,7 @@ def prepare_worker(
         print(line)
     print(f"\nStart script for {name} (run it in bash or Git Bash once the preflight passes):")
     print(bundle["script"])
+    print(f"Ask after the run (no hub needed): {bundle['ask_script']}")
     if not auto_start:
         print(
             f"Auto-start is off: once {name} is up, tell it to read and follow {bundle['prompt']}."

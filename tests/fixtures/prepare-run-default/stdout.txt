@@ -1,4 +1,9 @@
 {
+  "ask_scripts": {
+    "alice": "$RUN_DIR/ask-alice.sh",
+    "bob": "$RUN_DIR/ask-bob.sh",
+    "charlie": "$RUN_DIR/ask-charlie.sh"
+  },
   "checks": {
     "ci": "local repository has no GitHub workflows (allow_no_ci=true)",
     "codex_auth": {
@@ -62,5 +67,10 @@ Resume scripts (after a harness exit; no arguments normally needed):
 $RUN_DIR/resume-alice.sh
 $RUN_DIR/resume-bob.sh
 $RUN_DIR/resume-charlie.sh
+
+Ask scripts (interactive questions after the run; no hub needed):
+$RUN_DIR/ask-alice.sh
+$RUN_DIR/ask-bob.sh
+$RUN_DIR/ask-charlie.sh
 
 Alice kickoff prompt: $RUN_DIR/alice.prompt.md
