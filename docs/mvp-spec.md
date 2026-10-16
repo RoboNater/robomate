@@ -439,8 +439,8 @@ repairs. Robomate code/docs are discoverable and readable; changing the robomate
 installation itself is a separate development task. Denise's working directory is a
 dedicated directory inside the run, not the operator's or a worker's checkout. Grants
 resolve real paths and distinguish local paths from remote locations. They never cover
-other runs merely because those runs
-share a parent directory. Shared git metadata may serve sibling hubs, so git writes still
+other runs merely because those runs share a parent directory. Shared git metadata may
+serve sibling hubs, so git writes still
 require checking their effect. These are filesystem grants, not hub privileges.
 
 Denise uses supported operator CLI commands in the operator's environment; no worker or

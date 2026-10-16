@@ -154,6 +154,9 @@ needs a credential read grant, grant the exact file to the CLI where supported; 
 document trusted-only execution or have the operator run the command. Startup and offline
 diagnosis never require operator authentication. Shell history, logs, reports and forge
 comments must contain no token values or complete environment dumps.
+For the isolated harness profile, reuse the existing owner-only local authentication
+patterns; a missing login produces an actionable login recommendation. Inheriting Bob's
+model settings never means sharing his complete harness home, MCP environment or session.
 
 ### Authority, coordination and recovery procedure
 
@@ -298,6 +301,9 @@ recommendation. Add usage/troubleshooting to `docs/user-guide.md`, recovery link
 `docs/development/agent-recovery.md`, `guides/README.md`'s local-guide distinction, and
 standard-run config/launcher help and fixtures. Document supported versus trusted-only or
 deferred combinations, credential setup, reports, consequential decisions and M2 handoff.
+Clarify `AGENTS.md`'s role wording for Denise's explicitly requested recovery (including
+leaving a restored run hub running), while retaining the joined workers' restrictions and
+isolated-smoke-only exception.
 
 ```sh
 uv run --locked pytest tests/test_denise.py tests/test_prepare_run.py tests/test_prep_standard_run_area.py tests/test_runtime_content.py tests/test_agent_recovery.py
@@ -360,10 +366,11 @@ git diff --exit-code docs/
 ```
 
 For the final license-update drift check, first commit intended documentation edits so
-`git diff --exit-code docs/` measures generated drift, not the planned prose change. Verify
-local Markdown links/anchors and referenced source paths on this plan; the repository has
-no Markdown checker to treat as evidence by itself. No executable entry point is changed
-by #174. Implementation PRs must execute every changed generator/helper and emitted wrapper
+`git diff --exit-code docs/` measures generated drift, not the planned prose change.
+`uv run --locked pytest tests/test_doc_links.py` checks local Markdown file targets as part
+of the full suite; additionally verify anchors and referenced source paths on this plan.
+No executable entry point is changed by #174. Implementation PRs must execute every
+changed generator/helper and emitted wrapper
 at least once, including loop bodies and non-default branches, per `AGENTS.md`.
 
 Extend the existing Linux/native Windows CI with fake-harness script execution and isolated
