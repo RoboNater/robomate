@@ -99,6 +99,28 @@ def git_value(path: Path, *args: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def git_common_dir(path: Path) -> str | None:
+    """Resolve metadata only for an actual checkout root or bare repository root.
+
+    Git searches ancestors from plain directories such as Alice's runtime. That
+    enclosing repository is not part of this run's requested repair inventory.
+    """
+    path = path.resolve()
+    toplevel = git_value(path, "rev-parse", "--show-toplevel")
+    if toplevel:
+        if Path(toplevel).resolve() != path:
+            return None
+    else:
+        # Bare repositories have no worktree/toplevel. Require their actual git
+        # directory to be this path, not a bare repository found further up.
+        if git_value(path, "rev-parse", "--is-bare-repository") != "true":
+            return None
+        git_dir = git_value(path, "rev-parse", "--absolute-git-dir")
+        if not git_dir or Path(git_dir).resolve() != path:
+            return None
+    return git_value(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+
+
 def reference(path: str | Path | None, host: str, *, local: bool = True) -> dict[str, Any]:
     """Observe only host-local paths. Never translate or probe remote references."""
     if not local:
@@ -151,11 +173,7 @@ def build_context(
 
     def checkout(path: str | Path | None, purpose: str) -> dict[str, Any]:
         ref = add(path, purpose)
-        common = (
-            git_value(Path(ref["path"]), "rev-parse", "--path-format=absolute", "--git-common-dir")
-            if ref["path"]
-            else None
-        )
+        common = git_common_dir(Path(ref["path"])) if ref["path"] else None
         return {
             "checkout": ref,
             "git_common_dir": add(common, f"{purpose} git common directory"),

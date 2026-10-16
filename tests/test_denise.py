@@ -194,9 +194,37 @@ def test_inventory_resolves_git_common_directories_in_worktrees_and_bare_layouts
     assert context["tooling"]["root"]["path"] != context["hub"]["checkout"]["path"]
 
 
+@pytest.mark.parametrize("bare", [False, True])
+def test_plain_directories_never_grant_an_enclosing_repository(
+    tmp_path: Path,
+    bare: bool,
+) -> None:
+    enclosing = tmp_path / "unrelated parent"
+    enclosing.mkdir()
+    git(enclosing, "init", *(["--bare"] if bare else []))
+    saved = manifest(enclosing)
+    runtime = Path(saved["run_dir"]) / "alice-runtime"
+    runtime.mkdir(parents=True)
+    Path(saved["hub_repo"]).mkdir()
+    Path(saved["workspaces"]["bob"]["path"]).mkdir()
+
+    context = DENISE.build_context(saved, ROOT, DENISE.resolve_settings(AGENTS))
+
+    for indexed in (context["agents"]["alice"], context["hub"], context["agents"]["bob"]):
+        assert indexed["checkout"]["access"] == "present"
+        assert indexed["git_common_dir"]["path"] is None
+    write_roots = {
+        item["path"] for item in context["access_inventory"]["roots"] if item["mode"] == "write"
+    }
+    assert str(enclosing) not in write_roots
+    assert str(enclosing / ".git") not in write_roots
+    assert str(runtime) in write_roots
+
+
 def test_symlink_paths_resolve_to_their_actual_roots(tmp_path: Path) -> None:
     target = tmp_path / "actual"
     target.mkdir()
+    git(target, "init")
     alias = tmp_path / "alias"
     try:
         alias.symlink_to(target, target_is_directory=True)
@@ -208,6 +236,7 @@ def test_symlink_paths_resolve_to_their_actual_roots(tmp_path: Path) -> None:
     saved["workspaces"]["bob"]["path"] = str(alias)
     context = DENISE.build_context(saved, ROOT, DENISE.resolve_settings(AGENTS))
     assert context["agents"]["bob"]["checkout"]["path"] == str(target)
+    assert context["agents"]["bob"]["git_common_dir"]["path"] == str(target / ".git")
     assert str(alias) not in {item["path"] for item in context["access_inventory"]["roots"]}
 
 
