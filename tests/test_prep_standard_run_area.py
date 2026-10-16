@@ -95,6 +95,46 @@ def test_config_paths_and_cli_work_replacement(
     assert values["work_file"] == "" and values["issue"] == 43
 
 
+def test_doctor_config_cli_precedence_and_side_effect_free_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("configuration resolution must not probe git, a provider or a hub")
+
+    monkeypatch.setattr(HELPER.subprocess, "run", unexpected)
+    config = tmp_path / "doctor.toml"
+    config.write_text(
+        'denise_settings_from = "charlie"\ndenise_harness = "claude"\n'
+        'denise_model = "from config"\ndenise_effort = "config effort"\n'
+    )
+    output = tmp_path / "merged.toml"
+    HELPER.main(
+        [
+            "--config",
+            str(config),
+            "--generate-config",
+            str(output),
+            "--denise-settings-from",
+            "none",
+            "--denise-harness",
+            "codex",
+            "--denise-model",
+            'future "model"',
+            "--denise-effort",
+            "future effort",
+        ]
+    )
+    values = tomllib.loads(output.read_text())
+    assert values["denise_settings_from"] == "none"
+    assert values["denise_harness"] == "codex"
+    assert values["denise_model"] == 'future "model"'
+    assert values["denise_effort"] == "future effort"
+    # Selecting an unsupported source still serializes a valid team configuration.
+    config.write_text('bob_harness = "devin"\ndenise_settings_from = "bob"\n')
+    HELPER.main(["--config", str(config), "--generate-config", str(tmp_path / "devin.toml")])
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -105,6 +145,11 @@ def test_config_paths_and_cli_work_replacement(
         "issue = -1",
         'forge = "other"',
         'bob_harness = "other"',
+        'denise_settings_from = "worker"',
+        'denise_settings_from = "none"',
+        'denise_harness = "devin"',
+        "denise_model = 42",
+        "denise_effort = false",
         'issue = 42\nwork_file = "statement.md"',
         "not toml",
     ],
@@ -184,6 +229,14 @@ def test_prepare_clones_and_forwards_arguments(
         "model with spaces",
         "--bob-effort",
         "high",
+        "--denise-settings-from",
+        "charlie",
+        "--denise-harness",
+        "claude",
+        "--denise-model",
+        "future doctor model",
+        "--denise-effort",
+        "future doctor effort",
         "--no-auto-start",
         *flags,
     ]
@@ -197,6 +250,10 @@ def test_prepare_clones_and_forwards_arguments(
     assert command[command.index(flags[0]) + 1] == flags[1]
     assert ("--issue" in command) != ("--work-file" in command)
     assert "--no-auto-start" in command
+    assert command[command.index("--denise-settings-from") + 1] == "charlie"
+    assert command[command.index("--denise-harness") + 1] == "claude"
+    assert command[command.index("--denise-model") + 1] == "future doctor model"
+    assert command[command.index("--denise-effort") + 1] == "future doctor effort"
     calls.clear()
     HELPER.main([*args, "--yes"])
     assert len(prompted) == 1
