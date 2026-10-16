@@ -416,10 +416,14 @@ She is a distinct interactive role, normally stopped, with no worker assignment,
 heartbeat, event lease, or orchestrator session. She never registers as Alice or a worker.
 Closing her terminal ends the consultation without releasing workers or changing workflow
 state. Starting her again reads current evidence; it does not replay a recovery action.
-M7 supplies generated start scripts and a local `guides/denise.md`, not a new hub service or
-MCP role. Harness/model/effort can inherit an existing agent's settings (initial default:
-Bob) or be overridden explicitly; only those settings are inherited, never that agent's
-identity, conversation, MCP configuration, or unattended launch policy.
+M7 supplies generated start scripts and a local `docs/denise/guide.md`, outside the
+hub-served `guides/` directory, not a new hub service or MCP role. Harness/model/effort can
+inherit an existing agent's settings (initial default: Bob) or be overridden explicitly;
+only those settings are inherited, never that agent's identity, conversation, MCP
+configuration, or unattended launch policy.
+An unsupported inherited harness skips Denise's start script with a warning and a supported
+override remedy, while team preparation succeeds. An explicitly configured unsupported
+Denise harness/model/effort is a preparation error; never silently substitute a model.
 
 **Startup context.** A short local prompt identifies the run directory and manifest,
 expected hub identity and checkout, target repository, agents and workspace locations,
@@ -1003,8 +1007,10 @@ itself.
 stay fixed; M7 is inserted before M2 (#174), following the earlier M5 reordering (#68).
 The [M7 plan](development/implementation-plan-mvp-m7-denise.md) splits implementation into
 reviewable steps. #174 delivers its specification and plan, not the completed milestone.
-Roadmap #2 tracks the step issues and completion evidence; its independent maintenance
-lanes can continue without making M7 depend on M2.
+Roadmap #2 tracks the step issues and completion evidence. M7 runs on the MVP track
+(Track 2, lane A), without depending on optional lane C. M2 planning (#226) may continue
+independently, but M2 implementation steps wait for M7 completion. Other maintenance and
+operator-tooling lanes can continue independently; Track 3's next work after #174 is #222.
 
 **Checkout scope (#54)** is delivered in three steps, so that nothing ships which M2 would
 have to undo:

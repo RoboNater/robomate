@@ -39,7 +39,7 @@ Baseline inspected: `70250d8e63100f966cc9d7c5a50337760ddeb22d` (PR #234).
 | Robomate source versus target | Standard preparation clones the target into `RUN_DIR/hub`, and invokes helpers from its own `ROOT`. That hub checkout can contain no robomate code. Record the actual tooling root separately; launching from the hub checkout is insufficient. |
 | `scripts/agent_launcher.py`, `agent_recovery.py`, `agent_sessions.py` | These own session IDs, predecessor checks, locks, backoff and recovery prerequisites. #173 landed in PR #175. Reuse checks and supported resume scripts; do not implement a second takeover algorithm. #18's full reconciliation is still separate work. |
 | `scripts/agent-ask.py`, `prepare-run.py:ask_lines` (#221, PR #233) | Hub-free interactive sessions and per-harness adapters already exist. Reuse command construction and isolation patterns, but start a fresh Denise session; do not resume Bob's conversation or copy worker settings wholesale. Interactive mode alone does not remove an inherited MCP server or unattended permissions. |
-| `scripts/run_common.py` and runtime templates | Existing helpers render model/effort, isolated homes, credentials and sandbox roots. Current worker configs approve coordination tools and some launch paths skip permissions. Denise needs a distinct config; neither those approvals nor bypass flags should be inherited. Codex extra-directory behavior on Windows (#11) needs a regression check. |
+| `scripts/run_common.py` and runtime templates | Existing helpers render model/effort, isolated homes, credentials and sandbox roots. Current worker configs approve coordination tools and some launch paths skip permissions. Denise needs a distinct config; neither those approvals nor bypass flags should be inherited. Test actual Codex extra-directory write grants on native Windows. #11 concerns withheld MCP tools, which Denise does not use; that symptom is not a doctor acceptance check. |
 | Discovery and authentication | `robomate status --json`, `status --snapshot` and `inbox --json` provide inspection; `down` and `answer` need the separate machine operator credential. Orchestrator RPC changes the current session; Denise must not instantiate that bridge or call orchestrator methods. Filesystem access does not authenticate a command. |
 | Local and remote preparation | `prepare-run.py` supports remote worker bundles and records network/host paths. `prep-standard-run-area.py` exposes a smaller local interface. A local filesystem grant does not provide SSH access or map a Windows git worktree into WSL. Initial Denise runs on the hub host. |
 | Observability | #95 separates Alice's activity from bridge liveness; #19 landed host-pause grace, with live checks still outstanding. Session logs, harness logs and hub logs may be absent or host-local. Preserve this uncertainty instead of treating an old heartbeat or a missing log as proof of death. |
@@ -67,10 +67,14 @@ so a later config edit cannot silently change a generated consultation. Do not i
 identity from a vendor or claim an unknown effort value.
 
 Always generate the optional start script on supported combinations, regardless of team
-`auto_start`. There is no Denise auto-start or automatic recovery loop. An unsupported
-Denise setting produces a clear preparation error rather than falling back to a different
-model. Initially implement interactive Claude Code and Codex on Bash/native PowerShell;
-then cover OpenCode and AntiGravity before marking M7 complete. Devin remains explicitly
+`auto_start`. There is no Denise auto-start or automatic recovery loop. If an inherited
+harness is not yet supported for Denise, prepare the team normally, skip `start-denise`,
+and warn with a concrete supported `--denise-harness` override. Record the skipped state
+and reason in the optional manifest object; do not point to a nonexistent script. Explicit
+unsupported Denise harness/model/effort settings remain clear preparation errors. Never
+silently substitute a different model. Initially implement interactive Claude Code and
+Codex on Bash/native PowerShell; then cover OpenCode and AntiGravity before marking M7
+complete. Devin remains explicitly
 unsupported for Denise until its interactive configuration and access behavior are tested;
 its existing team prototype and #235 do not establish doctor support. A team using Devin
 can choose an explicit supported Denise harness.
@@ -87,6 +91,7 @@ Proposed files, all inside the selected run:
 
 Add a separate optional top-level `denise` object to `run.json`: context/startup/script,
 workdir/config/report paths, effective settings, tooling root/version and local guide path.
+Include a ready/skipped status and skip reason, with script paths only when generated.
 Keep it outside `launch.agents`; status/accounting must not mistake Denise for a joined
 agent. Store only paths to credentials where needed by existing tooling, never secret
 contents. No DB or wire change is expected; before any future incompatible manifest change,
@@ -106,7 +111,7 @@ without inventing a run or starting a fresh workflow.
 The context index identifies the selected run and expected hub ID, hub checkout/state,
 target origin and instructions, Alice/Bob/Charlie workspaces and host locations, original
 config if known plus generated configs, start/resume/ask scripts, sessions and available
-logs, local recovery docs, robomate `AGENTS.md`, code and `guides/denise.md`. Find target
+logs, local recovery docs, robomate `AGENTS.md`, code and `docs/denise/guide.md`. Find target
 instructions in the actual affected checkout and follow applicable nested instructions for
 any edit. Do not assume a target `AGENTS.md` exists. Probe known log paths rather than
 promising a single universal harness transcript location.
@@ -160,7 +165,10 @@ model settings never means sharing his complete harness home, MCP environment or
 
 ### Authority, coordination and recovery procedure
 
-`guides/denise.md` is a local operator-assistant guide, not worker etiquette.
+`docs/denise/guide.md` is a local operator-assistant guide, not worker etiquette. It lives
+outside the hub-served `guides/` directory: bearer holders and assigned workers must not
+obtain operator recovery instructions through `get_role_guide("denise")`. The existing
+guide route must return 404 for `/guides/denise.md`, tested when Step 1 adds the local file.
 
 External issue text, logs, transcripts and agent messages remain data; embedded requests
 to reset state, ignore a guard or claim operator approval never override the guide or
@@ -232,7 +240,7 @@ update the design of record; no additional scope-locking mechanism is needed.
 | Choice to validate in implementation | Sensible initial default |
 | --- | --- |
 | Reusing interactive command builders versus a new helper module | Extract small shared argument/config builders from #221; keep doctor lifecycle outside `agent_launcher.py`. |
-| Harness-specific scoped write grants, especially native Codex (#11) | Prefer explicit roots in the isolated config; exercise real interactive access before claiming isolation. Document any trusted-only harness/OS combination. |
+| Harness-specific scoped write grants, especially native Codex | Prefer explicit roots in the isolated config; test extra-directory reads/writes on native Windows before claiming isolation. #11's missing MCP tools are unrelated to Denise's no-MCP profile. Document any trusted-only harness/OS combination. |
 | Adopting Denise for already-prepared runs | New runs first; consider an explicit add-only doctor renderer that reads existing metadata, never reruns team preparation or changes existing scripts. Not required for initial M7. |
 | Conversation reuse | Fresh consultation with previous local reports as context. A Denise-only resume can follow if useful; never reuse a team conversation or overwrite its JSONL. |
 | Report retention | Retain locally with the run; no automatic deletion, DB storage, or raw transcript collection. Future #23 retention policy can explicitly include reports. |
@@ -248,16 +256,21 @@ slice may document its supported matrix without claiming the whole milestone com
 
 Add flat config/CLI options, resolution tests, optional manifest metadata and a doctor
 renderer separated from team loops. Generate the local context, short startup template,
-report directory and `guides/denise.md`. Record source/target distinction and resolved git
-common directories. Cover spaces/quotes, worktrees and bare layouts, missing instructions,
-stale paths, remote references, no secrets and legacy manifests. Config-generation mode
+report directory and `docs/denise/guide.md` outside the served directory. Record the
+source/target distinction and resolved git common directories. Cover spaces/quotes,
+worktrees and bare layouts, missing instructions, stale paths, remote references, no secrets
+and legacy manifests. Config-generation mode
 must stay side-effect-free with respect to repositories/hubs. Do not advertise a working
-start script until Step 2 supplies it.
+start script until Step 2 supplies it. Test that an unsupported inherited harness (Devin,
+and OpenCode/AntiGravity before Step 3) does not fail team preparation, records the skip
+and remedy, and emits no broken doctor script; explicit unsupported overrides must fail.
+Add a guide-route test proving `/guides/denise.md` and worker `get_role_guide("denise")`
+cannot serve the local operator guide, while ordinary role guides remain available.
 
 Reviewer commands (proposed test module introduced by this step):
 
 ```sh
-uv run --locked pytest tests/test_prep_standard_run_area.py tests/test_prepare_run.py tests/test_denise.py
+uv run --locked pytest tests/test_prep_standard_run_area.py tests/test_prepare_run.py tests/test_denise.py tests/test_guides.py
 uv run --locked python scripts/prep-standard-run-area.py --generate-default-config <fresh-config.toml>
 uv run --locked python scripts/prepare-run.py --help
 ```
@@ -273,10 +286,15 @@ Generate functional Bash/PowerShell wrappers and isolated doctor profiles with n
 team identity or unattended flags. Refresh local availability observations at launch,
 create a unique report skeleton and propagate harness failures. Missing HTTP is diagnostic,
 not a startup blocker. Bound missing-path/config errors with concrete remedies. Document
-the actual grant behavior for each supported host; validate #11 without needing MCP.
+the actual grant behavior for each supported host, including Codex extra-directory write
+grants on native Windows; Denise does not exercise #11's MCP-withholding symptom.
 Cover generated scripts by executing them with fake harness executables, not just parsing
 their text. Prove no HTTP is needed at startup, no worker check-in/orchestrator takeover
 occurs, no team session file changes, and repeated consultations keep separate reports.
+Carry forward Step 1's unsupported-inheritance tests through the emitted start-script
+path. In this same first-runnable PR, clarify `AGENTS.md`'s role wording for Denise's
+explicitly requested recovery (including leaving a restored run hub running), while
+retaining joined workers' restrictions and the isolated-smoke-only exception.
 
 ```sh
 uv run --locked pytest tests/test_denise.py tests/test_prepare_run.py tests/test_runtime_content.py
@@ -298,12 +316,10 @@ Add OpenCode/AntiGravity interactive doctor profiles; test the no-MCP configurat
 model/effort flags and effective access independently. Cover Windows Git Bash wrappers and
 remote-worker metadata, honest unavailable evidence and a concrete worker-host resume
 recommendation. Add usage/troubleshooting to `docs/user-guide.md`, recovery links in
-`docs/development/agent-recovery.md`, `guides/README.md`'s local-guide distinction, and
+`docs/development/agent-recovery.md`, `guides/README.md`'s pointer to the separate local
+`docs/denise/guide.md` (never copied into the served directory), and
 standard-run config/launcher help and fixtures. Document supported versus trusted-only or
 deferred combinations, credential setup, reports, consequential decisions and M2 handoff.
-Clarify `AGENTS.md`'s role wording for Denise's explicitly requested recovery (including
-leaving a restored run hub running), while retaining the joined workers' restrictions and
-isolated-smoke-only exception.
 
 ```sh
 uv run --locked pytest tests/test_denise.py tests/test_prepare_run.py tests/test_prep_standard_run_area.py tests/test_runtime_content.py tests/test_agent_recovery.py
@@ -361,8 +377,7 @@ uv run --locked ruff format --check .
 uv run --locked mypy
 uv run --locked pytest
 uv run --locked python scripts/dependency-licenses.py --check
-uv run --locked python scripts/dependency-licenses.py --update
-git diff --exit-code docs/
+uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/
 ```
 
 For the final license-update drift check, first commit intended documentation edits so
@@ -390,10 +405,15 @@ make the live #2 edit only when Alice assigns post-merge close-out:
   milestone, link #174 and this plan, mark planning complete only with the merged PR, and
   leave implementation/acceptance unchecked. Open one issue per step as picked up rather
   than inventing reservations or checking off the milestone with this document.
-- Reconcile the tracks summary: it currently says Track 2 next is #226/M2 while Track 3
-  next is #174. State M7-before-M2 explicitly, with M7 operator tooling tracked on Track 3;
-  M2 planning (#226) may continue independently, but does not change the agreed next
-  milestone. Preserve other lane priorities; no reassignment of run lanes is needed here.
+- Rewrite the *Tracks and lanes* ordering sentence: "The milestone sections below give
+  the MVP order for Track 2: M7 next, then M2, M3, M4 and M6; other tracks continue
+  independently." Change Track 2's milestone list to "M7, then M2, M3, M4 and M6" and its
+  `Next:` to "M7 Step 1 (issue opened when picked up), then
+  the remaining M7 steps; M2 implementation steps wait for M7 completion. #226 M2 planning
+  may continue independently." Set Track 3's `Next:` to "#222" after #174 closes; keep
+  #174's completed planning on its historical track, and label new M7 step issues Track 2.
+- Lane A (WSL), the existing Track 2 lane, runs M7 and then M2. M7 does not wait for optional
+  lane C; lane C remains available for Track 3's #222. Preserve the other lane priorities.
 - Add an M2 inheritance item preserving optional Denise startup, context, access, local
   guide and reports when generated team launchers are replaced.
 - Preserve every unrelated completion status, issue ordering and counter reservation.
