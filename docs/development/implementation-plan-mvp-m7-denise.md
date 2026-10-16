@@ -12,12 +12,20 @@ the spec if it settles a remaining choice differently.
 
 ## Outcome and boundaries
 
-M7 is the next milestone, before M2. Preparing a run through
+M7 proceeds alongside M2. Preparing a run through
 `scripts/prep-standard-run.sh --config run-config.toml` (PowerShell: `.ps1`) generates a
 Denise start script without starting her. When trouble occurs, the operator opens a new
 terminal, runs `start-denise`, and gets an interactive assistant who knows which run to
 inspect and where robomate and the target project's instructions live. The hub may be down.
 The normal team has no dependency on Denise, her terminal, or her credentials.
+
+The operator's decision during #174 review replaces the original all-M7-before-M2
+ordering: M2 implementation continues on Track 2/lane A while M7 proceeds on Track 3.
+Only M2 Step 11 (#248), retirement of preparation, waits for completed Denise and a proven
+successor. The prepared-run first slice below remains wanted: it helps runs being prepared
+today and does not depend on unfinished M2 APIs. M2 Step 10 (#247) can proceed in parallel;
+Steps 10/11 then carry this behavior into the successor launcher before removing its old
+entry points. Operational assignments live on #2; the durable gate is in spec §13.
 
 Denise diagnoses, explains and performs requested recovery within a distinct operator
 assistant role. She is not a fourth worker, a backup Alice, an always-on monitor, or a hub
@@ -29,7 +37,9 @@ agents, inspect its state, or answer on the operator's behalf.
 
 ## Facts from current code
 
-Baseline inspected: `70250d8e63100f966cc9d7c5a50337760ddeb22d` (PR #234).
+Production baseline inspected: `70250d8e63100f966cc9d7c5a50337760ddeb22d` (PR #234).
+Reconciled with the M2 plan merged in `4d911a569e0fc545d538a13545486dfdc9ee6cac`
+(PR #236); that merge changes planning only, so the prepared-run constraints still apply.
 
 | Area | Constraint and implication |
 | --- | --- |
@@ -232,7 +242,7 @@ The recovery procedure is:
 | Hub host with remote workers | Generate Denise on the hub host; include remote bundle/session paths as remote references. Local diagnosis/startup must work without contacting remote hosts. Operator may run guarded resume on the worker host or provide an existing trusted SSH connection; no automatic credential distribution or remote process control. |
 | Remote-only doctor terminal | Deferred: not required for M7. Explain how to start Denise on the hub host instead. Do not claim local grants reach remote state. |
 | OpenCode/AntiGravity | Follow the first slice with tested interactive configs and access grants on supported hosts. No MCP and no headless worker loop. Needed before M7 completion. |
-| M2 replacement of preparation | Carry the context/guide/profile generation forward behind the new preparation/join experience; use the state resolver and recorded identity, not hard-coded `.robomate`. Denise remains optional and outside join. |
+| M2 replacement of preparation | M2 Steps 10/11 provide an optional doctor entry in the successor launcher, reading locally saved context from the state resolver and `runs/<run_id>/manifest.json`. Preserve the guide at `docs/denise/guide.md`; keep the context, isolated doctor profile, scoped access inventory and local reports under that run's `denise/` directory. Startup must work without HTTP or join. Only Step 11 waits for M7 and demonstrated replacement behavior. |
 
 No dependency on future M2 join, state relocation or M3 certification. No new package is
 expected. Changes needing a dependency follow `docs/dependency-licenses.md`. No counters
@@ -242,8 +252,9 @@ on #2 before editing. An optional manifest field alone does not consume those co
 ## Spec deltas and remaining choices
 
 This planning PR updates §1/§2 (optional help and instruction/checkout exceptions), §5.1
-(role contract), §7.5/§8/§12 (recovery, tool and authority boundaries), §13 (M7 before M2),
-and Appendix B (M2 migration preserves Denise). Existing worker guides remain in force.
+(role contract), §7.5/§8/§12 (recovery, tool and authority boundaries), §13 (parallel M7/M2
+with a retirement gate), and Appendix B (M2 migration preserves Denise).
+Existing worker guides remain in force.
 The implementation steps add the local doctor guide, templates and documentation, without
 changing current worker permissions. Record meaningful later changes in their PRs and
 update the design of record; no additional scope-locking mechanism is needed.
@@ -254,7 +265,7 @@ update the design of record; no additional scope-locking mechanism is needed.
 | Harness-specific scoped write grants, especially native Codex | Prefer explicit roots in the isolated config; test extra-directory reads/writes on native Windows before claiming isolation. #11's missing MCP tools are unrelated to Denise's no-MCP profile. Document any trusted-only harness/OS combination. |
 | Adopting Denise for already-prepared runs | New runs first; consider an explicit add-only doctor renderer that reads existing metadata, never reruns team preparation or changes existing scripts. Not required for initial M7. |
 | Conversation reuse | Fresh consultation with previous local reports as context. A Denise-only resume can follow if useful; never reuse a team conversation or overwrite its JSONL. |
-| Report retention | Retain locally with the run; no automatic deletion, DB storage, or raw transcript collection. Future #23 retention policy can explicitly include reports. |
+| Report retention | Retain locally with the run, including through M2's move to `runs/<run_id>/denise/reports/`; no automatic deletion, DB storage, or raw transcript collection. Future #23 retention policy can explicitly include reports. |
 | Future privileged tool surface | None in M7. Use existing CLI; unsupported privileged actions stay with the operator rather than designing a new authentication layer. |
 
 ## PR-sized steps
@@ -414,21 +425,27 @@ actual conversation restoration; record live checks and limitations explicitly.
 On opening this PR, propose the following in an attributed PR comment for adjudication;
 make the live #2 edit only when Alice assigns post-merge close-out:
 
-- Insert `M7 Denise: interactive doctor agent` immediately before M2, mark it the next
-  milestone, link #174 and this plan, mark planning complete only with the merged PR, and
-  leave implementation/acceptance unchecked. Open one issue per step as picked up rather
+- Insert `M7 Denise: interactive doctor agent` immediately before M2 for discoverability,
+  mark it next on Track 3 alongside M2 on Track 2, link #174 and this plan, mark planning
+  complete only with the merged PR, and leave implementation/acceptance unchecked.
+  Open one issue per step as picked up rather
   than inventing reservations or checking off the milestone with this document.
-- Rewrite the *Tracks and lanes* ordering sentence: "The milestone sections below give
-  the MVP order for Track 2: M7 next, then M2, M3, M4 and M6; other tracks continue
-  independently." Change Track 2's milestone list to "M7, then M2, M3, M4 and M6" and its
-  `Next:` to "M7 Step 1 (issue opened when picked up), then
-  the remaining M7 steps; M2 implementation steps wait for M7 completion. #226 M2 planning
-  may continue independently." Set Track 3's `Next:` to "#222" after #174 closes; keep
-  #174's completed planning on its historical track, and label new M7 step issues Track 2.
-- Lane A (WSL), the existing Track 2 lane, runs M7 and then M2. M7 does not wait for optional
-  lane C; lane C remains available for Track 3's #222. Preserve the other lane priorities.
-- Add an M2 inheritance item preserving optional Denise startup, context, access, local
-  guide and reports when generated team launchers are replaced.
+- Replace the opening "Work top to bottom" with parallel-track/dependency wording. Keep
+  Track 2's M2, M3, M4, M6 order and current next steps: M2 Steps 1, 3 and 5
+  (#238, #240, #242) can start together; #226 opened #238–#249. State that M7 proceeds
+  independently on Track 3 and only M2 Step 11 waits for completed Denise and its handoff.
+- Set Track 3's `Next:` to "M7 Step 1 (issue opened when picked up), then the remaining
+  M7 steps" after #174 closes. Keep #174 and new M7 step issues on Track 3. State that
+  #222 is carried into M2 Step 10 (#247), closed by Step 11 (#248), and is not a separate
+  prepared-run implementation to pick up next.
+- Preserve lane A (WSL) on Track 2/M2, lane B's priorities, and lane C (when available) on
+  Track 3/M7. Other M2 work proceeds without waiting for lane C.
+- In the existing M2 section, append the M7 prerequisite to #248's dependency list and
+  add an "Inherit from M7" item immediately after "Inherit from M5". Attach the handoff
+  to Step 10 (#247) and retirement Step 11 (#248): preserve optional startup, locally
+  readable run context, local guide, isolated profile, access and reports through the
+  successor launcher. Step 10 can proceed first; #248 alone waits for M7 and proof that
+  no doctor capability is lost. Preserve the rest of #238–#249 and their dependencies.
 - Preserve every unrelated completion status, issue ordering and counter reservation.
   This planning PR reserves no DB or wire counter and creates no implementation issues.
 

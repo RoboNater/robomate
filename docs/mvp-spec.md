@@ -107,7 +107,7 @@ robomate log --timeline    # drill down when something looks wrong
   worktree and prints the path to start the harness in. IDE harnesses open that folder.
 - The statement of work can also be pasted to the orchestrator in chat; `robomate submit` is
   preferred because it is stored byte-for-byte (§7.1).
-- **Help on demand (M7, before M2).** `scripts/prep-standard-run.sh --config run-config.toml`
+- **Help on demand (M7, alongside M2).** `scripts/prep-standard-run.sh --config run-config.toml`
   (or `.ps1`) generates `start-denise.sh` / `.ps1` alongside the team scripts. When help is
   needed, the operator opens another terminal and runs it. Denise starts interactively with
   short context for that selected run, even when the hub is down. Preparation never starts
@@ -1008,13 +1008,14 @@ itself.
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
-**Order:** M1, M5, pre-M2, **M7 (next)**, M2, M3, M4, M6. Existing milestone numbers
-stay fixed; M7 is inserted before M2 (#174), following the earlier M5 reordering (#68).
+**Order:** M1, M5, pre-M2, then **M2 and M7 in parallel**, followed by M3, M4 and M6.
+Existing milestone numbers stay fixed. M7 starts on the prepared-run topology (#174);
+only M2 Step 11, retirement of that path, waits for M7 completion and its replacement.
 The [M7 plan](development/implementation-plan-mvp-m7-denise.md) splits implementation into
 reviewable steps. #174 delivers its specification and plan, not the completed milestone.
 Roadmap #2 tracks the step issues, operational track/lane assignments and completion
-evidence. M2 planning may continue independently, but M2 implementation steps wait for M7
-completion. Other maintenance and operator-tooling work can continue independently.
+evidence. M2 implementation proceeds while M7 is built; the retirement gate preserves
+Denise rather than blocking the other M2 steps. Other work can continue independently.
 
 **Checkout scope (#54)** is delivered in three steps, so that nothing ships which M2 would
 have to undo:
@@ -1042,9 +1043,11 @@ the GitLab preflight that `prepare-run.py` runs moves to `robomate submit` when 
 the script. M3's certification checks `glab` as well as `gh` (§9.3), and needs M2's join and
 worktrees. M4 depends on M2.
 M7 uses the existing prepared-run topology and recovery helpers (#173), not M2's `join`,
-configuration layers or state relocation. M2 must carry forward Denise's run context,
-separate local guide, access and optional startup when it replaces generated team scripts;
-it must not turn her into an always-running joined agent.
+configuration layers or state relocation. M2 Steps 10/11 carry forward Denise's optional
+startup, run context, separate local guide, isolated profile, repair access and local
+reports through the successor launcher and locally readable run metadata. Step 10 can
+proceed before M7; Step 11 must prove that handoff before deleting the prepared-run path.
+Denise remains usable while the hub is down and outside the joined team.
 
 ---
 
