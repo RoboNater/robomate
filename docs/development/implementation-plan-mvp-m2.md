@@ -1,8 +1,9 @@
 # Implementation plan — MVP Milestone M2: join, worktrees, work intake
 
 Status: proposed. Tracking issue [#226](https://github.com/RoboNater/robomate/issues/226);
-roadmap [#2](https://github.com/RoboNater/robomate/issues/2), section M2. Step issues are
-opened after this plan merges and linked from the step headings.
+roadmap [#2](https://github.com/RoboNater/robomate/issues/2), section M2. Step issues:
+[#238](https://github.com/RoboNater/robomate/issues/238)–[#249](https://github.com/RoboNater/robomate/issues/249),
+linked under each step heading.
 
 This plan turns [`docs/mvp-spec.md`](../mvp-spec.md) §13 row M2 into a sequence of
 PR-sized steps. It is a plan, not a design of record: where it settles something the spec
@@ -673,6 +674,8 @@ harmless.
 
 ### Step 1 — Worker `join`, `whoami`, standing roles, takeover
 
+Issue: [#238](https://github.com/RoboNater/robomate/issues/238).
+
 **Scope.**
 - `robomate mcp` starts unjoined without `--role`; `join` and `whoami` for workers, with
   `hub=` resolution (see [join](#join-and-whoami-5)). `--role`/`--name`/`AGENT_NAME` and
@@ -719,6 +722,8 @@ uv run --project <checkout> python <checkout>/scripts/mock-worker.py --agent bob
 
 ### Step 2 — Orchestrator `join` and `guides/orchestrator.md`
 
+Issue: [#239](https://github.com/RoboNater/robomate/issues/239).
+
 **Scope.**
 - Orchestrator `join` over `/rpc` with the session headers; one orchestrator per hub;
   `takeover` replaces the M1 newest-session rule's implicit form, keeping its refusal of
@@ -756,6 +761,8 @@ uv run --project <checkout> python <checkout>/scripts/mock-alice.py --join
 
 ### Step 3 — Run identity, sequential workflows, queue
 
+Issue: [#240](https://github.com/RoboNater/robomate/issues/240).
+
 **Scope.**
 - The step's reserved DB version: `run_id`, `statement_sha256`, `queued`, the `statement`
   table (see
@@ -790,6 +797,8 @@ uv run --locked pytest tests/test_store.py tests/test_rpc.py tests/test_database
 **Size:** medium to large.
 
 ### Step 4 — `robomate submit`, `get_statement`, preflight at submit
+
+Issue: [#241](https://github.com/RoboNater/robomate/issues/241).
 
 **Scope.**
 - `robomate submit <file> | --issue N | -`, `--policy k=v`, through an operator-only
@@ -831,6 +840,8 @@ sha256sum "$T/sow.md"   # equals the stored SHA-256
 
 ### Step 5 — Configuration layers
 
+Issue: [#242](https://github.com/RoboNater/robomate/issues/242).
+
 **Scope.**
 - `agent_hub_common.config_layers`: the three files, first match wins, and the §4
   key-to-layer table enforced with errors that name the file and key.
@@ -858,6 +869,8 @@ uv run --locked pytest tests/test_config_layers.py tests/test_forge_detection.py
 **Size:** small to medium.
 
 ### Step 6 — State and token in `<worktree_root>/<hub>/`, bindings, `robomate relocate`
+
+Issue: [#243](https://github.com/RoboNater/robomate/issues/243).
 
 **Scope.**
 - The resolver takes a binding or registry entry; new hubs' state in
@@ -893,6 +906,8 @@ ls -ld "$T/repo.robomate"/*/token   # drwx------ (0700)
 **Size:** medium to large.
 
 ### Step 7 — Worktree manager and `robomate workspace`
+
+Issue: [#244](https://github.com/RoboNater/robomate/issues/244).
 
 **Scope.**
 - Worktree creation at join and through `robomate workspace <name>` and
@@ -933,6 +948,8 @@ guides, grants) if review needs it.
 
 ### Step 8 — `robomate clean` and branch deletion after merge
 
+Issue: [#245](https://github.com/RoboNater/robomate/issues/245).
+
 **Scope.**
 - `robomate clean [--hub …]` per §6, operator-only, never removing state or `runs/`.
 - The §15 decision in the orchestrator appendices: GitHub merge without `--delete-branch`,
@@ -958,6 +975,8 @@ gh pr merge <scratch PR> --squash --delete-branch --match-head-commit <head>   #
 
 ### Step 9 — Clone fallback for remote agents
 
+Issue: [#246](https://github.com/RoboNater/robomate/issues/246).
+
 **Scope.**
 - `robomate workspace <name> --clone <path> --hub-url URL --token-file F` on the agent's
   host: rejects unexpanded variables and placeholders, probes `/healthz` and the agent card
@@ -981,6 +1000,8 @@ uv run --project <checkout> robomate workspace bob --clone C:\agents\bob --hub-u
 **Size:** small to medium.
 
 ### Step 10 — Headless agents without generated configs
+
+Issue: [#247](https://github.com/RoboNater/robomate/issues/247).
 
 **Scope.**
 - `scripts/agent-launcher.py start|resume|ask <agent>`, the successor of `alice-launcher.py`,
@@ -1023,6 +1044,8 @@ uv run --locked pytest tests/test_agent_launcher.py tests/test_alice_launcher.py
 
 ### Step 11 — Retire the prepare-run path
 
+Issue: [#248](https://github.com/RoboNater/robomate/issues/248).
+
 **Scope.**
 - Requires completed M7 and a proven doctor replacement from Steps 10/11 (#247/#248),
   in addition to the M2 step dependencies. Exercise the successor doctor entry on Bash
@@ -1057,6 +1080,8 @@ uv run --locked pytest
 **Size:** large, mostly deletions. Split documentation from removal if review needs it.
 
 ### Step 12 — M2 acceptance run
+
+Issue: [#249](https://github.com/RoboNater/robomate/issues/249).
 
 **Operator prerequisites.**
 - Claude Code and Codex installed and logged in on the hub host (WSL or Linux), each with
@@ -1124,8 +1149,8 @@ run exposed. Fixes of more than a few lines get their own issue.
 
 - On merge of this plan, #2's M2 line "Milestone work per mvp-spec §13 (issue to be
   written)" becomes a checked line linking this plan (#226), in the M5 form, and one
-  unchecked line per step issue follows as the issues are opened, each with the GitHub
-  milestone "M2 Join, worktrees, work intake" and its Tests section.
+  unchecked line per step issue follows, #238–#249, each with the GitHub milestone
+  "M2 Join, worktrees, work intake" and its Tests section.
 - **Dispositions on #2:** #8 closes with Steps 1–2 and #9 with Step 4; #10 is carried into
   Step 4; #90 into Step 9. The "Inherit from M5" line is met by Steps 1, 2 and 4. The
   "Inherit from #181" line moves to M3 with `robomate install` (above). #93 and #96 are
