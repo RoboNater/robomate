@@ -124,7 +124,7 @@ directory itself is refused. If you created a checkout using `git init` and
 `git remote add origin` instead of `git clone`, run `git fetch origin` and
 `git remote set-head origin --auto` in it before `robomate up`.
 
-The command creates `<target>/.robomate/hub.json`, `hub.db`, and an owner-only token file. It prints the hub's name, its state directory, its URL, and bridge environment settings. Keep this terminal open. A second `up` in the same checkout reports the running hub; a later `up` reuses the recorded name and port, and a port that another process has taken meanwhile fails startup rather than moving the hub. The name comes from the checkout's directory name; give another with `up --name <name>` at the first `up`. It is then fixed, and unique among the repository's hubs: `up` refuses a name a sibling hub holds rather than pick another. `.robomate/` is excluded from git by the repository's local exclude file.
+The command creates `<target>/.robomate/hub.json`, `hub.db`, and an owner-only token file. It prints the hub's name, its state directory, its URL, and bridge environment settings. Keep this terminal open. A second `up` in the same checkout reports the running hub. The first `up` takes the first free port from 8420 upward, skipping ports that are in use or that the host forbids (on Windows, a port in an excluded range or held exclusively fails with WinError 10013). A later `up` reuses the recorded name and port, and a recorded or `--port` port that another process has taken or the host forbids meanwhile fails startup rather than moving the hub: remote agents are configured with that port. The name comes from the checkout's directory name; give another with `up --name <name>` at the first `up`. It is then fixed, and unique among the repository's hubs: `up` refuses a name a sibling hub holds rather than pick another. `.robomate/` is excluded from git by the repository's local exclude file.
 
 In the robomate checkout, prepare agent configs and start scripts:
 
@@ -364,8 +364,8 @@ Forgetting deletes nothing: the hub's database and run reports are kept; hub.jso
 its identity and last address, records the released port, and clears its pid. Only the
 registry entry goes, so the hub leaves `robomate ls` and its name and port become
 reusable. A live hub is never forgotten: stop it first. The forgotten hub's next `up`
-takes the first free port from 8420 and says that its port was released and names the
-new one, since remote agents configured with the old port need the new one. If another
+takes the first free port from 8420, skipping ports in use or forbidden as on the first
+`up`, and says that its port was released and names the new one, since remote agents configured with the old port need the new one. If another
 hub has taken the freed name since, that `up` is refused; rename with
 `robomate up --name <new>`. A rename starts a new worktree/branch namespace: agent
 worktrees and `robomate/<old>/…` branches made under the old name keep it. To stop

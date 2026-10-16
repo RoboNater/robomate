@@ -91,10 +91,27 @@ def _first_free_base() -> int:
     return base
 
 
+def _skippable(exc: OSError) -> bool:
+    """Whether the first-free scan should move past a port that failed to bind (#229).
+
+    In use (EADDRINUSE; Python keeps WinError 10048 as the errno), and
+    forbidden: a port in a Windows excluded range or held exclusively fails
+    with WinError 10013, which Python reports as EACCES. A privileged port on
+    POSIX fails with EACCES too, and is just as unusable.
+    """
+
+    return exc.errno in (errno.EADDRINUSE, errno.EACCES, 10048, 10013)
+
+
 def _bind(
     host: str, port: int | None, avoid: frozenset[int] = frozenset()
 ) -> tuple[socket.socket, int]:
-    """Bind the pinned or saved port, or the first free one from the base not in `avoid`."""
+    """Bind the pinned or saved port, or the first free one from the base not in `avoid`.
+
+    Only the unpinned scan moves past a port it cannot bind. A pinned or saved
+    port that fails, for any reason, stops startup: moving a saved port would
+    strand remote agents configured with it.
+    """
 
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     base = DEFAULT_BASE_PORT if port is not None else _first_free_base()
@@ -112,7 +129,7 @@ def _bind(
             return sock, candidate
         except OSError as exc:
             sock.close()
-            if port is not None or exc.errno not in (errno.EADDRINUSE, 10048):
+            if port is not None or not _skippable(exc):
                 raise RuntimeError(
                     f"port {candidate} is unavailable; choose --port: {exc}"
                 ) from exc

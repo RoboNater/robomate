@@ -5,7 +5,6 @@ import io
 import json
 import os
 import queue
-import random
 import re
 import socket
 import subprocess
@@ -28,6 +27,14 @@ from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
 from agent_hub_common.discovery import HubEndpoint, read_hub_json, write_hub_json
 from agent_hub_common.registry import process_alive, register, registry_path
+from conftest import (
+    DEFAULT_EPHEMERAL_RANGES,
+    PRODUCTION_PORTS,
+    ephemeral_port_range,
+    parse_netsh_dynamic_ports,
+    port_block_spans,
+    reserve_port_block,
+)
 from robomate.cli import _bind
 
 CLI = str(Path(sys.executable).with_name("robomate.exe" if sys.platform == "win32" else "robomate"))
@@ -58,6 +65,10 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         # registry_path() uses %LOCALAPPDATA% on Windows, so isolate it too;
         # otherwise the tests read and prune the operator's real hub registry.
         "LOCALAPPDATA": str(tmp_path / "localappdata"),
+        # A private block for the first-free scan, away from 842x and the
+        # ephemeral range: hubs and suites elsewhere on the host cannot move
+        # the smallest free port mid-test (#198, #204, #217).
+        "ROBOMATE_BASE_PORT": str(reserve_port_block()),
     }
     return root, env
 
@@ -415,47 +426,6 @@ def _cli(cwd: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProc
     return subprocess.run(
         [CLI, *args], cwd=cwd, env=env, text=True, capture_output=True, timeout=30
     )
-
-
-def _reserve_base_port_block(count: int = 8) -> int:
-    """Reserve a base port with `count` consecutive free ports (#198).
-
-    Binds and releases the block so the caller can hand the base to
-    `ROBOMATE_BASE_PORT`: the first-free scan then runs far above 842x, where
-    other hubs and test runs on a shared host cannot move the smallest free
-    port mid-test. Holding the block is not enough; it must be released before
-    `robomate up` binds it, so a retry loop re-probes until a free block is
-    found.
-
-    The block lies below the ephemeral ranges (Linux 32768+, Windows 49152+).
-    In them, another socket can take a port between this release and
-    `robomate up`'s bind; on Windows CI that bind then failed with WinError
-    10013 (#207).
-    """
-
-    for _ in range(50):
-        candidate = random.randrange(20000, 32768 - count)
-        held: list[socket.socket] = []
-        try:
-            for port in range(candidate, candidate + count):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                held.append(sock)
-                try:
-                    sock.bind(("127.0.0.1", port))
-                except OSError:
-                    break
-            else:
-                return candidate
-        finally:
-            for sock in held:
-                sock.close()
-    raise AssertionError("could not reserve a free port block")
-
-
-def _env_with_isolated_base(env: dict[str, str]) -> dict[str, str]:
-    """Copy `env` with ROBOMATE_BASE_PORT set to a reserved block (#198)."""
-
-    return {**env, "ROBOMATE_BASE_PORT": str(_reserve_base_port_block())}
 
 
 def test_two_hubs_in_one_repository(
@@ -867,6 +837,7 @@ def test_first_free_port_is_selected(monkeypatch: pytest.MonkeyPatch) -> None:
             pass
 
     monkeypatch.setattr("robomate.cli.socket.socket", lambda *_args: FakeSocket())
+    monkeypatch.delenv("ROBOMATE_BASE_PORT", raising=False)
     _, port = _bind("127.0.0.1", None)
     assert (attempted, port) == ([8420, 8421], 8421)
 
@@ -874,6 +845,7 @@ def test_first_free_port_is_selected(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_first_free_base_port_env_sets_scan_base(monkeypatch: pytest.MonkeyPatch) -> None:
     """#198: ROBOMATE_BASE_PORT moves the first-free scan; default stays 8420."""
 
+    monkeypatch.delenv("ROBOMATE_BASE_PORT", raising=False)
     assert cli._first_free_base() == 8420
     monkeypatch.setenv("ROBOMATE_BASE_PORT", "35000")
     assert cli._first_free_base() == 35000
@@ -905,6 +877,202 @@ def test_first_free_port_scan_starts_at_base(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("ROBOMATE_BASE_PORT", "35000")
     _, port = _bind("127.0.0.1", None)
     assert (attempted, port) == ([35000], 35000)
+
+
+def _failing_socket(failures: dict[int, OSError], attempted: list[int]) -> Callable[..., Any]:
+    class FakeSocket:
+        def setsockopt(self, *_args: object) -> None:
+            pass
+
+        def bind(self, address: tuple[str, int]) -> None:
+            attempted.append(address[1])
+            if address[1] in failures:
+                raise failures[address[1]]
+
+        def listen(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    return lambda *_args: FakeSocket()
+
+
+# How Python raises Windows' WSAEACCES and WSAEADDRINUSE from bind().
+FORBIDDEN_10013 = PermissionError(errno.EACCES, "[WinError 10013] forbidden")
+IN_USE_10048 = OSError(10048, "[WinError 10048] in use")
+
+
+def test_bind_first_free_scan_skips_forbidden_ports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#229: WinError 10013 (an excluded or exclusive port) and EACCES are skipped like in-use."""
+
+    monkeypatch.setenv("ROBOMATE_BASE_PORT", "35000")
+    attempted: list[int] = []
+    failures = {
+        35000: FORBIDDEN_10013,
+        35001: PermissionError(errno.EACCES, "denied"),
+        35002: IN_USE_10048,
+        35003: OSError(errno.EADDRINUSE, "in use"),
+    }
+    monkeypatch.setattr("robomate.cli.socket.socket", _failing_socket(failures, attempted))
+    _, port = _bind("127.0.0.1", None)
+    assert (attempted, port) == ([35000, 35001, 35002, 35003, 35004], 35004)
+
+
+def test_bind_pinned_or_saved_port_still_fails_on_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#229: a pinned --port or saved port that is forbidden fails, as one in use does."""
+
+    for failure in (FORBIDDEN_10013, PermissionError(errno.EACCES, "denied")):
+        attempted: list[int] = []
+        monkeypatch.setattr(
+            "robomate.cli.socket.socket", _failing_socket({35000: failure}, attempted)
+        )
+        with pytest.raises(RuntimeError, match="port 35000 is unavailable; choose --port"):
+            _bind("127.0.0.1", 35000)
+        assert attempted == [35000]
+
+
+def test_bind_first_free_scan_stops_on_other_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOMATE_BASE_PORT", "35000")
+    attempted: list[int] = []
+    failures = {35000: OSError(errno.EADDRNOTAVAIL, "no such address")}
+    monkeypatch.setattr("robomate.cli.socket.socket", _failing_socket(failures, attempted))
+    with pytest.raises(RuntimeError, match="port 35000 is unavailable"):
+        _bind("127.0.0.1", None)
+    assert attempted == [35000]
+
+
+NETSH_ENGLISH = """
+Protocol tcp Dynamic Port Range
+---------------------------------
+Start Port      : 1024
+Number of Ports : 64511
+"""
+NETSH_GERMAN = """
+Protokoll tcp Dynamischer Portbereich
+---------------------------------
+Startport       : 49152
+Anzahl der Ports : 16384
+"""
+
+
+def test_base_port_block_reads_host_ephemeral_range() -> None:
+    """#229: each platform's reader, parsed defensively, with the default as fallback."""
+
+    def unreadable(*_args: object) -> str:
+        raise OSError("unreadable")
+
+    def failing(argv: list[str]) -> str:
+        raise subprocess.CalledProcessError(1, argv)
+
+    assert ephemeral_port_range("linux", read_text=lambda _p: "32768\t60999\n") == (32768, 60999)
+    assert ephemeral_port_range("linux", read_text=lambda _p: "1024 65535\n") == (1024, 65535)
+    assert ephemeral_port_range("win32", run_text=lambda _a: NETSH_ENGLISH) == (1024, 65534)
+    assert ephemeral_port_range("win32", run_text=lambda _a: NETSH_GERMAN) == (49152, 65535)
+    assert ephemeral_port_range("darwin", run_text=lambda _a: "49152\n65535\n") == (49152, 65535)
+    for platform in ("linux", "win32", "darwin"):
+        default = DEFAULT_EPHEMERAL_RANGES[platform]
+        assert ephemeral_port_range(platform, read_text=unreadable, run_text=unreadable) == default
+        assert ephemeral_port_range(platform, read_text=unreadable, run_text=failing) == default
+        assert ephemeral_port_range(platform, read_text=lambda _p: "", run_text=lambda _a: "") == (
+            default
+        )
+    assert (
+        ephemeral_port_range("win32", run_text=lambda _a: "Start : 60000\nCount : 9999\n")
+        == (DEFAULT_EPHEMERAL_RANGES["win32"])
+    )
+    assert parse_netsh_dynamic_ports("The service is not running.") is None
+
+
+def _block_ports(spans: list[tuple[int, int]], count: int) -> tuple[int, int]:
+    """The lowest and highest port any block drawn from `spans` can use."""
+
+    return spans[0][0], spans[-1][1] + count - 1
+
+
+@pytest.mark.parametrize(
+    ("ephemeral", "outside"),
+    [
+        (DEFAULT_EPHEMERAL_RANGES["linux"], True),
+        (DEFAULT_EPHEMERAL_RANGES["win32"], True),
+        ((1024, 65534), False),
+        ((1024, 65535), False),
+    ],
+)
+def test_base_port_block_spans_avoid_ephemeral_and_production_ports(
+    ephemeral: tuple[int, int], outside: bool
+) -> None:
+    """#229: blocks lie outside the ephemeral range when it leaves room, never on 842x."""
+
+    count = 16
+    spans, is_outside = port_block_spans(ephemeral, count)
+    assert is_outside is outside
+    low, high = _block_ports(spans, count)
+    assert low >= 10000 and high <= 65535
+    for first, last in spans:
+        block_ports = (first, last + count - 1)
+        assert block_ports[1] < PRODUCTION_PORTS[0] or block_ports[0] > PRODUCTION_PORTS[1]
+        if outside:
+            assert block_ports[1] < ephemeral[0] or block_ports[0] > ephemeral[1]
+
+
+def test_base_port_block_never_relies_on_bind_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#217: a host whose bind(0) always answers low (Windows' sequential allocator)."""
+
+    bound: list[int] = []
+
+    class LowEphemeralSocket:
+        def __init__(self, *_args: object) -> None:
+            self.port = 0
+
+        def bind(self, address: tuple[str, int]) -> None:
+            self.port = address[1] or 8446 + len(bound)
+            bound.append(address[1])
+
+        def getsockname(self) -> tuple[str, int]:
+            return ("127.0.0.1", self.port)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(socket, "socket", LowEphemeralSocket)
+    for _ in range(20):
+        bound.clear()
+        base = reserve_port_block(16, ephemeral=(1024, 65535))
+        assert 0 not in bound
+        assert bound == list(range(base, base + 16))
+        assert base >= 10000 and not PRODUCTION_PORTS[0] <= base <= PRODUCTION_PORTS[1]
+
+
+def test_base_port_block_retries_in_use_and_forbidden_ports() -> None:
+    """#217/#229: a block with a port in use, forbidden or excluded is replaced."""
+
+    failures = [OSError(errno.EADDRINUSE, "in use"), FORBIDDEN_10013, IN_USE_10048]
+    probed: list[int] = []
+
+    def probe(base: int, count: int) -> None:
+        probed.append(base)
+        if failures:
+            raise failures.pop(0)
+
+    base = reserve_port_block(16, ephemeral=(32768, 60999), probe=probe)
+    assert len(probed) == 4 and base == probed[-1]
+
+
+def test_base_port_block_fails_clearly_only_after_its_bound() -> None:
+    probed: list[int] = []
+
+    def probe(base: int, count: int) -> None:
+        probed.append(base)
+        raise FORBIDDEN_10013
+
+    with pytest.raises(
+        AssertionError, match="could not reserve a free 16-port block in 5 attempts"
+    ):
+        reserve_port_block(16, ephemeral=(32768, 60999), probe=probe, attempts=5)
+    assert len(probed) == 5
 
 
 def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str]]) -> None:
@@ -1928,10 +2096,7 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
 ) -> None:
     """#159: forget a stopped hub; ls drops it, state stays, next up takes first free."""
 
-    root, base_env = repository
-    # #198: scan a reserved high block so 842x churn from other hubs or test
-    # runs cannot move the smallest free port mid-test.
-    env = _env_with_isolated_base(base_env)
+    root, env = repository
     wt_a, wt_b, wt_c = tmp_path / "wt-a", tmp_path / "wt-b", tmp_path / "wt-c"
     _commit_and_add_worktrees(root, wt_a, wt_b, wt_c)
     hub_a, hub_b = start(wt_a, env), start(wt_b, env)
@@ -1959,7 +2124,7 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
 
         # The freed port goes to the next hub that starts (it is the
         # smallest free port: the sibling's port is still held live, and the
-        # scan runs on an isolated block per #198).
+        # scan runs on the fixture's private block).
         hub_c = start(wt_c, env)
         try:
             c = await_hub(wt_c, hub_c)
@@ -1992,10 +2157,7 @@ def test_forget_all_only_forgets_stopped_hubs(
 ) -> None:
     """#159: forget --all drops every stopped hub and keeps live ones and state."""
 
-    root, base_env = repository
-    # #198: scan a reserved high block so 842x churn from other hubs or test
-    # runs cannot move the smallest free port mid-test.
-    env = _env_with_isolated_base(base_env)
+    root, env = repository
     wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
     _commit_and_add_worktrees(root, wt_a, wt_b)
     hub_a, hub_b = start(wt_a, env), start(wt_b, env)
