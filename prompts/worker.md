@@ -11,9 +11,14 @@ owns orchestration; you own only the task currently assigned to you.
 
 ## Protocol
 
-1. Call `check_in` once when the runtime starts. Report only capabilities and a
-   model identifier you actually know; configured launcher values take
-   precedence, and unknown identity fields must never be guessed.
+1. Call `join(name, role, ...)` once when the runtime starts, using the name and
+   standing role (`implementer`, `reviewer`, or `worker`) the operator gave you
+   (or call `check_in` once on prepared runs where `AGENT_NAME` is already
+   configured). Report only capabilities, a model identifier, and an effort
+   level you actually know; configured launcher values take precedence, and
+   unknown identity fields must never be guessed. The `join` response includes
+   this worker etiquette guide (`guide` and `guide_sha256`), any
+   `reattached_task` on `takeover=true`, and `next_call: "await_assignment"`.
 2. Call `await_assignment(timeout_s=100)`. A timeout is normal: call it again.
    Never poll in a tight loop. Keep holds under 120 s: Claude Code backgrounds
    any tool call still running at 120 s.
@@ -107,11 +112,13 @@ The MVP stays flexible: do not require exhaustive upfront specifications or
 approval of every adjustment, and do not add scope locking, source pinning,
 or change-control machinery.
 
-Use `ask_alice(task_id, question, timeout_s=100)` when a decision cannot be
-derived from the assignment, its acceptance criteria, the role guide, or
-repository policy. Ask before expanding scope, making a destructive choice,
-resolving an ambiguous conflict, or acting on contradictory requirements. Keep
-working on independent parts while the answer is pending when that is safe.
+Use `ask_orchestrator(task_id, question, timeout_s=100)` (or the
+`ask_alice(task_id, question, timeout_s=100)` alias on prepared runs) when a
+decision cannot be derived from the assignment, its acceptance criteria, the
+role guide, or repository policy. Ask before expanding scope, making a
+destructive choice, resolving an ambiguous conflict, or acting on contradictory
+requirements. Keep working on independent parts while the answer is pending when
+that is safe.
 
 A question timeout is normal. Retry the same question on the same task;
 `worker-mcp` reuses the original question message ID so Alice's answer cannot

@@ -89,6 +89,39 @@ class TaskRole(StrEnum):
     REBASE = "rebase"
 
 
+class StandingRole(StrEnum):
+    """Standing roles an agent joins with (mvp-spec §5)."""
+
+    ORCHESTRATOR = "orchestrator"
+    IMPLEMENTER = "implementer"
+    REVIEWER = "reviewer"
+    WORKER = "worker"
+
+
+WORKER_STANDING_ROLES: frozenset[StandingRole] = frozenset(
+    {
+        StandingRole.IMPLEMENTER,
+        StandingRole.REVIEWER,
+        StandingRole.WORKER,
+    }
+)
+
+_IMPLEMENTER_TASK_ROLES: frozenset[str] = frozenset({"implementer", "rebase", "closeout"})
+_REVIEWER_TASK_ROLES: frozenset[str] = frozenset({"reviewer"})
+
+
+def standing_role_accepts_task(standing_role: StandingRole, task_role: str) -> bool:
+    """True when `standing_role` is allowed to take a task of `task_role` (mvp-spec §5)."""
+
+    if standing_role is StandingRole.WORKER:
+        return True
+    if standing_role is StandingRole.IMPLEMENTER:
+        return task_role in _IMPLEMENTER_TASK_ROLES
+    if standing_role is StandingRole.REVIEWER:
+        return task_role in _REVIEWER_TASK_ROLES
+    return False
+
+
 class EventState(StrEnum):
     QUEUED = "queued"
     DELIVERED = "delivered"
@@ -202,15 +235,17 @@ REBASE_RESULT_SCHEMA: dict[str, Any] = RebaseResult.model_json_schema()
 
 
 class ModelSource(StrEnum):
-    """Where a worker's `model` came from (spec §3).
+    """Where a worker's profile field came from (spec §3, mvp-spec §5).
 
-    `env` is the operator's launcher configuration (`HUB_MODEL`); `declared` is
-    the agent naming its own model at check-in, used only when the launcher
-    names none. Neither is attested (§1 non-goals).
+    `env` is the operator's launcher configuration (`HUB_MODEL`); `install` is
+    the static MCP entry flag (`robomate mcp --harness <name>`); `declared` is
+    the agent naming its own model/effort/harness at join or check-in. Neither
+    is attested (§1 non-goals).
     """
 
     DECLARED = "declared"
     ENV = "env"
+    INSTALL = "install"
     UNKNOWN = UNKNOWN
 
 
@@ -232,3 +267,6 @@ class AgentProfile:
     capabilities: tuple[str, ...] = field(default_factory=tuple)
     workspace_id: str | None = None
     declared_model: str = UNKNOWN
+    harness_source: ModelSource = ModelSource.UNKNOWN
+    effort: str = UNKNOWN
+    effort_source: ModelSource = ModelSource.UNKNOWN

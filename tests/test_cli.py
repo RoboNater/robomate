@@ -2245,3 +2245,180 @@ def test_forget_one_lock_contention_skips_under_all(
     }
     with pytest.raises(RuntimeError, match="is starting"):
         cli._forget_one(entry, forget_all=False, as_json=False)
+
+
+def test_unjoined_mcp_join_whoami_and_hub_selector(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#238: `robomate mcp` starts unjoined, guards tools, and binds via `join`."""
+
+    root, env = repository
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    hub = start(root, env)
+    worker: subprocess.Popen[bytes] | None = None
+    try:
+        info = await_hub(root, hub)
+        await_registry(env, lambda found: any(e.get("hub_id") == info["hub_id"] for e in found))
+        worker_env = {
+            key: value
+            for key, value in env.items()
+            if key
+            not in {"ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE", "AGENT_NAME"}
+        }
+        worker = subprocess.Popen(
+            [CLI, "mcp", "--harness", "claude-code"],
+            cwd=outside,
+            env=worker_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        stdin, stdout = worker.stdin, worker.stdout
+        assert stdin is not None and stdout is not None
+        responses: queue.Queue[dict[str, Any]] = queue.Queue()
+
+        def read() -> None:
+            try:
+                for line in stdout:
+                    responses.put(json.loads(line))
+            except ValueError:
+                pass
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+
+        def send(payload: dict[str, Any]) -> None:
+            stdin.write((json.dumps(payload) + "\n").encode())
+            stdin.flush()
+
+        def wait_id(req_id: int) -> dict[str, Any]:
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    response = responses.get(timeout=max(0.0, deadline - time.monotonic()))
+                except queue.Empty:
+                    raise AssertionError(f"request {req_id} timed out") from None
+                if response.get("id") == req_id:
+                    return response
+
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
+            }
+        )
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        wait_id(1)
+
+        # 1. whoami before join
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "whoami", "arguments": {}},
+            }
+        )
+        whoami_before = wait_id(2)["result"]
+        assert not whoami_before.get("isError"), whoami_before
+        assert json.loads(whoami_before["content"][0]["text"]) == {"joined": False, "hub": None}
+
+        # 2. await_assignment before join fails naming join
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "await_assignment", "arguments": {}},
+            }
+        )
+        guarded = wait_id(3)["result"]
+        assert guarded.get("isError") is True
+        assert "join" in guarded["content"][0]["text"]
+
+        # 3. join from outside any checkout with unknown hub selector lists live hubs
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "join",
+                    "arguments": {"role": "implementer", "name": "bob", "hub": "no-such-hub"},
+                },
+            }
+        )
+        bad_hub = wait_id(4)["result"]
+        assert bad_hub.get("isError") is True
+        assert str(info["name"]) in bad_hub["content"][0]["text"]
+
+        # 4. join with hub=<name> succeeds and records install harness source
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "join",
+                    "arguments": {
+                        "role": "implementer",
+                        "name": "bob",
+                        "hub": str(info["name"]),
+                        "model": "claude-opus-4-7",
+                        "effort": "high",
+                    },
+                },
+            }
+        )
+        joined = wait_id(5)["result"]
+        assert not joined.get("isError"), joined
+        joined_body = json.loads(joined["content"][0]["text"])
+        assert joined_body["status"] == "registered"
+        assert joined_body["agent"] == "bob"
+        assert joined_body["role"] == "implementer"
+        assert joined_body["profile"]["harness"] == "claude-code"
+        assert joined_body["profile"]["harness_source"] == "install"
+        assert joined_body["profile"]["model"] == "claude-opus-4-7"
+        assert joined_body["profile"]["effort"] == "high"
+
+        # 5. whoami after join reflects hub state
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "tools/call",
+                "params": {"name": "whoami", "arguments": {}},
+            }
+        )
+        whoami_after = wait_id(6)["result"]
+        assert not whoami_after.get("isError"), whoami_after
+        after_body = json.loads(whoami_after["content"][0]["text"])
+        assert after_body["joined"] is True
+        assert after_body["name"] == "bob"
+        assert after_body["role"] == "implementer"
+        assert after_body["hub"] == info["url"]
+
+        stdin.close()
+        worker.wait(timeout=10)
+        stdout.close()
+        reader.join(timeout=10)
+        stop(root, env, hub)
+    finally:
+        if worker is not None:
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait(timeout=10)
+            if worker.stdin is not None and not worker.stdin.closed:
+                worker.stdin.close()
+            if worker.stdout is not None and not worker.stdout.closed:
+                worker.stdout.close()
+        if hub.poll() is None:
+            hub.terminate()
+            hub.wait(timeout=10)

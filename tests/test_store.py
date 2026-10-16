@@ -121,17 +121,23 @@ def test_check_in_registers_an_agent_and_queues_the_event(store: HubStore) -> No
     assert event.kind is EventKind.AGENT_CHECKED_IN
     assert event.payload == {
         "agent": "bob",
+        "standing_role": "worker",
         "harness": "claude-code",
+        "harness_source": "unknown",
         "harness_version": "2.1.268",
         "provider": "anthropic",
         "model": "claude-opus-5",
         "model_source": "env",
+        "effort": "unknown",
+        "effort_source": "unknown",
         "declared_model": "unknown",
         "model_mismatch": False,
         "capabilities": ["python"],
         "workspace_id": None,
         "context_id": agent.context_id,
         "worker_instance_id": "bob-1",
+        "takeover": False,
+        "reattached_task_id": None,
     }
 
 
@@ -213,6 +219,7 @@ def test_get_state_shows_each_workers_profile(store: HubStore) -> None:
         "worker_instance_id": "",
     } == {
         "name": "bob",
+        "standing_role": "worker",
         "status": "idle",
         "context_id": "",
         "last_seen": "",
@@ -221,10 +228,13 @@ def test_get_state_shows_each_workers_profile(store: HubStore) -> None:
         "last_progress_at": None,
         "current_task_id": None,
         "harness": "claude-code",
+        "harness_source": "unknown",
         "harness_version": "2.1.268",
         "provider": "anthropic",
         "model": "claude-opus-5",
         "model_source": "env",
+        "effort": "unknown",
+        "effort_source": "unknown",
         "capabilities": ["python"],
         "workspace_id": None,
         "declared_model": "unknown",
@@ -1340,3 +1350,82 @@ def test_repeated_pause_restarts_monotonic_grace(
     assert store.sweep(180) == []
     clocks.step(1)
     assert [e.kind for e in store.sweep(180)] == [EventKind.AGENT_LOST]
+
+
+@pytest.mark.parametrize("bad_name", ["Feature.B", "state", "token", "con", "-bob", ""])
+def test_check_in_validates_agent_names_like_hub_names(store: HubStore, bad_name: str) -> None:
+    with pytest.raises(ValueError, match="agent name"):
+        store.check_in(bad_name)
+
+
+def test_standing_roles_enforce_compatible_task_assignments(store: HubStore) -> None:
+    store.initialize_workflow()
+    store.check_in("bob", standing_role="implementer", worker_instance_id="bob-1")
+    store.check_in("charlie", standing_role="reviewer", worker_instance_id="charlie-1")
+    store.check_in("dan", standing_role="worker", worker_instance_id="dan-1")
+
+    with pytest.raises(ValueError, match=r"standing role '?implementer'?"):
+        store.assign_task("bob", "reviewer", "Review", "Look")
+    with pytest.raises(ValueError, match=r"standing role '?reviewer'?"):
+        store.assign_task("charlie", "implementer", "Impl", "Build")
+    with pytest.raises(ValueError, match=r"standing role '?reviewer'?"):
+        store.assign_task("charlie", "rebase", "Rebase", "Rebase branch")
+
+    impl_task = store.assign_task("bob", "implementer", "Impl", "Build")
+    store.submit_result(impl_task.id, "bob", TaskState.COMPLETED, "done")
+    rebase_task = store.assign_task("bob", "rebase", "Rebase", "Rebase branch")
+    store.submit_result(rebase_task.id, "bob", TaskState.COMPLETED, "done")
+    rev_task = store.assign_task("charlie", "reviewer", "Review", "Look")
+    store.submit_result(rev_task.id, "charlie", TaskState.COMPLETED, "done")
+
+    # Standing role 'worker' accepts every task role.
+    for task_role in ("implementer", "reviewer", "rebase"):
+        task = store.assign_task("dan", task_role, f"Task {task_role}", "Do work")
+        store.submit_result(task.id, "dan", TaskState.COMPLETED, "done")
+
+
+def test_takeover_supersedes_old_instance_and_reattaches_live_task(store: HubStore) -> None:
+    store.initialize_workflow()
+    store.check_in("bob", CLAUDE, standing_role="implementer", worker_instance_id="bob-1")
+    _ = store.next_event()
+    task = store.assign_task(
+        "bob", "implementer", "IMPLEMENT for #238", "Implement join", pr_head_sha=HEAD
+    )
+    assert task.state is TaskState.SUBMITTED
+
+    # Without takeover, a second live instance gets 409 DuplicateAgentError.
+    with pytest.raises(DuplicateAgentError, match=r"(?i)takeover=true"):
+        store.check_in("bob", CLAUDE, standing_role="implementer", worker_instance_id="bob-2")
+
+    # With takeover=True, the new instance supersedes bob-1 and reattaches the held task.
+    agent = store.check_in(
+        "bob",
+        CLAUDE,
+        standing_role="implementer",
+        worker_instance_id="bob-2",
+        takeover=True,
+    )
+    assert agent.worker_instance_id == "bob-2"
+    assert agent.status is AgentStatus.BUSY
+    assert agent.current_task_id == task.id
+    reattached = agent.reattached_task
+    assert reattached is not None
+    assert reattached["task_id"] == task.id
+    assert reattached["role"] == "implementer"
+    assert reattached["title"] == "IMPLEMENT for #238"
+    assert reattached["instructions"] == "Implement join"
+    assert reattached["pr_head_sha"] == HEAD
+    assert reattached["state"] == "working"
+
+    # The task is still working with the same task ID, and no AGENT_LOST event was queued.
+    current_task = store.get_task(task.id)
+    assert current_task is not None and current_task.state is TaskState.WORKING
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.AGENT_CHECKED_IN
+    assert event.payload["takeover"] is True
+    assert event.payload["reattached_task_id"] == task.id
+    assert store.next_event() is None
+
+    # The old instance's heartbeats are ignored; the new instance's heartbeats are accepted.
+    assert store.heartbeat("bob", "bob-1", task.id) is False
+    assert store.heartbeat("bob", "bob-2", task.id) is True

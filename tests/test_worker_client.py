@@ -169,10 +169,13 @@ async def test_check_in_reports_the_launcher_profile_to_get_state(
 
     expected = {
         "harness": "codex",
+        "harness_source": "env",
         "harness_version": "0.154.0",
         "provider": "openai",
         "model": "example-codex-model",
         "model_source": "env",
+        "effort": "unknown",
+        "effort_source": "unknown",
         "capabilities": ["python", "gh"],
         "workspace_id": None,
         "declared_model": "something-else",
@@ -654,3 +657,85 @@ async def test_worker_idempotent_submit_result_and_conflict(
     assert exc_info.value.code == -32600
     msg = exc_info.value.message.lower()
     assert "conflict" in msg or "already executed" in msg
+
+
+async def test_worker_join_whoami_and_takeover_over_a2a(
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+) -> None:
+    unjoined = WorkerSettings.unjoined(
+        profile=AgentProfile(harness="claude-code", harness_source=ModelSource.INSTALL),
+        environ={"ROBOMATE_HUB_URL": BASE_URL, "ROBOMATE_TOKEN": TOKEN},
+        default_wait_s=0.2,
+    )
+    async with WorkerHubClient(unjoined, http_client=client) as first:
+        before = await first.whoami()
+        assert before == {"joined": False, "hub": None}
+
+        join_res = await first.join(
+            role="implementer",
+            name="bob",
+            model="claude-opus-4-7",
+            effort="xhigh",
+            capabilities=["python", "git"],
+        )
+        assert join_res["status"] == "registered"
+        assert join_res["agent"] == "bob"
+        assert join_res["role"] == "implementer"
+        assert join_res["profile"]["harness"] == "claude-code"
+        assert join_res["profile"]["harness_source"] == "install"
+        assert join_res["profile"]["model"] == "claude-opus-4-7"
+        assert join_res["profile"]["model_source"] == "declared"
+        assert join_res["profile"]["effort"] == "xhigh"
+        assert join_res["profile"]["effort_source"] == "declared"
+
+        task = hub_store.assign_task("bob", "implementer", "Fix #238", "Implement join")
+        after = await first.whoami()
+        assert after["joined"] is True
+        assert after["name"] == "bob"
+        assert after["role"] == "implementer"
+        assert after["hub"] == settings.public_url
+        assert after["status"] == "active"
+        assert after["current_task"] == {
+            "task_id": task.id,
+            "role": "implementer",
+            "title": "Fix #238",
+            "state": "submitted",
+        }
+        assert after["last_seen"] is not None
+
+        # Without takeover=True, a second live session under the same name is refused
+        async with WorkerHubClient(unjoined, http_client=client) as duplicate:
+            with pytest.raises(WorkerProtocolError, match=r"(?i)takeover=true"):
+                await duplicate.join(role="implementer", name="bob")
+
+        # With takeover=True, the new session supersedes the first and reattaches the task
+        async with WorkerHubClient(unjoined, http_client=client) as replacement:
+            takeover_res = await replacement.join(
+                role="implementer",
+                name="bob",
+                takeover=True,
+            )
+            assert takeover_res["reattached_task"] is not None
+            assert takeover_res["reattached_task"]["task_id"] == task.id
+            assert takeover_res["reattached_task"]["role"] == "implementer"
+            assert takeover_res["reattached_task"]["title"] == "Fix #238"
+            assert takeover_res["reattached_task"]["state"] == "working"
+            assert replacement.current_task_id == task.id
+
+            # Old session's await_assignment now fails with superseded instance error
+            with pytest.raises(WorkerProtocolError, match="superseded"):
+                await first.await_assignment(timeout_s=0.1)
+
+            # Replacement can finish the task directly
+            done = await replacement.submit_result(
+                task.id,
+                ImplementerResult(
+                    outcome=ImplementerOutcome.COMPLETED,
+                    summary="Finished after takeover",
+                    pr_url="https://github.com/org/repo/pull/238",
+                    head_sha="0123456789abcdef0123456789abcdef01234567",
+                ),
+            )
+            assert done["status"] == "completed"

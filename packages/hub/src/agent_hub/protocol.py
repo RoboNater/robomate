@@ -49,6 +49,7 @@ from agent_hub_common import (
     MAX_MESSAGE_PART_BYTES,
     MAX_TYPED_RESULT_BYTES,
     UNKNOWN,
+    WORKER_STANDING_ROLES,
     AgentProfile,
     HubSettings,
     ImplementerResult,
@@ -56,9 +57,11 @@ from agent_hub_common import (
     ModelSource,
     RebaseResult,
     ReviewerResult,
+    StandingRole,
     TaskResult,
     TaskRole,
     TaskState,
+    validate_agent_name,
 )
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -264,6 +267,15 @@ def _profile_text(metadata: Mapping[str, Any], key: MetaKeys) -> str | None:
     return None if text in ("", UNKNOWN) else text
 
 
+def _source_value(metadata: Mapping[str, Any], key: MetaKeys) -> ModelSource:
+    raw = _profile_text(metadata, key) or UNKNOWN
+    try:
+        return ModelSource(raw)
+    except ValueError as exc:
+        allowed = ", ".join(item.value for item in ModelSource)
+        raise _invalid(f"metadata.{key} must be one of {allowed}") from exc
+
+
 def _profile(metadata: Mapping[str, Any]) -> AgentProfile:
     """Read the identity profile a check-in carries (§4.3).
 
@@ -275,12 +287,7 @@ def _profile(metadata: Mapping[str, Any]) -> AgentProfile:
     """
 
     model = _profile_text(metadata, MetaKeys.MODEL)
-    raw_source = _profile_text(metadata, MetaKeys.MODEL_SOURCE) or UNKNOWN
-    try:
-        source = ModelSource(raw_source)
-    except ValueError as exc:
-        allowed = ", ".join(item.value for item in ModelSource)
-        raise _invalid(f"metadata.{MetaKeys.MODEL_SOURCE} must be one of {allowed}") from exc
+    source = _source_value(metadata, MetaKeys.MODEL_SOURCE)
     if model is None:
         source = ModelSource.UNKNOWN
     elif source is ModelSource.UNKNOWN:
@@ -288,9 +295,17 @@ def _profile(metadata: Mapping[str, Any]) -> AgentProfile:
             f"metadata.{MetaKeys.MODEL} needs metadata.{MetaKeys.MODEL_SOURCE} "
             f"({ModelSource.ENV.value} or {ModelSource.DECLARED.value})"
         )
+    harness = _profile_text(metadata, MetaKeys.HARNESS) or UNKNOWN
+    harness_source = _source_value(metadata, MetaKeys.HARNESS_SOURCE)
+    if harness == UNKNOWN:
+        harness_source = ModelSource.UNKNOWN
+    effort = _profile_text(metadata, MetaKeys.EFFORT) or UNKNOWN
+    effort_source = _source_value(metadata, MetaKeys.EFFORT_SOURCE)
+    if effort == UNKNOWN:
+        effort_source = ModelSource.UNKNOWN
     capabilities = _string_list(metadata.get(MetaKeys.CAPABILITIES), MetaKeys.CAPABILITIES)
     return AgentProfile(
-        harness=_profile_text(metadata, MetaKeys.HARNESS) or UNKNOWN,
+        harness=harness,
         harness_version=_profile_text(metadata, MetaKeys.HARNESS_VERSION) or UNKNOWN,
         provider=_profile_text(metadata, MetaKeys.PROVIDER) or UNKNOWN,
         model=model or UNKNOWN,
@@ -298,6 +313,9 @@ def _profile(metadata: Mapping[str, Any]) -> AgentProfile:
         capabilities=tuple(dict.fromkeys(item.strip() for item in capabilities if item.strip())),
         workspace_id=_profile_text(metadata, MetaKeys.WORKSPACE_ID),
         declared_model=_profile_text(metadata, MetaKeys.DECLARED_MODEL) or UNKNOWN,
+        harness_source=harness_source,
+        effort=effort,
+        effort_source=effort_source,
     )
 
 
@@ -532,43 +550,73 @@ class A2AProtocol:
         name = metadata.get(MetaKeys.AGENT)
         if not isinstance(name, str) or not name.strip():
             raise _invalid(f"check-in requires metadata.{MetaKeys.AGENT}")
-        agent_name = name.strip()
+        try:
+            agent_name = validate_agent_name(name.strip())
+        except ValueError as exc:
+            raise _invalid(str(exc)) from exc
+        raw_role = _profile_text(metadata, MetaKeys.STANDING_ROLE) or StandingRole.WORKER.value
+        try:
+            standing_role = StandingRole(raw_role)
+        except ValueError as exc:
+            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
+            raise _invalid(f"metadata.{MetaKeys.STANDING_ROLE} must be one of {allowed}") from exc
+        if standing_role not in WORKER_STANDING_ROLES:
+            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
+            raise _invalid(f"metadata.{MetaKeys.STANDING_ROLE} must be one of {allowed}")
+        raw_takeover = metadata.get(MetaKeys.TAKEOVER, False)
+        if not isinstance(raw_takeover, bool):
+            raise _invalid(f"metadata.{MetaKeys.TAKEOVER} must be a boolean")
+        takeover = raw_takeover
         profile = _profile(metadata)
 
         payload_hash = _hash_payload(
             {
                 "intent": "check_in",
                 "agent": agent_name,
+                "standing_role": standing_role.value,
+                "takeover": takeover,
                 "worker_instance_id": worker_instance_id,
                 "capabilities": sorted(profile.capabilities),
                 "harness": profile.harness,
+                "harness_source": profile.harness_source.value,
                 "harness_version": profile.harness_version,
                 "provider": profile.provider,
                 "model": profile.model,
                 "model_source": profile.model_source.value,
                 "declared_model": profile.declared_model,
+                "effort": profile.effort,
+                "effort_source": profile.effort_source.value,
                 "workspace_id": profile.workspace_id,
             }
         )
 
-        resp_json, _ = self.store.check_in(
-            agent_name,
-            profile,
-            worker_instance_id=worker_instance_id,
-            operation_id=operation_id,
-            payload_hash=payload_hash,
-            response_builder=lambda agent: json.dumps(
+        def _build_ack(agent: AgentRecord) -> str:
+            ack_meta: dict[str, Any] = {
+                MetaKeys.KIND: "check_in_ack",
+                MetaKeys.AGENT: agent.name,
+                MetaKeys.STATUS: agent.status.value,
+                MetaKeys.WORKER_INSTANCE_ID: agent.worker_instance_id,
+                MetaKeys.STANDING_ROLE: agent.standing_role.value,
+            }
+            if agent.reattached_task is not None:
+                ack_meta[MetaKeys.REATTACHED_TASK] = agent.reattached_task
+            return json.dumps(
                 _agent_message(
                     "REGISTERED",
                     context_id=agent.context_id,
-                    metadata={
-                        MetaKeys.KIND: "check_in_ack",
-                        MetaKeys.AGENT: agent.name,
-                        MetaKeys.STATUS: agent.status.value,
-                        MetaKeys.WORKER_INSTANCE_ID: agent.worker_instance_id,
-                    },
+                    metadata=ack_meta,
                 ).model_dump(mode="json", exclude_none=True)
-            ),
+            )
+
+        resp_json, _ = self.store.check_in(
+            agent_name,
+            profile,
+            standing_role=standing_role,
+            takeover=takeover,
+            worker_instance_id=worker_instance_id,
+            operation_id=operation_id,
+            payload_hash=payload_hash,
+            response_builder=_build_ack,
             remote_addr=remote_addr,
         )
         note_a2a(actor=agent_name)

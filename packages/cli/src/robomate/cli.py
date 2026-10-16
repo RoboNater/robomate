@@ -1133,7 +1133,7 @@ def _ls(as_json: bool) -> None:
 
 
 async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
-    if args.role == "worker":
+    if args.role in (None, "worker"):
         await run_worker_bridge(stdout, name=args.name, harness=args.harness)
     else:
         bridge = OrchestratorBridge(args.name or "alice")
@@ -1211,7 +1211,7 @@ def main() -> None:
     )
     forget.add_argument("--json", action="store_true")
     mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
-    mcp.add_argument("--role", choices=("orchestrator", "worker"), required=True)
+    mcp.add_argument("--role", choices=("orchestrator", "worker"), default=None)
     mcp.add_argument("--name")
     mcp.add_argument("--harness")
     args = parser.parse_args()

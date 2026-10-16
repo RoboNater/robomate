@@ -11,10 +11,13 @@ from worker_mcp.config import WorkerSettings
 from worker_mcp.tools import create_worker_mcp
 
 EXPECTED_TOOLS = {
+    "join",
+    "whoami",
     "check_in",
     "get_role_guide",
     "await_assignment",
     "report_progress",
+    "ask_orchestrator",
     "ask_alice",
     "submit_result",
     "get_operator_answer",
@@ -28,6 +31,12 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
         agent_name="bob",
     )
     client = WorkerHubClient(settings)
+    client.join = AsyncMock(  # type: ignore[method-assign]
+        return_value={"status": "registered", "agent": "bob", "role": "implementer"}
+    )
+    client.whoami = AsyncMock(  # type: ignore[method-assign]
+        return_value={"joined": True, "name": "bob", "role": "implementer"}
+    )
     client.check_in = AsyncMock(  # type: ignore[method-assign]
         return_value={"status": "registered", "agent": "bob", "context_id": "c1"}
     )
@@ -36,19 +45,34 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
         return_value={"task_id": "t1", "role": "implementer", "instructions": "Do it"}
     )
     client.report_progress = AsyncMock(return_value={"ok": True, "note": "working"})  # type: ignore[method-assign]
+    client.ask_orchestrator = AsyncMock(return_value={"reply": "yes"})  # type: ignore[method-assign]
     client.ask_alice = AsyncMock(return_value={"reply": "yes"})  # type: ignore[method-assign]
     client.submit_result = AsyncMock(return_value={"status": "completed", "task_id": "t1"})  # type: ignore[method-assign]
 
     server = create_worker_mcp(client)
     tools = await server.list_tools()
-    tool_names = {t.name for t in tools}
-    assert tool_names == EXPECTED_TOOLS
+    tool_by_name = {t.name: t for t in tools}
+    assert set(tool_by_name) == EXPECTED_TOOLS
+    assert (
+        tool_by_name["join"].description
+        == "Call when the user asks you to join robomate. Use the name and role the user gives."
+    )
 
-    async def call(name: str, **args: Any) -> Any:
-        result = await server.call_tool(name, args)
+    async def call(tool_name: str, **args: Any) -> Any:
+        result = await server.call_tool(tool_name, args)
         assert isinstance(result, tuple)
         return result[1]
 
+    assert (await call("join", role="implementer", name="bob")) == {
+        "status": "registered",
+        "agent": "bob",
+        "role": "implementer",
+    }
+    assert (await call("whoami")) == {
+        "joined": True,
+        "name": "bob",
+        "role": "implementer",
+    }
     assert (await call("check_in", capabilities=["python"])) == {
         "status": "registered",
         "agent": "bob",
@@ -64,6 +88,9 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
         "ok": True,
         "note": "working",
     }
+    assert (
+        await call("ask_orchestrator", task_id="t1", question="is this ok?", timeout_s=30.0)
+    ) == {"reply": "yes"}
     assert (await call("ask_alice", task_id="t1", question="is this ok?", timeout_s=30.0)) == {
         "reply": "yes",
     }
@@ -79,6 +106,40 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
             },
         )
     ) == {"status": "completed", "task_id": "t1"}
+
+
+async def test_unjoined_bridge_refuses_other_tools_and_names_join() -> None:
+    client = WorkerHubClient(WorkerSettings.unjoined())
+    server = create_worker_mcp(client)
+
+    whoami_res = await server.call_tool("whoami", {})
+    assert isinstance(whoami_res, tuple)
+    assert whoami_res[1]["joined"] is False
+
+    guarded_calls: list[tuple[str, dict[str, Any]]] = [
+        ("check_in", {}),
+        ("get_role_guide", {"role": "implementer"}),
+        ("await_assignment", {}),
+        ("report_progress", {"task_id": "t1", "note": "step"}),
+        ("ask_orchestrator", {"task_id": "t1", "question": "q?"}),
+        ("ask_alice", {"task_id": "t1", "question": "q?"}),
+        (
+            "submit_result",
+            {
+                "task_id": "t1",
+                "result": {
+                    "outcome": "completed",
+                    "summary": "Done",
+                    "pr_url": "https://github.com/org/repo/pull/1",
+                    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                },
+            },
+        ),
+        ("get_operator_answer", {"question_id": 1}),
+    ]
+    for tool_name, args in guarded_calls:
+        with pytest.raises(ToolError, match="join"):
+            await server.call_tool(tool_name, args)
 
 
 async def test_worker_mcp_tool_boundary_writes_telemetry(tmp_path: Path) -> None:

@@ -1170,3 +1170,53 @@ async def test_a_legacy_escalation_without_questions_can_be_resumed(
     with database(hub_store.path) as connection:
         row = connection.execute("SELECT summary, rationale, actor FROM decision").fetchone()
     assert tuple(row) == ("Resume", "Workflow status set to active", "alice")
+
+
+async def test_assign_task_refuses_standing_role_mismatch_with_invalid_params(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    from agent_hub_common import StandingRole
+
+    hub_store.check_in("bob", AgentProfile(), standing_role=StandingRole.IMPLEMENTER)
+    hub_store.check_in("dave", AgentProfile(), standing_role=StandingRole.WORKER)
+    event = hub_store.lease_next_event()
+    assert event is not None
+
+    code, text = error_of(
+        await call(
+            client,
+            "assign_task",
+            agent="bob",
+            role="reviewer",
+            title="Review #238",
+            instructions="Review it",
+            event_id=event.id,
+        )
+    )
+    assert code == INVALID_PARAMS
+    assert "implementer" in text and "reviewer" in text
+
+    ok_rebase = await call(
+        client,
+        "assign_task",
+        agent="bob",
+        role="rebase",
+        title="Rebase #238",
+        instructions="Rebase it",
+        event_id=event.id,
+    )
+    assert "result" in ok_rebase
+
+    event2 = hub_store.lease_next_event()
+    assert event2 is not None
+
+    ok_general = await call(
+        client,
+        "assign_task",
+        agent="dave",
+        role="reviewer",
+        title="Review #238",
+        instructions="Review it",
+        event_id=event2.id,
+    )
+    assert "result" in ok_general

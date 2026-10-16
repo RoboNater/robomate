@@ -84,4 +84,5 @@ def test_no_route_reaches_state_without_the_token(app: FastAPI) -> None:
         "/a2a",
         "/rpc",
         "/guides/{role}.md",
+        "/whoami",
     }
