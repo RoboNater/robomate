@@ -127,9 +127,9 @@ and `followup_label` handling, and `robomate log --timeline` (M4); `call_log` re
    `guides/worker.md` is about 20 KB of duplicate instructions per worker start, and the
    orchestrator skill alone is larger than a 16 KiB message part. The join response that
    replaces them (§5) carries a guide once per session with its hash.
-10. **Counters.** DB schema v20 shipped for #95; the next is v21 (#2, Reservations). Wire
-    `hub.schema_version` is 1. #215 (M4) also needs a DB version, reserved at
-    implementation time.
+10. **Counters.** DB schema v20 shipped for #95, and #2's Reservations block names the next
+    free value. Wire `hub.schema_version` is 1. #215 (M4) also needs a DB version, reserved
+    at implementation time.
 
 ## Design
 
@@ -207,8 +207,9 @@ before join, when it reports what discovery would select.
   appendices stay merge-free, and the M5 test that no served worker guide contains a merge
   command stays green (M5 plan, "What M2 inherits").
 - The orchestrator's join response carries the guide and its hash, the hub's forge, the
-  queue and workflow summary, unacknowledged deliveries, and, with a workflow active, the
-  resume procedure (§5, §7.5). On a rejoin in the same bridge session the guide is
+  compact `get_state` summary (which gains the queue and `run_id` in Step 3, so the join
+  response needs no change then), unacknowledged deliveries, and, with a workflow active,
+  the resume procedure (§5, §7.5). On a rejoin in the same bridge session the guide is
   returned as "unchanged (hash)" (§11 lever).
 - The skill becomes a thin pointer to `join` (Appendix B). `prompts/alice.md` keeps working
   for prepared runs until Step 11.
@@ -283,9 +284,11 @@ adds:
   hub's `.robomate/config.toml` `[forge]` table is still honoured, with a warning naming the
   repository-level file to move it to, until the hub is relocated (Step 6). Nothing is
   rewritten for the operator.
-- Policy defaults and agent defaults (model and effort pins) come from the layers; `setup`
-  is returned in the join response (§6). `nits_issue`, `followup_label` and
-  `closeout_steps` are parsed and validated but have no reader until M4.
+- Policy defaults and agent defaults (model and effort pins) come from the layers, and so
+  does `setup`. `submit` applies the policy defaults (Step 4); the join response returns
+  `setup` and applies the agent pins once worktrees exist (Step 7, §6). `nits_issue`,
+  `followup_label` and `closeout_steps` are parsed and validated but have no reader until
+  M4.
 - The isolated smoke hub adds `XDG_CONFIG_HOME` (Windows `APPDATA`) to the variables it
   points into its temporary directory (§4, #145). `guides/worker.md` changes with it.
 
@@ -543,47 +546,104 @@ it. This PR changes no spec text.
 
 ## Reservations
 
-| Counter | Value | Step | Change |
-|---|---|---|---|
-| DB schema | v21 | 1 | `agent.standing_role` (`orchestrator`, `implementer`, `reviewer`, `worker`) and the join profile sources. Step 2 records the orchestrator's joined name and role with these columns |
-| DB schema | v22 | 3 | `workflow.run_id` (unique), `workflow.statement_sha256`, `queued` in the status check, a `statement` table (SHA-256 key, bytes, size, source, created) |
-| DB schema | v23 | 7 | Agent workspace path and kind (`worktree` or `clone`) and the run's branch on the workflow |
-| Wire `hub.schema_version` | none | — | `join` is a new operation, check-in and assignment responses gain fields additively, and no typed result changes shape (§3, §7.3) |
+The plan claims **no schema version number**. Three steps each need one new DB version,
+and each takes it the way M5 and AGENTS.md require: when the step issue is picked up, it
+reserves the then-next value on #2's Reservations block and only then writes the number
+into code or text. The steps below say "the step's reserved DB version" for that reason.
 
-These values are **proposed for reservation on #2 in this plan's PR**; they are not
-reserved until #2 says so. Steps 2, 4–6 and 8–11 expect no DB change. A step that finds it
-needs one, or that needs a different value, stops and reserves the then-next value on #2
-before editing (AGENTS.md). #215 (M4) takes the then-next value when it is implemented.
+| Counter | Step | Change |
+|---|---|---|
+| DB schema, one new version | 1 | `agent.standing_role` (`orchestrator`, `implementer`, `reviewer`, `worker`) and the join profile sources. Step 2 records the orchestrator's joined name and role with these columns |
+| DB schema, one new version | 3 | `workflow.run_id` (unique), `workflow.statement_sha256`, `queued` in the status check, a `statement` table (SHA-256 key, bytes, size, source, created) |
+| DB schema, one new version | 7 | Agent workspace path and kind (`worktree` or `clone`) and the run's branch on the workflow |
+| Wire `hub.schema_version` | — | No change: `join` is a new operation, check-in and assignment responses gain fields additively, and no typed result changes shape (§3, §7.3) |
 
-Steps 1, 3 and 7 can run in parallel with other steps, but not with each other's
-migrations: a DB at v20 needs v21 before v22. If Step 3 is ready to merge before Step 1,
-the two swap reservations on #2 before either merges, and the PR that merges first takes
-v21. Track 2 runs in one lane (Lane A on #2), so this should rarely happen.
+Steps 2, 4–6 and 8–11 expect no DB change. A step that finds it needs one reserves the
+then-next value on #2 before editing (AGENTS.md). #215 (M4) does the same.
+
+**Landing order.** Migrations are linear, so DB steps merge in the order of their
+reserved values. Step 7 merges after Steps 1 and 3 anyway (see [Steps](#steps)); only
+Steps 1 and 3 can be ready in either order. If the step with the higher value is ready to
+merge first, the two swap their values on #2, and rename them in their branches, before
+either merges.
 
 ## Steps
 
 Each step is one issue and one PR, reviewable on its own, and leaves `main` usable.
 Prepared runs keep working through Step 10. Every step that changes a hub or CLI entry
 point comes with pytest tests that start and stop their own hub (#145); a worker's manual
-smoke run follows `guides/worker.md`'s isolated-hub rules.
+smoke commands run inside the [isolated smoke recipe](#isolated-smoke-recipe).
 
 ```
-Step 1 worker join ───────────▶ Step 2 orchestrator join + guide ─────────────────────────────────┐
-Step 3 run identity + queue ──▶ Step 4 submit + get_statement ────────────────────────────────────┤
-Step 5 config layers ──▶ Step 6 state + bindings ──▶ Step 7 worktrees ─┬─▶ Step 8 clean + merge ──┤
-                                                                       ├─▶ Step 9 clone fallback ─┤
-                                                                       └─▶ Step 10 launcher ──────┤
-  (Step 7 also needs Step 1; Step 10 also needs Step 3)                                           ▼
-                                                    Step 11 retire prepare-run ──▶ Step 12 acceptance
+Start together   [1] worker join        [3] run identity + queue      [5] config layers
+                   │                      │                             │
+Next             [2] orchestrator join + guide ◀── 1
+                 [4] submit + get_statement    ◀── 3, 5
+                 [6] state + bindings          ◀── 5
+                   │
+Then             [7] worktrees                 ◀── 1, 3, 6
+                   │
+In parallel      [8] clean + merge ◀── 7    [9] clone fallback ◀── 7    [10] launcher ◀── 7
+                   │
+Then             [11] retire prepare-run       ◀── 2, 4, 8, 9, 10
+                   │
+Last             [12] acceptance               ◀── all
 ```
 
-Dependencies: Step 2 needs Step 1. Step 4 needs Step 3. Step 6 needs Step 5. Step 7 needs
-Steps 1 and 6. Steps 8, 9 and 10 need Step 7, and Step 10 also needs Step 3 for `run_id`.
-Step 11 needs Steps 2, 4, 8, 9 and 10. Step 12 needs all of them.
+Read `[k] … ◀── a, b` as "Step k merges only after Steps a and b". The table gives the
+reason for each edge.
 
-Parallel: Steps 1, 3 and 5 are independent and can start together (subject to the
-migration order above). Step 2 can run alongside Steps 3–6. Steps 8, 9 and 10 can run in
-parallel once Step 7 lands.
+| Step | Needs (must have landed) | Why |
+|---|---|---|
+| 1, 3, 5 | — | Each is tested on today's code alone |
+| 2 | 1 | The orchestrator joins with Step 1's bridge and columns |
+| 4 | 3, 5 | Statements and the queue (3); `submit` applies the layers' policy defaults and its test checks that (5) |
+| 6 | 5 | `worktree_root` comes from the layers |
+| 7 | 1, 3, 6 | Worktrees are made at `join` (1); the branch label comes from the stored statement, and its migration follows Step 3's (3); worktrees live in the hub namespace (6) |
+| 8, 9, 10 | 7 | They clean, clone beside, or start agents in generated workspaces; Step 10 also logs `run_id` (3, through 7) |
+| 11 | 2, 4, 8, 9, 10 | Every replacement exists before the old path goes |
+| 12 | all | |
+
+Parallel: Steps 1, 3 and 5 can start and land in any order, except that Steps 1 and 3
+merge in the order of their reserved DB versions ([Reservations](#reservations)). Step 2
+can run alongside Steps 3–6, Step 4 alongside Steps 6–7, and Steps 8, 9 and 10 alongside
+each other. A step whose prerequisite is still open may be prepared in parallel, but it
+merges only after the prerequisite. Its tests need the prerequisite's code.
+
+### Isolated smoke recipe
+
+A step's manual smoke commands run inside this block, never on their own. It satisfies
+`guides/worker.md`'s isolated-hub rules (#145, §4): every location is under one `mktemp -d`
+directory, the explicit hub variables are unset, the hub belongs to a temporary clone,
+the directory change happens in the foreground, the block waits until the hub answers and
+checks that `status` names this clone, and the hub it started is stopped however the block
+ends. `rb` is shorthand for the checkout under test.
+
+```sh
+T=$(mktemp -d); echo "$T"
+git clone -q <robomate origin URL> "$T/repo"
+(
+  set -eu
+  cd "$T/repo" || exit 1   # foreground: every command below runs in the temporary clone
+  export HUB_STATE_DIR="$T/hub-state" XDG_STATE_HOME="$T/xdg-state" \
+         XDG_CONFIG_HOME="$T/xdg-config" ROBOMATE_OPERATOR_TOKEN_FILE="$T/operator-token"
+  unset ROBOMATE_HUB_URL ROBOMATE_TOKEN ROBOMATE_TOKEN_FILE
+  rb() { uv run --project <robomate checkout under test> robomate "$@"; }
+  rb up --port <free port, not the run hub's> > "$T/up.log" 2>&1 &
+  trap 'rb down; wait' EXIT   # stops the hub this clone owns, however the block ends
+  for i in $(seq 30); do rb status > /dev/null 2>&1 && break; sleep 1; done
+  rb status --json | python3 -c 'import json, os, sys
+sys.exit(os.path.realpath(json.load(sys.stdin)["checkout"]) != os.path.realpath(os.getcwd()))' \
+    || { echo "no hub, or status names another hub; stopping" >&2; exit 1; }
+  # the step's smoke commands go here
+)
+```
+
+`rb down` in the temporary clone can reach only the hub that clone owns, since discovery
+never attaches silently (§4). If `up` failed, it refuses instead. The checks end the block
+with an explicit `exit 1` rather than relying on `set -e`, which some harness shells run
+with errexit suppressed. `XDG_CONFIG_HOME` matters from Step 5 on; setting it earlier is
+harmless.
 
 ### Step 1 — Worker `join`, `whoami`, standing roles, takeover
 
@@ -591,7 +651,8 @@ parallel once Step 7 lands.
 - `robomate mcp` starts unjoined without `--role`; `join` and `whoami` for workers, with
   `hub=` resolution (see [join](#join-and-whoami-5)). `--role`/`--name`/`AGENT_NAME` and
   `check_in` stay as aliases. `--harness` is accepted and recorded.
-- Standing roles `implementer`, `reviewer`, `worker` stored on the agent row (v21);
+- Standing roles `implementer`, `reviewer`, `worker` stored on the agent row (the step's
+  reserved DB version);
   `assign_task` refuses an incompatible role.
 - Name validation as for hub names (§5). 409 on a live name; `takeover=true` supersedes the
   old instance and reattaches its task.
@@ -615,15 +676,17 @@ parallel once Step 7 lands.
   accepts every task role.
 - `join(hub=<name>)` from a temporary directory outside any checkout reaches that hub; an
   unknown name lists the live hubs.
-- A v20 database migrates to v21 with existing agents as `worker`.
+- A database at the previous version migrates to the step's version with existing agents
+  as `worker`.
 - The prepared-run path: a bridge started with `--role worker --name bob` still checks in
   and takes a task.
 
 ```sh
 uv run --locked pytest tests/test_cli.py tests/test_worker_tools.py tests/test_worker_client.py \
     tests/test_store.py tests/test_rpc.py tests/test_database.py tests/test_mock_worker.py
-# isolated smoke (guides/worker.md): hub from robomate up in a temporary clone, then
-uv run --locked python scripts/mock-worker.py --agent bob --join implementer   # prints the join response
+# inside the isolated smoke recipe:
+uv run --project <checkout> python <checkout>/scripts/mock-worker.py --agent bob --join implementer
+#   -> prints the join response: identity, hub name, forge, worker guide hash
 ```
 
 **Size:** medium.
@@ -658,7 +721,9 @@ uv run --locked python scripts/mock-worker.py --agent bob --join implementer   #
 ```sh
 uv run --locked pytest tests/test_guides.py tests/test_runtime_content.py tests/test_rpc.py \
     tests/test_orchestrator_bridge.py tests/test_mock_alice.py
-uv run --locked python scripts/mock-alice.py --join   # new flag; against an isolated smoke hub
+# inside the isolated smoke recipe:
+uv run --project <checkout> python <checkout>/scripts/mock-alice.py --join
+#   -> prints the orchestrator join response with the guide hash
 ```
 
 **Size:** medium. Mostly prose, but every orchestrator reads it.
@@ -666,13 +731,14 @@ uv run --locked python scripts/mock-alice.py --join   # new flag; against an iso
 ### Step 3 — Run identity, sequential workflows, queue
 
 **Scope.**
-- v22: `run_id`, `statement_sha256`, `queued`, the `statement` table (see
+- The step's reserved DB version: `run_id`, `statement_sha256`, `queued`, the `statement`
+  table (see
   [Run identity](#run-identity-and-history-step-3)). Legacy workflows get a `run_id`.
 - `start_workflow(statement?, policy?)`; `initialize_workflow` as an alias scoped to the
   current workflow. One live workflow at a time.
 - `get_state` carries `run_id`, the queue and the previous run's summary; assignments carry
-  `run_id`. Policy `on_done`. `prompts/alice.md` and the skill's policy blocks follow
-  `WorkflowPolicy`.
+  `run_id`. Policy `on_done`. The policy blocks that `tests/test_runtime_content.py` pins
+  (`prompts/alice.md`, and the skill or `guides/orchestrator.md`) follow `WorkflowPolicy`.
 - `runs/<run_id>/manifest.json` at start and end, written atomically.
 - `robomate status` shows the run ID and queue length. `prepare-run.py`'s
   `check_hub_workflow` accepts a hub whose workflows are all `done`.
@@ -684,7 +750,7 @@ uv run --locked python scripts/mock-alice.py --join   # new flag; against an iso
   `start_workflow` while one is active is refused with -32002.
 - `initialize_workflow` with the same goal confirms the active workflow; after `done` it
   starts a new one with a new `run_id`.
-- A v21 database with one `done` workflow migrates to v22, gets a `run_id` from its
+- A database at the previous version with one `done` workflow migrates, gets a `run_id` from its
   `created` date, and accepts a new workflow.
 - The manifest is written at start and completed at `done`, and a hub restart in between
   leaves it valid JSON.
@@ -703,7 +769,9 @@ uv run --locked pytest tests/test_store.py tests/test_rpc.py tests/test_database
 - `robomate submit <file> | --issue N | -`, `--policy k=v`, through an operator-only
   `hub.submit` method; `work_submitted` event; the size cap (#10) with an actionable error.
 - `get_statement(sha)` for workers (A2A) and the orchestrator; assignments carry
-  `statement_sha256`. Guides tell Alice to reference scope, not restate it (#9).
+  `statement_sha256`. The orchestrator's instructions tell Alice to reference scope, not
+  restate it (#9): `guides/orchestrator.md` if Step 2 has landed, otherwise the skill,
+  whose content Step 2 then carries over.
 - Policy-dependent forge checks at submit, from the hub's functions; #96's origin rule;
   #93's cases as tests of the shared code. `prepare-run.py`'s duplicate GitLab checks call
   the shared functions until Step 11.
@@ -720,14 +788,17 @@ uv run --locked pytest tests/test_store.py tests/test_rpc.py tests/test_database
   failure with `auto` refuses and names the check; a 404 only in the argument list is not
   read as "no CI file". GitHub runs no `glab`.
 - A hub whose `hub.json` has no origin refuses submit.
+- `robomate submit` without `--policy` takes the repository layer's `max_review_rounds`;
+  with `--policy max_review_rounds=5` it takes 5.
 
 ```sh
 uv run --locked pytest tests/test_cli.py tests/test_rpc.py tests/test_worker_tools.py \
     tests/test_forge_preflight.py tests/test_prepare_run.py
-# isolated smoke hub (guides/worker.md; $T is its mktemp -d directory), in its temporary clone:
-printf 'Fix the typo in README.\r\n' > "$T/sow.md" && uv run --project <checkout> robomate submit "$T/sow.md"
-uv run --project <checkout> robomate status          # one queued statement, its SHA-256
-sha256sum "$T/sow.md"                                # equals the stored SHA-256
+# inside the isolated smoke recipe:
+printf 'Fix the typo in README.\r\n' > "$T/sow.md"
+rb submit "$T/sow.md"
+rb status               # one queued statement and its SHA-256
+sha256sum "$T/sow.md"   # equals the stored SHA-256
 ```
 
 **Size:** medium.
@@ -738,8 +809,10 @@ sha256sum "$T/sow.md"                                # equals the stored SHA-256
 - `agent_hub_common.config_layers`: the three files, first match wins, and the §4
   key-to-layer table enforced with errors that name the file and key.
 - `forge.*` from the repository and user layers; the legacy `[forge]` table honoured with a
-  warning. Policy and agent defaults; `setup` in the join response; the M4 keys parsed and
-  validated only.
+  warning. The resolved policy defaults, agent defaults and `setup` are returned by the
+  reader; their consumers come later: `submit` applies the policy defaults (Step 4), and
+  the join response carries `setup` and applies the agent pins (Step 7). The M4 keys are
+  parsed and validated only.
 - The isolated smoke hub sets `XDG_CONFIG_HOME`/`APPDATA` (§4); `guides/worker.md` and
   AGENTS.md follow.
 - §4 deltas.
@@ -749,7 +822,8 @@ sha256sum "$T/sow.md"                                # equals the stored SHA-256
 - Precedence for each key class, on Linux and Windows paths; `worktree_root` in a hub
   `config.toml` is an error; `nits_issue` in the user layer is an error.
 - A legacy `.robomate/config.toml` `[forge]` still selects GitLab and warns.
-- `robomate submit` without `--policy` takes the repository layer's `max_review_rounds`.
+- The reader resolves `max_review_rounds` from the repository layer over the user layer,
+  and a hub `config.toml` over both.
 
 ```sh
 uv run --locked pytest tests/test_config_layers.py tests/test_forge_detection.py tests/test_cli.py
@@ -765,7 +839,9 @@ uv run --locked pytest tests/test_config_layers.py tests/test_forge_detection.py
   `robomate-root.json` ownership record.
 - Owner bindings at `up`; legacy hubs run in place with a binding. Discovery rule 2
   follows the binding; a missing or stopped bound hub is an error naming it (§4).
-- `robomate relocate`; `up` refused in an agent-bound checkout.
+- `robomate relocate`; `up` refused in an agent-bound checkout. Step 6 defines the binding
+  format for both roles and writes owner bindings; Step 7 writes agent bindings, so Step 6's
+  tests write an agent binding by hand.
 - Every reader of `.robomate/` (fact 4) on the resolver; `prepare-run.py`'s `hub.db` read
   and `scripts/hub-report.py` take the state location from `robomate status --json`.
 - §4, §12 deltas.
@@ -783,10 +859,9 @@ uv run --locked pytest tests/test_config_layers.py tests/test_forge_detection.py
 
 ```sh
 uv run --locked pytest tests/test_discovery.py tests/test_cli.py tests/test_main.py
-# isolated smoke (XDG_STATE_HOME, XDG_CONFIG_HOME, operator token file in $T; ROBOMATE_* unset):
-cd "$T/repo" && uv run --project <checkout> robomate up --port <free port> &
-uv run --project <checkout> robomate status          # State: $T/repo.robomate/<hub>/state
-uv run --project <checkout> robomate down
+# inside the isolated smoke recipe:
+rb status                   # State: $T/repo.robomate/<hub>/state
+ls -ld "$T/repo.robomate"/*/token   # drwx------ (0700)
 ```
 
 **Size:** medium to large.
@@ -797,7 +872,9 @@ uv run --project <checkout> robomate down
 - Worktree creation at join and through `robomate workspace <name>` and
   `robomate up --agents …` (operator-only `hub.workspace`); agent bindings; locks; reuse
   per `(hub, agent)`; the orchestrator gets one too (§1 principle 5).
-- Workspace identity for worktrees (fact 3); v23 records the workspace and the run's
+- The join response returns `setup` and applies the agent pins from the layers (Step 5).
+- Workspace identity for worktrees (fact 3); the step's reserved DB version records the
+  workspace and the run's
   branch. The hub names `robomate/<hub>/<agent>/<label>` in the first implementer
   assignment and refuses an existing ref.
 - §12 agent boundaries and §6 hygiene in the served guides; scratch outside the worktree.
@@ -820,9 +897,9 @@ uv run --project <checkout> robomate down
 ```sh
 uv run --locked pytest tests/test_worktrees.py tests/test_workspace.py tests/test_cli.py \
     tests/test_rpc.py tests/test_guides.py
-# isolated smoke hub as in Step 6, then:
-uv run --project <checkout> robomate workspace bob   # prints $T/repo.robomate/<hub>/bob
-git -C "$T/repo" worktree list --porcelain           # bob's worktree, locked
+# inside the isolated smoke recipe:
+rb workspace bob                # prints $T/repo.robomate/<hub>/bob
+git worktree list --porcelain   # bob's worktree, locked with the hub's reason
 ```
 
 **Size:** large. Split 7a (worktrees, bindings, locks, `workspace`) and 7b (branches,
@@ -1009,9 +1086,9 @@ run exposed. Fixes of more than a few lines get their own issue.
   Step 4; #90 into Step 9. The "Inherit from M5" line is met by Steps 1, 2 and 4. The
   "Inherit from #181" line moves to M3 with `robomate install` (above). #93 and #96 are
   added under M2 with Step 4.
-- **Reservations:** v21 (Step 1), v22 (Step 3) and v23 (Step 7) are proposed in this plan's
-  PR and recorded on #2's Reservations line when the plan merges; next free becomes v24.
-  Wire `hub.schema_version` stays 1.
+- **Reservations:** none made by this plan. Steps 1, 3 and 7 each reserve one DB version
+  on #2 when they are picked up ([Reservations](#reservations)). Wire `hub.schema_version`
+  stays 1.
 - The interim issues outside the M2 section (#188, #189, #190, #219, #220, #222, #223,
   #232) keep their tracks; their issues get a comment with the disposition above when the
   step that settles them lands.
