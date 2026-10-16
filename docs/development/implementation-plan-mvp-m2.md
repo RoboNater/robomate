@@ -33,8 +33,9 @@ From §13:
 > steps of §12
 >
 > **Done when:** On Claude Code + Codex: `robomate up`, three one-line joins,
-> `robomate submit`, merged PR — with no `prepare-run.py`, no generated configs, no pasted
-> launch prompts; the same again from a second worktree's hub while the first runs
+> `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no
+> pasted launch prompts; Denise's separate context/profile/report files remain (§5.1).
+> The same again from a second worktree's hub while the first runs
 
 Inputs:
 
@@ -391,7 +392,7 @@ does not ask for it. The §15 row moves to §14.
 
 ### What replaces the prepare-run run path
 
-The done-when excludes `prepare-run.py`, generated configs and pasted launch prompts. Each
+The done-when excludes `prepare-run.py`, generated team configs and pasted launch prompts. Each
 capability of today's run path is replaced, kept as an optional launcher outside the core,
 or retired:
 

@@ -440,6 +440,8 @@ make the live #2 edit only when Alice assigns post-merge close-out:
   prepared-run implementation to pick up next.
 - Preserve lane A (WSL) on Track 2/M2, lane B's priorities, and lane C (when available) on
   Track 3/M7. Other M2 work proceeds without waiting for lane C.
+  If M7 is incomplete when #248 is otherwise ready, lane A takes the remaining M7 steps
+  before retirement; include this fallback in #2's M7 section.
 - In the existing M2 section, append the M7 prerequisite to #248's dependency list and
   add an "Inherit from M7" item immediately after "Inherit from M5". Attach the handoff
   to Step 10 (#247) and retirement Step 11 (#248): preserve optional startup, locally
