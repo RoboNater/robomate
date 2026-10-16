@@ -61,20 +61,31 @@ denise_effort = ""            # empty: inherit when using the same harness
 Resolution: CLI overrides TOML; then resolve against the selected agent's final settings.
 If the harness is overridden to another harness, empty model/effort use that harness's
 defaults, not a potentially invalid inherited model. With `settings_from = "none"`, an
-explicit harness is required and empty model/effort use harness defaults. Validate supported
-combinations early, naming a remedy. Persist effective values and the inheritance source
-so a later config edit cannot silently change a generated consultation. Do not infer model
-identity from a vendor or claim an unknown effort value.
+explicit harness is required and empty model/effort use harness defaults. Validate
+configuration structure and known option capabilities early, naming a remedy. Persist
+effective values and the inheritance source so a later config edit cannot silently change
+a generated consultation. Do not infer model identity from a vendor or claim an unknown
+effort value.
 
 Always generate the optional start script on supported combinations, regardless of team
 `auto_start`. There is no Denise auto-start or automatic recovery loop. If an inherited
 harness is not yet supported for Denise, prepare the team normally, skip `start-denise`,
 and warn with a concrete supported `--denise-harness` override. Record the skipped state
-and reason in the optional manifest object; do not point to a nonexistent script. Explicit
-unsupported Denise harness/model/effort settings remain clear preparation errors. Never
-silently substitute a different model. Initially implement interactive Claude Code and
-Codex on Bash/native PowerShell; then cover OpenCode and AntiGravity before marking M7
-complete. Devin remains explicitly
+and reason in the optional manifest object; do not point to a nonexistent script. "Explicit
+harness" means a nonempty `denise_harness` CLI/TOML override, not merely choosing
+`denise_settings_from`. Resolve and test the following defaults in Step 1:
+
+| Input | Result |
+| --- | --- |
+| Empty `denise_harness`, with default or explicitly chosen `denise_settings_from` naming an agent whose harness lacks doctor support | Inherited: prepare the team, skip Denise with a warning and supported override remedy. An explicit source selector does not turn inheritance into an explicit harness override. |
+| Nonempty `denise_harness` naming a harness without doctor support | Preparation error naming that override and supported alternatives. |
+| Model/effort values, inherited or explicitly supplied | Forward through the existing adapters without a new model/effort allowlist or provider probe; the harness validates values when Denise is started. Never silently substitute a different value. |
+| Nonempty explicit `denise_effort` where the interactive harness has no supported way to render an effort option | Preparation error naming the unsupported option. This is an adapter capability check, not validation of the effort value. |
+| Inherited effort with no supported interactive representation | Keep team preparation working; skip the doctor profile with a warning and an override remedy. |
+| Invalid selector/type, or `denise_settings_from = "none"` without the required harness | Configuration error, independent of the unsupported-inheritance rule. |
+
+Initially implement interactive Claude Code and Codex on Bash/native PowerShell; then
+cover OpenCode and AntiGravity before marking M7 complete. Devin remains explicitly
 unsupported for Denise until its interactive configuration and access behavior are tested;
 its existing team prototype and #235 do not establish doctor support. A team using Devin
 can choose an explicit supported Denise harness.
@@ -263,7 +274,9 @@ and legacy manifests. Config-generation mode
 must stay side-effect-free with respect to repositories/hubs. Do not advertise a working
 start script until Step 2 supplies it. Test that an unsupported inherited harness (Devin,
 and OpenCode/AntiGravity before Step 3) does not fail team preparation, records the skip
-and remedy, and emits no broken doctor script; explicit unsupported overrides must fail.
+and remedy, and emits no broken doctor script. Cover both default and explicit
+`denise_settings_from` selectors, nonempty explicit harness overrides, and the effort
+capability cases above. Verify model/effort values are forwarded without a new allowlist.
 Add a guide-route test proving `/guides/denise.md` and worker `get_role_guide("denise")`
 cannot serve the local operator guide, while ordinary role guides remain available.
 
