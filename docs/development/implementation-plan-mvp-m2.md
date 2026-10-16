@@ -637,6 +637,13 @@ merges only after the prerequisite. Its tests need the prerequisite's code.
 Step 11 also waits for completed M7 and its proven doctor replacement, as the table
 specifies; this is the only M2 implementation step gated on M7 completion.
 
+**Single-lane order.** Track 2 runs in one lane (#2), which takes the steps in this order:
+**1, 2, 3, 5, 4, 6, 7, 8, 9, 10, 11, 12.** Number order is not a valid sequence, because
+Step 4 needs Step 5; this order satisfies every prerequisite in the table and reserves the
+DB versions of Steps 1, 3 and 7 in that order. The order does not lift the M7 gate: the
+lane holds at Step 11 until M7 is complete, Step 11 proves the doctor handoff before it
+removes anything, and Step 12 follows Step 11.
+
 ### Isolated smoke recipe
 
 A step's manual smoke commands run inside this block, never on their own. It satisfies
@@ -709,10 +716,19 @@ Issue: [#238](https://github.com/RoboNater/robomate/issues/238).
   as `worker`.
 - The prepared-run path: a bridge started with `--role worker --name bob` still checks in
   and takes a task.
+- Wait defaults stay at or below 100 s (#12, taken into this step because it rewrites the
+  text that holds them). One named constant, with a comment citing #12 and
+  robo-agents #109, bounds `worker_mcp.config.DEFAULT_WAIT_S`, the `wait_for_event`
+  default as the orchestrator tool's input schema exposes it, and every `timeout_s=` in
+  `guides/worker.md` and `prompts/worker.md` (`await_assignment`, `ask_orchestrator` and
+  the `ask_alice` alias). Step 2 extends the same test to `guides/orchestrator.md`. Setting
+  any of them to 120 makes the test fail, naming the place. M3 replaces the constant with
+  per-harness limits (§9.2), which is what keeps #12 open.
 
 ```sh
 uv run --locked pytest tests/test_cli.py tests/test_worker_tools.py tests/test_worker_client.py \
-    tests/test_store.py tests/test_rpc.py tests/test_database.py tests/test_mock_worker.py
+    tests/test_store.py tests/test_rpc.py tests/test_database.py tests/test_mock_worker.py \
+    tests/test_runtime_content.py tests/test_worker_config.py
 # inside the isolated smoke recipe:
 uv run --project <checkout> python <checkout>/scripts/mock-worker.py --agent bob --join implementer
 #   -> prints the join response: identity, hub name, forge, worker guide hash
@@ -745,6 +761,7 @@ Issue: [#239](https://github.com/RoboNater/robomate/issues/239).
   refused and its event leases released.
 - `guides/orchestrator.md` on a `gitlab` hub carries the GitLab orchestrator appendix, on a
   `github` hub the GitHub one; no worker guide contains a merge command.
+- Step 1's wait-limit test (#12) also covers every `timeout_s=` in `guides/orchestrator.md`.
 - The join response with an active workflow contains the resume procedure and the
   unacknowledged deliveries; a rejoin returns the hash only.
 - The PR reports the served orchestrator bytes, before (skill plus prompt) and after.
