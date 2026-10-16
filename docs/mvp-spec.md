@@ -52,16 +52,20 @@ restarts and laptop standby don't strand a run; token usage per run is measured 
    assignment is self-contained (references + statement of work hash), so an agent session
    can be restarted or cleared between tasks at no loss.
 2. **Instructions come from the hub.** Tool descriptions, the `join` response, and served
-   guides. No role depends on a harness-specific skill mechanism.
+   guides for joined agents. Denise's operator-assistant guide is also available locally
+   so diagnosis works without the hub (§5.1). No role depends on a harness-specific
+   skill mechanism.
 3. **Agents drive the forge CLIs.** They can read `--help`, react to errors, and iterate.
    The hub reads forge facts for the merge gate; it does not perform forge writes.
 4. **The hub checks facts; agents make judgment calls and record them.** A close-out rule
    either is checked in code (merge state) or is forced into a typed, validated result (every
    leftover finding dispositioned) — never left to prose
    ([`docs/poc-lessons.md`](poc-lessons.md): "what no step verifies, no one does").
-5. **The operator's checkout is never touched.** That is the checkout that owns the hub
-   (§4): the main checkout or a linked worktree. Every agent, including the orchestrator,
-   works in its own generated worktree (§6).
+5. **The joined team leaves the operator's checkout alone.** That is the checkout that owns
+   the hub (§4): the main checkout or a linked worktree. Every joined agent, including the
+   orchestrator, works in its own generated worktree (§6). Denise is an operator assistant
+   outside that team; any repair to the owning checkout follows the separate authority
+   rules in §5.1.
 6. **Evidence belongs to its run** ([`docs/poc-lessons.md`](poc-lessons.md)). Runs have
    identity and a manifest by default.
 7. **Nothing enters an agent's context that it doesn't need.** Payload size is a design
@@ -103,6 +107,12 @@ robomate log --timeline    # drill down when something looks wrong
   worktree and prints the path to start the harness in. IDE harnesses open that folder.
 - The statement of work can also be pasted to the orchestrator in chat; `robomate submit` is
   preferred because it is stored byte-for-byte (§7.1).
+- **Help on demand (M7, alongside M2).** `scripts/prep-standard-run.sh --config run-config.toml`
+  (or `.ps1`) generates `start-denise.sh` / `.ps1` alongside the team scripts. When help is
+  needed, the operator opens another terminal and runs it. Denise starts interactively with
+  short context for that selected run, even when the hub is down. Preparation never starts
+  her with Alice, Bob, or Charlie; she is optional and normal orchestration does not wait
+  for her. See §5.1 and the [M7 plan](development/implementation-plan-mvp-m7-denise.md).
 
 ---
 
@@ -399,6 +409,93 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   queues one `agent_stalled` event; nothing is failed or restarted. Episodes are kept in
   `stall_episode` (DB schema v17).
 
+### 5.1 Denise: interactive operator assistant (M7)
+
+**Purpose and lifecycle.** Denise helps the operator diagnose and repair a selected run.
+She is a distinct interactive role, normally stopped, with no worker assignment, join,
+heartbeat, event lease, or orchestrator session. She never registers as Alice or a worker.
+Closing her terminal ends the consultation without releasing workers or changing workflow
+state. Starting her again reads current evidence; it does not replay a recovery action.
+M7 supplies generated start scripts and a local `docs/denise/guide.md`, outside the
+hub-served `guides/` directory, not a new hub service or MCP role. Harness/model/effort can
+inherit an existing agent's settings (initial default: Bob) or be overridden explicitly;
+only those settings are inherited, never that agent's identity, conversation, MCP
+configuration, or unattended launch policy.
+An unsupported inherited harness skips Denise's start script with a warning and a supported
+override remedy, while team preparation succeeds. Choosing `denise_settings_from`, even
+explicitly, still means inheritance; only a nonempty `denise_harness` override selects an
+explicit harness, whose lack of doctor support is a preparation error. Model and effort
+values pass through the harness adapters without a new allowlist. If an effort option
+cannot be rendered for the interactive harness, a nonempty `denise_effort` override errors
+and an inherited effort skips the doctor profile with a warning. Never silently substitute
+values.
+
+**Startup context.** A short local prompt identifies the run directory and manifest,
+expected hub identity and checkout, target repository, agents and workspace locations,
+generated scripts/configuration, and available hub/harness/session logs. It points to
+robomate's own code, docs, `AGENTS.md` and Denise guide by explicit paths, separately from
+the target repository's instructions: the hub checkout may contain another project's code.
+Paths are host-specific; missing or inaccessible remote evidence is labeled as such, not
+treated as empty or translated by guesswork. Logs and whole guides need not be pasted into
+every prompt. Initial support covers Bash and PowerShell on the hub host; remote-worker
+diagnosis uses recorded host/path references and operator-provided access (§4, §6), without
+silently copying credentials or assuming a local grant reaches another host.
+
+**Access and credentials.** The launch configuration grants read/write access to the
+selected run's generated files, hub checkout/state, recovery reports and relevant agent
+workspaces, plus the actual git common directories resolved through git for authorized
+repairs. Robomate code/docs are discoverable and readable; changing the robomate
+installation itself is a separate development task. Denise's working directory is a
+dedicated directory inside the run, not the operator's or a worker's checkout. Grants
+resolve real paths and distinguish local paths from remote locations. They never cover
+other runs merely because those runs share a parent directory. Shared git metadata may
+serve sibling hubs, so git writes still
+require checking their effect. These are filesystem grants, not hub privileges.
+
+Denise uses supported operator CLI commands in the operator's environment; no worker or
+orchestrator MCP bridge is configured for her. Bearer and operator credentials are read by
+the CLI through the existing discovery/provisioning path (§12), never embedded in prompts,
+manifests, configs or reports. The machine operator credential has wider reach than one
+run: M7 does not claim a new run-scoped credential. Commands must explicitly select and
+verify the intended hub. If the credential is unavailable, diagnosis still works and
+privileged actions remain with the operator. No secret value is printed or copied to a
+remote host. Any harness that cannot enforce the intended filesystem limits is described
+as trusted-only, rather than claiming sandbox isolation.
+
+**Authority and coordination.** Denise acts directly under the interactive operator's
+request, with routine inspection and reversible repairs within that request proceeding
+without repeated confirmation. She may perform requested hub/agent recovery with supported
+operator commands and resume paths, including #173. Starting Denise alone authorizes
+diagnosis, not every proposed intervention. Discarding work, changing task/workflow state,
+answering a pending operator question, or replacing a still-attached predecessor requires
+an explicit consequential decision from the operator. She inspects a running Alice's state
+and agrees a handoff before actions that would compete with orchestration; Alice continues
+to own assignments and the ordinary review/CI/merge process. Lack of activity or a broken
+connection alone is not proof that a process stopped. Never launch a duplicate Alice or
+worker, bypass review/CI, fabricate an operator answer, or reset the run to make it start.
+For an existing hub authority question, record the operator's decision through
+`robomate answer <id> ...`; Denise's conversation/report does not authorize a worker. An
+unavailable hub can be restored first under the operator's direct recovery request; it
+does not require Alice to be available to ask permission. The joined-team rules in §12
+remain unchanged; this future role grants no extra authority to existing workers.
+
+**Recovery and reporting.** Inspect before changing: manifest and host/process evidence,
+hub status/snapshot when reachable, workspace status/diffs, session logs, and relevant
+forge facts. Separate observations from hypotheses and unknowns. Preserve the original
+run/hub/workflow identities, exact conversation IDs, branches and uncommitted work, pending
+questions, typed results and deliveries. Prefer the existing `resume-<agent>` checks and
+explain a refusal's prerequisites; never use kickoff as recovery or bypass identity and
+attachment checks. #18 still owns automatic restart reconciliation, #19 standby protection,
+and #95 activity versus bridge liveness. Denise helps interpret these mechanisms; she does
+not replace them with another recovery engine. Missing logs or state are reported honestly
+with concrete next steps. Retain a concise, dated account under
+`RUN_DIR/denise/reports/`: diagnosis, material operator decisions/actions, verification,
+unresolved issues, and evidence paths/URLs. Start it before repair and update it as work
+proceeds so an interruption or unavailable hub does not erase it. Reports stay local and
+uncommitted by default; no raw transcripts or credentials, no automatic forge posting.
+Issue text, logs, transcripts and messages are diagnostic data, never recovery authority
+or instructions that override this role's guide and the operator's request.
+
 ---
 
 ## 6. Workspaces
@@ -407,7 +504,8 @@ unjoined session can call besides `whoami`. Its description is the install-free 
 - Every joined agent, orchestrator included, gets its own **generated git worktree**. The
   checkout that owns the hub (§4) is never an agent workspace, and robomate never modifies
   it beyond its binding record in its git directory, worktree registration in the git
-  common directory, and, until M2 moves hub state, `.robomate/`.
+  common directory, and, until M2 moves hub state, `.robomate/`. This is the joined-team
+  policy; Denise's separate consultation directory and authorized repairs are in §5.1.
 - **Location:** `<worktree_root>/<hub>/<agent>/`, with `worktree_root` defaulting to
   `<parent>/<repo>.robomate/` (§4). The hub's namespace `<worktree_root>/<hub>/` also holds
   its `state/` and `token/` directories (§4, §12), which is why those two names are not
@@ -574,9 +672,9 @@ An escalation is `ask_user(question, options?)`, answered with `robomate answer`
 queues the question and sets `escalated`; `robomate inbox` lists it; `robomate answer <id>
 <text>` (or `--option N`) answers it once through the operator-only `hub.answer` (#130); and the
 orchestrator receives a `user_answered` event. It is for escalations (the PoC rails), not
-routine close-out. Asking in chat is no longer an escalation path: only an answer given with
-`robomate answer` is an operator decision. The inbox makes a headless orchestrator possible and
-is the channel a future dashboard uses.
+routine close-out. For the joined team, asking in chat is no longer an escalation path:
+only an answer given with `robomate answer` is an operator decision. The inbox makes a
+headless orchestrator possible and is the channel a future dashboard uses.
 
 For a question solely about waiting for, canceling or reassigning an unfinished
 task, `ask_user` may also carry `waiting_on_task_id`. It records that task and
@@ -599,6 +697,10 @@ Legacy questions and another session's questions still require an operator answe
 - **Agent restart:** join with `takeover` → task reattached (§5).
 - **Orchestrator restart:** join as orchestrator → re-briefing in the join response; the guide's
   "On resume" procedure (PoC skill) reconciles with the forge before acting.
+- **Operator-assisted recovery:** Denise (§5.1) can help inspect failures and use the
+  generated guarded resume scripts (#173), without joining or replacing the orchestrator.
+  Her startup and report remain usable while hub HTTP/MCP is unavailable. Before M2,
+  today's launcher/check-in rules apply; future `join`/takeover is not assumed to exist.
 - **Host standby (#19):** the sweeper detects a wall-clock jump against the monotonic clock and
   grants a grace window before declaring anyone lost, expiring task/event leases, or
   reporting stalls. A forward wall/monotonic discrepancy over 5 seconds, or a gap
@@ -620,6 +722,8 @@ Legacy questions and another session's questions still require an operator answe
 
 One static tool list for every session; the hub enforces role. Tool schemas are counted in
 the token budget (§11); list-changed per-role surfaces are an open decision (§15).
+This surface is for joined agents. Denise (§5.1) has no hub MCP connection; she uses local
+tools and supported operator CLI commands, without consuming events or taking a session.
 
 | Tool | Who | Change from PoC |
 |---|---|---|
@@ -829,6 +933,8 @@ Single operator. Loopback bind by default. Agents are untrusted as to role and a
 The hub enforces roles, attributes every action, and accepts operator authority only
 through the operator channel. Keeping the operator credential away from agents depends on
 the harness sandbox; a harness run without one can read it, so such runs are trusted-only.
+Denise is the separate interactive operator assistant of §5.1; her access is deliberately
+different from the joined team's, and does not relax any worker or orchestrator rule below.
 Identity and model metadata are self-declared (PoC §1).
 Agents share the operator's forge identity; the hub's typed reviewer verdict remains the
 approval record (PoC #37). The merge gate runs the forge CLI with that identity, so it reads
@@ -880,7 +986,8 @@ condition in §4 (#145).
   bridge, which reads the hub's token on the agent's behalf.
 - Sandbox grants name the agent's worktree and the actual git common directory. They never
   name `<checkout>/.git`, which is a file in a linked worktree, and never the hub's
-  namespace `<worktree_root>/<hub>/` or its state directory (§6).
+  namespace `<worktree_root>/<hub>/` or its state directory (§6). These joined-agent
+  boundaries do not describe Denise's operator-authorized recovery access (§5.1).
 
 ---
 
@@ -894,13 +1001,21 @@ itself.
 | M0 | Seed robomate | `RoboNater/robomate` created with the PoC files and this spec; `poc-spec.md` frozen; PoC acceptance scripts archived (Appendix B); robo-agents #57 exported to `docs/poc-lessons.md`; Python distribution renamed `robomate`; roadmap issue, a minor-nits issue, and one issue per carried item (Appendix A) opened; robo-agents archived with a pointer to robomate | CI green in robomate; the roadmap lists M1–M6 with the carried issues attached; robo-agents is read-only |
 | M1 | Standalone hub + `robomate` CLI | `robomate up/down/status/ls`, `.robomate/` layout, registry, port reuse; orchestrator JSON-RPC route; `robomate mcp` bridge for all roles (existing tool names) with heartbeat and discovery; accounting on (#7); fix flaky tests (#6) | A real run completes with the hub from `robomate up`, and the orchestrator's session is restarted mid-run without disturbing workers |
 | Pre-M2 | Checkout-scoped hubs: identity, discovery, lifecycle | The checkout owns its hub, bare-repository layouts included; hub names; per-hub registry entries, `up.lock`, and port; discovery without silent attach and an explicit hub selector for the CLI; legacy hubs keep their state (§4). State stays in the checkout's `.robomate/`, reached through one resolver | Two hubs from two linked worktrees of one repository run at once with distinct names, state, and ports, and `robomate ls` shows both; stopping one leaves the other running; `down` and `status` in a checkout with no hub refuse and list both; a hub created before the change starts with its old state; the standard run path is unchanged |
-| M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated configs, no pasted launch prompts; the same again from a second worktree's hub while the first runs |
+| M7 | Denise: interactive doctor agent | Optional generated `start-denise.sh` / `.ps1` from standard-run preparation; harness/model/effort inheritance and overrides; short run-specific context with robomate and target-repository references; local guide, selected-run repair access and operator authority rules (§5.1); hub-independent recovery reports | The operator starts Denise only when needed, with no hand-assembled briefing, on Bash and native PowerShell. Diagnosis works with the hub down and with a separate target repository. Recorded acceptance covers a stopped hub, an agent returned to the shell, an attached/orphan predecessor, a pending question or pause, and preservation of uncommitted work; normal team scripts and orchestration remain usable |
+| M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no pasted launch prompts; Denise's separate context/profile/report files remain (§5.1). The same again from a second worktree's hub while the first runs |
 | M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; Devin CLI certified, or attempted and recorded; Devin Desktop (Devin Local) attempted via `join` and recorded; one real run with a non-Claude orchestrator |
 | M4 | Close-out and resilience | `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
-**Order:** M1, M5, pre-M2, M2, M3, M4, M6. The names stay M1–M6; only the order changed (#68).
+**Order:** M1, M5, pre-M2, then **M2 and M7 in parallel**, followed by M3, M4 and M6.
+Existing milestone numbers stay fixed. M7 starts on the prepared-run topology (#174);
+only M2 Step 11, retirement of that path, waits for M7 completion and its replacement.
+The [M7 plan](development/implementation-plan-mvp-m7-denise.md) splits implementation into
+reviewable steps. #174 delivers its specification and plan, not the completed milestone.
+Roadmap #2 tracks the step issues, operational track/lane assignments and completion
+evidence. M2 implementation proceeds while M7 is built; the retirement gate preserves
+Denise rather than blocking the other M2 steps. Other work can continue independently.
 
 **Checkout scope (#54)** is delivered in three steps, so that nothing ships which M2 would
 have to undo:
@@ -927,6 +1042,12 @@ guides are already forge-neutral and composed with a forge appendix at serve tim
 the GitLab preflight that `prepare-run.py` runs moves to `robomate submit` when M2 removes
 the script. M3's certification checks `glab` as well as `gh` (§9.3), and needs M2's join and
 worktrees. M4 depends on M2.
+M7 uses the existing prepared-run topology and recovery helpers (#173), not M2's `join`,
+configuration layers or state relocation. M2 Steps 10/11 carry forward Denise's optional
+startup, run context, separate local guide, isolated profile, repair access and local
+reports through the successor launcher and locally readable run metadata. Step 10 can
+proceed before M7; Step 11 must prove that handoff before deleting the prepared-run path.
+Denise remains usable while the hub is down and outside the joined team.
 
 ---
 
@@ -937,10 +1058,11 @@ worktrees. M4 depends on M2.
 | Unit of work | One run = one PR/MR; sequential runs via queue; carried context = previous run summary only |
 | Hub scope | One hub per checkout (main checkout or linked worktree), own name, state, and port; registry + `robomate ls`/`robomate status` to tell them apart; no silent attach. Reason: a git worktree should be an isolated enough place for a team of agents to work, so parallel lines of work in one repository need separate worktrees, not full clones (#54) |
 | Forge operations | Agents run `gh`/`glab` directly; hub gate reads facts only; orchestrator merges bound to the approved SHA |
-| Workspaces | Generated worktree per agent (orchestrator included) at `<worktree_root>/<hub>/<agent>/`, outside every checkout, beside the hub's state; locked while in use; the owning checkout is never a workspace; clone fallback for other host/OS. Reason: state must survive `git worktree remove` of the owning checkout, and stable paths let harnesses resume sessions (#54) |
+| Workspaces | Generated worktree per joined agent (orchestrator included) at `<worktree_root>/<hub>/<agent>/`, outside every checkout, beside the hub's state; locked while in use; the owning checkout is never a workspace; clone fallback for other host/OS. Reason: state must survive `git worktree remove` of the owning checkout, and stable paths let harnesses resume sessions (#54) |
+| Operator assistant | Denise uses a separate consultation directory, local guide and operator-authorized recovery access (§5.1); she is outside join, team workspaces and the assignment queue |
 | Harness/model/role | Any certified harness, any model and effort, any role; tiers from `robomate certify` |
 | Forges | GitHub and GitLab (incl. self-hosted) |
-| Instruction delivery | Tool descriptions, join response, served guides; no harness-specific skill required |
+| Instruction delivery | Tool descriptions, join response, served guides for the joined team; local guide and generated context for Denise (§5.1); no harness-specific skill required |
 | Close-out | Hub-built `closeout` task with a validated typed result; `done` requires merge state per `deliver` and a completed close-out; run report replaces reading agent chat; `robomate abandon` is the operator's no-delivery exit. No general obligation ledger in the MVP |
 | Orchestrator mode | Interactive or headless; both supported via the inbox |
 | Users | Single operator; per-hub shared token plus the operator credential; loopback default |
@@ -1024,12 +1146,12 @@ milestone shown, linking the robo-agents original for history.
 |---|---|
 | `docs/poc-spec.md`, PoC evidence, plans for Steps 6/7 | Frozen; historical record |
 | `scripts/step5*`, `step6*`, `step7*`, `launch-step*`, `verify-step*`, `run-step6-disturbances.py`, their tests | Move to `scripts/poc/`; not maintained; tests moved out of the default CI run |
-| `scripts/prepare-run.py`, `bootstrap-workspace.*` | Kept until M2 covers their topologies (incl. remote workers), then removed |
+| `scripts/prepare-run.py`, `bootstrap-workspace.*` | Kept until M2 covers their topologies (incl. remote workers) and M7's optional Denise startup/context, then removed |
 | `scripts/mock-alice.py`, `mock-worker.py` | Kept; become the engine of `robomate certify` and the scripted E2E tests |
 | `scripts/supervise-claude-code.sh` | Kept; referenced from the Claude Code harness profile |
 | `scripts/hub-report.py` | Folded into `robomate log` / `robomate status` |
 | `skills/alice-orchestrator` | Content moves to `guides/orchestrator.md` (M2); an optional thin `robomate` skill only points the agent at `join` |
 | `skills/alice-relay`, `docs/historical/poc/notes/relay-trial-*` | Archived |
-| `skills/worker`, `prompts/*.md` | Replaced by join responses (M2) |
+| `skills/worker`, `prompts/*.md` | Joined-team content replaced by join responses (M2); Denise's local startup context and guide remain available without a hub |
 | `docs/user-guide.md` | Rewritten around `robomate` (M2, M3) |
 | `packages/worker_mcp` | Becomes `robomate mcp` |

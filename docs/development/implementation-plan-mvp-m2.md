@@ -16,6 +16,10 @@ M2 runs after M1, M5 and the pre-M2 checkout-scope step (#147, PR #157), in that
 state in the checkout's `.robomate/`, `robomate mcp` bridges in `--role` mode, and runs
 prepared by `scripts/prepare-run.py`.
 
+M7 Denise proceeds in parallel on the prepared-run path. Only Step 11 (#248) waits for
+M7 completion and the doctor handoff described below; the other M2 implementation steps,
+including Step 10 (#247), can proceed independently (spec §13; #174 review decision).
+
 ## What M2 has to deliver
 
 From §13:
@@ -29,8 +33,9 @@ From §13:
 > steps of §12
 >
 > **Done when:** On Claude Code + Codex: `robomate up`, three one-line joins,
-> `robomate submit`, merged PR — with no `prepare-run.py`, no generated configs, no pasted
-> launch prompts; the same again from a second worktree's hub while the first runs
+> `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no
+> pasted launch prompts; Denise's separate context/profile/report files remain (§5.1).
+> The same again from a second worktree's hub while the first runs
 
 Inputs:
 
@@ -55,6 +60,8 @@ Inputs:
   point.
 - The two inheritance lines on #2: from M5 (M5 plan, "The run path before M2") and from
   #181 (pywin32 kept out of the `uv tool install` path).
+- M7's optional interactive Denise (#174), built alongside M2 and retained through the
+  Step 10/11 launcher handoff before retirement.
 - What the run path grew after M1, which M2 has to replace or keep: headless launchers and
   backoff (#146, #165, #158), generated guarded recovery (#173), ask scripts (#221), remote
   worker-only bundles, isolated harness homes and credential links (#179, #184), closeout
@@ -385,7 +392,7 @@ does not ask for it. The §15 row moves to §14.
 
 ### What replaces the prepare-run run path
 
-The done-when excludes `prepare-run.py`, generated configs and pasted launch prompts. Each
+The done-when excludes `prepare-run.py`, generated team configs and pasted launch prompts. Each
 capability of today's run path is replaced, kept as an optional launcher outside the core,
 or retired:
 
@@ -398,14 +405,25 @@ or retired:
 | Generated guarded recovery (`resume-<agent>`) | `join(takeover=true)` reattaches the task in the hub; the launcher's `resume <agent>` resumes the saved conversation with today's guards, taking the run from the hub (#223) | 1, 10 |
 | Generated `ask-<agent>` scripts (#221) | The launcher's `ask <agent>`, reading the same session log | 10 |
 | Remote worker-only bundles | Clone fallback: `robomate workspace <name> --clone` on the remote host, with an explicit URL and token file (§4, §6) | 9 |
-| Isolated harness homes, credential links and copies (#179, #184) | **Retired.** They existed because a rendered config carried per-run identity and URL. A static entry holds neither, so the harness uses the operator's own home and login | 11 |
+| Isolated team harness homes, credential links and copies (#179, #184) | **Retired for the joined team.** They existed because a rendered config carried per-run identity and URL. A static entry holds neither, so the team harness uses the operator's own home and login. Denise's isolated no-MCP profile is preserved separately below | 11 |
 | Per-harness sandbox grants rendered per run (Codex `writable_roots`, `--add-dir`; #11) | Static per-repository grants on the worktree and git common directory, recorded for Claude Code and Codex in M2 and for every harness in M3; the launcher passes the same grants as flags | 7, 10 |
 | `RUN_DIR/closeout/<agent>.md` report paths (#97) | **Retired** with the run directory. Hub collection (#215, M4) replaces it; until then an operator who needs the files keeps using prepared runs, which work until Step 11 | 11 |
 | `RUN_DIR/tmp/<agent>` (#81, #232) | The harness's own temporary directory, outside the worktree | 7 |
 | `run.json` | `runs/<run_id>/manifest.json` in hub state | 3 |
 | GitHub and GitLab preflight in `prepare-run.py` | Policy-independent checks at `up` (M5 Step 2); policy-dependent checks at `submit` | 4 |
-| Bash and PowerShell wrappers | Not needed: `robomate` and the launcher are Python and run the same on Windows | 10 |
+| Team Bash and PowerShell wrappers | Not needed: `robomate` and the launcher are Python and run the same on Windows; Denise's optional replacement must be demonstrated before retiring her wrappers | 10, 11 |
 | `prep-standard-run*` (#107) | Retired: `robomate up` in a checkout plus `robomate submit` | 11 |
+| M7 `start-denise.sh` / `.ps1`, isolated doctor profile and `RUN_DIR/denise/` | Optional doctor entry in the successor launcher, outside join/supervision. Use the state resolver and locally readable `runs/<run_id>/manifest.json` for explicit hub/run selection, robomate/target references and effective settings; keep context, isolated no-MCP config, scoped repair grants and local reports in that run's `denise/` directory. The guide stays local at `docs/denise/guide.md`, outside served `guides/`. Startup and diagnosis work without HTTP/MCP; no new credential or privileged API | 10 integration, 11 proven handoff before removal |
+
+The doctor entry is separate from `start <agent>` and never calls `workspace`, `join` or
+an agent's supervision loop to start Denise. It reads saved local metadata when the hub is
+down; absent/stale metadata yields a concrete remedy rather than creating a run. M7 keeps
+its prepared-run first slice while M2 is built. Step 10 provides the launcher integration
+as the doctor implementation becomes available, without waiting for all of M7; Step 11
+completes and verifies the replacement before deleting its generators. Doctor context,
+profile and report files are an intentional exception to the team's no-generated-config
+path. Existing consultation reports remain at their recorded paths; adoption must retain
+or explicitly reference them, never delete or silently move a live consultation.
 
 **Headless supervision: the launcher survives without generated configs; `robomate`
 gains no launch command in M2.** Reasons:
@@ -468,6 +486,11 @@ live validation stays in #235.
   `robomate submit`: Step 4. M2's tests keep `tests/test_gitlab_gate.py`,
   `tests/test_guides.py` and the M5 dispatch tests green, and M2's done-when stays
   GitHub-only; M6 covers GitLab end to end (§13).
+- **From M7.** Add an inheritance line after M5 in the M2 section, naming Step 10 (#247)
+  and Step 11 (#248). Carry optional Denise startup, locally readable context, local
+  guide, isolated no-MCP profile, repair access and local reports into the successor
+  launcher as above. Only retirement Step 11 waits for completed M7 and demonstrated
+  replacement behavior; other M2 implementation proceeds in parallel.
 - **From #181.** M2 does **not** ship the §2 `uv tool install` path. Its done-when runs
   from `uv run --project <robomate checkout>`, and installing needs the root to become a
   package and the guides to become package data (fact 5), which belong with
@@ -601,7 +624,7 @@ reason for each edge.
 | 6 | 5 | `worktree_root` comes from the layers |
 | 7 | 1, 3, 6 | Worktrees are made at `join` (1); the branch label comes from the stored statement, and its migration follows Step 3's (3); worktrees live in the hub namespace (6) |
 | 8, 9, 10 | 7 | They clean, clone beside, or start agents in generated workspaces; Step 10 also logs `run_id` (3, through 7) |
-| 11 | 2, 4, 8, 9, 10 | Every replacement exists before the old path goes |
+| 11 | 2, 4, 8, 9, 10; completed M7 and its launcher handoff | Every replacement, including optional Denise, exists and is verified before the old path goes |
 | 12 | all | |
 
 Parallel: Steps 1, 3 and 5 can start and land in any order, except that Steps 1 and 3
@@ -609,6 +632,9 @@ merge in the order of their reserved DB versions ([Reservations](#reservations))
 can run alongside Steps 3–6, Step 4 alongside Steps 6–7, and Steps 8, 9 and 10 alongside
 each other. A step whose prerequisite is still open may be prepared in parallel, but it
 merges only after the prerequisite. Its tests need the prerequisite's code.
+
+Step 11 also waits for completed M7 and its proven doctor replacement, as the table
+specifies; this is the only M2 implementation step gated on M7 completion.
 
 ### Isolated smoke recipe
 
@@ -965,14 +991,22 @@ uv run --project <checkout> robomate workspace bob --clone C:\agents\bob --hub-u
   session log with `run_id` in the hub's `sessions/`, guarded resume taking the run from
   the hub (#223), `--interactive` (#222), `--sessions-dir` on a remote host. All five
   harness adapters move with it.
+- Provide the separate optional Denise entry described in the replacement table as M7
+  becomes available. Read selected hub/run metadata locally, preserve her isolated
+  no-MCP profile, local guide, access inventory and reports, and keep hub-down startup.
+  This does not gate Step 10 on M7 completion; Step 11 finishes and validates the handoff.
 - `docs/development/agent-recovery.md` rewritten for join takeover and the launcher.
 - §9.4, Appendix B deltas.
 
 **Tests** (`tests/test_agent_launcher.py`, new, with the fake harnesses that
 `tests/test_alice_launcher.py`, `tests/test_worker_launcher.py` and
 `tests/test_agent_recovery.py` use today; those stay green until Step 11).
-- Each harness's start command contains the join line and no file path of a rendered
+- Each team harness's start command contains the join line and no file path of a rendered
   config; no file is written outside `sessions/`.
+- For the doctor integration, fake-harness tests exercise startup with HTTP unavailable,
+  explicit hub/run selection, separate robomate/target paths, no join/MCP/supervision,
+  scoped grants and retained reports. Doctor files stay under the selected run's
+  `denise/`, separate from team session logs. Complete these cases before Step 11 removal.
 - Kill the fake harness mid-task: the launcher resumes the same conversation with the
   continuation text and backoff; the session log rows carry the hub's `run_id`.
 - `resume` with an empty log refuses; with a log from before the workflow started it takes
@@ -990,6 +1024,12 @@ uv run --locked pytest tests/test_agent_launcher.py tests/test_alice_launcher.py
 ### Step 11 — Retire the prepare-run path
 
 **Scope.**
+- Requires completed M7 and a proven doctor replacement from Steps 10/11 (#247/#248),
+  in addition to the M2 step dependencies. Exercise the successor doctor entry on Bash
+  and native PowerShell, including a stopped hub, separate target repository, effective
+  repair grants and retained reports. Preserve the local guide and isolated doctor
+  profile; do not remove their only generator/entry point. No other M2 implementation
+  step waits for M7 completion.
 - Remove `scripts/prepare-run.py`, `bootstrap-workspace.*`, `prep-standard-run*`,
   `archive-run.py`, the old launchers, the rendering half of `run_common.py`, `prompts/`,
   `skills/worker`, and the `runtimes/` templates (Appendix B), with their tests and
@@ -1003,6 +1043,10 @@ uv run --locked pytest tests/test_agent_launcher.py tests/test_alice_launcher.py
 - §2, §13, Appendix B deltas.
 
 **Tests.** The full suite on Linux and native Windows, and:
+
+Run the doctor integration cases from Step 10 and M7's live acceptance through the
+replacement entry point before removing the old wrappers. Record the commands and
+evidence for both platforms; fake-harness tests alone do not prove real access grants.
 
 ```sh
 git grep -n 'prepare-run\|check_in\|ask_alice\|initialize_workflow' -- ':!docs/historical' ':!docs/evidence' ':!docs/development/implementation-plan-mvp-m*.md'
