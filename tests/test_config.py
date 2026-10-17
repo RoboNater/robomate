@@ -220,16 +220,20 @@ def test_profile_reads_the_launcher_environment() -> None:
             "HUB_HARNESS_VERSION": "2.1.268",
             "HUB_PROVIDER": "anthropic",
             "HUB_MODEL": "claude-opus-5",
+            "HUB_EFFORT": " high ",
             "HUB_CAPABILITIES": "python,gh, python ,",
         }
     )
 
     assert profile == AgentProfile(
         harness="claude-code",
+        harness_source=ModelSource.ENV,
         harness_version="2.1.268",
         provider="anthropic",
         model="claude-opus-5",
         model_source=ModelSource.ENV,
+        effort="high",
+        effort_source=ModelSource.ENV,
         capabilities=("python", "gh"),
     )
 

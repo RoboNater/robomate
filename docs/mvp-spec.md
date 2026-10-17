@@ -302,8 +302,9 @@ hub state and run reports are kept. Background/service mode is post-MVP.
 on a hub. **There is no silent attach**: a checkout never reaches a hub it was not given.
 1. `ROBOMATE_HUB_URL` with `ROBOMATE_TOKEN` or `ROBOMATE_TOKEN_FILE` — explicit, for remote
    agents and the clone fallback. For the CLI, an explicit selector,
-   `--hub <name | hub_id | checkout path>`, at the same rank; a name that matches hubs of
-   several repositories fails with the choices.
+   `--hub <name | hub_id | checkout path>`, at the same rank; for a bridge at `join`,
+   `join(hub=<name | hub_id | checkout path>)` is resolved against the machine registry on
+   the same terms; a name that matches hubs of several repositories fails with the choices.
 2. From the working directory, through git: this checkout's binding (from M2), or the hub
    this checkout owns. Works from any directory inside the checkout.
 3. Otherwise an error that lists the live hubs (name, owning checkout, repository, URL) and
@@ -320,9 +321,12 @@ Before a bound or selected local hub is used, its `hub_id` is checked against `/
 In M1, before `join` exists, `robomate mcp` resolves the hub on its first tool call. An
 ambiguous or empty discovery returns the live-hub list as a tool error.
 
-**Identify-the-hub** — `robomate status` and the `whoami` tool both report the hub name,
+**Identify-the-hub** — `robomate status` and the `whoami` tool (backed by Bearer-authenticated
+`GET /whoami` on the hub) both report the hub name,
 owning checkout, repository, origin, forge, URL, and the agents joined, so neither the
-operator nor an agent can confuse two hubs, even two of one repository. `robomate status`
+operator nor an agent can confuse two hubs, even two of one repository. `whoami` works both
+before `join` (reporting what discovery selects and `joined: false`) and after `join`
+(adding the joined agent's name, standing role, and context). `robomate status`
 also shows the hub's state location, which operator tools take
 (`scripts/hub-report.py --state-dir`).
 
@@ -353,28 +357,37 @@ one temporary directory, so it can touch nothing of the run's.
 unjoined session can call besides `whoami`. Its description is the install-free instruction:
 *"Call when the user asks you to join robomate. Use the name and role the user gives."*
 
-- **Standing roles:** `orchestrator`, `implementer`, `reviewer`, `worker` (any task role).
+- **Standing roles:** `orchestrator`, `implementer`, `reviewer`, `worker` (any task role),
+  stored on `agent.standing_role` (DB schema v21).
   Task roles are `implementer`, `reviewer`, `rebase`, and `closeout` (new, §7.3). An
   `implementer` accepts implementer, rebase, and closeout tasks; a `reviewer` accepts reviewer
-  tasks; `worker` accepts any. The hub refuses an incompatible `assign_task`.
+  tasks; `worker` accepts any. The hub refuses an incompatible `assign_task` (-32602, naming
+  the agent's standing role).
 - **One orchestrator per hub.** A second orchestrator join is refused unless `takeover`.
-- **M1 before `join`:** `robomate mcp --role orchestrator|worker [--name NAME]` selects the
-  bridge mode and name; a worker may instead use `AGENT_NAME`, and the orchestrator defaults to
-  `alice`. The orchestrator bridge sends a session ID with its `/rpc` calls and a heartbeat
-  every 30 s. The first call from a new session makes it current: calls from older sessions
-  are refused, and outstanding event delivery leases expire for immediate redelivery.
-  Worker tasks, leases, and heartbeats are unaffected. This is the reduced M1 form of
-  orchestrator `takeover`; M2 replaces the flags with `join`.
+- **Unjoined bridge and `--role` compatibility:** `robomate mcp` starts unjoined when
+  `--role` and `AGENT_NAME` are omitted, serving the static tool list (§8) and refusing every
+  tool except `join` and `whoami` (naming `join`) until `join` succeeds. Worker `join` uses
+  the extended A2A check-in route; workers never call `/rpc` (§12). `robomate mcp --role
+  orchestrator|worker [--name NAME]` (or `AGENT_NAME`) and `check_in` (which defaults
+  `standing_role` to `worker`) remain as aliases for prepared runs until M2 Step 11 removes
+  them. In M1 before orchestrator `join` (M2 Step 2), the orchestrator bridge sends a
+  session ID with its `/rpc` calls and a heartbeat every 30 s; the first call from a new
+  session makes it current, refusing older sessions and expiring outstanding event delivery
+  leases for immediate redelivery while leaving worker tasks, leases, and heartbeats
+  unaffected.
 - **Names** are unique per hub, and validated like hub names (§4), since they appear in
   worktree paths and branch names (§6). Joining a name whose instance is alive returns 409 unless
   `takeover=true`, which supersedes the old instance at once (its heartbeats are ignored).
   A takeover of an agent holding a live task **reattaches** the task to the new instance and
   returns it in the join response, instead of failing it as `worker_lost`.
 - **Profile** (observational, as in PoC §3): `harness`, `harness_version`, `provider`,
-  `model`, `effort`, each with a source (`declared` / `install` / `unknown`), plus
+  `model`, `effort`, each with a source (`declared` / `install` / `env` / `unknown`, DB
+  schema v21), plus
   `capabilities`, `host`, `os`, `workspace_id`. `harness` is written by `robomate install` into the
-  static MCP entry (`robomate mcp --harness opencode`); `model` and `effort` are declared by the
-  agent or pinned by the operator in `config.toml`. Unknown stays `unknown`.
+  static MCP entry (`robomate mcp --harness opencode`, recorded with source `install`); `model`
+  and `effort` are declared by the agent at `join` (source `declared`) or pinned by the
+  operator as exact model IDs in `config.toml` / environment (`env`), so launcher model-alias
+  mismatches (#87) do not arise on the `join` path. Unknown stays `unknown`.
   `provider` records model-maker lineage (who trained the model, not which gateway served it),
   resolved from the model ID via `scripts/run_common.py:resolve_provider`: explicit
   `--<agent>-provider` first, then OpenRouter maker segments, then model-family prefixes
@@ -728,16 +741,16 @@ tools and supported operator CLI commands, without consuming events or taking a 
 
 | Tool | Who | Change from PoC |
 |---|---|---|
-| `join`, `whoami` | any | **new** |
-| `await_assignment`, `get_role_guide`, `report_progress` | worker | unchanged semantics; hold capped by the harness profile |
+| `join`, `whoami` | any | **new**: only tools callable before `join`; worker `join` over A2A (`check_in` alias kept until M2 Step 11); `whoami` over `GET /whoami` (#238) |
+| `await_assignment`, `get_role_guide`, `report_progress` | worker | unchanged semantics; hold capped by `MAX_HOLD_DEFAULT_S` (100 s, #12) until M3 per-harness profiles |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
-| `ask_orchestrator` | worker | renamed from `ask_alice` |
+| `ask_orchestrator` | worker | renamed from `ask_alice` (`ask_alice` alias kept until M2 Step 11; #238) |
 | `get_operator_answer(question_id)` | worker | **new** (#129): reads `hub.operator_answer`, so a worker can check an operator decision it is told of |
 | `get_statement(sha)` | worker, orchestrator | **new** (#9) |
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
-| `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role; refused (-32002) while `escalated`, naming the open question ids (#132) |
+| `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed; `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
 | `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
@@ -1012,8 +1025,12 @@ itself.
 **Order:** M1, M5, pre-M2, then **M2 and M7 in parallel**, followed by M3, M4 and M6.
 Existing milestone numbers stay fixed. M7 starts on the prepared-run topology (#174);
 only M2 Step 11, retirement of that path, waits for M7 completion and its replacement.
-The [M7 plan](development/implementation-plan-mvp-m7-denise.md) splits implementation into
-reviewable steps. #174 delivers its specification and plan, not the completed milestone.
+The [M2 plan](development/implementation-plan-mvp-m2.md) and
+[M7 plan](development/implementation-plan-mvp-m7-denise.md) split implementation into
+reviewable steps; M2 Step 1 (#238, DB schema v21) lands worker `join`/`whoami`, standing
+roles, takeover + task reattach, and `ask_orchestrator` while keeping `--role`, `check_in`,
+and `ask_alice` aliases for prepared runs through Step 10. #174 delivers M7's specification
+and plan, not the completed milestone.
 Roadmap #2 tracks the step issues, operational track/lane assignments and completion
 evidence. M2 implementation proceeds while M7 is built; the retirement gate preserves
 Denise rather than blocking the other M2 steps. Other work can continue independently.

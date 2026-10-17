@@ -3,25 +3,34 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
+from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import asdict, replace
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from agent_hub_common import (
+    AGENT_HEADER,
     SCHEMA_VERSION,
     UNKNOWN,
+    WORKER_STANDING_ROLES,
     AgentProfile,
     ImplementerResult,
     MetaKeys,
     ModelSource,
     RebaseResult,
     ReviewerResult,
+    StandingRole,
+    validate_agent_name,
 )
+from agent_hub_common.discovery import discover
+from agent_hub_common.workspace import canonical_workspace, read_identity
 
 from .config import WorkerSettings
 from .telemetry import TelemetryLog, count_http_exchange, count_http_retry
@@ -53,6 +62,8 @@ class WorkerHubClient:
         self._external_client = http_client
         self._client: httpx.AsyncClient | None = http_client
         self.context_id: str | None = None
+        self.standing_role: StandingRole | None = None
+        self._joined: bool = False
         self.worker_instance_id = uuid4().hex
         self.telemetry = TelemetryLog(
             settings.telemetry_log,
@@ -82,8 +93,12 @@ class WorkerHubClient:
         # Active pending progress (note, operation_id) per task (§4.1)
         self._pending_progress: dict[str, tuple[str, str]] = {}
 
+    @property
+    def is_joined(self) -> bool:
+        return self._joined or bool(self.context_id)
+
     async def __aenter__(self) -> WorkerHubClient:
-        if self._client is None:
+        if self._client is None and self.settings.hub_url:
             self._client = httpx.AsyncClient(
                 base_url=self.settings.hub_url,
                 headers={"Authorization": f"Bearer {self.settings.token}"},
@@ -198,10 +213,12 @@ class WorkerHubClient:
         return (result.get("metadata") or {}).get(MetaKeys.ACCEPTED) is True
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self.settings.token}"}
+        headers: dict[str, str] = {}
+        if self.settings.token:
+            headers["Authorization"] = f"Bearer {self.settings.token}"
         # Names the caller of the identity-less guide route for the hub's
         # call accounting (#78); the hub counts it only for a registered agent.
-        if self.settings.agent_name.isascii():
+        if self.settings.agent_name.isascii() and self.settings.agent_name:
             headers["X-Hub-Agent"] = self.settings.agent_name
         return headers
 
@@ -219,10 +236,12 @@ class WorkerHubClient:
         path: str,
         *,
         json_body: dict[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
     ) -> httpx.Response:
         client = self._ensure_client()
         attempts = 0
+        req_headers = {**self._headers(), **dict(headers or {})}
         while True:
             try:
                 response = await client.request(
@@ -230,7 +249,7 @@ class WorkerHubClient:
                     path,
                     json=json_body,
                     timeout=timeout,
-                    headers=self._headers(),
+                    headers=req_headers,
                 )
                 retryable = (
                     response.status_code in RETRYABLE_STATUS_CODES
@@ -471,8 +490,30 @@ class WorkerHubClient:
                     continue
                 raise
 
+    async def _bind_hub(self, hub: str | None = None) -> None:
+        if hub is not None or (not self.settings.hub_url and self._external_client is None):
+            cwd = self.settings.cwd or Path.cwd()
+            endpoint = discover(cwd, self.settings.environ, selector=hub)
+            if (
+                self._external_client is None
+                and self._client is not None
+                and (self.settings.hub_url != endpoint.url or self.settings.token != endpoint.token)
+            ):
+                await self._client.aclose()
+                self._client = None
+            self.settings = replace(self.settings, hub_url=endpoint.url, token=endpoint.token)
+        elif not self.settings.hub_url and self._external_client is not None:
+            self.settings = replace(
+                self.settings, hub_url=str(self._external_client.base_url).rstrip("/")
+            )
+
     def profile(
-        self, capabilities: list[str] | None = None, model: str | None = None
+        self,
+        capabilities: list[str] | None = None,
+        model: str | None = None,
+        *,
+        effort: str | None = None,
+        harness: str | None = None,
     ) -> AgentProfile:
         """Combine the launcher's profile with what the agent declares.
 
@@ -486,18 +527,49 @@ class WorkerHubClient:
         configured = self.settings.profile
         declared_caps = (item.strip() for item in capabilities or [])
         merged = dict.fromkeys([*configured.capabilities, *(c for c in declared_caps if c)])
-        declared_model = (model or "").strip()
-        if declared_model == "":
-            declared_model = UNKNOWN
+        declared_model = (model or "").strip() or UNKNOWN
         if configured.model_source is ModelSource.UNKNOWN and declared_model != UNKNOWN:
-            return replace(
-                configured,
-                capabilities=tuple(merged),
-                model=declared_model,
-                model_source=ModelSource.DECLARED,
-                declared_model=declared_model,
+            resolved_model = declared_model
+            resolved_model_source = ModelSource.DECLARED
+        else:
+            resolved_model = configured.model
+            resolved_model_source = configured.model_source
+
+        declared_effort = (effort or "").strip() or UNKNOWN
+        if configured.effort_source is ModelSource.UNKNOWN and declared_effort != UNKNOWN:
+            resolved_effort = declared_effort
+            resolved_effort_source = ModelSource.DECLARED
+        else:
+            resolved_effort = configured.effort
+            resolved_effort_source = configured.effort_source
+
+        declared_harness = (harness or "").strip() or UNKNOWN
+        resolved_harness_source: ModelSource
+        if configured.harness != UNKNOWN:
+            resolved_harness = configured.harness
+            resolved_harness_source = (
+                configured.harness_source
+                if configured.harness_source is not ModelSource.UNKNOWN
+                else ModelSource.ENV
             )
-        return replace(configured, capabilities=tuple(merged), declared_model=declared_model)
+        elif declared_harness != UNKNOWN:
+            resolved_harness = declared_harness
+            resolved_harness_source = ModelSource.DECLARED
+        else:
+            resolved_harness = UNKNOWN
+            resolved_harness_source = ModelSource.UNKNOWN
+
+        return replace(
+            configured,
+            capabilities=tuple(merged),
+            harness=resolved_harness,
+            harness_source=resolved_harness_source,
+            model=resolved_model,
+            model_source=resolved_model_source,
+            declared_model=declared_model,
+            effort=resolved_effort,
+            effort_source=resolved_effort_source,
+        )
 
     async def check_in(
         self,
@@ -506,6 +578,7 @@ class WorkerHubClient:
         operation_id: str | None = None,
     ) -> dict[str, Any]:
         """Register the worker with the hub and store the returned contextId."""
+        await self._bind_hub()
         profile = self.profile(capabilities, model)
         if operation_id is not None:
             op_id = operation_id
@@ -520,11 +593,14 @@ class WorkerHubClient:
             MetaKeys.AGENT: self.settings.agent_name,
             MetaKeys.CAPABILITIES: list(profile.capabilities),
             MetaKeys.HARNESS: profile.harness,
+            MetaKeys.HARNESS_SOURCE: profile.harness_source.value,
             MetaKeys.HARNESS_VERSION: profile.harness_version,
             MetaKeys.PROVIDER: profile.provider,
             MetaKeys.MODEL: profile.model,
             MetaKeys.MODEL_SOURCE: profile.model_source.value,
             MetaKeys.DECLARED_MODEL: profile.declared_model,
+            MetaKeys.EFFORT: profile.effort,
+            MetaKeys.EFFORT_SOURCE: profile.effort_source.value,
             MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
             MetaKeys.OPERATION_ID: op_id,
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
@@ -547,13 +623,225 @@ class WorkerHubClient:
         if not context_id or not isinstance(context_id, str):
             raise WorkerProtocolError(None, "check_in response did not contain contextId")
         self.context_id = context_id
+        self.standing_role = StandingRole.WORKER
+        self._joined = True
         self.current_task_id = None
         self._pending_checkin = None
         return {
             "status": "registered",
             "agent": self.settings.agent_name,
             "context_id": self.context_id,
-            "profile": asdict(profile) | {"capabilities": list(profile.capabilities)},
+            "profile": {
+                "harness": profile.harness,
+                "harness_source": profile.harness_source.value,
+                "harness_version": profile.harness_version,
+                "provider": profile.provider,
+                "model": profile.model,
+                "model_source": profile.model_source.value,
+                "effort": profile.effort,
+                "effort_source": profile.effort_source.value,
+                "declared_model": profile.declared_model,
+                "capabilities": list(profile.capabilities),
+                "workspace_id": profile.workspace_id,
+            },
+        }
+
+    async def join(
+        self,
+        name: str,
+        role: str,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+        harness: str | None = None,
+        hub: str | None = None,
+        takeover: bool = False,
+        capabilities: list[str] | None = None,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Register this worker by name and standing role and fetch its role guide (§5)."""
+
+        clean_name = validate_agent_name(name.strip())
+        clean_role = role.strip().lower()
+        if clean_role == StandingRole.ORCHESTRATOR.value:
+            raise ValueError(
+                "role 'orchestrator' is not supported by the worker bridge (see #239); "
+                "choose one of: implementer, reviewer, worker"
+            )
+        try:
+            standing_role = StandingRole(clean_role)
+        except ValueError as exc:
+            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
+            raise ValueError(f"role must be one of {allowed} (got {role!r})") from exc
+        if standing_role not in WORKER_STANDING_ROLES:
+            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
+            raise ValueError(f"role must be one of {allowed} (got {role!r})")
+
+        await self._bind_hub(hub)
+        profile = self.profile(capabilities, model, effort=effort, harness=harness)
+
+        bridge_cwd = (self.settings.cwd or Path.cwd()).resolve()
+        env = self.settings.environ or {}
+        if "HUB_WORKSPACE" in env and env["HUB_WORKSPACE"]:
+            resolved_workspace_path = canonical_workspace(env["HUB_WORKSPACE"]).resolve()
+        else:
+            resolved_workspace_path = bridge_cwd
+
+        cwd_inside_workspace = bridge_cwd == resolved_workspace_path or bridge_cwd.is_relative_to(
+            resolved_workspace_path
+        )
+
+        if profile.workspace_id is None:
+            try:
+                identity = read_identity(resolved_workspace_path, clean_name)
+                profile = replace(profile, workspace_id=identity["workspace_id"])
+            except Exception:
+                pass
+
+        self.settings = replace(self.settings, agent_name=clean_name)
+        self.telemetry.agent = clean_name
+        op_id = operation_id or uuid4().hex
+        metadata: dict[str, Any] = {
+            MetaKeys.AGENT: clean_name,
+            MetaKeys.STANDING_ROLE: standing_role.value,
+            MetaKeys.TAKEOVER: takeover,
+            MetaKeys.CAPABILITIES: list(profile.capabilities),
+            MetaKeys.HARNESS: profile.harness,
+            MetaKeys.HARNESS_SOURCE: profile.harness_source.value,
+            MetaKeys.HARNESS_VERSION: profile.harness_version,
+            MetaKeys.PROVIDER: profile.provider,
+            MetaKeys.MODEL: profile.model,
+            MetaKeys.MODEL_SOURCE: profile.model_source.value,
+            MetaKeys.DECLARED_MODEL: profile.declared_model,
+            MetaKeys.EFFORT: profile.effort,
+            MetaKeys.EFFORT_SOURCE: profile.effort_source.value,
+            MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+            MetaKeys.OPERATION_ID: op_id,
+            MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
+        }
+        if profile.workspace_id is not None:
+            metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
+
+        params = {
+            "message": {
+                "messageId": uuid4().hex,
+                "role": "user",
+                "parts": [{"kind": "text", "text": "READY"}],
+                "metadata": metadata,
+            }
+        }
+        result = await self._post_rpc("message/send", params)
+        if not isinstance(result, dict):
+            raise WorkerProtocolError(None, "join response was not a dict")
+        res_meta = result.get("metadata") or {}
+        context_id = result.get("contextId") or res_meta.get("contextId")
+        if not context_id or not isinstance(context_id, str):
+            raise WorkerProtocolError(None, "join response did not contain contextId")
+        self.context_id = context_id
+        self.standing_role = standing_role
+        self._joined = True
+        reattached_task = res_meta.get(MetaKeys.REATTACHED_TASK)
+        if isinstance(reattached_task, dict) and reattached_task.get("task_id"):
+            self.current_task_id = str(reattached_task["task_id"])
+        else:
+            reattached_task = None
+            self.current_task_id = None
+        self._pending_checkin = None
+
+        worker_guide = await self.get_role_guide("worker")
+        worker_guide_sha256 = hashlib.sha256(worker_guide.encode("utf-8")).hexdigest()
+        role_guide = await self.get_role_guide(standing_role.value)
+
+        who = await self._request_with_retry("GET", "/whoami")
+        who.raise_for_status()
+        who_data = who.json()
+        if not isinstance(who_data, dict):
+            raise WorkerProtocolError(None, "GET /whoami did not return a JSON object")
+        hub_summary = {
+            "hub_id": who_data.get("hub_id"),
+            "name": who_data.get("hub_name") or who_data.get("name"),
+            "repository": who_data.get("repository"),
+            "checkout": who_data.get("checkout"),
+            "url": who_data.get("url") or who_data.get("hub") or self.settings.hub_url,
+            "port": who_data.get("port"),
+            "forge": who_data.get("forge"),
+            "default_branch": who_data.get("default_branch"),
+        }
+
+        profile_dict = {
+            "harness": profile.harness,
+            "harness_source": profile.harness_source.value,
+            "harness_version": profile.harness_version,
+            "provider": profile.provider,
+            "model": profile.model,
+            "model_source": profile.model_source.value,
+            "effort": profile.effort,
+            "effort_source": profile.effort_source.value,
+            "declared_model": profile.declared_model,
+            "capabilities": list(profile.capabilities),
+            "workspace_id": profile.workspace_id,
+        }
+
+        return {
+            "status": "registered",
+            "agent": clean_name,
+            "role": standing_role.value,
+            "standing_role": standing_role.value,
+            "context_id": self.context_id,
+            "worker_instance_id": self.worker_instance_id,
+            "hub": hub_summary,
+            "workspace_path": str(resolved_workspace_path),
+            "workspace_id": profile.workspace_id,
+            "cwd_inside_workspace": cwd_inside_workspace,
+            "profile": profile_dict,
+            "role_guide": role_guide,
+            "guide": worker_guide,
+            "guide_sha256": worker_guide_sha256,
+            "reattached_task": reattached_task,
+            "next_call": "await_assignment",
+        }
+
+    async def whoami(self) -> dict[str, Any]:
+        """Return the connected hub's identity and this bridge's join state (§5)."""
+
+        if not self.is_joined:
+            hub_summary: dict[str, Any] | None = None
+            try:
+                await self._bind_hub()
+                response = await self._request_with_retry("GET", "/whoami")
+                if response.status_code == 200:
+                    who_data = response.json()
+                    if isinstance(who_data, dict):
+                        hub_summary = {
+                            "hub_id": who_data.get("hub_id"),
+                            "name": who_data.get("hub_name") or who_data.get("name"),
+                            "repository": who_data.get("repository"),
+                            "checkout": who_data.get("checkout"),
+                            "url": (
+                                who_data.get("url") or who_data.get("hub") or self.settings.hub_url
+                            ),
+                            "port": who_data.get("port"),
+                            "forge": who_data.get("forge"),
+                            "default_branch": who_data.get("default_branch"),
+                        }
+            except Exception:
+                hub_summary = None
+            return {"joined": False, "hub": hub_summary}
+
+        await self._bind_hub()
+        headers = {AGENT_HEADER: self.settings.agent_name} if self.settings.agent_name else None
+        response = await self._request_with_retry("GET", "/whoami", headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise WorkerProtocolError(None, "whoami response was not a dict")
+        return {
+            **data,
+            "joined": self.is_joined,
+            "agent_name": self.settings.agent_name or None,
+            "standing_role": self.standing_role.value if self.standing_role is not None else None,
+            "context_id": self.context_id,
+            "worker_instance_id": self.worker_instance_id,
         }
 
     async def get_role_guide(self, role: str) -> str:
@@ -761,6 +1049,15 @@ class WorkerHubClient:
                 reply_text += part["root"]["text"]
 
         return {"reply": reply_text}
+
+    async def ask_orchestrator(
+        self,
+        task_id: str,
+        question: str,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Ask the orchestrator a question, holding until answered, overridden, or timed out."""
+        return await self.ask_alice(task_id, question, timeout_s)
 
     async def submit_result(
         self,

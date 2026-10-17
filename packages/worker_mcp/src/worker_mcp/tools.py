@@ -24,9 +24,8 @@ def create_worker_mcp(
     server = FastMCP(
         server_name,
         instructions=(
-            "Worker-side MCP tools for coordinating with Alice through the hub. "
-            "Follow the workflow: check_in -> await_assignment -> get_role_guide -> "
-            "do work -> submit_result."
+            "Worker-side MCP tools for coordinating with the orchestrator through the hub. "
+            "Follow the workflow: join -> await_assignment -> do work -> submit_result."
         ),
     )
 
@@ -58,6 +57,64 @@ def create_worker_mcp(
         )
         return result
 
+    def require_joined(resolved: WorkerHubClient, *, allow_preconfigured: bool = True) -> None:
+        if resolved.is_joined:
+            return
+        if allow_preconfigured and resolved.settings.agent_name:
+            return
+        raise RuntimeError(
+            "Worker has not joined or checked in yet; "
+            "call join(name=..., role=...) or check_in first"
+        )
+
+    @server.tool(
+        description=(
+            "Call when the user asks you to join robomate. Use the name and role the user gives."
+        )
+    )
+    async def join(
+        name: str,
+        role: str,
+        model: str | None = None,
+        effort: str | None = None,
+        harness: str | None = None,
+        hub: str | None = None,
+        takeover: bool = False,
+        capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Join the hub under the given agent name and standing role."""
+        resolved = await resolve()
+        return await invoke(
+            resolved,
+            "join",
+            resolved.join(
+                name,
+                role,
+                model=model,
+                effort=effort,
+                harness=harness,
+                hub=hub,
+                takeover=takeover,
+                capabilities=capabilities,
+            ),
+            {
+                "name": name,
+                "role": role,
+                "model": model,
+                "effort": effort,
+                "harness": harness,
+                "hub": hub,
+                "takeover": takeover,
+                "capabilities": capabilities,
+            },
+        )
+
+    @server.tool()
+    async def whoami() -> dict[str, Any]:
+        """Return the connected hub's identity and this bridge's join state."""
+        resolved = await resolve()
+        return await invoke(resolved, "whoami", resolved.whoami(), {})
+
     @server.tool()
     async def check_in(
         capabilities: list[str] | None = None, model: str | None = None
@@ -70,6 +127,7 @@ def create_worker_mcp(
         already names the model. Omit rather than guess.
         """
         resolved = await resolve()
+        require_joined(resolved, allow_preconfigured=True)
         return await invoke(
             resolved,
             "check_in",
@@ -81,6 +139,7 @@ def create_worker_mcp(
     async def get_role_guide(role: str) -> str:
         """Fetch instructions for the assigned role (e.g. 'implementer', 'reviewer')."""
         resolved = await resolve()
+        require_joined(resolved, allow_preconfigured=True)
         return await invoke(
             resolved, "get_role_guide", resolved.get_role_guide(role), {"role": role}
         )
@@ -95,6 +154,7 @@ def create_worker_mcp(
         timeout_s: Optional wait timeout in seconds (defaults to HUB_DEFAULT_WAIT_S if omitted).
         """
         resolved = await resolve()
+        require_joined(resolved)
         return await invoke(
             resolved,
             "await_assignment",
@@ -106,6 +166,7 @@ def create_worker_mcp(
     async def report_progress(task_id: str, note: str) -> dict[str, Any]:
         """Send a non-blocking progress update note to Alice."""
         resolved = await resolve()
+        require_joined(resolved)
         return await invoke(
             resolved,
             "report_progress",
@@ -125,10 +186,30 @@ def create_worker_mcp(
         timeout_s: Optional wait timeout in seconds (defaults to HUB_DEFAULT_WAIT_S if omitted).
         """
         resolved = await resolve()
+        require_joined(resolved)
         return await invoke(
             resolved,
             "ask_alice",
             resolved.ask_alice(task_id, question, timeout_s),
+            {"task_id": task_id, "question": question, "timeout_s": timeout_s},
+            task_id=task_id,
+        )
+
+    @server.tool()
+    async def ask_orchestrator(
+        task_id: str, question: str, timeout_s: Timeout | None = None
+    ) -> dict[str, Any]:
+        """Ask the orchestrator a clarifying question and hold for a response.
+
+        Returns {reply: text}, {timeout: true}, or {task_ended: true, state, note}.
+        On timeout, call ask_orchestrator again to continue waiting.
+        """
+        resolved = await resolve()
+        require_joined(resolved)
+        return await invoke(
+            resolved,
+            "ask_orchestrator",
+            resolved.ask_orchestrator(task_id, question, timeout_s),
             {"task_id": task_id, "question": question, "timeout_s": timeout_s},
             task_id=task_id,
         )
@@ -142,6 +223,7 @@ def create_worker_mcp(
         decision; withdrawn grants no authority.
         """
         resolved = await resolve()
+        require_joined(resolved, allow_preconfigured=True)
         return await invoke(
             resolved,
             "get_operator_answer",
@@ -158,6 +240,7 @@ def create_worker_mcp(
     ) -> dict[str, Any]:
         """Submit the final result for a task, validated against the role's schema."""
         resolved = await resolve()
+        require_joined(resolved)
         return await invoke(
             resolved,
             "submit_result",

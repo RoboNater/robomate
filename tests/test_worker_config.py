@@ -1,11 +1,20 @@
 import json
+import re
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
-from agent_hub_common import AgentProfile, ConfigurationError, ModelSource
+import worker_mcp.config as worker_config_mod
+from agent_hub_common import (
+    MAX_HOLD_DEFAULT_S,
+    AgentProfile,
+    ConfigurationError,
+    ModelSource,
+)
 from agent_hub_common.discovery import HubEndpoint
 from worker_mcp.config import WorkerSettings
+from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,6 +59,7 @@ def test_worker_settings_custom_overrides(tmp_path: Path) -> None:
     assert settings.agent_name == "charlie"
     assert settings.profile == AgentProfile(
         harness="codex",
+        harness_source=ModelSource.ENV,
         harness_version="0.154.0",
         provider="openai",
         model="example-codex-model",
@@ -82,6 +92,7 @@ def test_discovered_worker_keeps_profile_and_workspace_configuration(tmp_path: P
         "bob",
     )
     assert settings.profile.harness == "codex"
+    assert settings.profile.harness_source is ModelSource.INSTALL
     assert settings.profile.model == "configured-model"
     assert (settings.heartbeat_s, settings.max_retries) == (7, 2)
     # Discovery does not bypass the legacy full-clone identity check.
@@ -182,3 +193,66 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
 
     claude = json.loads((ROOT / "runtimes" / "claude-code.mcp.json").read_text(encoding="utf-8"))
     assert "HUB_TELEMETRY_LOG" in claude["mcpServers"]["robomate"]["env"]
+
+
+def _check_hold_defaults(
+    *,
+    worker_default_wait_s: float,
+    wait_for_event_default_s: float,
+    guide_texts: dict[str, str],
+) -> None:
+    assert MAX_HOLD_DEFAULT_S == 100
+    assert worker_default_wait_s <= MAX_HOLD_DEFAULT_S, (
+        f"worker_mcp.config.DEFAULT_WAIT_S={worker_default_wait_s} > {MAX_HOLD_DEFAULT_S}"
+    )
+    assert wait_for_event_default_s <= MAX_HOLD_DEFAULT_S, (
+        f"orchestrator wait_for_event timeout_s={wait_for_event_default_s} > {MAX_HOLD_DEFAULT_S}"
+    )
+    for rel_path, text in guide_texts.items():
+        literals = [
+            float(m.group(1)) for m in re.finditer(r"timeout_s\s*=\s*(\d+(?:\.\d+)?)", text)
+        ]
+        assert literals, f"{rel_path} has no timeout_s= literals"
+        for value in literals:
+            assert value <= MAX_HOLD_DEFAULT_S, (
+                f"{rel_path} has timeout_s={value:g} > {MAX_HOLD_DEFAULT_S}"
+            )
+
+
+async def test_max_hold_default_s_bounds_worker_orchestrator_and_guide_timeouts() -> None:
+    """#12: MCP hold defaults stay at or below 100 s across code, schema, and guides."""
+    tools = await create_orchestrator_mcp(OrchestratorBridge()).list_tools()
+    wait_tool = next(t for t in tools if t.name == "wait_for_event")
+    schema: dict[str, Any] = wait_tool.inputSchema
+    wait_default = float(schema["properties"]["timeout_s"]["default"])
+    guide_texts = {
+        rel: (ROOT / rel).read_text(encoding="utf-8")
+        for rel in ("guides/worker.md", "prompts/worker.md")
+    }
+
+    _check_hold_defaults(
+        worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
+        wait_for_event_default_s=wait_default,
+        guide_texts=guide_texts,
+    )
+
+    with pytest.raises(AssertionError, match=r"worker_mcp\.config\.DEFAULT_WAIT_S"):
+        _check_hold_defaults(
+            worker_default_wait_s=120.0,
+            wait_for_event_default_s=wait_default,
+            guide_texts=guide_texts,
+        )
+    with pytest.raises(AssertionError, match="orchestrator wait_for_event"):
+        _check_hold_defaults(
+            worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
+            wait_for_event_default_s=120.0,
+            guide_texts=guide_texts,
+        )
+    for rel in ("guides/worker.md", "prompts/worker.md"):
+        tampered = {**guide_texts, rel: guide_texts[rel] + "\nawait_assignment(timeout_s=120)\n"}
+        with pytest.raises(AssertionError, match=re.escape(rel)):
+            _check_hold_defaults(
+                worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
+                wait_for_event_default_s=wait_default,
+                guide_texts=tampered,
+            )

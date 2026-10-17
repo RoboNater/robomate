@@ -7,6 +7,13 @@ from enum import StrEnum
 MAX_MESSAGE_PART_BYTES = 16 * 1024
 MAX_TYPED_RESULT_BYTES = 32 * 1024
 
+# #12 / robo-agents #109: Claude Code backgrounds any MCP tool call still
+# running at 120 s, so every default hold across worker_mcp, orchestrator
+# wait_for_event, and the worker guides/prompts stays at or below 100 s.
+MAX_HOLD_DEFAULT_S = 100
+
+AGENT_HEADER = "X-Hub-Agent"
+
 
 class MetaKeys(StrEnum):
     """Hub-specific metadata keys namespaced with `hub.` (spec §4.0)."""
@@ -15,11 +22,17 @@ class MetaKeys(StrEnum):
     AGENT = "hub.agent"
     CAPABILITIES = "hub.capabilities"
     HARNESS = "hub.harness"
+    HARNESS_SOURCE = "hub.harness_source"
     HARNESS_VERSION = "hub.harness_version"
     PROVIDER = "hub.provider"
     MODEL = "hub.model"
     MODEL_SOURCE = "hub.model_source"
     DECLARED_MODEL = "hub.declared_model"
+    EFFORT = "hub.effort"
+    EFFORT_SOURCE = "hub.effort_source"
+    STANDING_ROLE = "hub.standing_role"
+    TAKEOVER = "hub.takeover"
+    REATTACHED_TASK = "hub.reattached_task"
     WORKSPACE_ID = "hub.workspace_id"
     STATUS = "hub.status"
     TIMEOUT = "hub.timeout"

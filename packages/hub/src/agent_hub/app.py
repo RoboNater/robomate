@@ -7,11 +7,19 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from agent_hub_common import HubSettings, load_or_create_token, read_token_file
+from agent_hub_common import (
+    AgentStatus,
+    HubSettings,
+    TaskState,
+    load_or_create_token,
+    read_token_file,
+)
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.clock import utcnow_iso
+from agent_hub_common.discovery import repository_dir
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -191,6 +199,73 @@ def create_app(
     @app.get("/healthz", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok", "hub_id": hub_id}
+
+    @app.get("/whoami", include_in_schema=False, dependencies=[Depends(require_bearer)])
+    async def whoami(request: Request) -> Response:
+        call = begin_a2a("whoami") if accounting.enabled else None
+        claimed = request.headers.get(AGENT_HEADER, "")
+        if call is not None and claimed and store.agent_by_name(claimed) is not None:
+            call.actor = claimed
+        info = dict(hub_info or {})
+        hub_name = info.get("name") or info.get("hub_name") or "hub"
+        checkout = info.get("checkout") or info.get("repo_root")
+        common = info.get("git_common_dir")
+        repository = (
+            str(repository_dir(Path(str(common))))
+            if common
+            else (str(checkout) if checkout else None)
+        )
+        agents = [
+            {
+                "name": a.name,
+                "standing_role": a.standing_role.value,
+                "status": a.status.value,
+                "alive": a.status is not AgentStatus.LOST,
+                "harness": a.harness,
+                "model": a.model,
+            }
+            for a in store.agents()
+        ]
+        agent = store.agent_by_name(claimed) if claimed else None
+        current_task = None
+        if agent and agent.current_task_id:
+            task = store.get_task(agent.current_task_id)
+            if task and task.state not in (
+                TaskState.COMPLETED,
+                TaskState.FAILED,
+                TaskState.CANCELED,
+            ):
+                current_task = {
+                    "task_id": task.id,
+                    "role": task.role,
+                    "title": task.title,
+                    "state": task.state.value,
+                }
+        hub_url = info.get("url") or resolved.public_url
+        payload = {
+            "hub_id": hub_id,
+            "name": hub_name,
+            "hub_name": hub_name,
+            "agent_name": agent.name if agent else None,
+            "joined": agent is not None,
+            "role": agent.standing_role.value if agent else None,
+            "standing_role": agent.standing_role.value if agent else None,
+            "hub": hub_url,
+            "status": "active" if agent and agent.status is not AgentStatus.LOST else "idle",
+            "current_task": current_task,
+            "last_seen": agent.last_seen if agent else None,
+            "checkout": checkout,
+            "repo_root": info.get("repo_root") or checkout,
+            "repository": repository,
+            "git_common_dir": common,
+            "origin": info.get("origin"),
+            "forge": info.get("forge"),
+            "default_branch": info.get("default_branch"),
+            "url": hub_url,
+            "port": info.get("port") or resolved.port,
+            "agents": agents,
+        }
+        return measured(call, 0, JSONResponse(payload))
 
     @app.post("/rpc", include_in_schema=False, dependencies=[Depends(require_bearer)])
     async def rpc(request: Request, background: BackgroundTasks) -> Response:

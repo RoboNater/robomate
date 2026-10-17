@@ -18,10 +18,12 @@ import base64
 import json
 import logging
 import os
+import queue
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -377,6 +379,109 @@ class CrashInjector:
         raise InjectedCrash(f"Injected crash at {point}")
 
 
+def join_via_mcp(
+    agent: str,
+    role: str,
+    *,
+    runtime: str = "claude-code",
+    hub: str | None = None,
+    hub_url: str | None = None,
+    token: str | None = None,
+    takeover: bool = False,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout_s: float = 30.0,
+) -> dict[str, Any]:
+    """Join a worker through an unjoined `robomate mcp` bridge process."""
+    child_env = dict(os.environ if env is None else env)
+    if hub_url is not None:
+        child_env["ROBOMATE_HUB_URL"] = hub_url
+    if token is not None:
+        child_env["ROBOMATE_TOKEN"] = token
+    worker = subprocess.Popen(
+        [sys.executable, "-m", "robomate.cli", "mcp", "--harness", runtime],
+        cwd=cwd or Path.cwd(),
+        env=child_env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    stdin, stdout, stderr = worker.stdin, worker.stdout, worker.stderr
+    assert stdin is not None and stdout is not None and stderr is not None
+    responses: queue.Queue[dict[str, Any]] = queue.Queue()
+
+    def _read_stdout() -> None:
+        try:
+            for line in stdout:
+                responses.put(json.loads(line))
+        except ValueError:
+            pass
+
+    reader = threading.Thread(target=_read_stdout, daemon=True)
+    reader.start()
+    arguments: dict[str, Any] = {
+        "name": agent,
+        "role": role,
+        "harness": runtime,
+        "takeover": takeover,
+    }
+    if hub is not None:
+        arguments["hub"] = hub
+    try:
+        for payload in (
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "mock-worker", "version": "0"},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "join", "arguments": arguments},
+            },
+        ):
+            stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+            stdin.flush()
+        while True:
+            try:
+                response = responses.get(timeout=timeout_s)
+            except queue.Empty as exc:
+                err_text = stderr.read().decode("utf-8", errors="replace").strip()
+                raise RuntimeError(
+                    f"join over robomate mcp timed out after {timeout_s}s: {err_text}"
+                ) from exc
+            if response.get("id") == 2:
+                break
+        if "error" in response:
+            raise RuntimeError(f"join RPC error: {response['error']}")
+        result = response.get("result") or {}
+        text = str((result.get("content") or [{}])[0].get("text") or "")
+        if result.get("isError"):
+            raise RuntimeError(text or "join returned isError")
+        parsed: dict[str, Any] = json.loads(text)
+        return parsed
+    finally:
+        if not stdin.closed:
+            stdin.close()
+        try:
+            worker.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            worker.wait(timeout=10)
+        if not stdout.closed:
+            stdout.close()
+        if not stderr.closed:
+            stderr.close()
+        reader.join(timeout=5)
+
+
 async def run_worker(
     settings: WorkerSettings,
     *,
@@ -384,20 +489,41 @@ async def run_worker(
     ask_question: str | None = None,
     fail: bool = False,
     timeout_s: float = 60.0,
+    join_role: str | None = None,
 ) -> dict[str, Any]:
     """Execute the full worker coordination lifecycle:
 
-    check_in -> await_assignment -> get_role_guide -> work -> submit_result -> release
+    join/check_in -> await_assignment -> get_role_guide -> work -> submit_result -> release
     """
     async with WorkerHubClient(settings, http_client=http_client) as client:
-        logger.info(
-            "Worker %r (%s) checking in at %s...",
-            settings.agent_name,
-            settings.profile.harness,
-            settings.hub_url,
-        )
-        checkin_res = await client.check_in(["python", "testing"])
-        logger.info("Checked in successfully: context_id=%s", checkin_res.get("context_id"))
+        if join_role is not None:
+            logger.info(
+                "Worker %r (%s) joining as %s at %s...",
+                settings.agent_name,
+                settings.profile.harness,
+                join_role,
+                settings.hub_url,
+            )
+            join_res = await client.join(
+                settings.agent_name,
+                join_role,
+                capabilities=["python", "testing"],
+                harness=settings.profile.harness or None,
+            )
+            logger.info(
+                "Joined successfully: role=%s context_id=%s",
+                join_res.get("role"),
+                join_res.get("context_id"),
+            )
+        else:
+            logger.info(
+                "Worker %r (%s) checking in at %s...",
+                settings.agent_name,
+                settings.profile.harness,
+                settings.hub_url,
+            )
+            checkin_res = await client.check_in(["python", "testing"])
+            logger.info("Checked in successfully: context_id=%s", checkin_res.get("context_id"))
 
         logger.info("Waiting for task assignment (timeout=%.1fs)...", timeout_s)
         assignment = await client.await_assignment(timeout_s=timeout_s)
@@ -427,9 +553,9 @@ async def run_worker(
         logger.info("Reported progress on task %s", task_id)
 
         if ask_question:
-            logger.info("Asking Alice question: %r", ask_question)
-            reply = await client.ask_alice(task_id, ask_question, timeout_s=30.0)
-            logger.info("Alice replied: %s", reply)
+            logger.info("Asking orchestrator question: %r", ask_question)
+            reply = await client.ask_orchestrator(task_id, ask_question, timeout_s=30.0)
+            logger.info("Orchestrator replied: %s", reply)
 
         await client.report_progress(task_id, "Completed task execution, preparing result")
 
@@ -945,14 +1071,24 @@ def main() -> None:
     except ConfigurationError:
         default_hub_url = "http://127.0.0.1:8420"
 
-    parser.add_argument("--hub-url", default=default_hub_url, help="Hub public URL")
+    parser.add_argument("--hub-url", default=None, help="Hub public URL")
     parser.add_argument(
         "--token",
-        default=os.environ.get("HUB_TOKEN", "test-token"),
+        default=None,
         help="Bearer token for A2A communication",
     )
     parser.add_argument("--agent", default="bob", help="Worker agent name")
     parser.add_argument("--runtime", default="claude-code", help="Worker runtime slug")
+    parser.add_argument(
+        "--join",
+        default=None,
+        metavar="ROLE",
+        help="Standing role to join as through robomate mcp (implementer, reviewer, worker)",
+    )
+    parser.add_argument("--hub", default=None, help="Optional hub selector for --join")
+    parser.add_argument(
+        "--takeover", action="store_true", help="Supersede a live instance with --join"
+    )
     parser.add_argument("--ask", default=None, help="Optional question to ask Alice")
     parser.add_argument("--fail", action="store_true", help="Simulate task failure")
     parser.add_argument(
@@ -993,6 +1129,8 @@ def main() -> None:
         help="Timeout in seconds waiting for assignments",
     )
     args = parser.parse_args()
+    resolved_hub_url = args.hub_url or default_hub_url
+    resolved_token = args.token or os.environ.get("HUB_TOKEN", "test-token")
 
     if args.allow_repeat and not args.seed:
         parser.error("--allow-repeat is only valid with --seed")
@@ -1027,8 +1165,8 @@ def main() -> None:
             asyncio.run(
                 run_scenario(
                     args.manifest.resolve(),
-                    hub_url=args.hub_url,
-                    token=args.token,
+                    hub_url=resolved_hub_url,
+                    token=resolved_token,
                     crash_at=args.crash_at,
                     timeout_s=args.timeout,
                 )
@@ -1039,10 +1177,23 @@ def main() -> None:
         return
     if args.scenario is not None:
         parser.error("--scenario is only valid with --seed")
+    if args.join is not None:
+        join_response = join_via_mcp(
+            args.agent,
+            args.join,
+            runtime=args.runtime,
+            hub=args.hub,
+            hub_url=args.hub_url,
+            token=args.token,
+            takeover=args.takeover,
+            timeout_s=args.timeout,
+        )
+        print(json.dumps(join_response, indent=2, sort_keys=True))
+        return
 
     settings = WorkerSettings(
-        hub_url=args.hub_url,
-        token=args.token,
+        hub_url=resolved_hub_url,
+        token=resolved_token,
         agent_name=args.agent,
         profile=AgentProfile(harness=args.runtime),
         default_wait_s=args.timeout,

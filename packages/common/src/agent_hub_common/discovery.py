@@ -188,6 +188,19 @@ def validate_hub_name(name: str) -> str:
     return name
 
 
+def validate_agent_name(name: str) -> str:
+    """Return a valid agent name unchanged, or refuse it with the rule it breaks (spec §5)."""
+
+    if not HUB_NAME_PATTERN.fullmatch(name):
+        raise ValueError(
+            f"invalid agent name {name!r}: use 1 to 40 of a-z, 0-9, '-' and '_', "
+            "starting and ending with a letter or digit"
+        )
+    if name in RESERVED_HUB_NAMES:
+        raise ValueError(f"invalid agent name {name!r}: the name is reserved")
+    return name
+
+
 def derive_hub_name(checkout: Path) -> str:
     """The default hub name, from the owning checkout's directory name."""
 
@@ -478,7 +491,7 @@ def describe_hubs(entries: list[dict[str, Any]]) -> str:
 def select_hub(selector: str, environ: Mapping[str, str] | None = None) -> LocalHub:
     """The hub an explicit `--hub <name | hub_id | checkout path>` names."""
 
-    from .registry import hub_entries
+    from .registry import hub_entries, live_entries
 
     if _is_path_selector(selector):
         path = Path(selector).expanduser()
@@ -499,7 +512,8 @@ def select_hub(selector: str, environ: Mapping[str, str] | None = None) -> Local
     if not matches:
         raise DiscoveryError(
             f"--hub {selector}: no registered hub has that name or hub_id. "
-            f"Registered hubs:\n{describe_hubs(entries)}"
+            f"Registered hubs:\n{describe_hubs(entries)}\n"
+            f"Live hubs:\n{describe_hubs(live_entries(environ))}"
         )
     if len(matches) > 1:
         raise DiscoveryError(
@@ -552,14 +566,16 @@ def find_hub(
     )
 
 
-def discover(cwd: Path, environ: Mapping[str, str] | None = None) -> HubEndpoint:
+def discover(
+    cwd: Path, environ: Mapping[str, str] | None = None, *, selector: str | None = None
+) -> HubEndpoint:
     """The URL and token of the hub `find_hub` chooses, for the MCP bridge and scripts.
 
     A local hub is used only once /healthz reports its recorded hub_id; an
     explicit URL is taken as given.
     """
 
-    hub = find_hub(cwd, environ)
+    hub = find_hub(cwd, environ, selector=selector)
     if isinstance(hub, LocalHub):
         verify_local_hub(hub)
         return hub.endpoint()

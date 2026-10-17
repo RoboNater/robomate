@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from agent_hub_common import AgentProfile, ConfigurationError, profile_from_env
+from agent_hub_common import (
+    MAX_HOLD_DEFAULT_S,
+    UNKNOWN,
+    AgentProfile,
+    ConfigurationError,
+    ModelSource,
+    profile_from_env,
+)
 from agent_hub_common.discovery import HubEndpoint
 from agent_hub_common.workspace import canonical_workspace, read_identity
 
-DEFAULT_WAIT_S = 100.0
+DEFAULT_WAIT_S = float(MAX_HOLD_DEFAULT_S)
 DEFAULT_HEARTBEAT_S = 30.0
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF_FACTOR_S = 0.5
@@ -68,6 +76,8 @@ class WorkerSettings:
     backoff_factor_s: float = DEFAULT_BACKOFF_FACTOR_S
     telemetry_log: Path | None = None
     workspace: Path | None = None
+    cwd: Path | None = None
+    environ: Mapping[str, str] | None = field(default=None, compare=False)
 
     @classmethod
     def from_discovered(
@@ -80,14 +90,77 @@ class WorkerSettings:
     ) -> WorkerSettings:
         """Use discovery for connection settings while retaining worker environment options."""
 
-        env = dict(os.environ if environ is None else environ)
+        base_env = os.environ if environ is None else environ
+        env_had_harness = bool(
+            base_env.get("HUB_HARNESS", "").strip() or base_env.get("AGENT_RUNTIME", "").strip()
+        )
+        env = dict(base_env)
         env["HUB_URL"] = endpoint.url
         env["HUB_TOKEN"] = endpoint.token
         if agent_name is not None:
             env["AGENT_NAME"] = agent_name
-        if harness is not None:
+        if harness is not None and not env_had_harness:
             env["HUB_HARNESS"] = harness
-        return cls.from_env(env)
+        settings = cls.from_env(env)
+        if settings.profile.harness != UNKNOWN:
+            source = ModelSource.ENV if env_had_harness else ModelSource.INSTALL
+            return replace(
+                settings,
+                profile=replace(settings.profile, harness_source=source),
+                environ=base_env,
+            )
+        return replace(settings, environ=base_env)
+
+    @classmethod
+    def unjoined(
+        cls,
+        *,
+        harness: str | None = None,
+        environ: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+        profile: AgentProfile | None = None,
+        default_wait_s: float | None = None,
+    ) -> WorkerSettings:
+        """Settings for a worker MCP bridge before `join` names the agent and role (§5)."""
+
+        env = dict(os.environ if environ is None else environ)
+        wait_s = (
+            default_wait_s
+            if default_wait_s is not None
+            else _positive_seconds(env, "HUB_DEFAULT_WAIT_S", DEFAULT_WAIT_S)
+        )
+        heartbeat_s = _positive_seconds(env, "HUB_HEARTBEAT_S", DEFAULT_HEARTBEAT_S)
+        max_retries = _non_negative_int(env, "HUB_MAX_RETRIES", DEFAULT_MAX_RETRIES)
+        backoff_factor_s = _positive_seconds(env, "HUB_BACKOFF_FACTOR_S", DEFAULT_BACKOFF_FACTOR_S)
+        telemetry_log = _optional_absolute_path(env, "HUB_TELEMETRY_LOG")
+        resolved_profile = profile if profile is not None else profile_from_env(env)
+        if profile is None:
+            if resolved_profile.harness != UNKNOWN:
+                resolved_profile = replace(resolved_profile, harness_source=ModelSource.ENV)
+            elif harness is not None and harness.strip() and harness.strip() != UNKNOWN:
+                resolved_profile = replace(
+                    resolved_profile, harness=harness.strip(), harness_source=ModelSource.INSTALL
+                )
+        raw_hub_url = (env.get("HUB_URL") or env.get("ROBOMATE_HUB_URL") or "").strip().rstrip("/")
+        raw_token = (env.get("HUB_TOKEN") or env.get("ROBOMATE_TOKEN") or "").strip()
+        raw_token_file = env.get("ROBOMATE_TOKEN_FILE", "").strip()
+        if not raw_token and raw_token_file:
+            with suppress(OSError):
+                raw_token = Path(raw_token_file).expanduser().read_text(encoding="utf-8").strip()
+        raw_agent_name = (env.get("AGENT_NAME") or env.get("ROBOMATE_AGENT_NAME") or "").strip()
+        return cls(
+            hub_url=raw_hub_url,
+            token=raw_token,
+            agent_name=raw_agent_name,
+            profile=resolved_profile,
+            default_wait_s=wait_s,
+            heartbeat_s=heartbeat_s,
+            max_retries=max_retries,
+            backoff_factor_s=backoff_factor_s,
+            telemetry_log=telemetry_log,
+            cwd=cwd,
+            environ=env,
+        )
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> WorkerSettings:

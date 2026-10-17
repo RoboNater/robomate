@@ -1061,3 +1061,48 @@ def test_v18_task_migration_starts_with_zero_pause_offset(tmp_path: Path) -> Non
         row = connection.execute("SELECT lease_expires, lease_clock_shift_s FROM task").fetchone()
         assert row["lease_expires"] == before
         assert row["lease_clock_shift_s"] == 0
+
+
+def test_migration_from_v20_adds_standing_role_and_join_profile_sources(tmp_path: Path) -> None:
+    """#238's v21: existing agents migrate with standing_role='worker' and unknown join sources."""
+    path = tmp_path / "v20.db"
+    _legacy_database(path, 20)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO agent (name, status, context_id, last_seen, harness, model, model_source)"
+            " VALUES ('bob', 'idle', 'ctx-bob', '2026-10-15T00:00:00Z',"
+            " 'claude-code', 'opus', 'env')"
+        )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO agent (name, standing_role, status, context_id, last_seen)"
+                " VALUES ('bad', 'manager', 'idle', 'ctx-bad', '2026-10-15T00:00:00Z')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO agent (name, standing_role, status, context_id, last_seen)"
+                " VALUES ('bad-rebase', 'rebase', 'idle', 'ctx-rebase', '2026-10-15T00:00:00Z')"
+            )
+        connection.execute(
+            "INSERT INTO agent (name, standing_role, status, context_id, last_seen)"
+            " VALUES ('alice', 'orchestrator', 'idle', 'ctx-alice', '2026-10-15T00:00:00Z')"
+        )
+    store = HubStore(path)
+    bob = store.agent_by_name("bob")
+    assert bob is not None
+    assert bob.standing_role.value == "worker"
+    assert bob.harness_source is ModelSource.UNKNOWN
+    assert bob.effort == UNKNOWN
+    assert bob.effort_source is ModelSource.UNKNOWN
+    # A migrated 'worker' accepts both implementer and reviewer assignments.
+    store.initialize_workflow()
+    t1 = store.assign_task("bob", "implementer", "Impl", "Do impl")
+    store.submit_result(t1.id, "bob", TaskState.COMPLETED, "done")
+    t2 = store.assign_task("bob", "reviewer", "Rev", "Do review")
+    assert t2.role == "reviewer"

@@ -570,3 +570,27 @@ def test_task_requirements_do_not_grant_operator_authority() -> None:
         read("docs/user-guide.md"),
         ("State decisions a run depends on in the issue or work file.",),
     )
+
+
+def test_worker_guide_and_skill_document_join_and_takeover() -> None:
+    guide = read("guides/worker.md")
+    prompt = read("prompts/worker.md")
+    skill = read("skills/worker/SKILL.md")
+
+    assert prompt.endswith(guide)
+    for text in (guide, prompt, skill):
+        assert_fragments(
+            text,
+            (
+                "join(name, role",
+                "takeover=true",
+                "reattached_task",
+            ),
+        )
+    assert_fragments(
+        guide,
+        (
+            "ask_orchestrator",
+            "ask_alice",
+        ),
+    )
