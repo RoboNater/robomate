@@ -111,11 +111,16 @@ async def test_worker_bridge_checks_the_local_hub_identity_before_connecting(
         async def close(self) -> None:
             pass
 
-    def capture(get_client: Any, server_name: str) -> object:
-        tools["get_client"] = get_client
-        return object()
+    class FakeServer:
+        async def list_tools(self) -> list[Any]:
+            return []
 
-    async def serve(_server: object, _stdout: object) -> None:
+    def capture(get_client: Any, server_name: str, include_orchestrator: bool) -> FakeServer:
+        assert server_name == "robomate" and include_orchestrator is False
+        tools["get_client"] = get_client
+        return FakeServer()
+
+    async def serve(_server: object, _stdout: object, _accounting: object) -> None:
         if error is None:
             await tools["get_client"]()
         else:

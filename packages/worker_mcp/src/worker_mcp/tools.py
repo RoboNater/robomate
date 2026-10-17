@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from functools import wraps
+from types import MethodType
 from typing import Annotated, Any, TypeVar
 
-from agent_hub_common import ImplementerResult, RebaseResult, ReviewerResult
+from agent_hub_common import ImplementerResult, RebaseResult, ReviewerResult, StandingRole
+from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
@@ -20,6 +23,7 @@ def create_worker_mcp(
     client: WorkerHubClient | Callable[[], Awaitable[WorkerHubClient]],
     *,
     server_name: str = "worker-mcp",
+    include_orchestrator: bool = False,
 ) -> FastMCP:
     server = FastMCP(
         server_name,
@@ -58,6 +62,8 @@ def create_worker_mcp(
         return result
 
     def require_joined(resolved: WorkerHubClient, *, allow_preconfigured: bool = True) -> None:
+        if resolved.standing_role is StandingRole.ORCHESTRATOR:
+            raise RuntimeError("this tool requires a worker role")
         if resolved.is_joined:
             return
         if allow_preconfigured and resolved.settings.agent_name:
@@ -249,4 +255,18 @@ def create_worker_mcp(
             task_id=task_id,
         )
 
+    if include_orchestrator:
+
+        def forward_operation(name: str) -> Any:
+            @wraps(getattr(OrchestratorTools, name))
+            async def forward(_self: Any, **kwargs: Any) -> dict[str, Any]:
+                resolved = await resolve()
+                if resolved.orchestrator is None or not resolved.orchestrator.joined:
+                    raise RuntimeError("call join(name=..., role='orchestrator') first")
+                return await resolved.orchestrator.call(name, kwargs)
+
+            return forward
+
+        for operation in OPERATIONS:
+            server.add_tool(MethodType(forward_operation(operation), server))
     return server

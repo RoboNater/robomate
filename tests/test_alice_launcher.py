@@ -249,7 +249,9 @@ def test_each_harness_resumes_its_own_conversation_until_done(
 
 def test_the_continuation_carries_no_state_or_decision() -> None:
     prompt = LAUNCHER.CONTINUE_PROMPT
-    assert "get_state first" in prompt and "\n" not in prompt
+    assert prompt.index("join") < prompt.index("get_state") and "\n" not in prompt
+    assert 'role="orchestrator", takeover=true first' in prompt
+    assert "returned orchestrator guide's On resume" in prompt
     assert "no operator decision, approval, or state" in prompt
     for word in ("approved", "answer is", "snapshot", "delivery_id", "task_id"):
         assert word not in prompt
@@ -829,3 +831,51 @@ def test_healthy_running_time_does_not_spend_the_budget(
         launcher.run()
     assert stopped.value.reason == "resumes_spent"
     assert delays == [5.0, 10.0]
+
+
+async def test_prepared_resume_replaces_the_bridge_before_reading_state(settings: Any) -> None:
+    """#239 r1-1: execute the continuation's join/read order against the real hub."""
+    from dataclasses import replace
+
+    import httpx
+    from agent_hub.app import create_app
+    from conftest import BASE_URL, TOKEN
+    from worker_mcp.orchestrator import OrchestratorBridge, SupersededSessionError
+
+    app = create_app(replace(settings, guides_dir=ROOT / "guides"))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        old = OrchestratorBridge(http_client=http)
+        resumed = OrchestratorBridge(http_client=http)
+        try:
+            await old.call("initialize_workflow", {"goal": "Keep the existing workflow"})
+            app.state.store.check_in("bob")
+            delivery = (await old.call("wait_for_event", {"timeout_s": 0}))["event"]
+            question = await old.call("ask_user", {"question": "Wait?"})
+            before = await old.call("get_state", {})
+            with pytest.raises(RuntimeError, match="join with takeover=true"):
+                await resumed.call("get_state", {})
+            assert LAUNCHER.CONTINUE_PROMPT.index("join") < LAUNCHER.CONTINUE_PROMPT.index(
+                "get_state"
+            )
+            joined = await resumed.join("alice", "orchestrator", takeover=True)
+            after = await resumed.call("get_state", {})
+            assert joined["resume_procedure"] and joined["guide_sha256"]
+            assert after["workflow"] == before["workflow"]
+            assert after["workflow"]["status"] == "escalated"
+            assert (
+                app.state.store.operator_answer(question["question_id"])["status"] == "unanswered"
+            )
+            replay = (await resumed.call("wait_for_event", {"timeout_s": 0}))["event"]
+            assert replay["id"] == delivery["id"] and replay["delivery_attempts"] == 2
+            with pytest.raises(SupersededSessionError):
+                await old.call("get_state", {})
+        finally:
+            await resumed.close()
+            await old.close()

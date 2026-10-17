@@ -312,18 +312,23 @@ def test_existing_manifests_do_not_regenerate_or_retrofit_doctor_artifacts(
         assert context_path.read_bytes() == previous
 
 
-def test_codex_alice_uses_orchestrator_bridge(
+async def test_codex_alice_uses_orchestrator_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_hub_common.orchestrator_tools import OPERATIONS
+    from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
     run_dir, _ = prepare(tmp_path, monkeypatch, alice_harness="codex")
     config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
     server = config["mcp_servers"]["robomate"]
     assert server["args"][-3:] == ["mcp", "--role", "orchestrator"]
     assert set(server["enabled_tools"]) == set(PREPARE_RUN.ALICE_TOOLS)
-    assert set(server["enabled_tools"]) == set(OPERATIONS)
+    served = {
+        tool.name for tool in await create_orchestrator_mcp(OrchestratorBridge()).list_tools()
+    }
+    assert "join" in served
+    assert set(server["enabled_tools"]) == served
+    assert server["tools"]["join"]["approval_mode"] == "approve"
 
 
 def test_missing_or_different_hub_is_rejected(
@@ -2007,7 +2012,7 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from agent_hub.mcp import create_mcp
+    from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
     fake_agy_home = tmp_path / "user-home"
     cli_dir = fake_agy_home / ".gemini" / "antigravity-cli"
@@ -2046,8 +2051,10 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     assert alice_mcp["args"][-3:] == ["mcp", "--role", "orchestrator"]
     assert alice_mcp["env"]["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8521"
     assert alice_mcp["env"]["ROBOMATE_TOKEN_FILE"] == str(tmp_path / "target/.robomate/token")
-    initialize_database(tmp_path / "hub.db")
-    served = {tool.name for tool in await create_mcp(HubStore(tmp_path / "hub.db")).list_tools()}
+    served = {
+        tool.name for tool in await create_orchestrator_mcp(OrchestratorBridge()).list_tools()
+    }
+    assert "join" in served
     assert set(alice_mcp["enabledTools"]) == served
     assert alice_mcp["timeoutSeconds"] == 330
 
@@ -2652,13 +2659,16 @@ def test_worker_resume_uses_git_bash_spellings() -> None:
 
 
 def test_resume_prompts_use_role_specific_first_hub_call() -> None:
-    """Alice resumes with get_state; workers check in (r1-1)."""
+    """#239 r2-2: Alice replaces her bridge before state reads; workers check in."""
     from agent_hub_common.orchestrator_tools import OPERATIONS
 
     assert "check_in" not in OPERATIONS
     assert "check_in" in RUN_COMMON.TOOLS
     alice = PREPARE_RUN.render_resume_prompt("alice", PurePosixPath("/runs/r"))
-    assert "get_state" in alice and "call `check_in`" not in alice
+    assert alice.index("`join`") < alice.index("`get_state`")
+    assert 'role="orchestrator"' in alice and "`takeover=true`" in alice
+    assert "returned orchestrator guide's On resume" in alice
+    assert "grants no workflow" in alice and "call `check_in`" not in alice
     for name in ("bob", "charlie"):
         assert "call `check_in`" in PREPARE_RUN.render_resume_prompt(name, PurePosixPath("/runs/r"))
 
