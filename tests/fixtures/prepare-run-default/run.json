@@ -110,6 +110,7 @@
     "bob": "anthropic",
     "charlie": "openai"
   },
+  "pytest_workers": 0,
   "repository": "$ORIGIN",
   "run_dir": "$RUN_DIR",
   "schema_version": 1,
