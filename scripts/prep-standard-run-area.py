@@ -44,6 +44,7 @@ DEFAULTS: dict[str, str | int | bool] = {
     "denise_model": "",
     "denise_effort": "",
     "auto_start": True,
+    "pytest_workers": 0,
 }
 PATH_KEYS = ("run_parent_dir", "work_file")
 
@@ -118,6 +119,8 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def validate(values: dict[str, Any], *, preparing: bool) -> None:
+    if values["pytest_workers"] < 0:
+        raise ValueError("pytest_workers must not be negative (0 means CPU count)")
     if values["issue"] < 0:
         raise ValueError("issue must be positive (0 means unset)")
     if values["issue"] and values["work_file"]:
@@ -165,6 +168,8 @@ def write_config(path: Path, values: dict[str, Any]) -> None:
             if type(value) in (int, bool)
             else json.dumps(value, ensure_ascii=False)
         )
+        if key == "pytest_workers":
+            lines.append("# Workers per pytest -n auto run; 0 uses the CPU count.")
         lines.append(f"{key} = {literal}")
     with path.expanduser().open("x", encoding="utf-8") as stream:
         stream.write("\n".join(lines) + "\n")
@@ -220,6 +225,7 @@ def prepare(values: dict[str, Any], *, yes: bool, source_config: Path | None = N
         "--account",
         values["account"],
     ]
+    command += ["--pytest-workers", str(values["pytest_workers"])]
     if values["issue"]:
         command += ["--issue", str(values["issue"])]
     else:

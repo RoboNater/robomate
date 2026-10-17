@@ -911,6 +911,7 @@ def _state_location(local: LocalHub | None, checkout: Path) -> str:
 
 
 def _status(as_json: bool, selector: str | None) -> None:
+    escape_unencodable_output()
     """Show the selected or discovered hub, retaining local metadata for stopped hubs."""
 
     hub = find_hub(Path.cwd(), selector=selector)

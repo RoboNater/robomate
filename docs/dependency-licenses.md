@@ -98,7 +98,7 @@ licenses.
 ## Inventory (generated)
 
 <!-- generated-inventory -->
-Lock SHA256: `3f6998a37512c81cb08fd6a0a2cbcdbf780f083e56671f2aac28efdb272cf4e3`. Artifact and notice digests, metadata,
+Lock SHA256: `0efdfce6a1e018fc96314f87eba365495e4627b3c736f588a9b3d03cbfa1f736`. Artifact and notice digests, metadata,
 markers, and every runtime/dev graph path are in
 [dependency-license-facts.json](dependency-license-facts.json).
 
@@ -117,6 +117,7 @@ markers, and every runtime/dev graph path are in
 | click | 8.5.0 | runtime | 2 / 2 | permissive |
 | colorama | 0.4.6 | dev | 2 / 2 | permissive |
 | cryptography | 50.0.1 | runtime | 16 / 40 | permissive |
+| execnet | 2.1.2 | dev | 2 / 2 | permissive |
 | fastapi | 0.141.1 | runtime | 2 / 2 | permissive |
 | google-api-core | 2.34.0 | runtime | 2 / 2 | permissive |
 | google-auth | 2.57.0 | runtime | 2 / 2 | permissive |
@@ -150,6 +151,7 @@ markers, and every runtime/dev graph path are in
 | pygments | 2.21.0 | dev | 2 / 2 | permissive |
 | pyjwt | 2.15.0 | runtime | 2 / 2 | permissive |
 | pytest-asyncio | 1.4.0 | dev | 2 / 2 | permissive |
+| pytest-xdist | 3.8.0 | dev | 2 / 2 | permissive |
 | pytest | 9.1.1 | dev | 2 / 2 | permissive |
 | python-dotenv | 1.2.3 | runtime | 2 / 2 | permissive |
 | python-multipart | 0.0.32 | runtime | 2 / 2 | permissive |
@@ -330,8 +332,8 @@ review_date = "2026-10-12"
 name = "colorama"
 version = "0.4.6"
 expression = "BSD-3-Clause"
-fingerprint = "12539616e05611a116d7bd33a988f313d07ff65d00b734748cc55faf1d32a5d6"
-renewal_fingerprint = "1a2731c265befec8d5a2fc8e977f4b519b5680341d00f12a449ccd088fd62aaf"
+fingerprint = "89881198e7eefe658688941bd5ce92622ece5f313ab13ca7ced535f08481ac72"
+renewal_fingerprint = "e96d02da186aefd4e615f7a4625b41fb4f7881cd9bc66701330f8cc23b298e8a"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 
@@ -430,8 +432,8 @@ review_date = "2026-10-13"
 name = "iniconfig"
 version = "2.3.0"
 expression = "MIT"
-fingerprint = "d9e7b0779dd1527c407e6c5deba5f76cc6d9340bf61094a0404a39ab41c76f91"
-renewal_fingerprint = "0f1dce3613e4efd67ecd5a44377e6a2fb9b8c959723cb724da1c95c968bf462f"
+fingerprint = "8589b7c43660a9ca428bbcba7f3329e70014f688859f9db60f7beb645d19afe6"
+renewal_fingerprint = "bca19ca653c0c4da8b3cbc2d8ece850e6a38877f2ee8c2d98a5c0a572c8b340f"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 
@@ -495,8 +497,8 @@ components = ["Python-2.0", "BSD-2-Clause", "Apache-2.0", "BSD-3-Clause"]
 name = "packaging"
 version = "26.3"
 expression = "Apache-2.0 OR BSD-2-Clause"
-fingerprint = "71b666885d929adf85fe6353d94b499b24897c0a79923b448efce1fea6ba7dcf"
-renewal_fingerprint = "1dbec087d15a8334bc3f6bdba9f946e48788a2ac46797b9c673823648794c4ec"
+fingerprint = "3470abb4f9e85d0a8d19a83e826cd661551435b72e49af8bedce4bd8726eac8d"
+renewal_fingerprint = "82382e123ae58171199982540989d5a32d687d29f987cb0055e8e471a7efb324"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 or_choices = ["Apache-2.0"]
@@ -516,8 +518,8 @@ owner_approval = "operator question #1, answered 2026-10-12T00:40:18.892Z; verif
 name = "pluggy"
 version = "1.6.0"
 expression = "MIT"
-fingerprint = "4ae038f27a13040ffd7ce2e064c7b208c9d749e03de4fa847c408f9c73d4d3c4"
-renewal_fingerprint = "5d29059dd478b7041f93b48776551c729154681b6ad23c50a981f95cb04717ef"
+fingerprint = "b7b164452b018fc5703f1ca47beb372a9654c1c722a677975068945771ebcf48"
+renewal_fingerprint = "e56bc477e3670aa9f632d9dff219993dd2f35f3a89689e8044bde39cecf9aa1b"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 
@@ -597,8 +599,8 @@ review_date = "2026-10-12"
 name = "pygments"
 version = "2.21.0"
 expression = "BSD-2-Clause"
-fingerprint = "57cc4c32a170cfd32c3f6f782c9bd5b69c027f41d3b4a24bc84f5d2847ebf527"
-renewal_fingerprint = "2a4559fc63b6383ce25e5e8047406fbb9d662f024ffaa898b1a10ef2887d1455"
+fingerprint = "00b4d2d938956b9812f7cfe0b56420b71a59fafcb2db24b87dc12526302fcb78"
+renewal_fingerprint = "2cae7a9efaa44158ed3501d3bc4350b5f3dd737eaa617c37f26127c684c6259a"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 
@@ -624,8 +626,8 @@ review_date = "2026-10-11"
 name = "pytest"
 version = "9.1.1"
 expression = "MIT"
-fingerprint = "93b446420bdff417ce7df162235bbf3d163a1cd079497ad1c90a992cc039bd0b"
-renewal_fingerprint = "49aa644f956d875d3a21b9635690946b969a47fd873d38624833c676b611d5db"
+fingerprint = "9adcbc98e482faa4c6e71afceb7084544e24fc2430dd24e2fe69eaed8c380599"
+renewal_fingerprint = "e9a377adad513b64afe9ca3d4f66fb8a167b2fdbc220e351958057adb5b23e99"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-11"
 
@@ -687,8 +689,8 @@ review_date = "2026-10-12"
 name = "robomate"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "f9e683cee904aa0970661294dc46f56040d2a2cadf5ac812c8970eaf8bf4fa9b"
-renewal_fingerprint = "1e1987080320b6d45aaef67a3784fb8318a35000338cb026bc0516adab4fdfa6"
+fingerprint = "4d66181ce8a0aa2f4daa01bf0dd90da0df1d217513e787b912fbf0fabe8f18c2"
+renewal_fingerprint = "6636266b53f67a1afc5233d48d64fdf32d719e7f92c2b66a3c0309ed08b5ab6b"
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-13"
 
@@ -812,9 +814,36 @@ renewal_fingerprint = "e8b51dd26d1347c9915c294aae19b9db6c74ead09fbf5b9ebab883442
 reviewer = "Implementation agent bob on behalf of RoboNater"
 review_date = "2026-10-13"
 
+[[review]]
+name = "execnet"
+version = "2.1.2"
+expression = "MIT"
+fingerprint = "ae8f19dceac9dd116bdffca9f9c6d7ef9da84f5706a02a740f727a92aafb6012"
+renewal_fingerprint = "7a4a65c50d85f87b1277ed4e39c5e9324ef12eb56e6c624cc3b593c4c847e179"
+reviewer = "Implementation agent bob on behalf of RoboNater"
+review_date = "2026-10-17"
+
+[[review]]
+name = "pytest-xdist"
+version = "3.8.0"
+expression = "MIT"
+fingerprint = "ce25cdc4c0b87c1a61e3db4e7cc1579df62c5a7e7c18f0a98fee57fe51dc4aac"
+renewal_fingerprint = "2666c15fc805ca834145aa2a841e7fc8ee26065e92e72c7509241c15515bf2bf"
+reviewer = "Implementation agent bob on behalf of RoboNater"
+review_date = "2026-10-17"
+
 ```
 
 ## Review log
+
+2026-10-17 - Implementation agent bob on behalf of RoboNater reviewed execnet
+2.1.2 and pytest-xdist 3.8.0: both locked sdists and universal wheels contain
+MIT notices, with matching notice digests per package and no additional bundled
+notices. Metadata agrees. Adding xdist changes only reachability for colorama,
+iniconfig, packaging, pluggy, pygments and pytest, plus the root dev declaration;
+verified their versions, artifact hashes, metadata and notices are unchanged.
+Updated those permissive approval fingerprints. No exception paths changed.
+
 
 2026-10-12 — Rebase review by worker bob: main #196 moves pydantic into
 common and removes worker-to-hub dependency paths. Reviewed all 46 changed
