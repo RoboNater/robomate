@@ -1,8 +1,11 @@
 """Fixtures shared by the hub's HTTP and state tests."""
 
 import json
+import random
+import re
 import socket
 import subprocess
+import sys
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -224,6 +227,148 @@ def closed_port_url() -> str:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return f"http://127.0.0.1:{probe.getsockname()[1]}"
+
+
+# Port blocks for hub-starting tests (#198, #204, #217, #229).
+
+# The platform's default ephemeral (dynamic) TCP range, inclusive, used when the
+# host's own setting cannot be read.
+DEFAULT_EPHEMERAL_RANGES: dict[str, tuple[int, int]] = {
+    "linux": (32768, 60999),
+    "win32": (49152, 65535),
+    "darwin": (49152, 65535),
+}
+FALLBACK_EPHEMERAL_RANGE = (32768, 65535)
+# Test blocks start here: clear of privileged ports, well-known services and
+# production `robomate up`, which scans from 8420, so run hubs and sibling
+# worktree hubs live in 842x.
+LOWEST_TEST_PORT = 10000
+
+
+def _linux_ephemeral_range() -> tuple[int, int] | None:
+    text = Path("/proc/sys/net/ipv4/ip_local_port_range").read_text(encoding="ascii")
+    low, high = (int(field) for field in text.split())
+    return low, high
+
+
+def _windows_ephemeral_range() -> tuple[int, int] | None:
+    """Parse `netsh int ipv4 show dynamicport tcp`.
+
+    The labels are localised, so take the first two `<label> : <number>`
+    lines in order: start port, then number of ports.
+    """
+
+    output = subprocess.run(
+        ["netsh", "int", "ipv4", "show", "dynamicport", "tcp"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout
+    numbers = [int(found) for found in re.findall(r"^[^:\n]*:\s*(\d+)\s*$", output, re.M)]
+    if len(numbers) < 2:
+        return None
+    start, count = numbers[:2]
+    return start, start + count - 1
+
+
+def _macos_ephemeral_range() -> tuple[int, int] | None:
+    output = subprocess.run(
+        ["sysctl", "-n", "net.inet.ip.portrange.first", "net.inet.ip.portrange.last"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout
+    low, high = (int(field) for field in output.split())
+    return low, high
+
+
+EPHEMERAL_RANGE_READERS: dict[str, Callable[[], tuple[int, int] | None]] = {
+    "linux": _linux_ephemeral_range,
+    "win32": _windows_ephemeral_range,
+    "darwin": _macos_ephemeral_range,
+}
+
+
+def ephemeral_port_range(platform: str = sys.platform) -> tuple[int, int]:
+    """The host's ephemeral TCP port range, inclusive; read only, never changed.
+
+    Falls back to the platform default when the setting can't be read or
+    makes no sense.
+    """
+
+    default = DEFAULT_EPHEMERAL_RANGES.get(platform, FALLBACK_EPHEMERAL_RANGE)
+    reader = EPHEMERAL_RANGE_READERS.get(platform)
+    if reader is None:
+        return default
+    try:
+        found = reader()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return default
+    if found is None or not 1 <= found[0] <= found[1] <= 65535:
+        return default
+    return found
+
+
+def port_block_bases(count: int, ephemeral: tuple[int, int]) -> list[int]:
+    """Bases of `count`-port blocks from LOWEST_TEST_PORT up, outside `ephemeral` if any fit.
+
+    A host whose ephemeral range covers everything from LOWEST_TEST_PORT up
+    (Windows set to 1024-65535) leaves no block outside it; then every base
+    from LOWEST_TEST_PORT up qualifies, inside the range.
+    """
+
+    low, high = ephemeral
+    usable = range(LOWEST_TEST_PORT, 65536 - count + 1)
+    outside = [base for base in usable if base + count - 1 < low or base > high]
+    return outside or list(usable)
+
+
+def reserve_port_block(
+    count: int = 16, *, platform: str = sys.platform, attempts: int = 100
+) -> int:
+    """Base of `count` consecutive free loopback ports for a test's own hubs.
+
+    Give the base to `ROBOMATE_BASE_PORT` so `robomate up`'s first-free scan
+    runs there and not from 8420, or use it as a pinned `--port`. The block is
+    drawn at random (from the OS's random source, so two suites seeded alike
+    still draw apart) from 10000 up, outside the host's ephemeral range,
+    then every port in it is probe-bound. Any bind failure (in use, WinError
+    10013, a Windows excluded range) rejects the block and draws another;
+    after `attempts` blocks it raises RuntimeError. It never relies on
+    `bind(0)`, whose result follows the host's allocator (#217).
+
+    Not race-free: the probe releases the block before `robomate up` binds it.
+    Outside the ephemeral range only an explicit bind can take a port in that
+    gap, such as a concurrent suite drawing an overlapping block, which the
+    random base makes unlikely. On a host whose ephemeral range leaves no room
+    (Windows set to 1024-65535) the block falls back inside that range, where
+    an outgoing connection can also take a port, as in #207. The first-free
+    scan skips a port taken that way, but a test that pins a port, restarts a
+    hub on its saved port or expects a particular port then fails; rerun it.
+    """
+
+    bases = port_block_bases(count, ephemeral_port_range(platform))
+    draw = random.SystemRandom()
+    for _ in range(attempts):
+        base = draw.choice(bases)
+        held: list[socket.socket] = []
+        try:
+            for port in range(base, base + count):
+                probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                held.append(probe)
+                probe.bind(("127.0.0.1", port))
+            return base
+        except OSError:
+            continue
+        finally:
+            for probe in held:
+                probe.close()
+    raise RuntimeError(
+        f"no {count} consecutive free loopback ports after {attempts} random blocks "
+        f"in {bases[0]}-{bases[-1] + count - 1}"
+    )
 
 
 def record_local_hub(checkout: Path, url: str, hub_id: str) -> Path:

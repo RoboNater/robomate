@@ -285,9 +285,10 @@ worktree/branch namespace: agent worktrees and `robomate/<old>/…` branches mad
 the old name keep it. Removing hub state stays a separate, explicit operator action.
 
 **Port** — per hub: the first free port from 8420 upward on the hub's first `up`, saved in
-`hub.json` and reused on restart so remote agents keep working; `--port` pins it. A pinned
-or saved port that is taken fails startup instead of moving the hub, so two hubs that ask
-for the same port fail clearly. Allocation binds first; there is no repository-wide lock.
+`hub.json` and reused on restart so remote agents keep working; `--port` pins it. The
+first-free scan skips a port that is in use or that the host forbids binding (WinError
+10013 / EACCES). A pinned or saved port that is taken or forbidden fails startup instead of
+moving the hub, so two hubs that ask for the same port fail clearly. Allocation binds first; there is no repository-wide lock.
 A hub forgotten with `robomate forget` has its port released: its next `up` ignores the
 saved port, takes the first free port, and says that the port was released and names the
 new one, since remote agents configured with the old port need the new one.

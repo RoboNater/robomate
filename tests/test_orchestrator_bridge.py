@@ -20,7 +20,7 @@ from agent_hub.store import HubStore
 from agent_hub_common import TaskState
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import DiscoveryError, read_hub_json
-from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub
+from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -339,7 +339,15 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         check=True,
     )
     command = str(Path(sys.executable).with_name("robomate"))
-    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path / "xdg")}
+    env = {
+        **os.environ,
+        "XDG_STATE_HOME": str(tmp_path / "xdg"),
+        # The registry and operator credential live under %LOCALAPPDATA% on
+        # Windows: isolate them, as tests/test_cli.py does.
+        "LOCALAPPDATA": str(tmp_path / "localappdata"),
+        # Scan this test's own block, not 842x (#204).
+        "ROBOMATE_BASE_PORT": str(reserve_port_block()),
+    }
     hub = subprocess.Popen(
         [command, "up"],
         cwd=repo,

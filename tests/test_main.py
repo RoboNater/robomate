@@ -20,6 +20,7 @@ import uvicorn
 from agent_hub import main
 from agent_hub.rpc_errors import OPERATOR_REQUIRED
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
+from conftest import reserve_port_block
 
 
 def test_hub_entry_point_escapes_unencodable_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,9 +99,7 @@ def test_second_sigint_forces_exit() -> None:
 
 
 def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) -> None:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
+    port = reserve_port_block(1)
     operator_file = tmp_path / "operator-token"
     operator_file.write_text("operator-secret\n")
     operator_file.chmod(0o600)
