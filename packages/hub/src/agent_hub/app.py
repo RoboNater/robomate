@@ -207,6 +207,7 @@ def create_app(
         if call is not None and claimed and store.agent_by_name(claimed) is not None:
             call.actor = claimed
         info = dict(hub_info or {})
+        hub_name = info.get("name") or info.get("hub_name") or "hub"
         checkout = info.get("checkout") or info.get("repo_root")
         common = info.get("git_common_dir")
         repository = (
@@ -243,9 +244,12 @@ def create_app(
         hub_url = info.get("url") or resolved.public_url
         payload = {
             "hub_id": hub_id,
-            "name": agent.name if agent else info.get("name"),
+            "name": hub_name,
+            "hub_name": hub_name,
+            "agent_name": agent.name if agent else None,
             "joined": agent is not None,
             "role": agent.standing_role.value if agent else None,
+            "standing_role": agent.standing_role.value if agent else None,
             "hub": hub_url,
             "status": "active" if agent and agent.status is not AgentStatus.LOST else "idle",
             "current_task": current_task,

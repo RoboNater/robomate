@@ -1084,6 +1084,15 @@ def test_migration_from_v20_adds_standing_role_and_join_profile_sources(tmp_path
                 "INSERT INTO agent (name, standing_role, status, context_id, last_seen)"
                 " VALUES ('bad', 'manager', 'idle', 'ctx-bad', '2026-10-15T00:00:00Z')"
             )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO agent (name, standing_role, status, context_id, last_seen)"
+                " VALUES ('bad-rebase', 'rebase', 'idle', 'ctx-rebase', '2026-10-15T00:00:00Z')"
+            )
+        connection.execute(
+            "INSERT INTO agent (name, standing_role, status, context_id, last_seen)"
+            " VALUES ('alice', 'orchestrator', 'idle', 'ctx-alice', '2026-10-15T00:00:00Z')"
+        )
     store = HubStore(path)
     bob = store.agent_by_name("bob")
     assert bob is not None

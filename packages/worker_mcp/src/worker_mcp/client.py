@@ -666,7 +666,7 @@ class WorkerHubClient:
         if clean_role == StandingRole.ORCHESTRATOR.value:
             raise ValueError(
                 "role 'orchestrator' is not supported by the worker bridge (see #239); "
-                "choose one of: implementer, reviewer, rebase, worker"
+                "choose one of: implementer, reviewer, worker"
             )
         try:
             standing_role = StandingRole(clean_role)
@@ -679,11 +679,24 @@ class WorkerHubClient:
 
         await self._bind_hub(hub)
         profile = self.profile(capabilities, model, effort=effort, harness=harness)
+
+        bridge_cwd = (self.settings.cwd or Path.cwd()).resolve()
         env = self.settings.environ or {}
-        if "HUB_WORKSPACE" in env and profile.workspace_id is None:
-            workspace = canonical_workspace(env["HUB_WORKSPACE"])
-            identity = read_identity(workspace, clean_name)
-            profile = replace(profile, workspace_id=identity["workspace_id"])
+        if "HUB_WORKSPACE" in env and env["HUB_WORKSPACE"]:
+            resolved_workspace_path = canonical_workspace(env["HUB_WORKSPACE"]).resolve()
+        else:
+            resolved_workspace_path = bridge_cwd
+
+        cwd_inside_workspace = bridge_cwd == resolved_workspace_path or bridge_cwd.is_relative_to(
+            resolved_workspace_path
+        )
+
+        if profile.workspace_id is None:
+            try:
+                identity = read_identity(resolved_workspace_path, clean_name)
+                profile = replace(profile, workspace_id=identity["workspace_id"])
+            except Exception:
+                pass
 
         self.settings = replace(self.settings, agent_name=clean_name)
         self.telemetry.agent = clean_name
@@ -735,32 +748,25 @@ class WorkerHubClient:
             self.current_task_id = None
         self._pending_checkin = None
 
-        worker_guide = ""
-        worker_guide_sha256 = ""
-        with suppress(Exception):
-            worker_guide = await self.get_role_guide("worker")
-            worker_guide_sha256 = hashlib.sha256(worker_guide.encode("utf-8")).hexdigest()
+        worker_guide = await self.get_role_guide("worker")
+        worker_guide_sha256 = hashlib.sha256(worker_guide.encode("utf-8")).hexdigest()
+        role_guide = await self.get_role_guide(standing_role.value)
 
-        role_guide = ""
-        with suppress(Exception):
-            role_guide = await self.get_role_guide(standing_role.value)
-
-        hub_summary: dict[str, Any] = {"url": self.settings.hub_url}
-        with suppress(Exception):
-            who = await self._request_with_retry("GET", "/whoami")
-            if who.status_code == 200:
-                who_data = who.json()
-                if isinstance(who_data, dict):
-                    hub_summary = {
-                        "hub_id": who_data.get("hub_id"),
-                        "name": who_data.get("name"),
-                        "repository": who_data.get("repository"),
-                        "checkout": who_data.get("checkout"),
-                        "url": who_data.get("url") or self.settings.hub_url,
-                        "port": who_data.get("port"),
-                        "forge": who_data.get("forge"),
-                        "default_branch": who_data.get("default_branch"),
-                    }
+        who = await self._request_with_retry("GET", "/whoami")
+        who.raise_for_status()
+        who_data = who.json()
+        if not isinstance(who_data, dict):
+            raise WorkerProtocolError(None, "GET /whoami did not return a JSON object")
+        hub_summary = {
+            "hub_id": who_data.get("hub_id"),
+            "name": who_data.get("hub_name") or who_data.get("name"),
+            "repository": who_data.get("repository"),
+            "checkout": who_data.get("checkout"),
+            "url": who_data.get("url") or who_data.get("hub") or self.settings.hub_url,
+            "port": who_data.get("port"),
+            "forge": who_data.get("forge"),
+            "default_branch": who_data.get("default_branch"),
+        }
 
         profile_dict = {
             "harness": profile.harness,
@@ -784,6 +790,9 @@ class WorkerHubClient:
             "context_id": self.context_id,
             "worker_instance_id": self.worker_instance_id,
             "hub": hub_summary,
+            "workspace_path": str(resolved_workspace_path),
+            "workspace_id": profile.workspace_id,
+            "cwd_inside_workspace": cwd_inside_workspace,
             "profile": profile_dict,
             "role_guide": role_guide,
             "guide": worker_guide,
@@ -796,7 +805,28 @@ class WorkerHubClient:
         """Return the connected hub's identity and this bridge's join state (§5)."""
 
         if not self.is_joined:
-            return {"joined": False, "hub": None}
+            hub_summary: dict[str, Any] | None = None
+            try:
+                await self._bind_hub()
+                response = await self._request_with_retry("GET", "/whoami")
+                if response.status_code == 200:
+                    who_data = response.json()
+                    if isinstance(who_data, dict):
+                        hub_summary = {
+                            "hub_id": who_data.get("hub_id"),
+                            "name": who_data.get("hub_name") or who_data.get("name"),
+                            "repository": who_data.get("repository"),
+                            "checkout": who_data.get("checkout"),
+                            "url": (
+                                who_data.get("url") or who_data.get("hub") or self.settings.hub_url
+                            ),
+                            "port": who_data.get("port"),
+                            "forge": who_data.get("forge"),
+                            "default_branch": who_data.get("default_branch"),
+                        }
+            except Exception:
+                hub_summary = None
+            return {"joined": False, "hub": hub_summary}
 
         await self._bind_hub()
         headers = {AGENT_HEADER: self.settings.agent_name} if self.settings.agent_name else None

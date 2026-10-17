@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -231,6 +232,7 @@ async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> 
     initialize_database(db_path)
     guides_dir = tmp_path / "guides"
     guides_dir.mkdir()
+    (guides_dir / "worker.md").write_text("# Worker Guide", encoding="utf-8")
     (guides_dir / "implementer.md").write_text("# Implementer Guide", encoding="utf-8")
     (guides_dir / "forge").mkdir()
     (guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
@@ -588,3 +590,36 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
     assert all(evidence["untrusted_text_behavior_checks"].values())
     assert evidence["pull_request"]["merged_sha"] == "3" * 40
     assert (tmp_path / "evidence.json").is_file()
+
+
+def test_join_via_mcp_against_live_hub(tmp_path: Path) -> None:
+    """r1-1: join_via_mcp runs robomate mcp and registers with a live hub."""
+    from test_cli import await_hub, init_checkout, start, stop
+
+    root = tmp_path / "repo"
+    init_checkout(root)
+    env = {
+        **os.environ,
+        "XDG_STATE_HOME": str(tmp_path / "xdg"),
+        "LOCALAPPDATA": str(tmp_path / "localappdata"),
+    }
+    hub = start(root, env)
+    try:
+        info = await_hub(root, hub)
+        token = (root / ".robomate" / "token").read_text(encoding="utf-8").strip()
+        res = mock_worker.join_via_mcp(
+            "bob",
+            "implementer",
+            runtime="claude-code",
+            hub_url=str(info["url"]),
+            token=token,
+            timeout_s=30.0,
+        )
+        assert res["status"] == "registered"
+        assert res["agent"] == "bob"
+        assert res["role"] == "implementer"
+        assert res["hub"]["name"] == info["name"]
+        assert "workspace_path" in res
+        assert "guide_sha256" in res
+    finally:
+        stop(root, env, hub)

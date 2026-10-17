@@ -1249,3 +1249,7 @@ def main() -> None:
     except (DiscoveryError, RuntimeError, ValueError, OSError) as exc:
         print(f"robomate: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+
+if __name__ == "__main__":
+    main()

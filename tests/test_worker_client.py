@@ -664,6 +664,12 @@ async def test_worker_join_whoami_and_takeover_over_a2a(
     hub_store: HubStore,
     settings: HubSettings,
 ) -> None:
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# Implementer Guide\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
+
     unjoined = WorkerSettings.unjoined(
         profile=AgentProfile(harness="claude-code", harness_source=ModelSource.INSTALL),
         environ={"ROBOMATE_HUB_URL": BASE_URL, "ROBOMATE_TOKEN": TOKEN},
@@ -671,7 +677,10 @@ async def test_worker_join_whoami_and_takeover_over_a2a(
     )
     async with WorkerHubClient(unjoined, http_client=client) as first:
         before = await first.whoami()
-        assert before == {"joined": False, "hub": None}
+        assert before["joined"] is False
+        assert before["hub"] is not None
+        assert before["hub"]["name"] == "hub"
+        assert before["hub"]["url"] == settings.public_url
 
         join_res = await first.join(
             role="implementer",
@@ -683,6 +692,9 @@ async def test_worker_join_whoami_and_takeover_over_a2a(
         assert join_res["status"] == "registered"
         assert join_res["agent"] == "bob"
         assert join_res["role"] == "implementer"
+        assert join_res["hub"]["name"] == "hub"
+        assert "workspace_path" in join_res
+        assert join_res["cwd_inside_workspace"] is True
         assert join_res["profile"]["harness"] == "claude-code"
         assert join_res["profile"]["harness_source"] == "install"
         assert join_res["profile"]["model"] == "claude-opus-4-7"
@@ -693,7 +705,8 @@ async def test_worker_join_whoami_and_takeover_over_a2a(
         task = hub_store.assign_task("bob", "implementer", "Fix #238", "Implement join")
         after = await first.whoami()
         assert after["joined"] is True
-        assert after["name"] == "bob"
+        assert after["name"] == "hub"
+        assert after["agent_name"] == "bob"
         assert after["role"] == "implementer"
         assert after["hub"] == settings.public_url
         assert after["status"] == "active"
@@ -739,3 +752,38 @@ async def test_worker_join_whoami_and_takeover_over_a2a(
                 ),
             )
             assert done["status"] == "completed"
+
+
+async def test_join_declared_model_no_mismatch(
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+) -> None:
+    """#87: join with declared exact ID and no HUB_MODEL gives declared source and no mismatch."""
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# Implementer Guide\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
+
+    unjoined = WorkerSettings.unjoined(
+        profile=AgentProfile(harness="claude-code", harness_source=ModelSource.INSTALL),
+        environ={"ROBOMATE_HUB_URL": BASE_URL, "ROBOMATE_TOKEN": TOKEN},
+        default_wait_s=0.2,
+    )
+    async with WorkerHubClient(unjoined, http_client=client) as worker:
+        res = await worker.join(
+            role="implementer",
+            name="bob",
+            model="claude-opus-5-5",
+        )
+        assert res["profile"]["model"] == "claude-opus-5-5"
+        assert res["profile"]["model_source"] == "declared"
+        agent = hub_store.agent_by_name("bob")
+        assert agent is not None
+        assert agent.model == "claude-opus-5-5"
+        assert agent.model_source == ModelSource.DECLARED
+        assert agent.declared_model == "claude-opus-5-5"
+        state = hub_store.get_state()
+        agent_summary = next(a for a in state["agents"] if a["name"] == "bob")
+        assert agent_summary["model_mismatch"] is False

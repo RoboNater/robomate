@@ -2387,6 +2387,8 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         assert joined_body["profile"]["harness_source"] == "install"
         assert joined_body["profile"]["model"] == "claude-opus-4-7"
         assert joined_body["profile"]["effort"] == "high"
+        assert joined_body["hub"]["name"] == info["name"]
+        assert "workspace_path" in joined_body
 
         # 5. whoami after join reflects hub state
         send(
@@ -2401,7 +2403,8 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         assert not whoami_after.get("isError"), whoami_after
         after_body = json.loads(whoami_after["content"][0]["text"])
         assert after_body["joined"] is True
-        assert after_body["name"] == "bob"
+        assert after_body["name"] == info["name"]
+        assert after_body["agent_name"] == "bob"
         assert after_body["role"] == "implementer"
         assert after_body["hub"] == info["url"]
 

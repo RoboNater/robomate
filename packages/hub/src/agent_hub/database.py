@@ -84,7 +84,7 @@ PEER_ADDRESS_COLUMNS = {
 # role, so `worker` is the truthful default for them.
 JOIN_COLUMNS = {
     "standing_role": f"TEXT NOT NULL DEFAULT '{StandingRole.WORKER.value}'"
-    " CHECK (standing_role IN ('worker', 'implementer', 'reviewer', 'rebase'))",
+    f" CHECK (standing_role IN ({_sql_values(StandingRole)}))",
     "harness_source": f"TEXT NOT NULL DEFAULT '{UNKNOWN}'"
     f" CHECK (harness_source IN ({_sql_values(ModelSource)}))",
     "effort": f"TEXT NOT NULL DEFAULT '{UNKNOWN}'",
