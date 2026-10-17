@@ -1007,6 +1007,17 @@ def test_base_port_block_avoids_host_ephemeral_range(
     assert base in bases and attempted == list(range(base, base + 16))
 
 
+@pytest.mark.parametrize("count", [1, 8, 16])
+def test_base_port_block_falls_back_when_little_lies_outside(count: int) -> None:
+    """A range ending at 65534 leaves base 65535 outside; one base is no room to draw from.
+
+    Two concurrent suites each pinning one port both drew 65535 there.
+    """
+
+    bases = conftest.port_block_bases(count, (1024, 65534))
+    assert bases == list(range(conftest.LOWEST_TEST_PORT, 65536 - count + 1))
+
+
 def test_base_port_block_never_relies_on_bind_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     """#217: a host whose bind(0) only answers low ports still gets a block."""
 

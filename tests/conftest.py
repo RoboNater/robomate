@@ -243,6 +243,8 @@ FALLBACK_EPHEMERAL_RANGE = (32768, 65535)
 # production `robomate up`, which scans from 8420, so run hubs and sibling
 # worktree hubs live in 842x.
 LOWEST_TEST_PORT = 10000
+# Fewer bases than this outside the ephemeral range are too few to draw from.
+MIN_OUTSIDE_BASES = 1000
 
 
 def _linux_ephemeral_range() -> tuple[int, int] | None:
@@ -312,17 +314,19 @@ def ephemeral_port_range(platform: str = sys.platform) -> tuple[int, int]:
 
 
 def port_block_bases(count: int, ephemeral: tuple[int, int]) -> list[int]:
-    """Bases of `count`-port blocks from LOWEST_TEST_PORT up, outside `ephemeral` if any fit.
+    """Bases of `count`-port blocks from LOWEST_TEST_PORT up, outside `ephemeral` if room.
 
-    A host whose ephemeral range covers everything from LOWEST_TEST_PORT up
-    (Windows set to 1024-65535) leaves no block outside it; then every base
-    from LOWEST_TEST_PORT up qualifies, inside the range.
+    A host whose ephemeral range covers (nearly) everything from
+    LOWEST_TEST_PORT up, such as Windows set to 1024-65534, leaves fewer than
+    MIN_OUTSIDE_BASES bases outside it. Concurrent suites drawing from so few
+    would collide (all on 65535 for one port), so then every base from
+    LOWEST_TEST_PORT up qualifies, inside the range.
     """
 
     low, high = ephemeral
     usable = range(LOWEST_TEST_PORT, 65536 - count + 1)
     outside = [base for base in usable if base + count - 1 < low or base > high]
-    return outside or list(usable)
+    return outside if len(outside) >= MIN_OUTSIDE_BASES else list(usable)
 
 
 def reserve_port_block(
@@ -342,8 +346,9 @@ def reserve_port_block(
     Not race-free: the probe releases the block before `robomate up` binds it.
     Outside the ephemeral range only an explicit bind can take a port in that
     gap, such as a concurrent suite drawing an overlapping block, which the
-    random base makes unlikely. On a host whose ephemeral range leaves no room
-    (Windows set to 1024-65535) the block falls back inside that range, where
+    random base makes unlikely. On a host whose ephemeral range leaves too
+    little room (Windows set to 1024-65534 or 1024-65535; see
+    port_block_bases) the block falls back inside that range, where
     an outgoing connection can also take a port, as in #207. The first-free
     scan skips a port taken that way, but a test that pins a port, restarts a
     hub on its saved port or expects a particular port then fails; rerun it.
