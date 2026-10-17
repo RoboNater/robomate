@@ -2212,6 +2212,8 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    tmp_path = tmp_path / "spaced directory"
+    tmp_path.mkdir()
     host = os.name
     # 1. Local start scripts: bash on POSIX, PowerShell on a Windows host
     run_dir, manifest = prepare(tmp_path, monkeypatch)
@@ -2238,7 +2240,7 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
             assert lines[2:4] == [f"$env:TEMP = {tmp_quoted}", f"$env:TMP = {tmp_quoted}"]
         else:
             assert lines[0] == "set -e"
-            assert lines[2] == f"export TMPDIR={agent_tmp}"
+            assert lines[2] == f"export TMPDIR={PREPARE_RUN.shell_word(str(agent_tmp))}"
         assert len(lines) >= 4
 
     # 2. Local PowerShell launch lines and start script
@@ -2292,7 +2294,7 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert lines[0] == "set -e"
     assert lines[1].startswith("cd ")
     bash_tmp = PREPARE_RUN.git_bash_path(bob_tmp) if host == "nt" else str(bob_tmp)
-    assert lines[2] == f"export TMPDIR={bash_tmp}"
+    assert lines[2] == f"export TMPDIR={PREPARE_RUN.shell_word(bash_tmp)}"
 
     # 4. Remote worker-only output on Windows host
     win_out = tmp_path / "win_bundle"
@@ -2863,6 +2865,16 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
         run_script(run_dir / f"start-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         started = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         (base / "argv.jsonl").unlink()
+        # #264 / #120: this tests shell/launcher recovery, not the wall clock.
+        # WSL can step backwards between subprocesses and make a just-written
+        # exit look future-dated. Keep the recorded-exit path, using historical
+        # fixture data; test_agent_recovery covers refusing real future times.
+        sessions = run_dir / f"{agent}-sessions.jsonl"
+        records = [json.loads(line) for line in sessions.read_text().splitlines()]
+        for record in records:
+            if record["event"] == "exit":
+                record["exited_at"] = "2000-01-01T00:00:00+00:00"
+        sessions.write_text("".join(json.dumps(record) + "\n" for record in records))
         run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         resumed = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         # Bearer-only reads: the launcher never presents an orchestrator session.
@@ -3808,3 +3820,85 @@ def test_devin_worker_only_bundle_writes_the_clone_scope(tmp_path: Path) -> None
     assert "worker-launcher.py" in script and "devin --model swe-1.6-slow" in script
     resume = (out / "resume-bob.sh").read_text(encoding="utf-8")
     assert "--recover" in resume
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_pytest_worker_budget_reaches_local_start_and_resume_scripts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: int, auto_start: bool
+) -> None:
+    run_dir, manifest = prepare(
+        tmp_path, monkeypatch, pytest_workers=workers, auto_start=auto_start
+    )
+    assert manifest["pytest_workers"] == workers
+    if os.name == "nt":
+        expected = (
+            f"$env:PYTEST_XDIST_AUTO_NUM_WORKERS = '{workers}'"
+            if workers
+            else "$env:PYTEST_XDIST_AUTO_NUM_WORKERS = $null"
+        )
+    else:
+        expected = (
+            f"export PYTEST_XDIST_AUTO_NUM_WORKERS={workers}"
+            if workers
+            else "unset PYTEST_XDIST_AUTO_NUM_WORKERS"
+        )
+    for name in ("alice", "bob", "charlie"):
+        for kind in ("start", "resume"):
+            text = (run_dir / f"{kind}-{name}.{SCRIPT_SUFFIX}").read_text(encoding="utf-8")
+            assert expected in text.splitlines()
+
+
+@pytest.mark.parametrize("windows", [True, False])
+@pytest.mark.parametrize("auto_start", [True, False])
+def test_pytest_worker_budget_reaches_remote_git_bash_scripts(
+    tmp_path: Path, windows: bool, auto_start: bool
+) -> None:
+    run = PureWindowsPath("C:/my run") if windows else PurePosixPath("/srv/my run")
+    root = run / "robomate"
+    PREPARE_RUN.render_worker_bundle(
+        "bob",
+        "claude-code",
+        "2.1",
+        "anthropic",
+        "",
+        "",
+        "test-token-file",
+        "http://192.0.2.1:8420",
+        root,
+        run,
+        run / "bob",
+        tmp_path,
+        auto_start=auto_start,
+        pytest_workers=2,
+    )
+    for kind in ("start", "resume"):
+        text = (tmp_path / f"{kind}-bob.sh").read_text(encoding="utf-8")
+        assert "export PYTEST_XDIST_AUTO_NUM_WORKERS=2" in text.splitlines()
+    command = PREPARE_RUN.worker_only_command(
+        "bob",
+        "o/r",
+        "http://192.0.2.1:8420",
+        tmp_path / "token",
+        "claude-code",
+        "",
+        None,
+        "",
+        pytest_workers=2,
+    )
+    assert "--pytest-workers 2" in command
+
+
+def test_negative_pytest_worker_count_fails_before_preparation(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="pytest-workers"):
+        PREPARE_RUN.prepare("o/r", tmp_path, pytest_workers=-1)
+    with pytest.raises(ValueError, match="pytest-workers"):
+        PREPARE_RUN.prepare_worker(
+            "bob",
+            "o/r",
+            tmp_path,
+            "http://192.0.2.1:8420",
+            tmp_path / "token",
+            "claude-code",
+            pytest_workers=-1,
+        )

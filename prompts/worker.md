@@ -51,6 +51,22 @@ and never end it promising to continue once a background job finishes. Wait in
 the foreground instead: a foreground CI watch or bounded polling of the checks,
 with each call kept under 120 s on Claude Code.
 
+<!-- Validation cadence: #264. -->
+
+While implementing, run the affected test files during iteration, then the full
+`uv run --locked pytest -n auto` suite once before submitting. Reviewers run
+changed-code tests, the issue's acceptance commands and touched entry points;
+CI supplies the full Linux and Windows runs on the reviewed head. Run a full
+local suite for review only when CI is absent on that head or the change risks
+the test harness itself. A clean rebase with no hand resolutions relies on CI;
+a rebase with hand resolutions also runs the full suite locally.
+
+`-n auto` uses `PYTEST_XDIST_AUTO_NUM_WORKERS` from the run's launch/resume
+script. The operator sets `pytest_workers` in the standard-run TOML or passes
+`--pytest-workers N`; zero clears the override and uses the CPU count. The
+setting can be edited in a generated script before resuming (the run record
+then retains its original value, like a hand-edited model).
+
 <!-- Long local command: #122. -->
 
 A local command can outlast one tool call too: the full test suite takes
@@ -60,14 +76,15 @@ that file in separate foreground calls, each under your harness's tool limit
 because shell variables may not survive between calls:
 
 ```sh
-D=$(mktemp -d) && echo "$D" && (nohup sh -c 'uv run --locked pytest > "$1/out.log" 2>&1; echo $? > "$1/rc"' sh "$D" >/dev/null 2>&1 &)
+D=$(mktemp -d) && echo "$D" && (nohup sh -c 'uv run --locked pytest -n auto > "$1/out.log" 2>&1; echo $? > "$1/rc"' sh "$D" >/dev/null 2>&1 &)
 D='<dir>'; for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done; cat "$D/rc" 2>/dev/null || echo running; tail -3 "$D/out.log"
 ```
 
-On native Windows, run that in Git Bash, or this in PowerShell:
+On native Windows, run that in Git Bash, or this in PowerShell. The child
+uses UTF-8 for Python output, including redirected pytest diagnostics:
 
 ```powershell
-$D = New-Item -ItemType Directory (Join-Path ([IO.Path]::GetTempPath()) (New-Guid)); "$D"; Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "uv run --locked pytest *> '$D/out.log'; `$LASTEXITCODE > '$D/rc'"
+$D = New-Item -ItemType Directory (Join-Path ([IO.Path]::GetTempPath()) (New-Guid)); "$D"; Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "`$env:PYTHONUTF8 = '1'; uv run --locked pytest -n auto *> '$D/out.log'; `$LASTEXITCODE > '$D/rc'"
 $D = '<dir>'; foreach ($i in 1..18) { if (Test-Path "$D/rc") { break }; Start-Sleep 5 }; if (Test-Path "$D/rc") { Get-Content "$D/rc" } else { 'running' }; Get-Content "$D/out.log" -Tail 3
 ```
 

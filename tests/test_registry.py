@@ -3,6 +3,7 @@
 import ctypes
 import os
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -338,29 +339,58 @@ def test_a_trickling_answer_is_cut_off_at_the_budget(
 
 
 def test_a_tls_handshake_gets_only_what_connecting_left(
-    silent_url: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#266 r2-1: a slow connect leaves the handshake only the rest of the budget.
+    """#266 r2-1 / #264: assert the remaining budget at the TLS socket boundary.
 
-    The handshake used the timeout set before connecting, so a connect that
-    took most of the budget and a silent TLS peer ran to nearly twice it.
+    A real silent peer returned unreachable rather than timeout once under
+    Windows load. This regression checks our timeout assignment with a virtual
+    clock; the silent/trickling endpoint tests still exercise real IO deadlines.
     """
+    clock = 100.0
+    raw_socket = object()
 
-    connect = socket.create_connection
+    class TLS:
+        timeout = 0.0
+        closed = False
 
-    def slow_connect(*args: Any, **kwargs: Any) -> socket.socket:
-        connected = connect(*args, **kwargs)
-        time.sleep(0.9)
-        return connected
+        def settimeout(self, seconds: float) -> None:
+            self.timeout = seconds
 
+        def do_handshake(self) -> None:
+            nonlocal clock
+            clock += self.timeout
+            raise TimeoutError("silent TLS peer")
+
+        def close(self) -> None:
+            self.closed = True
+
+    tls = TLS()
+
+    class Context:
+        def wrap_socket(
+            self, sock: object, *, server_hostname: str, do_handshake_on_connect: bool
+        ) -> TLS:
+            assert sock is raw_socket
+            assert server_hostname == "hub.test"
+            assert not do_handshake_on_connect
+            return tls
+
+    def slow_connect(address: tuple[str, int], *, timeout: float) -> object:
+        nonlocal clock
+        assert address == ("hub.test", 443)
+        assert timeout == pytest.approx(1.0)
+        clock += 0.9
+        return raw_socket
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock)
     monkeypatch.setattr(socket, "create_connection", slow_connect)
-    url = silent_url().replace("http://", "https://")
-    started = time.monotonic()
-    health = registry.check_healthz(url, 1.0)
-    elapsed = time.monotonic() - started
+    monkeypatch.setattr(ssl, "create_default_context", Context)
+    health = registry.check_healthz("https://hub.test", 1.0)
     assert health == registry.HealthCheck(None, "did not answer /healthz within 1 s", True)
-    # 1 s, not 0.9 s + 1 s; the margin is for a loaded host.
-    assert elapsed < 1.6
+    assert tls.timeout == pytest.approx(0.1)
+    assert clock == pytest.approx(101.0)
+    assert tls.closed
 
 
 def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
@@ -409,3 +439,100 @@ def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
     }
     # The probe kept every entry, and did not drop the one written meanwhile.
     assert {x["hub_id"] for x in hub_entries(env)} >= {*silent, "slow", "late"}
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_lock_creation_permission_error_is_busy_only_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    path = tmp_path / "hubs.json"
+    real_open = os.open
+    attempts = 0
+
+    def flaky_open(*args: Any, **kwargs: Any) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("delete pending")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(os, "open", flaky_open)
+    if platform == "win32":
+        with registry._locked(path):
+            assert path.with_name("registry.lock").exists()
+        assert attempts == 2
+    else:
+        with pytest.raises(PermissionError, match="delete pending"), registry._locked(path):
+            pytest.fail("must not acquire")
+        assert attempts == 1
+    assert not path.with_name("registry.lock").exists()
+
+
+@pytest.mark.parametrize("failure", ["create", "stale_unlink", "stale_stat"])
+def test_lock_sharing_errors_obey_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    path = tmp_path / "hubs.json"
+    lock = path.with_name("registry.lock")
+    if failure != "create":
+        lock.touch()
+        os.utime(lock, (time.time() - 60,) * 2)
+    clock = 0.0
+
+    def advance(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    def denied(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(time, "monotonic", lambda: clock)
+    monkeypatch.setattr(time, "sleep", advance)
+    if failure == "create":
+        monkeypatch.setattr(os, "open", denied)
+    elif failure == "stale_unlink":
+        monkeypatch.setattr(Path, "unlink", denied)
+    else:
+        real_stat = Path.stat
+
+        def denied_lock_stat(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            if self == lock:
+                raise PermissionError("sharing violation")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", denied_lock_stat)
+    with (
+        pytest.raises(RegistryError, match="last failure: access or sharing error"),
+        registry._locked(path),
+    ):
+        pytest.fail("must time out")
+    assert 5 <= clock < 5.1
+
+
+def test_lock_cleanup_permission_error_preserves_completed_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(registry, "_RETRY_DELAYS_S", (0.0, 0.0))
+    attempts = 0
+
+    def denied(*args: Any, **kwargs: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(Path, "unlink", denied)
+    with registry._locked(tmp_path / "hubs.json"):
+        pass
+    assert attempts == 3
+
+
+def test_stale_registry_lock_is_reclaimed(tmp_path: Path) -> None:
+    lock = tmp_path / "registry.lock"
+    lock.touch()
+    os.utime(lock, (time.time() - 31,) * 2)
+    with registry._locked(tmp_path / "hubs.json"):
+        assert lock.stat().st_mtime > time.time() - 5
+    assert not lock.exists()

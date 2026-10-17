@@ -21,7 +21,7 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
-from conftest import BASE_URL, TOKEN
+from conftest import BASE_URL, TOKEN, reserve_port_block
 from worker_mcp.config import WorkerSettings
 
 script_path = Path(__file__).resolve().parents[1] / "scripts" / "mock-worker.py"
@@ -602,6 +602,7 @@ def test_join_via_mcp_against_live_hub(tmp_path: Path) -> None:
         **os.environ,
         "XDG_STATE_HOME": str(tmp_path / "xdg"),
         "LOCALAPPDATA": str(tmp_path / "localappdata"),
+        "ROBOMATE_BASE_PORT": str(reserve_port_block()),
     }
     hub = start(root, env)
     try:

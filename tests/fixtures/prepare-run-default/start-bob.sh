@@ -3,4 +3,5 @@
 set -e
 cd $RUN_DIR/bob
 export TMPDIR=$RUN_DIR/tmp/bob
+unset PYTEST_XDIST_AUTO_NUM_WORKERS
 $PYTHON $ROOT/scripts/worker-launcher.py --harness claude-code --hub-url http://127.0.0.1:8420 --token-file $HUB_REPO/.robomate/token --sessions $RUN_DIR/bob-sessions.jsonl --resume-delay-s 5 --resume-max-delay-s 1800 --resume-total-s 43200 --resume-series-reset-s 300 --agent bob --telemetry $RUN_DIR/bob-telemetry.jsonl --prompt $RUN_DIR/bob.prompt.md -- claude --permission-mode auto --strict-mcp-config --mcp-config $RUN_DIR/configs/bob.mcp.json --add-dir $RUN_DIR
