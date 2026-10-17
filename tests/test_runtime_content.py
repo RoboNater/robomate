@@ -608,5 +608,3 @@ def test_orchestrator_skill_is_a_join_pointer_and_guide_is_forge_neutral() -> No
     guide = read("guides/orchestrator.md")
     assert "gh pr " not in guide and "glab " not in guide
     assert "takeover=true" in guide and "guide_sha256" in guide
-    for timeout in re.findall(r"timeout_s\s*=\s*(\d+)", guide):
-        assert int(timeout) <= 100

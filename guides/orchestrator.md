@@ -19,15 +19,22 @@ durable hub policy govern the workflow.
 
 Call `join(name, role="orchestrator", takeover=false)` with the operator's name
 and only identity fields you actually know. One orchestrator attaches per hub.
-An attached session is refused unless the operator has asked you to replace it
-with `takeover=true`; takeover fences the old session and releases event leases.
+An attached session is refused without `takeover=true`. A launcher or harness
+resume of your same Alice conversation is an explicit replacement of your prior
+bridge: call `join` with your configured name, `role="orchestrator"` and
+`takeover=true` before `get_state`. That existing launch/resume path needs no
+additional operator question for session replacement; it grants no workflow
+authority and never changes the stored goal, policy or operator answers. For a
+different orchestrator, require the operator's replacement request; if the
+identity or intent is unclear, stop and ask the operator. Takeover fences the
+old session and releases event leases.
 The response supplies this guide and `guide_sha256`, the hub identity and forge,
 compact state and unacknowledged deliveries. A rejoin in the same bridge session
 returns `unchanged (<hash>)` when the served bytes are identical; retain the
 previous guide. When a workflow is active follow On resume below. Use
 `wait_for_event(timeout_s=100)` for the event loop. The bridge sends heartbeats.
 The forge appendix supplies all forge CLI commands, including merge and read-back.
-Prepared runs may still start with `get_state` through their configured bridge.
+Fresh prepared runs may still start with `get_state` through their configured bridge.
 
 ## KICKOFF and PLAN
 

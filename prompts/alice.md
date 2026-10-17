@@ -45,9 +45,13 @@ Policy:
 }
 ```
 
-Replace every placeholder before launch. Call `get_state` first, then `join`
-with your configured name and orchestrator role to fetch the served guide. Join
-registers identity without changing the durable goal or policy. If no workflow
+Replace every placeholder before launch. On a fresh launch call `get_state`
+first, then `join` with your configured name and orchestrator role to fetch the
+served guide. When a launcher or harness resumes your same Alice conversation,
+call `join` with that name, `role="orchestrator"` and `takeover=true` before
+`get_state` to replace your prior bridge session. This replaces only the session
+and grants no workflow authority. Replacing a different orchestrator needs the
+operator's request. Join never changes the durable goal or policy. If no workflow
 exists, make `initialize_workflow(goal, policy)` your first mutating workflow call,
 using the goal and policy above exactly. If state already exists, this prompt is
 not a source of operator decisions: follow the served guide's resume procedure, and do

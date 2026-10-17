@@ -116,9 +116,12 @@ its worker `busy`, and the workflow status unchanged throughout.
 2. Within `--resume-delay-s` (5 s) the launcher logs `exit`, then `wait` with
    `delay_s` and `next_attempt`, then `resume` with the same `conversation_id`
    (`tail -4 "$RUN/alice-sessions.jsonl"`).
-3. A new RPC session supersedes the old one:
+3. The continuation tells the resumed Alice to call `join` with her configured
+   name, `role="orchestrator"` and `takeover=true` before `get_state`. This explicit
+   session replacement supersedes the old bridge; a new session alone does not:
    `q "SELECT ts, actor, session FROM rpc_audit WHERE method = 'session.supersede'"`.
-4. Her first substantive call after the takeover is `get_state`:
+4. After `join` returns the guide and resume procedure, her first workflow read
+   is `get_state`; the stored goal, policy and any escalation stay unchanged:
    `q "SELECT started, tool FROM call_log WHERE actor = 'alice' AND started > 'KILL_TIME' ORDER BY started LIMIT 3"`
    (call accounting is on under `robomate up`).
 5. The run finishes with no manual resume: the launcher logs `stop` with

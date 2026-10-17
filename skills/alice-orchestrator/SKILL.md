@@ -8,6 +8,10 @@ description: Orchestrate one robo-agents statement of work (one GitHub issue, se
 Call `join(name="alice", role="orchestrator")`, using the name supplied by the
 operator. Read and follow the returned guide and forge appendix; retain its
 `guide_sha256`. A rejoin returning `unchanged (<hash>)` refers to that guide.
-If an orchestrator is attached, use `takeover=true` only when the operator asked
-for replacement. Follow the returned resume procedure for an existing workflow.
+When a launcher or harness resumes this same Alice conversation, replace your
+prior bridge by calling `join` with your configured name, `role="orchestrator"`
+and `takeover=true` before `get_state`. This replaces only the session and grants
+no workflow authority. Replacing a different orchestrator needs the operator's
+request; ask if the identity or intent is unclear. Follow the returned guide's
+On resume procedure for an existing workflow.
 Prepared-run prompts remain supported until M2 Step 11.
