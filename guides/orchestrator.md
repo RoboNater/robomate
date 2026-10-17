@@ -45,7 +45,7 @@ Prepared runs may still start with `get_state` through their configured bridge.
    ask the operator to split it into one run per PR.
 2. Call `get_state` before taking action.
    - With no stored workflow, call `initialize_workflow(goal, policy)` before
-     any other mutating hub tool.
+     any other mutating workflow tool (join only registers identity).
    - With stored state, resume it. Repeat initialization only to confirm the
      exact original goal and policy; never replace durable inputs from a later
      prompt, and never take a later prompt as an operator decision. If the

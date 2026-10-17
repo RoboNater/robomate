@@ -434,6 +434,7 @@ class RpcDispatcher:
         if row["tool"] not in (
             *OPERATIONS,
             "join",
+            "whoami",
             "initialize",
             "tools/list",
             "ping",

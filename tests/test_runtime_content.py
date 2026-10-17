@@ -129,7 +129,7 @@ def test_alice_prompt_uses_the_validated_default_policy() -> None:
     assert match is not None
     assert json.loads(match.group("policy")) == WorkflowPolicy().model_dump(mode="json")
     assert prompt.index("get_state") < prompt.index("initialize_workflow")
-    assert "first mutating hub call" in prompt
+    assert "first mutating workflow call" in prompt
     assert "<roadmap-owner>/<roadmap-repository>#<roadmap-issue>" in prompt
     assert "throwaway run with no roadmap target" in prompt
     assert "roadmap issue `#2`" not in prompt
@@ -348,7 +348,10 @@ def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
     )
     assert_fragments(
         read("prompts/alice.md"),
-        ("this prompt is not a source of operator decisions", "the skill's resume procedure"),
+        (
+            "this prompt is not a source of operator decisions",
+            "the served guide's resume procedure",
+        ),
     )
 
 

@@ -67,7 +67,7 @@ class OrchestratorBridge:
             logger.warning("MCP accounting queue full; dropped %d rows", self.dropped_calls)
 
     async def flush_accounting(self) -> None:
-        if self._endpoint is None or self._calls.empty():
+        if (self._endpoint is None and self._client is None) or self._calls.empty():
             return
         while not self._calls.empty():
             batch = [self._calls.get_nowait() for _ in range(min(32, self._calls.qsize()))]

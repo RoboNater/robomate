@@ -492,6 +492,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 "WHERE boundary = 'mcp' AND actor = 'alice'"
             ).fetchall()
         assert rows
+        assert any(tool == "join" and content_bytes > 0 for tool, content_bytes in rows)
         assert any(
             tool == "initialize_workflow" and content_bytes > 0 for tool, content_bytes in rows
         )
