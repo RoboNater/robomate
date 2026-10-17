@@ -105,15 +105,20 @@ def profile_from_env(environ: Mapping[str, str] | None = None) -> AgentProfile:
     """
 
     env = os.environ if environ is None else environ
+    harness = _declared(env, "HUB_HARNESS", "AGENT_RUNTIME")
     model = _declared(env, "HUB_MODEL")
+    effort = _declared(env, "HUB_EFFORT")
     capabilities = (item.strip() for item in env.get("HUB_CAPABILITIES", "").split(","))
     return AgentProfile(
-        harness=_declared(env, "HUB_HARNESS", "AGENT_RUNTIME"),
+        harness=harness,
+        harness_source=ModelSource.UNKNOWN if harness == UNKNOWN else ModelSource.ENV,
         harness_version=_declared(env, "HUB_HARNESS_VERSION"),
         provider=_declared(env, "HUB_PROVIDER"),
         model=model,
         model_source=ModelSource.UNKNOWN if model == UNKNOWN else ModelSource.ENV,
         capabilities=tuple(dict.fromkeys(item for item in capabilities if item)),
+        effort=effort,
+        effort_source=ModelSource.UNKNOWN if effort == UNKNOWN else ModelSource.ENV,
     )
 
 

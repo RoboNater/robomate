@@ -12,7 +12,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from sqlite3 import Connection, Row
@@ -26,6 +26,7 @@ from agent_hub_common import (
     MAX_TYPED_RESULT_BYTES,
     SHA_HEX_40_RE,
     UNKNOWN,
+    WORKER_STANDING_ROLES,
     AgentProfile,
     AgentStatus,
     EventKind,
@@ -37,12 +38,15 @@ from agent_hub_common import (
     RebaseResult,
     ReviewerResult,
     ReviewerVerdict,
+    StandingRole,
     TaskResult,
     TaskState,
     WorkflowPolicy,
     WorkflowStatus,
+    standing_role_accepts_task,
     to_iso,
     utcnow,
+    validate_agent_name,
 )
 from pydantic import ValidationError
 
@@ -139,6 +143,11 @@ class AgentRecord:
     # observation, never identity: None when the hub did not see one.
     checkin_remote_addr: str | None = None
     last_remote_addr: str | None = None
+    standing_role: StandingRole = StandingRole.WORKER
+    harness_source: ModelSource = ModelSource.UNKNOWN
+    effort: str = UNKNOWN
+    effort_source: ModelSource = ModelSource.UNKNOWN
+    reattached_task: dict[str, Any] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +246,10 @@ def _agent(row: Row) -> AgentRecord:
         declared_model=row["declared_model"] or UNKNOWN,
         checkin_remote_addr=row["checkin_remote_addr"],
         last_remote_addr=row["last_remote_addr"],
+        standing_role=StandingRole(row["standing_role"]),
+        harness_source=ModelSource(row["harness_source"]),
+        effort=row["effort"],
+        effort_source=ModelSource(row["effort_source"]),
     )
 
 
@@ -252,16 +265,22 @@ def _model_mismatch(model_source: ModelSource, model: str, declared_model: str) 
     return model_source is ModelSource.ENV and declared_model not in (UNKNOWN, model)
 
 
-def _profile_fields(profile: AgentProfile) -> dict[str, Any]:
+def _profile_fields(
+    profile: AgentProfile, standing_role: StandingRole = StandingRole.WORKER
+) -> dict[str, Any]:
     """The profile as an event payload: what Alice pairs workers on (§5)."""
 
     return {
+        "standing_role": standing_role.value,
         "harness": profile.harness,
+        "harness_source": profile.harness_source.value,
         "harness_version": profile.harness_version,
         "provider": profile.provider,
         "model": profile.model,
         "model_source": profile.model_source.value,
         "declared_model": profile.declared_model,
+        "effort": profile.effort,
+        "effort_source": profile.effort_source.value,
         "model_mismatch": _model_mismatch(
             profile.model_source, profile.model, profile.declared_model
         ),
@@ -501,6 +520,7 @@ class HubStore:
             for row in connection.execute("SELECT * FROM agent ORDER BY name").fetchall():
                 agent = _agent(row)
                 summary = asdict(agent)
+                summary.pop("reattached_task", None)
                 summary["model_mismatch"] = _model_mismatch(
                     agent.model_source, agent.model, agent.declared_model
                 )
@@ -541,8 +561,12 @@ class HubStore:
             agents = [
                 {
                     "name": row["name"],
+                    "standing_role": row["standing_role"],
                     "harness": row["harness"],
+                    "harness_source": row["harness_source"],
                     "model": row["model"],
+                    "effort": row["effort"],
+                    "effort_source": row["effort_source"],
                     "status": row["status"],
                     "alive": row["status"] != AgentStatus.LOST.value,
                     "current_task": row["current_task_id"],
@@ -550,7 +574,8 @@ class HubStore:
                     "activity": assessment["agents"][row["name"]],
                 }
                 for row in connection.execute(
-                    "SELECT name, harness, model, status, current_task_id FROM agent ORDER BY name"
+                    "SELECT name, standing_role, harness, harness_source, model, effort,"
+                    " effort_source, status, current_task_id FROM agent ORDER BY name"
                 )
             ]
             tasks = [
@@ -1114,6 +1139,8 @@ class HubStore:
         name: str,
         profile: AgentProfile = DEFAULT_PROFILE,
         *,
+        standing_role: StandingRole | str = StandingRole.WORKER,
+        takeover: bool = False,
         worker_instance_id: str | None = None,
         operation_id: str | None = None,
         payload_hash: str | None = None,
@@ -1129,6 +1156,16 @@ class HubStore:
         addresses; a replayed check-in records nothing.
         """
 
+        name = validate_agent_name(name)
+        try:
+            role_obj = (
+                StandingRole(standing_role) if isinstance(standing_role, str) else standing_role
+            )
+        except ValueError:
+            role_obj = None
+        if role_obj not in WORKER_STANDING_ROLES:
+            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
+            raise ValueError(f"standing_role must be one of {allowed} (got {standing_role!r})")
         now = self._now_iso()
         instance_id = worker_instance_id or uuid4().hex
         profile_values = (
@@ -1142,7 +1179,12 @@ class HubStore:
             profile.declared_model,
             remote_addr,
             remote_addr,
+            role_obj.value,
+            profile.harness_source.value,
+            profile.effort,
+            profile.effort_source.value,
         )
+        reattached: dict[str, Any] | None = None
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             if operation_id is not None and payload_hash is not None:
@@ -1182,8 +1224,9 @@ class HubStore:
                     "INSERT INTO agent (name, status, context_id, last_seen, worker_instance_id,"
                     " last_heartbeat, capabilities_json,"
                     " harness, harness_version, provider, model, model_source, workspace_id,"
-                    " declared_model, checkin_remote_addr, last_remote_addr)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " declared_model, checkin_remote_addr, last_remote_addr,"
+                    " standing_role, harness_source, effort, effort_source)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         name,
                         AgentStatus.IDLE.value,
@@ -1197,18 +1240,40 @@ class HubStore:
             else:
                 previous = AgentStatus(row["status"])
                 previous_instance = str(row["worker_instance_id"])
-                if previous in (AgentStatus.IDLE, AgentStatus.BUSY) and previous_instance:
-                    raise DuplicateAgentError(f"agent {name} already has a live worker instance")
+                if (
+                    not takeover
+                    and previous in (AgentStatus.IDLE, AgentStatus.BUSY)
+                    and previous_instance
+                ):
+                    raise DuplicateAgentError(
+                        f"agent {name} already has a live worker instance; "
+                        "ask the user before calling join(..., takeover=True) to supersede it"
+                    )
                 # A returning worker keeps its context id so Alice reads one
                 # unbroken thread per agent across restarts.
                 context_id = row["context_id"]
                 current = self._open_task_id(connection, row["current_task_id"])
+                if takeover and current is not None:
+                    open_task = self._require_task(connection, current)
+                    if open_task.state is TaskState.SUBMITTED:
+                        self._set_state(connection, current, TaskState.WORKING)
+                        open_task = self._require_task(connection, current)
+                    reattached = {
+                        "task_id": open_task.id,
+                        "role": open_task.role,
+                        "title": open_task.title,
+                        "instructions": open_task.instructions,
+                        "state": open_task.state.value,
+                        "lease_expires": open_task.lease_expires,
+                        "pr_head_sha": open_task.pr_head_sha,
+                    }
                 connection.execute(
                     "UPDATE agent SET status = ?, last_seen = ?, worker_instance_id = ?,"
                     " last_heartbeat = ?, last_progress_at = ?, current_task_id = ?,"
                     " capabilities_json = ?, harness = ?, harness_version = ?, provider = ?,"
                     " model = ?, model_source = ?, workspace_id = ?, declared_model = ?,"
-                    " checkin_remote_addr = ?, last_remote_addr = ?"
+                    " checkin_remote_addr = ?, last_remote_addr = ?,"
+                    " standing_role = ?, harness_source = ?, effort = ?, effort_source = ?"
                     " WHERE name = ?",
                     (
                         _readmitted(previous, current).value,
@@ -1221,7 +1286,7 @@ class HubStore:
                         name,
                     ),
                 )
-            profile_payload = _profile_fields(profile)
+            profile_payload = _profile_fields(profile, role_obj)
             self._add_message(
                 connection,
                 task_id=None,
@@ -1241,9 +1306,14 @@ class HubStore:
                 EventKind.AGENT_CHECKED_IN,
                 {"agent": name}
                 | profile_payload
-                | {"context_id": context_id, "worker_instance_id": instance_id},
+                | {
+                    "context_id": context_id,
+                    "worker_instance_id": instance_id,
+                    "takeover": takeover,
+                    "reattached_task_id": reattached["task_id"] if reattached else None,
+                },
             )
-            agent = self._require_agent(connection, name)
+            agent = replace(self._require_agent(connection, name), reattached_task=reattached)
             res: tuple[Any, bool]
             if (
                 operation_id is not None
@@ -1491,6 +1561,11 @@ class HubStore:
                     )
             self._refuse_while_escalated(connection, workflow_id, "assign_task")
             record = self._require_agent(connection, agent)
+            if not standing_role_accepts_task(record.standing_role, role):
+                raise ValueError(
+                    f"agent {agent} has standing role {record.standing_role.value} "
+                    f"and cannot accept {role} tasks"
+                )
             if record.status is not AgentStatus.IDLE:
                 held = self._open_task_id(connection, record.current_task_id)
                 if held is not None:

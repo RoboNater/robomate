@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -224,6 +225,80 @@ def test_mock_worker_main_cli_parses_arguments(
     )
     mock_worker.main()
     assert called is True
+
+
+async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> None:
+    db_path = tmp_path / "hub_join.db"
+    initialize_database(db_path)
+    guides_dir = tmp_path / "guides"
+    guides_dir.mkdir()
+    (guides_dir / "worker.md").write_text("# Worker Guide", encoding="utf-8")
+    (guides_dir / "implementer.md").write_text("# Implementer Guide", encoding="utf-8")
+    (guides_dir / "forge").mkdir()
+    (guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
+
+    settings = HubSettings(
+        host="127.0.0.1",
+        port=8420,
+        public_url="http://hub.example:8420",
+        state_dir=tmp_path,
+        database_path=db_path,
+        token=TOKEN,
+        token_file=tmp_path / "token",
+        guides_dir=guides_dir,
+        default_wait_s=0.5,
+        max_wait_s=1.0,
+        lost_after_s=60.0,
+        sweep_interval_s=3600.0,
+    )
+    app = create_app(settings)
+    store = app.state.store
+    store.initialize_workflow()
+
+    worker_settings = WorkerSettings(
+        hub_url=BASE_URL,
+        token=TOKEN,
+        agent_name="bob",
+        profile=AgentProfile(harness="claude-code"),
+        default_wait_s=0.5,
+        max_retries=2,
+        backoff_factor_s=0.01,
+    )
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http_client,
+    ):
+
+        async def orchestrator() -> None:
+            for _ in range(100):
+                ag = store.agent_by_name("bob")
+                if ag is not None:
+                    break
+                await asyncio.sleep(0.01)
+
+            task = store.assign_task("bob", "implementer", "Implement feature", "Write code")
+            for _ in range(100):
+                t = store.get_task(task.id)
+                if t is not None and t.state == TaskState.COMPLETED:
+                    break
+                await asyncio.sleep(0.01)
+            store.release_agent("bob")
+
+        worker_coro = mock_worker.run_worker(
+            worker_settings,
+            http_client=http_client,
+            timeout_s=5.0,
+            join_role="implementer",
+        )
+        _, worker_res = await asyncio.gather(orchestrator(), worker_coro)
+        assert worker_res.get("status") == "completed"
+        bob = store.agent_by_name("bob")
+        assert bob is not None and bob.standing_role == "implementer"
 
 
 def test_seed_scenario_writes_a_reproducible_manifest(tmp_path: Path) -> None:
@@ -515,3 +590,36 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
     assert all(evidence["untrusted_text_behavior_checks"].values())
     assert evidence["pull_request"]["merged_sha"] == "3" * 40
     assert (tmp_path / "evidence.json").is_file()
+
+
+def test_join_via_mcp_against_live_hub(tmp_path: Path) -> None:
+    """r1-1: join_via_mcp runs robomate mcp and registers with a live hub."""
+    from test_cli import await_hub, init_checkout, start, stop
+
+    root = tmp_path / "repo"
+    init_checkout(root)
+    env = {
+        **os.environ,
+        "XDG_STATE_HOME": str(tmp_path / "xdg"),
+        "LOCALAPPDATA": str(tmp_path / "localappdata"),
+    }
+    hub = start(root, env)
+    try:
+        info = await_hub(root, hub)
+        token = (root / ".robomate" / "token").read_text(encoding="utf-8").strip()
+        res = mock_worker.join_via_mcp(
+            "bob",
+            "implementer",
+            runtime="claude-code",
+            hub_url=str(info["url"]),
+            token=token,
+            timeout_s=30.0,
+        )
+        assert res["status"] == "registered"
+        assert res["agent"] == "bob"
+        assert res["role"] == "implementer"
+        assert res["hub"]["name"] == info["name"]
+        assert "workspace_path" in res
+        assert "guide_sha256" in res
+    finally:
+        stop(root, env, hub)

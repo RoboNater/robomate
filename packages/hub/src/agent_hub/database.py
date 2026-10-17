@@ -15,10 +15,13 @@ from agent_hub_common import (
     EventKind,
     EventState,
     ModelSource,
+    StandingRole,
     TaskState,
     WorkflowStatus,
 )
 
+# v21 is #238's `agent.standing_role` and `join` profile columns
+# (`harness_source`, `effort`, `effort_source`).
 # v20 is #95's `orchestrator_last_call`: one row, the orchestrator's latest
 # substantive `/rpc` call, so status can still say when Alice last did
 # anything after a hub restart.
@@ -36,7 +39,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 class DatabaseVersionError(RuntimeError):
@@ -76,8 +79,21 @@ PEER_ADDRESS_COLUMNS = {
     "checkin_remote_addr": "TEXT",
     "last_remote_addr": "TEXT",
 }
+# Standing role and join profile provenance (#238, v21). Workers registered
+# before v21 joined through the pre-M2 worker path, which accepted any task
+# role, so `worker` is the truthful default for them.
+JOIN_COLUMNS = {
+    "standing_role": f"TEXT NOT NULL DEFAULT '{StandingRole.WORKER.value}'"
+    f" CHECK (standing_role IN ({_sql_values(StandingRole)}))",
+    "harness_source": f"TEXT NOT NULL DEFAULT '{UNKNOWN}'"
+    f" CHECK (harness_source IN ({_sql_values(ModelSource)}))",
+    "effort": f"TEXT NOT NULL DEFAULT '{UNKNOWN}'",
+    "effort_source": f"TEXT NOT NULL DEFAULT '{UNKNOWN}'"
+    f" CHECK (effort_source IN ({_sql_values(ModelSource)}))",
+}
 _AGENT_SQL = "".join(
-    f"\n    {name} {spec}," for name, spec in (PROFILE_COLUMNS | PEER_ADDRESS_COLUMNS).items()
+    f"\n    {name} {spec},"
+    for name, spec in (PROFILE_COLUMNS | PEER_ADDRESS_COLUMNS | JOIN_COLUMNS).items()
 )
 
 
@@ -367,6 +383,7 @@ def initialize_database(path: Path) -> None:
         _migrate_question_withdrawal(connection)
         _migrate_lease_clock_shift(connection)
         _migrate_orchestrator_last_call(connection)
+        _migrate_standing_role_and_join_profile(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -376,6 +393,19 @@ def initialize_database(path: Path) -> None:
     _rebuild_drifted_tables(path)
     with database(path) as connection:
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _migrate_standing_role_and_join_profile(connection: sqlite3.Connection) -> None:
+    """Add standing_role and join profile columns on agent (#238, v21).
+
+    Agents recorded before v21 joined through the pre-M2 worker path, which
+    accepted any task role, so `worker` is the truthful default for them.
+    """
+
+    columns = _columns(connection, "agent")
+    for name, spec in JOIN_COLUMNS.items():
+        if name not in columns:
+            connection.execute(f"ALTER TABLE agent ADD COLUMN {name} {spec}")
 
 
 def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:

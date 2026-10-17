@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -103,10 +104,14 @@ async def run_worker_bridge(
         nonlocal client
         async with init_lock:
             if client is None:
-                endpoint = discover(Path.cwd())
-                settings = WorkerSettings.from_discovered(
-                    endpoint, agent_name=name, harness=harness
-                )
+                configured_name = name or os.environ.get("AGENT_NAME", "").strip()
+                if configured_name:
+                    endpoint = discover(Path.cwd())
+                    settings = WorkerSettings.from_discovered(
+                        endpoint, agent_name=configured_name, harness=harness
+                    )
+                else:
+                    settings = WorkerSettings.unjoined(harness=harness, cwd=Path.cwd())
                 created = WorkerHubClient(settings)
                 await created.__aenter__()
                 client = created

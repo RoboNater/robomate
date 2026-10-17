@@ -2,7 +2,14 @@
 
 from .clock import iso_after, to_iso, utcnow, utcnow_iso
 from .config import DEFAULT_EVENT_LEASE_S, ConfigurationError, HubSettings, profile_from_env
-from .constants import MAX_MESSAGE_PART_BYTES, MAX_TYPED_RESULT_BYTES, MetaKeys
+from .constants import (
+    AGENT_HEADER,
+    MAX_HOLD_DEFAULT_S,
+    MAX_MESSAGE_PART_BYTES,
+    MAX_TYPED_RESULT_BYTES,
+    MetaKeys,
+)
+from .discovery import validate_agent_name
 from .models import (
     IMPLEMENTER_RESULT_SCHEMA,
     REBASE_RESULT_SCHEMA,
@@ -10,6 +17,7 @@ from .models import (
     SCHEMA_VERSION,
     SHA_HEX_40_RE,
     UNKNOWN,
+    WORKER_STANDING_ROLES,
     AgentProfile,
     AgentStatus,
     EventKind,
@@ -22,23 +30,27 @@ from .models import (
     ReviewerResult,
     ReviewerVerdict,
     RolePolicy,
+    StandingRole,
     TaskResult,
     TaskRole,
     TaskState,
     TestResult,
     WorkflowPolicy,
     WorkflowStatus,
+    standing_role_accepts_task,
 )
 from .stdio import reserve_stdout
 from .token import TokenError, load_or_create_token, read_token_file, token_matches
 
 __all__ = [
+    "AGENT_HEADER",
     "IMPLEMENTER_RESULT_SCHEMA",
     "REBASE_RESULT_SCHEMA",
     "REVIEWER_RESULT_SCHEMA",
     "SCHEMA_VERSION",
     "SHA_HEX_40_RE",
     "UNKNOWN",
+    "WORKER_STANDING_ROLES",
     "AgentProfile",
     "AgentStatus",
     "ConfigurationError",
@@ -49,6 +61,7 @@ __all__ = [
     "HubSettings",
     "ImplementerOutcome",
     "ImplementerResult",
+    "MAX_HOLD_DEFAULT_S",
     "MAX_MESSAGE_PART_BYTES",
     "MAX_TYPED_RESULT_BYTES",
     "MetaKeys",
@@ -57,6 +70,7 @@ __all__ = [
     "RolePolicy",
     "ReviewerResult",
     "ReviewerVerdict",
+    "StandingRole",
     "TaskResult",
     "TaskRole",
     "TaskState",
@@ -69,8 +83,10 @@ __all__ = [
     "profile_from_env",
     "read_token_file",
     "reserve_stdout",
+    "standing_role_accepts_task",
     "to_iso",
     "token_matches",
     "utcnow",
     "utcnow_iso",
+    "validate_agent_name",
 ]
