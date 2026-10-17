@@ -429,20 +429,30 @@ def verify_local_hub(hub: LocalHub) -> None:
     address while it was stopped never receives the bearer token.
     """
 
-    from .registry import healthz_hub_id, process_alive
+    from .registry import (
+        HEALTHZ_LIVE_PID_TIMEOUT_S,
+        HEALTHZ_TIMEOUT_S,
+        check_healthz,
+        process_alive,
+    )
 
-    answered = healthz_hub_id(hub.url) if hub.url else None
-    if answered == hub.hub_id:
+    pid = int(hub.info.get("pid") or 0)
+    alive = process_alive(pid)
+    timeout_s = HEALTHZ_LIVE_PID_TIMEOUT_S if alive else HEALTHZ_TIMEOUT_S
+    health = check_healthz(hub.url, timeout_s) if hub.url else None
+    if health is not None and health.hub_id == hub.hub_id:
         return
     where = f"{hub.label()} (checkout {hub.checkout}) at {hub.url}"
-    if answered is not None:
+    if health is not None and health.hub_id is not None:
         raise DiscoveryError(
-            f"{where} answers as hub {answered}, not {hub.hub_id}: another process holds "
+            f"{where} answers as hub {health.hub_id}, not {hub.hub_id}: another process holds "
             "its address. Stop that process, then run robomate up in that checkout"
         )
-    pid = int(hub.info.get("pid") or 0)
-    if process_alive(pid):
-        raise DiscoveryError(f"{where} is unreachable; recorded pid {pid} is visible")
+    failure = health.describe() if health is not None else "is unreachable"
+    if alive:
+        raise DiscoveryError(f"{where} {failure}; recorded pid {pid} is visible")
+    if health is not None and health.timed_out:
+        raise DiscoveryError(f"{where} {failure}")
     raise DiscoveryError(f"{where} is not running; run robomate up in that checkout")
 
 

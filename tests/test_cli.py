@@ -1,5 +1,6 @@
 """End-to-end operator CLI tests in a disposable Git checkout."""
 
+import argparse
 import errno
 import io
 import json
@@ -26,8 +27,13 @@ import robomate.cli as cli
 from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
-from agent_hub_common.discovery import HubEndpoint, read_hub_json, write_hub_json
-from agent_hub_common.registry import process_alive, register, registry_path
+from agent_hub_common.discovery import (
+    HubEndpoint,
+    read_hub_json,
+    resolve_repository,
+    write_hub_json,
+)
+from agent_hub_common.registry import HealthCheck, process_alive, register, registry_path
 from conftest import reserve_port_block
 from robomate.cli import _bind
 
@@ -1836,7 +1842,7 @@ def test_status_uses_matching_hub_health_when_pid_is_not_visible(
     )
     monkeypatch.chdir(root)
     monkeypatch.setattr(cli, "process_alive", lambda _pid: False)
-    monkeypatch.setattr(cli, "hub_healthy", lambda _url, hub_id: hub_id == "same-hub")
+    monkeypatch.setattr(cli, "check_healthz", lambda _url, _timeout: HealthCheck("same-hub"))
 
     def status(_url: str, _token: str, method: str) -> dict[str, Any]:
         assert method == "hub.status"
@@ -1860,7 +1866,9 @@ def test_status_reports_unreachable_with_visible_recorded_pid(
     )
     monkeypatch.chdir(root)
     monkeypatch.setattr(cli, "process_alive", lambda _pid: True)
-    monkeypatch.setattr(cli, "hub_healthy", lambda _url, _hub_id: False)
+    monkeypatch.setattr(
+        cli, "check_healthz", lambda _url, _timeout: HealthCheck(None, "unreachable")
+    )
     with pytest.raises(SystemExit, match="1"):
         cli._status(True, None)
     assert json.loads(capsys.readouterr().out) == {
@@ -1872,6 +1880,66 @@ def test_status_reports_unreachable_with_visible_recorded_pid(
         "url": "http://127.0.0.1:8420",
         "port": 8420,
         "reason": "unreachable; recorded pid 1234 is visible",
+    }
+
+
+def test_status_tells_a_silent_hub_and_a_wrong_hub_from_an_unreachable_one(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    healthz: Callable[[str], str],
+    silent_url: Callable[[], str],
+) -> None:
+    """#230: status names a /healthz timeout and a wrong hub_id, not "unreachable"."""
+
+    root, _ = repository
+    (root / ".robomate").mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(cli, "HEALTHZ_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(cli, "HEALTHZ_LIVE_PID_TIMEOUT_S", 0.4)
+
+    def reason(url: str, alive: bool) -> str:
+        write_hub_json(root, {"url": url, "port": 1, "pid": 1234, "hub_id": "same-hub"})
+        monkeypatch.setattr(cli, "process_alive", lambda _pid: alive)
+        with pytest.raises(SystemExit, match="1"):
+            cli._status(True, None)
+        return str(json.loads(capsys.readouterr().out)["reason"])
+
+    silent = silent_url()
+    assert reason(silent, True) == (
+        "did not answer /healthz within 0.4 s; recorded pid 1234 is visible"
+    )
+    assert reason(silent, False) == "did not answer /healthz within 0.2 s"
+    assert reason(healthz("other-hub"), True) == "answers as hub other-hub, not same-hub"
+
+
+def test_up_refuses_to_start_over_a_live_hub_too_busy_to_answer(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    silent_url: Callable[[], str],
+) -> None:
+    """#230: a silent hub whose recorded pid is alive is not replaced by a second one."""
+
+    root, env = repository
+    for name in ("XDG_STATE_HOME", "LOCALAPPDATA", "ROBOMATE_BASE_PORT"):
+        monkeypatch.setenv(name, env[name])
+    url = silent_url()
+    write_hub_json(root, {"url": url, "port": 1, "pid": 1234, "hub_id": "busy-hub"})
+    monkeypatch.setattr(cli, "process_alive", lambda pid: pid == 1234)
+    monkeypatch.setattr(cli, "HEALTHZ_LIVE_PID_TIMEOUT_S", 0.4)
+    repo = resolve_repository(root)
+    args = argparse.Namespace(name=None, port=None, forge=None)
+    with pytest.raises(
+        RuntimeError,
+        match=rf"hub at {re.escape(url)} did not answer /healthz within 0.4 s; "
+        "recorded pid 1234 is alive",
+    ):
+        anyio.run(cli._run_up, args, repo, root / ".robomate")
+    assert read_hub_json(root) == {
+        "url": url,
+        "port": 1,
+        "pid": 1234,
+        "hub_id": "busy-hub",
     }
 
 

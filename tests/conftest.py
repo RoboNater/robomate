@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, cast
 from uuid import uuid4
 
@@ -191,13 +191,15 @@ def healthz() -> Iterator[Callable[[str], str]]:
     """Start loopback servers whose /healthz reports a given hub_id; return their URLs.
 
     Stands in for a hub, or for another process that took its address (#147).
+    `delay_s` holds each answer back, like a hub busy on a loaded host (#230).
     """
 
     servers: list[ThreadingHTTPServer] = []
 
-    def serve(hub_id: str) -> str:
+    def serve(hub_id: str, delay_s: float = 0.0) -> str:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
+                sleep(delay_s)
                 body = json.dumps({"ok": True, "hub_id": hub_id}).encode()
                 self.send_response(200 if self.path == "/healthz" else 404)
                 self.send_header("Content-Type", "application/json")
@@ -219,6 +221,28 @@ def healthz() -> Iterator[Callable[[str], str]]:
         for server in servers:
             server.shutdown()
             server.server_close()
+
+
+@pytest.fixture
+def silent_url() -> Iterator[Callable[[], str]]:
+    """Open loopback listeners that never accept or answer; return their URLs.
+
+    A connection completes into the backlog and then hears nothing, like a
+    hub too busy to reply, or a process that holds its port and stays mute.
+    """
+
+    listeners: list[socket.socket] = []
+
+    def listen() -> str:
+        listener = socket.create_server(("127.0.0.1", 0), backlog=16)
+        listeners.append(listener)
+        return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+    try:
+        yield listen
+    finally:
+        for listener in listeners:
+            listener.close()
 
 
 def closed_port_url() -> str:

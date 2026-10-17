@@ -49,9 +49,11 @@ from agent_hub_common.discovery import (
     write_hub_json,
 )
 from agent_hub_common.registry import (
+    HEALTHZ_LIVE_PID_TIMEOUT_S,
+    HEALTHZ_TIMEOUT_S,
     RegistryError,
+    check_healthz,
     hub_entries,
-    hub_healthy,
     live_entries,
     mark_stopped,
     operator_token_path,
@@ -252,12 +254,17 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     ensure_excluded(repo.git_common_dir)
     old = read_hub_json(repo.root) or {}
     old_pid = int(old.get("pid") or 0)
-    if (
-        old_pid
-        and process_alive(old_pid)
-        and hub_healthy(str(old.get("url") or ""), str(old.get("hub_id") or ""))
-    ):
-        raise RuntimeError(f"hub already running at {old['url']}")
+    if old_pid and old.get("url") and process_alive(old_pid):
+        health = check_healthz(str(old["url"]), HEALTHZ_LIVE_PID_TIMEOUT_S)
+        if health.hub_id is not None and health.hub_id == old.get("hub_id"):
+            raise RuntimeError(f"hub already running at {old['url']}")
+        # Silent, with its process alive: most likely the hub itself, too busy
+        # to answer. Starting another over it would share its state (#230).
+        if health.timed_out:
+            raise RuntimeError(
+                f"hub at {old['url']} {health.describe()}; recorded pid {old_pid} is alive. "
+                "Wait for it, or stop it with robomate down"
+            )
     hub_id = str(old.get("hub_id") or uuid.uuid4().hex)
     # A hub forgotten with `robomate forget` (#159) carries an explicit
     # `released_port` marker in hub.json: its port counts as released, so the
@@ -939,9 +946,15 @@ def _status(as_json: bool, selector: str | None) -> None:
         pid = int(local.info.get("pid") or 0)
         # A worker in another PID namespace cannot see the hub process. The
         # matching HTTP hub ID is the authoritative live check in that case.
-        if not hub_healthy(url, local.hub_id):
-            if process_alive(pid):
-                stopped(url, port, f"unreachable; recorded pid {pid} is visible")
+        alive = process_alive(pid)
+        health = check_healthz(url, HEALTHZ_LIVE_PID_TIMEOUT_S if alive else HEALTHZ_TIMEOUT_S)
+        if health.hub_id != local.hub_id:
+            if health.hub_id is not None:
+                stopped(url, port, f"answers as hub {health.hub_id}, not {local.hub_id}")
+            if alive:
+                stopped(url, port, f"{health.failure}; recorded pid {pid} is visible")
+            if health.timed_out:
+                stopped(url, port, health.failure)
             stopped(url, port)
         endpoint = local.endpoint()
     else:

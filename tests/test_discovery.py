@@ -424,3 +424,37 @@ def test_hub_json_write_survives_windows_sharing_violation(repository: Path) -> 
             holder.close()
         raise
     assert read_hub_json(repository) == {"port": 8421}
+
+
+def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
+    repository: Path,
+    healthz: Callable[[str, float], str],
+    silent_url: Callable[[], str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#230: a hub slower than the old 0.5 s check is used; a silent one is named as such."""
+
+    (repository / ".robomate").mkdir()
+    token_file(repository).write_text("repo-token\n")
+    slow = healthz("expected-hub", 1.0)
+    write_hub_json(repository, {"url": slow, "hub_id": "expected-hub", "name": "repo"})
+    assert discover(repository, {}) == HubEndpoint(slow, "repo-token")
+
+    monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_TIMEOUT_S", 0.2)
+    monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 0.4)
+    silent = silent_url()
+    write_hub_json(repository, {"url": silent, "hub_id": "expected-hub", "name": "repo"})
+    with pytest.raises(DiscoveryError, match=r"at .* did not answer /healthz within 0.2 s$"):
+        discover(repository, {})
+    monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 4321)
+    write_hub_json(repository, {"url": silent, "hub_id": "expected-hub", "pid": 4321})
+    with pytest.raises(
+        DiscoveryError, match="did not answer /healthz within 0.4 s; recorded pid 4321 is visible"
+    ):
+        discover(repository, {})
+    # A slow answer from the wrong hub is still refused.
+    other = healthz("different-hub", 1.0)
+    write_hub_json(repository, {"url": other, "hub_id": "expected-hub", "pid": 4321})
+    monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 10.0)
+    with pytest.raises(DiscoveryError, match="answers as hub different-hub, not expected-hub"):
+        discover(repository, {})

@@ -503,7 +503,10 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
                 question_reply_delay_s=0.2,
                 long_work_s=ENDURANCE_LONG_WORK_S,
                 lost_after_s=ENDURANCE_LOST_AFTER_S,
-                checkin_timeout_s=2.0,
+                # Bounds only the wait for check-in, which a healthy run
+                # passes at once; a fixed 2 s failed nothing yet but is the
+                # same short-budget pattern as #231 and #260.
+                checkin_timeout_s=FULL_TASK_TIMEOUT_S,
             )
         )
         result, _ = await asyncio.gather(alice_task, run_worker())
@@ -545,7 +548,9 @@ async def test_mock_alice_rejects_unexpected_harness(tmp_path: Path) -> None:
         await mock_alice.drive_one_task(
             store=store,
             expected_agent="bob",
-            timeout_s=1.0,
+            # The mismatch is found as soon as the check-in is read; the budget
+            # only bounds that read, so a slow one is not reported as a timeout.
+            timeout_s=FULL_TASK_TIMEOUT_S,
             expected_harness="codex",
         )
 
@@ -608,33 +613,33 @@ async def test_mock_alice_agent_already_checked_in_event_consumed(
     store = HubStore(db_path)
 
     # Bob checks in as codex
-    store.check_in("bob", AgentProfile(harness="codex"))
+    bob = store.check_in("bob", AgentProfile(harness="codex"))
 
     # Consume the check_in event so wait_for_event returns None
     event = await store.wait_for_event(timeout_s=0.01)
     assert event is not None and event.kind.value == "agent_checked_in"
 
-    # Worker completes task once assigned
+    # Worker completes task once assigned. It holds for the assignment as a
+    # worker does, as long as the drive may take, and names the stage that
+    # stalled: a fixed ~1 s poll ended silently under load and surfaced only
+    # as the driver's timeout (#260).
     async def finish_task() -> None:
-        for _ in range(100):
-            t = store.get_state()["tasks"]
-            if t:
-                task_id = t[0]["id"]
-                store.submit_result(
-                    task_id=task_id,
-                    agent="bob",
-                    status=TaskState.COMPLETED,
-                    summary="Done",
-                )
-                break
-            await asyncio.sleep(0.01)
+        task = await store.await_assignment(bob.context_id, timeout_s=FULL_TASK_TIMEOUT_S)
+        if not isinstance(task, TaskRecord):
+            pytest.fail(f"worker: no task assigned to bob within {FULL_TASK_TIMEOUT_S:g} s")
+        store.submit_result(
+            task_id=task.id,
+            agent="bob",
+            status=TaskState.COMPLETED,
+            summary="Done",
+        )
 
     async with alice_backend(backend_kind, store) as backend:
         drive_fut = asyncio.create_task(
             mock_alice.drive_one_task_with_backend(
                 backend=backend,
                 expected_agent="bob",
-                timeout_s=2.0,
+                timeout_s=FULL_TASK_TIMEOUT_S,
                 expected_harness="codex",
             )
         )
@@ -659,7 +664,7 @@ async def test_mock_alice_agent_already_checked_in_mismatch(tmp_path: Path) -> N
         await mock_alice.drive_one_task(
             store=store,
             expected_agent="bob",
-            timeout_s=1.0,
+            timeout_s=FULL_TASK_TIMEOUT_S,
             expected_harness="claude-code",
         )
 
@@ -799,26 +804,33 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
     clock = MonotonicClock()
     event_lease_s = 60.0
     store = HubStore(db_path, clock=clock, default_event_lease_s=event_lease_s)
-    drive_timeout_s = 5.0
+    # Each drive bounds a whole task, from check-in to release: the shared
+    # full-task budget, not a fixed 5 s, which timed out on a loaded Windows
+    # runner (#231). Each worker hold below can span the rest of the crashed
+    # drive and all of the recovery drive, in real time: _wait_for does not
+    # read the test clock (#207). All of them end as soon as their event
+    # arrives, so the budgets only bound a hang.
+    drive_timeout_s = FULL_TASK_TIMEOUT_S
+    worker_hold_s = 2 * drive_timeout_s
 
     async def run_worker() -> None:
         bob = store.check_in("bob", AgentProfile(harness="claude-code"))
-        task = await store.await_assignment(bob.context_id, timeout_s=4.0)
-        assert isinstance(task, TaskRecord)
+        task = await store.await_assignment(bob.context_id, timeout_s=worker_hold_s)
+        if not isinstance(task, TaskRecord):
+            pytest.fail(f"worker: no task assigned within {worker_hold_s:g} s")
         question_id = store.open_question(task.id, "bob", "Proceed?", "q-1")
-        reply = await store.await_reply(task.id, question_id, timeout_s=4.0)
-        assert reply is not None
+        reply = await store.await_reply(task.id, question_id, timeout_s=worker_hold_s)
+        if reply is None:
+            pytest.fail(f"worker: no reply to its question within {worker_hold_s:g} s")
         store.submit_result(
             task.id,
             "bob",
             TaskState.COMPLETED,
             "Recovered and finished",
         )
-        # After a crash after reply, this wait spans the rest of the first
-        # drive and all of the second, in real time: _wait_for does not read
-        # the test clock (#207).
-        release = await store.await_assignment(bob.context_id, timeout_s=2 * drive_timeout_s)
-        assert release is not None
+        release = await store.await_assignment(bob.context_id, timeout_s=worker_hold_s)
+        if release is None:
+            pytest.fail(f"worker: release wait expired after {worker_hold_s:g} s")
 
     async with alice_backend(backend_kind, store) as backend:
         worker_fut = asyncio.create_task(run_worker())
