@@ -138,7 +138,7 @@ def test_alice_prompt_uses_the_validated_default_policy() -> None:
     assert "no roadmap edit" in durable_goal
     assert "Forge: <forge> (host: <host>, project: <project>)." in prompt
 
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     skill_match = re.search(r"```json\n(?P<policy>.*?)\n```", skill, flags=re.DOTALL)
     assert skill_match is not None
     assert json.loads(skill_match.group("policy")) == WorkflowPolicy().model_dump(mode="json")
@@ -173,7 +173,7 @@ def test_runtime_docs_explain_how_claude_loads_the_skills() -> None:
 
 
 def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
 
     assert_fragments(
         skill,
@@ -198,7 +198,7 @@ def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
             "When the count reaches the cap",
             "conflict_files: []",
             "check_merge_gate(pr_url, expected_head_sha=<approved head>)",
-            "--match-head-commit <approved head>",
+            "orchestrator forge appendix",
             "CI is red on the original run and that repair",
             "no policy-valid worker",
             "worker question not answered by trusted inputs",
@@ -212,11 +212,11 @@ def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
 
 
 def test_alice_skill_covers_gitlab_merge_and_reads() -> None:
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/forge/orchestrator-gitlab.md")
     assert_fragments(
         skill,
         (
-            "### GitLab merge and read-back",
+            "# GitLab Orchestrator Appendix",
             (
                 "glab mr merge <iid> -R <host>/<project> --sha <approved head> "
                 "--auto-merge=false --squash/--squash=false --remove-source-branch --yes"
@@ -236,7 +236,7 @@ def test_alice_skill_covers_gitlab_merge_and_reads() -> None:
 
 
 def test_alice_skill_documents_resume_and_redelivery_guards() -> None:
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     assert_fragments(
         skill,
         (
@@ -273,7 +273,7 @@ def test_alice_skill_documents_resume_and_redelivery_guards() -> None:
 
 def test_alice_skill_takes_a_statement_of_work() -> None:
     """A goal naming two issues landing in one PR closes both of them (#101)."""
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     kickoff = section(skill, "## KICKOFF and PLAN", "## Choose the worker pair")
     assert_fragments(
         kickoff,
@@ -310,7 +310,7 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
 
 def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
     """Escalate with ask_user, wait for user_answered, trust only hub answers (#131)."""
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     escalation = section(skill, "## Escalation", "## WRAP-UP")
     assert_fragments(
         escalation,
@@ -354,7 +354,7 @@ def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
 
 def test_operator_only_work_never_goes_to_a_worker() -> None:
     """PLAN routes operator-only steps to ask_user; workers block on them (#132)."""
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     assert_fragments(
         section(skill, "## KICKOFF and PLAN", "## Choose the worker pair and IMPLEMENT"),
         (
@@ -433,13 +433,13 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
         ("never starts or stops the run's hub or any agent", "isolated smoke run"),
     )
     assert_fragments(
-        read("skills/alice-orchestrator/SKILL.md"),
+        read("guides/orchestrator.md"),
         ("A worker's isolated smoke hub for this repository's own entry points is not",),
     )
 
 
 def test_decision_comments_reference_the_governing_spec_and_issues() -> None:
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     comments = "\n".join(re.findall(r"<!--(.*?)-->", skill, flags=re.DOTALL))
 
     assert_fragments(comments, ("spec §4.2", "spec §4.4", "spec §5", "§8"))
@@ -448,7 +448,7 @@ def test_decision_comments_reference_the_governing_spec_and_issues() -> None:
 
 def test_merge_invariant_and_command_match_the_spec_exactly() -> None:
     spec = read("docs/poc-spec.md")
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
 
     spec_invariant = re.search(
         r"She merges only when the invariant holds on that reading:\n\n\s+`(?P<text>[^`]+)`",
@@ -464,13 +464,15 @@ def test_merge_invariant_and_command_match_the_spec_exactly() -> None:
     assert normalize(skill_invariant.group("text")) == normalize(spec_invariant.group("text"))
 
     spec_merge = re.search(r"Then Alice runs:\n\n\s+`(?P<text>gh pr merge[^`]+)`", spec)
-    skill_merge = re.search(r"```text\n(?P<text>gh pr merge.*?)\n```", skill)
+    skill_merge = re.search(
+        r"```text\n(?P<text>gh pr merge.*?)\n```", read("guides/forge/orchestrator-github.md")
+    )
     assert spec_merge is not None and skill_merge is not None
     assert normalize(skill_merge.group("text")) == normalize(spec_merge.group("text"))
 
 
 def test_typed_guide_outcomes_have_explicit_alice_routes() -> None:
-    skill = read("skills/alice-orchestrator/SKILL.md")
+    skill = read("guides/orchestrator.md")
     implementer = read("guides/implementer.md")
     reviewer = read("guides/reviewer.md")
     rebase = read("guides/rebase.md")
@@ -519,7 +521,7 @@ def test_task_requirements_do_not_grant_operator_authority() -> None:
     worker = read("guides/worker.md")
     prompt = read("prompts/worker.md")
     authority = section(
-        read("skills/alice-orchestrator/SKILL.md"),
+        read("guides/orchestrator.md"),
         "### Operator authority",
         "## WRAP-UP",
     )
@@ -594,3 +596,14 @@ def test_worker_guide_and_skill_document_join_and_takeover() -> None:
             "ask_alice",
         ),
     )
+
+
+def test_orchestrator_skill_is_a_join_pointer_and_guide_is_forge_neutral() -> None:
+    pointer = read("skills/alice-orchestrator/SKILL.md")
+    assert len(pointer.encode()) < 1500
+    assert 'join(name="alice", role="orchestrator")' in pointer
+    guide = read("guides/orchestrator.md")
+    assert "gh pr " not in guide and "glab " not in guide
+    assert "takeover=true" in guide and "guide_sha256" in guide
+    for timeout in re.findall(r"timeout_s\s*=\s*(\d+)", guide):
+        assert int(timeout) <= 100

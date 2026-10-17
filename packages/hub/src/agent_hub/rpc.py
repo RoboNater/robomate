@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 import math
@@ -9,16 +10,18 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
-from agent_hub_common import token_matches
+from agent_hub_common import AgentProfile, token_matches, validate_agent_name
 from agent_hub_common.accounting import CallRecord, hub_id
 from agent_hub_common.orchestrator_tools import OPERATIONS
-from fastapi import BackgroundTasks
-from pydantic import validate_call
+from fastapi import BackgroundTasks, HTTPException
+from pydantic import BaseModel, ConfigDict, StrictBool, validate_call
 from pydantic_core import to_jsonable_python
 
 from .accounting import CallAccounting
+from .guides import guide_response
 from .orchestrator import CALLER, Caller, OrchestratorOps
 from .rpc_errors import CONFLICT as CONFLICT
 from .rpc_errors import INTERNAL_ERROR as INTERNAL_ERROR
@@ -123,6 +126,14 @@ class _Audit:
     session: str | None = None
 
 
+class OrchestratorJoin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    role: Literal["orchestrator"] = "orchestrator"
+    takeover: StrictBool = False
+    profile: AgentProfile = AgentProfile()
+
+
 class RpcDispatcher:
     """Validate and route one JSON-RPC request body."""
 
@@ -133,11 +144,14 @@ class RpcDispatcher:
         hub_info: Mapping[str, Any] | None = None,
         shutdown: Callable[[], None] | None = None,
         accounting: CallAccounting | None = None,
+        guides_dir: Path | None = None,
     ) -> None:
         self.ops = ops
         self.hub_info = hub_info
         self.shutdown = shutdown
         self.accounting = accounting
+        self.guides_dir = guides_dir
+        self._guide_hashes: dict[str, str] = {}
         # Set by the app's lifespan from the operator token file (#128).
         self.operator_token: str | None = None
         self.orchestrator: OrchestratorSession | None = None
@@ -286,6 +300,55 @@ class RpcDispatcher:
             audit.actor, audit.session = "operator", None
             background.add_task(self.shutdown)
             return {"stopping": True}
+        if method == "join":
+            if caller is None:
+                raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
+            params = OrchestratorJoin.model_validate(payload.get("params", {}))
+            name = validate_agent_name(params.name)
+            if name != caller[0]:
+                raise RpcError(INVALID_PARAMS, "join name must match the actor header")
+            # Load the guide before changing ownership: a missing appendix must
+            # not fence the current session after a failed join.
+            if self.guides_dir is None:
+                raise RpcError(NOT_FOUND, "orchestrator guide is unavailable")
+            forge = str((self.hub_info or {}).get("forge", "github"))
+            try:
+                guide = bytes(guide_response(self.guides_dir, "orchestrator", forge).body).decode(
+                    "utf-8"
+                )
+            except HTTPException as exc:
+                raise RpcError(NOT_FOUND, str(exc.detail)) from exc
+            digest = hashlib.sha256(guide.encode("utf-8")).hexdigest()
+            self._check_session(*caller, takeover=params.takeover)
+            self.ops.store.join_orchestrator(name, caller[1], params.profile)
+            self._accept_session(*caller, takeover=params.takeover)
+            unchanged = self._guide_hashes.get(caller[1]) == digest
+            self._guide_hashes[caller[1]] = digest
+            state = self.ops.store.get_state()
+            workflow = state.get("workflow")
+            active = workflow is not None and workflow["status"] != "done"
+            return {
+                "status": "registered",
+                "agent": name,
+                "role": "orchestrator",
+                "standing_role": "orchestrator",
+                "session": caller[1],
+                "hub": dict(self.hub_info or {}) | {"forge": forge},
+                "guide": f"unchanged ({digest})" if unchanged else guide,
+                "guide_sha256": digest,
+                "state": state,
+                "unacked_delivered": state["unacked_delivered"],
+                "resume_procedure": (
+                    "Call get_state first; independently read the known change request "
+                    "and its head, state, base and merge commit using the forge appendix. "
+                    "Compare stored tasks/results and unacknowledged deliveries; "
+                    "log discrepancies, then route one safe next action under the "
+                    "guide's On resume procedure. Never duplicate an active task."
+                )
+                if active
+                else None,
+                "next_call": "get_state",
+            }
         if method == "hub.heartbeat":
             if caller is None:
                 raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
@@ -370,6 +433,7 @@ class RpcDispatcher:
             raise RpcError(INVALID_PARAMS, "call record actor or boundary mismatch")
         if row["tool"] not in (
             *OPERATIONS,
+            "join",
             "initialize",
             "tools/list",
             "ping",
@@ -407,9 +471,20 @@ class RpcDispatcher:
             raise RpcError(INVALID_PARAMS, "invalid repeat_bytes")
         return CallRecord(**row)
 
-    def _accept_session(self, actor: str, session: str) -> None:
+    def _check_session(self, actor: str, session: str, *, takeover: bool = False) -> None:
         if session in self._superseded_sessions:
             raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
+        current = self.orchestrator
+        if current is not None:
+            if current.session == session and current.actor != actor:
+                raise RpcError(CONFLICT, "orchestrator session belongs to another actor")
+            if current.session != session and not takeover:
+                raise RpcError(
+                    CONFLICT, "an orchestrator is already attached; join with takeover=true"
+                )
+
+    def _accept_session(self, actor: str, session: str, *, takeover: bool = False) -> None:
+        self._check_session(actor, session, takeover=takeover)
         current = self.orchestrator
         if current is not None and current.session != session:
             self._superseded_sessions.add(current.session)

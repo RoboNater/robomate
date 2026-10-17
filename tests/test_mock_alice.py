@@ -852,3 +852,13 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
     assert store.get_state()["workflow"]["status"] == WorkflowStatus.DONE.value
     with database(store.path) as connection:
         assert connection.execute("SELECT MAX(delivery_attempts) FROM event").fetchone()[0] >= 2
+
+
+def test_mock_alice_takeover_requires_join(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["mock-alice.py", "--takeover"])
+    with pytest.raises(SystemExit, match="2"):
+        mock_alice.main()
+    assert "--takeover requires --join" in capsys.readouterr().err

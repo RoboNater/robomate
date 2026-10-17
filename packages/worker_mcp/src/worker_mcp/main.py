@@ -118,7 +118,12 @@ async def run_worker_bridge(
         return client
 
     try:
-        await serve_mcp(create_worker_mcp(get_client, server_name="robomate"), stdout)
+        await serve_mcp(
+            create_worker_mcp(
+                get_client, server_name="robomate", include_orchestrator=name is None
+            ),
+            stdout,
+        )
     finally:
         if client is not None:
             await client.close()

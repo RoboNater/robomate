@@ -570,8 +570,10 @@ class HubStore:
                     "status": row["status"],
                     "alive": row["status"] != AgentStatus.LOST.value,
                     "current_task": row["current_task_id"],
-                    "stalled": assessment["agents"][row["name"]]["stalled"],
-                    "activity": assessment["agents"][row["name"]],
+                    "stalled": assessment["agents"].get(row["name"], assessment["orchestrator"])[
+                        "stalled"
+                    ],
+                    "activity": assessment["agents"].get(row["name"], assessment["orchestrator"]),
                 }
                 for row in connection.execute(
                     "SELECT name, standing_role, harness, harness_source, model, effort,"
@@ -1238,6 +1240,8 @@ class HubStore:
                     ),
                 )
             else:
+                if row["standing_role"] == StandingRole.ORCHESTRATOR.value:
+                    raise DuplicateAgentError(f"agent {name} is already registered as orchestrator")
                 previous = AgentStatus(row["status"])
                 previous_instance = str(row["worker_instance_id"])
                 if (
@@ -2506,7 +2510,8 @@ class HubStore:
     def _lose_agents(self, connection: Connection, cutoff: str) -> list[int]:
         live = (AgentStatus.IDLE, AgentStatus.BUSY)
         rows = connection.execute(
-            f"SELECT * FROM agent WHERE status IN ({_placeholders(live)}) AND last_heartbeat <= ?",
+            f"SELECT * FROM agent WHERE status IN ({_placeholders(live)}) "
+            "AND last_heartbeat <= ? AND standing_role != 'orchestrator'",
             (*(status.value for status in live), cutoff),
         ).fetchall()
         emitted = []
@@ -2583,6 +2588,59 @@ class HubStore:
             return nullcontext()
         return self.activity.worker_hold(name, instance, kind, timeout_s, self._now)
 
+    def join_orchestrator(self, name: str, session: str, profile: AgentProfile) -> None:
+        """Record the joined role/profile in the existing agent columns, without a worker event.
+
+        Orchestrator liveness and stalls use the separate session tracker, not
+        the worker heartbeat/assignment lifecycle.
+        """
+        name = validate_agent_name(name)
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM agent WHERE name = ?", (name,)).fetchone()
+            if row is not None and row["standing_role"] != StandingRole.ORCHESTRATOR.value:
+                raise DuplicateAgentError(f"agent {name} is already registered as a worker")
+            if profile.workspace_id is not None:
+                owner = connection.execute(
+                    "SELECT name FROM agent WHERE workspace_id = ? AND name != ? "
+                    "AND standing_role != 'orchestrator' AND status IN ('idle', 'busy')",
+                    (profile.workspace_id, name),
+                ).fetchone()
+                if owner is not None:
+                    raise DuplicateAgentError(
+                        f"workspace is occupied by live agent {owner['name']}"
+                    )
+            connection.execute(
+                "UPDATE agent SET status = 'released' WHERE standing_role = 'orchestrator' "
+                "AND name != ?",
+                (name,),
+            )
+            values = {
+                "status": "idle",
+                "worker_instance_id": session,
+                "last_seen": self._now_iso(),
+                "last_heartbeat": self._now_iso(),
+                "standing_role": StandingRole.ORCHESTRATOR.value,
+                "capabilities_json": json.dumps(list(profile.capabilities)),
+                **{
+                    key: value.value if isinstance(value, ModelSource) else value
+                    for key, value in asdict(profile).items()
+                    if key != "capabilities"
+                },
+            }
+            if row is None:
+                values = {"name": name, "context_id": uuid4().hex, **values}
+                connection.execute(
+                    f"INSERT INTO agent ({', '.join(values)}) "
+                    f"VALUES ({_placeholders(tuple(values))})",
+                    tuple(values.values()),
+                )
+            else:
+                connection.execute(
+                    f"UPDATE agent SET {', '.join(f'{key} = ?' for key in values)} WHERE name = ?",
+                    (*values.values(), name),
+                )
+
     def note_orchestrator_session(self, actor: str, session: str) -> None:
         """The session `/rpc` just accepted as the current orchestrator."""
 
@@ -2590,6 +2648,12 @@ class HubStore:
 
     def note_orchestrator_heartbeat(self, session: str) -> None:
         self.activity.orchestrator_heartbeat(session, self._now())
+        with database(self.path) as connection:
+            connection.execute(
+                "UPDATE agent SET last_seen = ?, last_heartbeat = ? "
+                "WHERE standing_role = 'orchestrator' AND worker_instance_id = ?",
+                (self._now_iso(), self._now_iso(), session),
+            )
 
     @contextmanager
     def orchestrator_call(self, session: str, kind: str, timeout_s: float) -> Iterator[None]:
@@ -2705,7 +2769,10 @@ class HubStore:
         agents = {
             agent.name: self._assess_worker(connection, agent, now, threshold, suppressed)
             for agent in (
-                _agent(r) for r in connection.execute("SELECT * FROM agent ORDER BY name")
+                _agent(r)
+                for r in connection.execute(
+                    "SELECT * FROM agent WHERE standing_role != 'orchestrator' ORDER BY name"
+                )
             )
         }
         return {

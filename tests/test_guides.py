@@ -368,3 +368,30 @@ def test_served_gitlab_reviewer_guide_builds_review_url_from_note_id() -> None:
     served = reviewer + "\n\n" + appendix
     assert "<MR URL>#note_<id>" in served
     assert "resolvable" in served
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+async def test_orchestrator_route_has_only_its_orchestrator_appendix(
+    settings: HubSettings,
+    forge: str,
+) -> None:
+    from agent_hub.app import create_app
+
+    hub = create_app(
+        replace(settings, guides_dir=CHECKED_IN_GUIDES),
+        hub_info={"forge": forge, "hub_id": "test-hub"},
+    )
+    async with (
+        hub.router.lifespan_context(hub),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/orchestrator.md")
+    assert response.status_code == 200
+    assert "# Orchestrator" in response.text
+    assert ("gh pr merge" in response.text) == (forge == "github")
+    assert ("glab mr merge" in response.text) == (forge == "gitlab")
+    assert "# GitHub Forge Appendix" not in response.text

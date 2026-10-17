@@ -92,7 +92,11 @@ def create_app(
         jsonl_path=resolved.call_log_jsonl,
     )
     dispatcher = RpcDispatcher(
-        orchestrator, hub_info=hub_info, shutdown=shutdown, accounting=accounting
+        orchestrator,
+        hub_info=hub_info,
+        shutdown=shutdown,
+        accounting=accounting,
+        guides_dir=resolved.guides_dir,
     )
 
     @asynccontextmanager
