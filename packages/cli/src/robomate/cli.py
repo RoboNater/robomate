@@ -91,10 +91,22 @@ def _first_free_base() -> int:
     return base
 
 
+# Errors that make the first-free scan move on to the next port: the port is
+# in use (EADDRINUSE, WSAEADDRINUSE 10048), or this process may not bind it
+# (EACCES, WSAEACCES 10013: a Windows excluded range or an exclusive holder,
+# or a privileged port on POSIX) (#229).
+_SKIPPED_BIND_ERRORS = frozenset({errno.EADDRINUSE, 10048, errno.EACCES, 10013})
+
+
 def _bind(
     host: str, port: int | None, avoid: frozenset[int] = frozenset()
 ) -> tuple[socket.socket, int]:
-    """Bind the pinned or saved port, or the first free one from the base not in `avoid`."""
+    """Bind the pinned or saved port, or the first free one from the base not in `avoid`.
+
+    The first-free scan skips ports in use or forbidden to this process. A
+    pinned or saved port is never moved: any bind failure stops startup, since
+    remote agents are configured with that port (#229).
+    """
 
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     base = DEFAULT_BASE_PORT if port is not None else _first_free_base()
@@ -112,7 +124,7 @@ def _bind(
             return sock, candidate
         except OSError as exc:
             sock.close()
-            if port is not None or exc.errno not in (errno.EADDRINUSE, 10048):
+            if port is not None or exc.errno not in _SKIPPED_BIND_ERRORS:
                 raise RuntimeError(
                     f"port {candidate} is unavailable; choose --port: {exc}"
                 ) from exc

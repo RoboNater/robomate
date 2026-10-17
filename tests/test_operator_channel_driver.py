@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from agent_hub_common.registry import operator_token_path, registry_path
+from conftest import reserve_port_block
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -107,7 +108,7 @@ def test_driver_hub_leaves_the_machine_state_untouched(
     temp.mkdir()
     clone = temp / "sandbox"
     init_checkout(clone)
-    port = driver.free_port()
+    port = reserve_port_block(1)
     hub = driver.IsolatedHub(clone, temp, driver.isolated_env(normal, temp), port)
 
     with hub:
@@ -144,7 +145,7 @@ def test_driver_hub_is_stopped_when_a_step_fails(tmp_path: Path, normal: dict[st
     clone = tmp_path / "sandbox"
     init_checkout(clone)
     hub = driver.IsolatedHub(
-        clone, tmp_path, driver.isolated_env(normal, tmp_path), driver.free_port()
+        clone, tmp_path, driver.isolated_env(normal, tmp_path), reserve_port_block(1)
     )
 
     with pytest.raises(driver.DriverError, match="step failed"), hub:
@@ -226,7 +227,7 @@ def test_hub_log_is_read_in_the_encoding_the_hub_writes(
     temp.mkdir()
     clone = temp / "sandbox"
     init_checkout(clone)
-    hub = driver.IsolatedHub(clone, temp, driver.isolated_env(env, temp), driver.free_port())
+    hub = driver.IsolatedHub(clone, temp, driver.isolated_env(env, temp), reserve_port_block(1))
 
     with hub:
         hub.start()
