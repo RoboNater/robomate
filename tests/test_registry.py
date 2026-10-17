@@ -3,6 +3,7 @@
 import ctypes
 import os
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -338,29 +339,58 @@ def test_a_trickling_answer_is_cut_off_at_the_budget(
 
 
 def test_a_tls_handshake_gets_only_what_connecting_left(
-    silent_url: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#266 r2-1: a slow connect leaves the handshake only the rest of the budget.
+    """#266 r2-1 / #264: assert the remaining budget at the TLS socket boundary.
 
-    The handshake used the timeout set before connecting, so a connect that
-    took most of the budget and a silent TLS peer ran to nearly twice it.
+    A real silent peer returned unreachable rather than timeout once under
+    Windows load. This regression checks our timeout assignment with a virtual
+    clock; the silent/trickling endpoint tests still exercise real IO deadlines.
     """
+    clock = 100.0
+    raw_socket = object()
 
-    connect = socket.create_connection
+    class TLS:
+        timeout = 0.0
+        closed = False
 
-    def slow_connect(*args: Any, **kwargs: Any) -> socket.socket:
-        connected = connect(*args, **kwargs)
-        time.sleep(0.9)
-        return connected
+        def settimeout(self, seconds: float) -> None:
+            self.timeout = seconds
 
+        def do_handshake(self) -> None:
+            nonlocal clock
+            clock += self.timeout
+            raise TimeoutError("silent TLS peer")
+
+        def close(self) -> None:
+            self.closed = True
+
+    tls = TLS()
+
+    class Context:
+        def wrap_socket(
+            self, sock: object, *, server_hostname: str, do_handshake_on_connect: bool
+        ) -> TLS:
+            assert sock is raw_socket
+            assert server_hostname == "hub.test"
+            assert not do_handshake_on_connect
+            return tls
+
+    def slow_connect(address: tuple[str, int], *, timeout: float) -> object:
+        nonlocal clock
+        assert address == ("hub.test", 443)
+        assert timeout == pytest.approx(1.0)
+        clock += 0.9
+        return raw_socket
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock)
     monkeypatch.setattr(socket, "create_connection", slow_connect)
-    url = silent_url().replace("http://", "https://")
-    started = time.monotonic()
-    health = registry.check_healthz(url, 1.0)
-    elapsed = time.monotonic() - started
+    monkeypatch.setattr(ssl, "create_default_context", Context)
+    health = registry.check_healthz("https://hub.test", 1.0)
     assert health == registry.HealthCheck(None, "did not answer /healthz within 1 s", True)
-    # 1 s, not 0.9 s + 1 s; the margin is for a loaded host.
-    assert elapsed < 1.6
+    assert tls.timeout == pytest.approx(0.1)
+    assert clock == pytest.approx(101.0)
+    assert tls.closed
 
 
 def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
