@@ -340,7 +340,10 @@ async def drive_endurance(
         await asyncio.sleep(0.1)
         agent = store.agent_by_name(expected_agent)
     if agent is None or agent.status == AgentStatus.RELEASED:
-        raise TimeoutError(f"Worker {expected_agent!r} did not check in")
+        raise TimeoutError(
+            f"Endurance Alice: worker {expected_agent!r} did not check in within "
+            f"{checkin_timeout_s:g} s"
+        )
     if expected_harness is not None and agent.harness != expected_harness:
         raise ValueError(
             f"Worker {expected_agent!r} checked in with harness {agent.harness!r}, "
@@ -767,7 +770,10 @@ async def drive_one_task_with_backend(
                 checkin_event_id = event.get("id")
 
         if agent_name is None:
-            raise TimeoutError(f"Worker {expected_agent!r} did not check in within {timeout_s}s")
+            raise TimeoutError(
+                f"Mock Alice drive: worker {expected_agent!r} did not check in within "
+                f"the drive's {timeout_s:g} s budget"
+            )
         _check_harness(agent_name, checked_in_harness, expected_harness)
 
         checkpoint_source = (
@@ -794,8 +800,11 @@ async def drive_one_task_with_backend(
             TaskState.COMPLETED.value,
             TaskState.FAILED.value,
         )
+        # Each hold stops at the drive's deadline, so the drive's own budget
+        # bounds it, and a timeout below reports that budget truthfully.
+        remaining = deadline - asyncio.get_running_loop().time()
         delivered = await backend.wait_for_event(
-            0.05 if terminal_recovery else 5.0,
+            0.05 if terminal_recovery else max(0.05, min(5.0, remaining)),
             last_delivery_id,
         )
         event = delivered.get("event") if isinstance(delivered, dict) else None
@@ -862,7 +871,12 @@ async def drive_one_task_with_backend(
             )
 
     if not task_finished:
-        raise TimeoutError(f"Task {task_id} did not finish within {timeout_s}s")
+        # Says "drive", so a driver timeout is never mistaken for a worker's
+        # own wait (assignment, reply or release) running out (#231).
+        raise TimeoutError(
+            f"Mock Alice drive: task {task_id} did not finish within the drive's "
+            f"{timeout_s:g} s budget"
+        )
     if last_delivery_id:
         await backend.wait_for_event(0.05, last_delivery_id)
 

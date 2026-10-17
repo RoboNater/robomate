@@ -7,15 +7,20 @@ hubs of its repository; an entry whose state is gone is pruned.
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import os
+import socket
+import ssl
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -165,20 +170,142 @@ def _windows_process_alive(pid: int) -> bool:
         close_handle(handle)
 
 
-def healthz_hub_id(url: str) -> str | None:
-    """The hub_id the hub at `url` reports on /healthz, or None when nothing answers."""
+# /healthz budgets (#230). A hub busy on a loaded host can take seconds to
+# answer: at 0.5 s a live hub was reported unreachable before the longer RPC
+# timeout (#207) could help. A refused connection still fails at once (about
+# 2 s on Windows, which retries a refused loopback connect), and an answer
+# from the wrong hub is refused as soon as it arrives, so only a silent or
+# trickling endpoint waits out the budget. When the recorded pid is visible
+# the hub is probably busy rather than gone, so it gets as long as an RPC would.
+HEALTHZ_TIMEOUT_S = 5.0
+HEALTHZ_LIVE_PID_TIMEOUT_S = 15.0
+# A /healthz answer is a few dozen bytes; anything this large is not a hub.
+_HEALTHZ_MAX_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class HealthCheck:
+    """What one /healthz probe found: the hub_id that answered, or why none did."""
+
+    hub_id: str | None
+    # Why no hub_id came back, phrased to follow "<hub> at <url>": None when
+    # one did, else "unreachable" (refused, reset, no route), "did not answer
+    # /healthz within N s", or "answered /healthz ... without a hub_id".
+    failure: str | None = None
+    timed_out: bool = False
+
+    def describe(self) -> str:
+        """The failure as a predicate: "is unreachable", "did not answer ..."."""
+
+        return f"is {self.failure}" if self.failure == "unreachable" else str(self.failure)
+
+
+class _Received:
+    """A finished response's bytes, in the shape http.client parses from."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def makefile(self, *_args: object, **_kwargs: object) -> io.BytesIO:
+        return io.BytesIO(self.data)
+
+
+def _get_within(url: str, deadline: float) -> tuple[int, bytes]:
+    """GET `url` and return its status and body, all of it before `deadline`.
+
+    urllib's timeout bounds each socket operation, so a response that keeps
+    sending a byte at a time never times out (#266 r1-1). Here every connect
+    and recv waits only for what is left of one deadline, and the response is
+    parsed once the server has closed the connection. Raises TimeoutError
+    when the deadline passes first, OSError for a refused or reset
+    connection, and ValueError for anything that is not an HTTP response.
+    """
+
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"not an http URL: {url}")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+
+    def remaining() -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError
+        return left
+
+    context = ssl.create_default_context() if parts.scheme == "https" else None
+    sock = socket.create_connection((parts.hostname, port), timeout=remaining())
+    try:
+        if context is not None:
+            # The handshake gets only what connecting left of the budget
+            # (#266 r2-1); CPython's do_handshake keeps to one deadline across
+            # its reads and writes.
+            tls = context.wrap_socket(
+                sock, server_hostname=parts.hostname, do_handshake_on_connect=False
+            )
+            sock = tls
+            tls.settimeout(remaining())
+            tls.do_handshake()
+        host = parts.netloc.rpartition("@")[2]
+        sock.settimeout(remaining())
+        sock.sendall(
+            f"GET {parts.path or '/'} HTTP/1.1\r\nHost: {host}\r\n"
+            "Accept: application/json\r\nConnection: close\r\n\r\n".encode("ascii")
+        )
+        received = bytearray()
+        while True:
+            sock.settimeout(remaining())
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            received += chunk
+            if len(received) > _HEALTHZ_MAX_BYTES:
+                raise ValueError("response too large")
+    finally:
+        sock.close()
+    response = http.client.HTTPResponse(_Received(bytes(received)))  # type: ignore[arg-type]
+    try:
+        response.begin()
+        return response.status, response.read()
+    except (http.client.HTTPException, OSError) as exc:
+        raise ValueError(f"malformed response: {exc}") from exc
+
+
+def check_healthz(url: str, timeout_s: float = HEALTHZ_TIMEOUT_S) -> HealthCheck:
+    """Ask the hub at `url` for its hub_id, waiting at most `timeout_s` in all.
+
+    The budget covers connecting, the headers and the whole body (#266 r1-1);
+    only resolving a host name falls outside it, and hub URLs are loopback
+    addresses.
+    """
 
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/healthz", timeout=0.5) as response:
-            data = json.load(response)
-    except (OSError, ValueError, urllib.error.URLError):
-        return None
+        status, body = _get_within(f"{url.rstrip('/')}/healthz", time.monotonic() + timeout_s)
+    except TimeoutError:
+        return HealthCheck(None, f"did not answer /healthz within {timeout_s:g} s", True)
+    except ValueError:
+        return HealthCheck(None, "answered /healthz without a hub_id")
+    except OSError:
+        return HealthCheck(None, "unreachable")
+    if status != 200:
+        return HealthCheck(None, f"answered /healthz with HTTP {status}, without a hub_id")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return HealthCheck(None, "answered /healthz without a hub_id")
     hub_id = data.get("hub_id") if isinstance(data, dict) else None
-    return str(hub_id) if hub_id else None
+    if not hub_id:
+        return HealthCheck(None, "answered /healthz without a hub_id")
+    return HealthCheck(str(hub_id))
 
 
-def hub_healthy(url: str, hub_id: str) -> bool:
-    return bool(url) and healthz_hub_id(url) == hub_id
+def healthz_hub_id(url: str, timeout_s: float = HEALTHZ_TIMEOUT_S) -> str | None:
+    """The hub_id the hub at `url` reports on /healthz, or None when nothing answers."""
+
+    return check_healthz(url, timeout_s).hub_id
+
+
+def hub_healthy(url: str, hub_id: str, timeout_s: float = HEALTHZ_TIMEOUT_S) -> bool:
+    return bool(url) and healthz_hub_id(url, timeout_s) == hub_id
 
 
 def _stale(entry: Mapping[str, Any]) -> bool:
@@ -196,9 +323,19 @@ def _stale(entry: Mapping[str, Any]) -> bool:
     return info is None or info.get("hub_id") != entry.get("hub_id")
 
 
-def _live(entry: Mapping[str, Any]) -> bool:
-    return process_alive(int(entry.get("pid") or 0)) and hub_healthy(
-        str(entry.get("url") or ""), str(entry.get("hub_id") or "")
+# hub_entries probes every entry with a visible pid at once, each on its own
+# thread, outside the registry lock. A silent entry neither holds up registry
+# writers (whose lock wait is 5 s) nor delays the others, and no entry waits
+# in a queue behind silent ones (#266 r1-2). The probes share one deadline, a
+# live-pid budget away, which check_healthz keeps to in full, so the listing
+# waits at most that long. An entry whose pid is not visible is not live and
+# is never probed, so there are only as many threads as running hubs.
+
+
+def _live(entry: Mapping[str, Any], deadline: float) -> bool:
+    remaining = deadline - time.monotonic()
+    return remaining > 0 and hub_healthy(
+        str(entry.get("url") or ""), str(entry.get("hub_id") or ""), remaining
     )
 
 
@@ -208,11 +345,26 @@ def hub_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]
     path = registry_path(environ)
     with _locked(path):
         entries = _read(path)
-        checked = [(item, _live(item)) for item in entries]
-        kept = [(item, live) for item, live in checked if live or not _stale(item)]
-        if len(kept) != len(entries):
-            _write(path, [item for item, _ in kept])
-    return [item | {"live": live} for item, live in kept]
+    running = [
+        index for index, item in enumerate(entries) if process_alive(int(item.get("pid") or 0))
+    ]
+    deadline = time.monotonic() + HEALTHZ_LIVE_PID_TIMEOUT_S
+    live: set[int] = set()
+    if running:
+        with ThreadPoolExecutor(max_workers=len(running)) as pool:
+            answers = list(pool.map(lambda index: _live(entries[index], deadline), running))
+        live = {index for index, ok in zip(running, answers, strict=True) if ok}
+    checked = [(item, index in live) for index, item in enumerate(entries)]
+    gone = [item for item, live in checked if not live and _stale(item)]
+    if gone:
+        with _locked(path):
+            # Only entries unchanged since the probe go: one re-registered or
+            # updated meanwhile is newer than what was checked.
+            current = _read(path)
+            kept = [item for item in current if item not in gone]
+            if len(kept) != len(current):
+                _write(path, kept)
+    return [item | {"live": live} for item, live in checked if item not in gone]
 
 
 def live_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:

@@ -69,7 +69,7 @@ from urllib.parse import quote, urlsplit
 from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, check_merge_compatibility
 from agent_hub_common.discovery import read_hub_json, token_file
 from agent_hub_common.discovery import state_dir as hub_state_dir
-from agent_hub_common.registry import hub_healthy, process_alive
+from agent_hub_common.registry import HEALTHZ_LIVE_PID_TIMEOUT_S, hub_healthy, process_alive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from denise import render as render_denise  # noqa: E402
@@ -2382,7 +2382,7 @@ def prepare(
     live_url = str(hub_info["url"])
     live_port = int(hub_info["port"])
     if not process_alive(int(hub_info["pid"])) or not hub_healthy(
-        live_url, str(hub_info["hub_id"])
+        live_url, str(hub_info["hub_id"]), HEALTHZ_LIVE_PID_TIMEOUT_S
     ):
         raise ValueError(f"hub in {hub_repo} is not responding; run robomate up first")
     if hub_url is not None and hub_url.rstrip("/") != live_url:

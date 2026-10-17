@@ -36,6 +36,10 @@ spec.loader.exec_module(mock_alice)
 # and so a test that sleeps is visibly a timing-sensitive one.
 EVENT_LEASE_S = 1.0
 PAST_LEASE_S = EVENT_LEASE_S + 0.05
+# Bounds one whole mock Alice drive, check-in to release; a healthy one takes
+# well under a second. A fixed 5 s is the budget that timed out under load in
+# test_mock_alice (#231), so the drives here share this generous one.
+DRIVE_TIMEOUT_S = 20.0
 
 
 @pytest.fixture
@@ -500,7 +504,7 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
             store=hub_store,
             expected_agent="bob",
             expected_harness="claude-code",
-            timeout_s=5.0,
+            timeout_s=DRIVE_TIMEOUT_S,
             crash_at=crash_at,
         )
 
@@ -511,7 +515,7 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
         store=hub_store,
         expected_agent="bob",
         expected_harness="claude-code",
-        timeout_s=5.0,
+        timeout_s=DRIVE_TIMEOUT_S,
     )
     await worker_task
 

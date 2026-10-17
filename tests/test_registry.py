@@ -2,8 +2,11 @@
 
 import ctypes
 import os
+import socket
 import sys
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ from agent_hub_common.registry import (
     register,
     registry_path,
 )
+from conftest import closed_port_url
 
 
 def _entry(tmp_path: Path, hub_id: str, name: str, common: str = "/repo/.git") -> dict[str, object]:
@@ -47,7 +51,7 @@ def test_registry_keeps_stopped_hubs_and_prunes_gone_state(
 ) -> None:
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 123)
     monkeypatch.setattr(
-        "agent_hub_common.registry.hub_healthy", lambda url, hub_id: hub_id == "live"
+        "agent_hub_common.registry.hub_healthy", lambda url, hub_id, *_: hub_id == "live"
     )
     register(_entry(tmp_path, "live", "a"), env)
     register(_entry(tmp_path, "stopped", "b"), env)
@@ -99,7 +103,7 @@ def test_forget_removes_the_entry_and_frees_the_name(
     """#159: forgetting drops the registry entry only; hub.json stays."""
 
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: False)
-    monkeypatch.setattr("agent_hub_common.registry.hub_healthy", lambda url, hub_id: False)
+    monkeypatch.setattr("agent_hub_common.registry.hub_healthy", lambda url, hub_id, *_: False)
     register(_entry(tmp_path, "a", "wt-a"), env)
     register(_entry(tmp_path, "b", "wt-b"), env)
     removed = forget("a", env)
@@ -271,3 +275,137 @@ def test_registry_read_survives_windows_sharing_violation(
         assert [x["hub_id"] for x in registry._read(path)] == ["a"]
     finally:
         timer.join()
+
+
+# /healthz budgets (#230). Each fixture server is owned by its fixture, which
+# shuts it down after the test.
+
+# Wall-clock ceilings for "fails fast" and "stays bounded": far above the
+# expected time, so a loaded host passes, but well below what unbounded or
+# serial waits would take. Windows takes about 2 s to report a refused
+# loopback connection.
+FAST_FAILURE_S = 8.0
+
+
+def test_a_hub_slower_than_the_old_budget_is_healthy(healthz: Callable[[str, float], str]) -> None:
+    url = healthz("slow-hub", 1.0)
+    assert registry.check_healthz(url) == registry.HealthCheck("slow-hub")
+    assert registry.hub_healthy(url, "slow-hub")
+
+
+def test_a_wrong_hub_id_is_refused_at_once(healthz: Callable[[str], str]) -> None:
+    url = healthz("other-hub")
+    started = time.monotonic()
+    assert registry.check_healthz(url, 60.0) == registry.HealthCheck("other-hub")
+    assert not registry.hub_healthy(url, "expected-hub", 60.0)
+    assert time.monotonic() - started < FAST_FAILURE_S
+
+
+def test_a_silent_endpoint_fails_within_its_budget(silent_url: Callable[[], str]) -> None:
+    url = silent_url()
+    started = time.monotonic()
+    health = registry.check_healthz(url, 0.5)
+    assert time.monotonic() - started < FAST_FAILURE_S
+    assert health == registry.HealthCheck(None, "did not answer /healthz within 0.5 s", True)
+    assert health.describe() == "did not answer /healthz within 0.5 s"
+    assert not registry.hub_healthy(url, "any-hub", 0.5)
+
+
+def test_a_refused_port_fails_fast_as_unreachable() -> None:
+    started = time.monotonic()
+    health = registry.check_healthz(closed_port_url(), 60.0)
+    assert time.monotonic() - started < FAST_FAILURE_S
+    assert health == registry.HealthCheck(None, "unreachable")
+    assert health.describe() == "is unreachable"
+
+
+def test_a_trickling_answer_is_cut_off_at_the_budget(
+    trickle_url: Callable[[str, float], str],
+) -> None:
+    """#266 r1-1: the budget covers the whole response, not each read."""
+
+    # A valid answer, but one byte every 50 ms: about 20 s in all.
+    url = trickle_url("trickle-hub", 0.05)
+    started = time.monotonic()
+    health = registry.check_healthz(url, 0.5)
+    elapsed = time.monotonic() - started
+    assert health == registry.HealthCheck(None, "did not answer /healthz within 0.5 s", True)
+    assert elapsed < 0.5 + FAST_FAILURE_S / 4
+    # Given the time, the same server's answer is accepted.
+    assert registry.check_healthz(trickle_url("trickle-hub", 0.0), 10.0) == registry.HealthCheck(
+        "trickle-hub"
+    )
+
+
+def test_a_tls_handshake_gets_only_what_connecting_left(
+    silent_url: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#266 r2-1: a slow connect leaves the handshake only the rest of the budget.
+
+    The handshake used the timeout set before connecting, so a connect that
+    took most of the budget and a silent TLS peer ran to nearly twice it.
+    """
+
+    connect = socket.create_connection
+
+    def slow_connect(*args: Any, **kwargs: Any) -> socket.socket:
+        connected = connect(*args, **kwargs)
+        time.sleep(0.9)
+        return connected
+
+    monkeypatch.setattr(socket, "create_connection", slow_connect)
+    url = silent_url().replace("http://", "https://")
+    started = time.monotonic()
+    health = registry.check_healthz(url, 1.0)
+    elapsed = time.monotonic() - started
+    assert health == registry.HealthCheck(None, "did not answer /healthz within 1 s", True)
+    # 1 s, not 0.9 s + 1 s; the margin is for a loaded host.
+    assert elapsed < 1.6
+
+
+def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
+    tmp_path: Path,
+    env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    silent_url: Callable[[], str],
+    healthz: Callable[[str, float], str],
+    trickle_url: Callable[[str, float], str],
+) -> None:
+    """Many silent entries share one budget, and registry writers never wait on them.
+
+    More entries than the old 16-probe cap, with the healthy one registered
+    last: queued behind silent probes, it was listed as stopped without ever
+    being asked (#266 r1-2).
+    """
+
+    budget = 3.0
+    monkeypatch.setattr(registry, "HEALTHZ_LIVE_PID_TIMEOUT_S", budget)
+    monkeypatch.setattr(registry, "process_alive", lambda pid: True)
+    silent = [f"silent-{index}" for index in range(19)]
+    for hub_id in silent:
+        register(_entry(tmp_path, hub_id, hub_id) | {"url": silent_url()}, env)
+    silent.append("trickle")
+    # Keeps sending past the budget, a byte at a time (#266 r1-1).
+    register(_entry(tmp_path, "trickle", "trickle") | {"url": trickle_url("trickle", 0.05)}, env)
+    register(_entry(tmp_path, "slow", "slow") | {"url": healthz("slow", 1.0)}, env)
+    listing: list[list[dict[str, Any]]] = []
+    started = time.monotonic()
+    lister = threading.Thread(target=lambda: listing.append(hub_entries(env)))
+    lister.start()
+    try:
+        time.sleep(0.3)
+        # The lister is mid-probe; a write still gets the lock at once.
+        register(_entry(tmp_path, "late", "late") | {"url": closed_port_url()}, env)
+        assert time.monotonic() - started < budget
+    finally:
+        lister.join(timeout=60)
+    elapsed = time.monotonic() - started
+    # One budget in all: serial probes would take 20 * 3 s, and the trickling
+    # answer alone would take about 20 s to arrive.
+    assert budget <= elapsed < 2 * budget
+    assert {(x["hub_id"], x["live"]) for x in listing[0]} == {
+        *((hub_id, False) for hub_id in silent),
+        ("slow", True),
+    }
+    # The probe kept every entry, and did not drop the one written meanwhile.
+    assert {x["hub_id"] for x in hub_entries(env)} >= {*silent, "slow", "late"}
