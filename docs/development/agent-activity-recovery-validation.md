@@ -178,7 +178,7 @@ Record the results in `docs/evidence/agent-activity-recovery-<run-id>.md`:
 | 1 Worker frozen → STALLED, one agent_stalled event | | | | |
 | 1 Negative control (operator-answer or worker wait) | | | | |
 | 2 OpenCode Alice killed → same conversation resumed | | | | |
-| 2 session.supersede row; get_state first; run done without manual resume | | | | |
+| 2 explicit join/takeover; session.supersede row; get_state; run done without manual resume | | | | |
 | 3 Snapshot matches state; no supersede, no delivery change | | | | |
 
 Cleanup: <processes stopped, hub stopped, `rm8 ls` empty, sandbox cleaned>
