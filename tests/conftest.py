@@ -245,6 +245,52 @@ def silent_url() -> Iterator[Callable[[], str]]:
             listener.close()
 
 
+@pytest.fixture
+def trickle_url() -> Iterator[Callable[[str, float], str]]:
+    """Serve a valid /healthz answer one byte every `interval_s`; return the URLs.
+
+    Each read makes progress, so a per-read timeout never fires: only a total
+    deadline stops the client (#266 r1-1). Stopped and closed after the test.
+    """
+
+    stop = threading.Event()
+    listeners: list[socket.socket] = []
+
+    def serve(listener: socket.socket, hub_id: str, interval_s: float) -> None:
+        body = json.dumps({"hub_id": hub_id}).encode() + b" " * 400
+        head = (
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+        ).encode()
+        while not stop.is_set():
+            try:
+                connection, _ = listener.accept()
+            except OSError:
+                return
+            with connection:
+                try:
+                    connection.recv(4096)
+                    for byte in head + body:
+                        if stop.wait(interval_s):
+                            break
+                        connection.sendall(bytes([byte]))
+                except OSError:
+                    pass
+
+    def trickle(hub_id: str, interval_s: float) -> str:
+        listener = socket.create_server(("127.0.0.1", 0))
+        listeners.append(listener)
+        threading.Thread(target=serve, args=(listener, hub_id, interval_s), daemon=True).start()
+        return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+    try:
+        yield trickle
+    finally:
+        stop.set()
+        for listener in listeners:
+            listener.close()
+
+
 def closed_port_url() -> str:
     """A loopback URL nothing listens on: a stopped hub's recorded address."""
 

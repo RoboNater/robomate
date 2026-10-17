@@ -318,21 +318,48 @@ def test_a_refused_port_fails_fast_as_unreachable() -> None:
     assert health.describe() == "is unreachable"
 
 
+def test_a_trickling_answer_is_cut_off_at_the_budget(
+    trickle_url: Callable[[str, float], str],
+) -> None:
+    """#266 r1-1: the budget covers the whole response, not each read."""
+
+    # A valid answer, but one byte every 50 ms: about 20 s in all.
+    url = trickle_url("trickle-hub", 0.05)
+    started = time.monotonic()
+    health = registry.check_healthz(url, 0.5)
+    elapsed = time.monotonic() - started
+    assert health == registry.HealthCheck(None, "did not answer /healthz within 0.5 s", True)
+    assert elapsed < 0.5 + FAST_FAILURE_S / 4
+    # Given the time, the same server's answer is accepted.
+    assert registry.check_healthz(trickle_url("trickle-hub", 0.0), 10.0) == registry.HealthCheck(
+        "trickle-hub"
+    )
+
+
 def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
     tmp_path: Path,
     env: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     silent_url: Callable[[], str],
     healthz: Callable[[str, float], str],
+    trickle_url: Callable[[str, float], str],
 ) -> None:
-    """Several silent entries share one budget, and registry writers never wait on them."""
+    """Many silent entries share one budget, and registry writers never wait on them.
+
+    More entries than the old 16-probe cap, with the healthy one registered
+    last: queued behind silent probes, it was listed as stopped without ever
+    being asked (#266 r1-2).
+    """
 
     budget = 3.0
     monkeypatch.setattr(registry, "HEALTHZ_LIVE_PID_TIMEOUT_S", budget)
     monkeypatch.setattr(registry, "process_alive", lambda pid: True)
-    silent = [f"silent-{index}" for index in range(8)]
+    silent = [f"silent-{index}" for index in range(19)]
     for hub_id in silent:
         register(_entry(tmp_path, hub_id, hub_id) | {"url": silent_url()}, env)
+    silent.append("trickle")
+    # Keeps sending past the budget, a byte at a time (#266 r1-1).
+    register(_entry(tmp_path, "trickle", "trickle") | {"url": trickle_url("trickle", 0.05)}, env)
     register(_entry(tmp_path, "slow", "slow") | {"url": healthz("slow", 1.0)}, env)
     listing: list[list[dict[str, Any]]] = []
     started = time.monotonic()
@@ -346,8 +373,9 @@ def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
     finally:
         lister.join(timeout=60)
     elapsed = time.monotonic() - started
-    # One budget, not eight: serial probes would take 8 * 3 s.
-    assert budget <= elapsed < 4 * budget
+    # One budget in all: serial probes would take 20 * 3 s, and the trickling
+    # answer alone would take about 20 s to arrive.
+    assert budget <= elapsed < 2 * budget
     assert {(x["hub_id"], x["live"]) for x in listing[0]} == {
         *((hub_id, False) for hub_id in silent),
         ("slow", True),
