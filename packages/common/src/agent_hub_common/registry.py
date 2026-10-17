@@ -248,7 +248,9 @@ def _stale(entry: Mapping[str, Any]) -> bool:
 
 # hub_entries probes every entry at once and outside the registry lock, so a
 # silent entry neither holds up registry writers (whose lock wait is 5 s) nor
-# adds up with others: the whole listing waits at most one live-pid budget.
+# adds up with others. Every probe shares one deadline, a live-pid budget
+# away; urllib applies it to each step (connect, then read), so the listing
+# waits about one budget, at worst two, never one per entry.
 _PROBE_WORKERS = 16
 
 
