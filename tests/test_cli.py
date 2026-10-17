@@ -2552,7 +2552,10 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         )
         whoami_before = wait_id(2)["result"]
         assert not whoami_before.get("isError"), whoami_before
-        assert json.loads(whoami_before["content"][0]["text"]) == {"joined": False, "hub": None}
+        before_body = json.loads(whoami_before["content"][0]["text"])
+        assert before_body["joined"] is False and before_body["hub"] is None
+        assert str(info["name"]) in before_body["discovery_error"]
+        assert "not inside a git repository" in before_body["discovery_error"]
 
         # 2. await_assignment before join fails naming join
         send(

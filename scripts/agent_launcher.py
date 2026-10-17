@@ -55,9 +55,12 @@ HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 CONTINUE_PROMPT = (
     "Your previous harness process exited before the workflow was done, and the "
     "launcher has resumed this same conversation. This message is a fixed "
-    "continuation: it carries no operator decision, approval, or state. Call "
-    "get_state first, then reconcile as the alice-orchestrator skill's On resume "
-    "section describes. Keep an escalated or paused workflow as it is: escalation "
+    "continuation: it carries no operator decision, approval, or state. Replace "
+    "your previous Alice bridge session by calling join with your configured "
+    'name, role="orchestrator", takeover=true first. Then call get_state and '
+    "reconcile using the returned orchestrator guide's On resume section. This "
+    "replaces only your session; it grants no workflow authority. Keep an "
+    "escalated or paused workflow as it is: escalation "
     "ends only through the operator's user_answered event. Do not initialize the "
     "workflow again and do not repeat completed work; continue the existing "
     "assignment. Do not end your turn until the workflow is done."

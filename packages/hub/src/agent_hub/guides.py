@@ -54,7 +54,8 @@ def guide_response(guides_dir: Path, role: str, forge: str | None = None) -> Res
         return Response(content=content, media_type=MEDIA_TYPE)
     if not ROLE_PATTERN.fullmatch(forge):
         raise _not_found(role)
-    appendix_path = (root / "forge" / f"{forge}.md").resolve()
+    appendix_name = f"orchestrator-{forge}" if role == "orchestrator" else forge
+    appendix_path = (root / "forge" / f"{appendix_name}.md").resolve()
     if not appendix_path.is_file() or not appendix_path.is_relative_to(root):
         raise _not_found(role)
     content = content + b"\n\n" + appendix_path.read_bytes()

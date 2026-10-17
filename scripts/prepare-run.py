@@ -144,6 +144,7 @@ ALICE_TOOLS = [
     "log_decision",
     "ask_user",
     "withdraw_question",
+    "join",
 ]
 DEFAULT_HUB_HOST = "127.0.0.1"
 DEFAULT_HUB_PORT = 8420
@@ -963,8 +964,12 @@ conversation ID, because `alice-sessions.jsonl` shows the launcher's
 automatic resumes were spent or it stopped. Never rerun `start-alice.sh`
 (`start-alice.ps1` on Windows): it replays the kickoff prompt.
 
-The orchestrator bridge has no `check_in`: make `get_state` your first hub
-call, then reconcile.
+Replace your prior Alice bridge session first: call `join` with your configured
+name, `role="orchestrator"` and `takeover=true`, then call `get_state` and
+reconcile using the returned orchestrator guide's On resume section. This
+same-conversation resume replaces only the bridge session; it grants no workflow
+authority and never changes the durable goal, policy or operator answers. The
+orchestrator bridge has no `check_in`.
 
 End your turn only when the workflow is `done`. While `escalated`, hold on
 `wait_for_event` for the operator's answer. Every announcement of a step must

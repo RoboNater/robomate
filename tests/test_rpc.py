@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -31,13 +32,23 @@ from agent_hub.rpc import (
     RpcError,
     require_operator,
 )
-from agent_hub.store import HubStore
+from agent_hub.store import DuplicateAgentError, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from fastapi import FastAPI
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.fixture(autouse=True)
+def orchestrator_guides(settings: HubSettings) -> None:
+    settings.guides_dir.mkdir(exist_ok=True)
+    root = Path(__file__).resolve().parents[1] / "guides"
+    for relative in ("orchestrator.md", "forge/orchestrator-github.md"):
+        target = settings.guides_dir / relative
+        target.parent.mkdir(exist_ok=True)
+        target.write_bytes((root / relative).read_bytes())
 
 
 async def call(
@@ -337,7 +348,7 @@ async def test_superseded_bridge_can_flush_accounting_without_reclaiming_session
     newer_session = "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"
     new = {ACTOR_HEADER: "alice", SESSION_HEADER: newer_session}
     assert "result" in await call(client, "get_state", old)
-    assert "result" in await call(client, "get_state", new)
+    assert "result" in await call(client, "join", new, name="alice", takeover=True)
     row = {
         "boundary": "mcp",
         "actor": "alice",
@@ -738,6 +749,9 @@ async def test_the_callers_session_is_recorded_for_orchestrator_calls(
     assert first.last_seen.tzinfo is not None
 
     newer = "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"
+    assert "result" in await call(
+        client, "join", {ACTOR_HEADER: "alice", SESSION_HEADER: newer}, name="alice", takeover=True
+    )
     await call(
         client,
         "log_decision",
@@ -763,6 +777,7 @@ async def test_heartbeat_fences_old_session_and_releases_delivery(
     assert (await call(client, "hub.heartbeat", old))["result"] == {"ok": True}
     assert hub_store.lease_next_event() is None
 
+    assert "result" in await call(client, "join", new, name="alice", takeover=True)
     assert (await call(client, "hub.heartbeat", new))["result"] == {"ok": True}
     again = (await call(client, "wait_for_event", new, timeout_s=0))["result"]["event"]
     assert again["id"] == first["id"] and again["delivery_attempts"] == 2
@@ -802,7 +817,7 @@ async def test_superseded_held_call_releases_event_it_received_after_takeover(
     }
     held = asyncio.create_task(call(client, "wait_for_event", old, timeout_s=0))
     await asyncio.wait_for(started.wait(), 1)
-    assert "result" in await call(client, "get_state", new)
+    assert "result" in await call(client, "join", new, name="alice", takeover=True)
     hub_store.check_in("bob", AgentProfile())
     resume.set()
     assert error_of(await held) == (CONFLICT, "superseded by a newer orchestrator session")
@@ -896,11 +911,18 @@ async def test_a_session_takeover_leaves_an_audit_row(
 ) -> None:
     newer = "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"
     await call(client, "get_state")
-    await call(client, "hub.heartbeat", {ACTOR_HEADER: "mallory", SESSION_HEADER: newer})
+    await call(
+        client,
+        "join",
+        {ACTOR_HEADER: "mallory", SESSION_HEADER: newer},
+        name="mallory",
+        takeover=True,
+    )
     assert error_of(await call(client, "log_decision", summary="s", rationale="r"))[0] == CONFLICT
 
     assert audit_rows(hub_store) == [
         ("mallory", newer, SUPERSEDE_METHOD, "ok"),
+        ("mallory", newer, "join", "ok"),
         ("alice", SESSION, "log_decision", f"error {CONFLICT}"),
     ]
     with database(hub_store.path) as connection:
@@ -1220,3 +1242,58 @@ async def test_assign_task_refuses_standing_role_mismatch_with_invalid_params(
         event_id=event2.id,
     )
     assert "result" in ok_general
+
+
+async def test_orchestrator_join_resume_hash_and_explicit_takeover(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+) -> None:
+    import hashlib
+
+    hub_store.check_in("bob")
+    delivered = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    first = (await call(client, "join", name="alice", profile={"model": "known-model"}))["result"]
+    assert first["guide_sha256"] == hashlib.sha256(first["guide"].encode()).hexdigest()
+    assert first["state"]["workflow"]["status"] == "active"
+    assert hub_store.status_summary()["agents"][0]["standing_role"] == "orchestrator"
+    with pytest.raises(DuplicateAgentError, match="registered as orchestrator"):
+        hub_store.check_in("alice", takeover=True)
+    assert first["resume_procedure"] and "get_state" in first["resume_procedure"]
+    assert first["unacked_delivered"][0]["id"] == delivered["id"]
+    again = (await call(client, "join", name="alice"))["result"]
+    assert again["guide"] == f"unchanged ({first['guide_sha256']})"
+    assert (
+        next(a for a in hub_store.agents() if a.name == "alice").standing_role.value
+        == "orchestrator"
+    )
+    other = {ACTOR_HEADER: "replacement", SESSION_HEADER: "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5"}
+    assert error_of(await call(client, "join", other, name="replacement"))[0] == CONFLICT
+    assert error_of(await call(client, "get_state", other))[0] == CONFLICT
+    assert hub_store.lease_next_event() is None
+    replacement = await call(client, "join", other, name="replacement", takeover=True)
+    assert "result" in replacement
+    assert next(a for a in hub_store.agents() if a.name == "alice").status.value == "released"
+    assert error_of(await call(client, "join", name="alice", takeover=True))[0] == CONFLICT
+    assert error_of(await call(client, "hub.heartbeat"))[0] == CONFLICT
+    replay = (await call(client, "wait_for_event", other, timeout_s=0))["result"]["event"]
+    assert replay["id"] == delivered["id"] and replay["delivery_attempts"] == 2
+    assert error_of(await bare_call(app, "join", name="alice"))[0] == INVALID_REQUEST
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"name": "other"},
+        {"name": "alice", "takeover": "yes"},
+        {"name": "alice", "role": "worker"},
+        {"name": "alice", "unexpected": True},
+    ],
+)
+async def test_invalid_orchestrator_join_does_not_attach(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+) -> None:
+    assert error_of(await call(client, "join", **params))[0] == INVALID_PARAMS
+    assert app.state.rpc.orchestrator is None

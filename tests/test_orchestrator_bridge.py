@@ -104,8 +104,8 @@ async def test_cancelled_flush_counts_rows_it_cannot_requeue() -> None:
     assert bridge.dropped_calls == 1 and bridge._calls.qsize() == 1
 
 
-async def _call(server: Any, name: str, **arguments: Any) -> dict[str, Any]:
-    result = await server.call_tool(name, arguments)
+async def _call(server: Any, tool_name: str, **arguments: Any) -> dict[str, Any]:
+    result = await server.call_tool(tool_name, arguments)
     assert isinstance(result, tuple)
     return cast(dict[str, Any], result[1])
 
@@ -113,7 +113,9 @@ async def _call(server: Any, name: str, **arguments: Any) -> dict[str, Any]:
 async def test_tool_list_matches_legacy_fixture() -> None:
     bridge = OrchestratorBridge()
     tools = await create_orchestrator_mcp(bridge).list_tools()
-    actual = [tool.model_dump(exclude_none=True, by_alias=True) for tool in tools]
+    actual = [
+        tool.model_dump(exclude_none=True, by_alias=True) for tool in tools if tool.name != "join"
+    ]
     fixture = Path(__file__).parent / "fixtures/orchestrator-tools.json"
     assert actual == json.loads(fixture.read_text(encoding="utf-8"))
     assert bridge._client is None  # Listing tools does not discover or connect.
@@ -227,6 +229,7 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
 async def test_worker_task_survives_orchestrator_session_restart(
     app: FastAPI, hub_store: HubStore
 ) -> None:
+    app.state.rpc.guides_dir = Path(__file__).resolve().parents[1] / "guides"
     async with app.router.lifespan_context(app):
 
         async def orchestrator() -> tuple[OrchestratorBridge, Any]:
@@ -289,6 +292,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
 
                 new_bridge, new = await orchestrator()
                 try:
+                    await _call(new, "join", name="alice", takeover=True)
                     redelivered = (await _call(new, "wait_for_event", timeout_s=0))["event"]
                     assert redelivered["id"] == question["id"]
                     assert redelivered["delivery_attempts"] == 2
@@ -393,7 +397,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 12
+            assert len((await alice.list_tools()).tools) == 13
             assert len((await bob.list_tools()).tools) == 10
             created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
             assert created.structuredContent is not None
@@ -444,6 +448,8 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 ClientSession(new_read, new_write) as resumed,
             ):
                 await resumed.initialize()
+                joined = await resumed.call_tool("join", {"name": "alice", "takeover": True})
+                assert not joined.isError
                 repeated = await resumed.call_tool("wait_for_event", {"timeout_s": 0})
                 assert repeated.structuredContent is not None
                 second_delivery = repeated.structuredContent["event"]
@@ -462,12 +468,31 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             reply = await pending
             assert reply.structuredContent is not None
             assert reply.structuredContent["reply"] == "This one"
+        # Exercise the public smoke entry point through the static MCP bridge,
+        # replacing the session from the preceding prepared-run scenario.
+        joined_cli = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "scripts/mock-alice.py"),
+                "--join",
+                "--takeover",
+            ],
+            cwd=repo,
+            env=bridge_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert joined_cli.returncode == 0, joined_cli.stderr
+        assert "'guide_sha256':" in joined_cli.stdout
+        assert "'role': 'orchestrator'" in joined_cli.stdout
         with sqlite3.connect(repo / ".robomate/hub.db") as connection:
             rows = connection.execute(
                 "SELECT tool, content_bytes FROM call_log "
                 "WHERE boundary = 'mcp' AND actor = 'alice'"
             ).fetchall()
         assert rows
+        assert any(tool == "join" and content_bytes > 0 for tool, content_bytes in rows)
         assert any(
             tool == "initialize_workflow" and content_bytes > 0 for tool, content_bytes in rows
         )
@@ -571,3 +596,59 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
                 await _call(alice, "set_workflow_status", status="active", summary="Review result")
             finally:
                 await bridge.close()
+
+
+async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
+    settings: Any,
+) -> None:
+    from dataclasses import replace
+
+    from agent_hub.app import create_app
+
+    hub = create_app(replace(settings, guides_dir=Path(__file__).resolve().parents[1] / "guides"))
+    async with (
+        hub.router.lifespan_context(hub),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        client = WorkerHubClient(WorkerSettings.unjoined(environ={}), http)
+        server = create_worker_mcp(client, include_orchestrator=True)
+        try:
+            with pytest.raises(ToolError, match="join"):
+                await _call(server, "get_state")
+            first = await _call(
+                server, "join", name="alice", role="orchestrator", model="test-model"
+            )
+            assert first["guide_sha256"] and first["hub"]["forge"] == "github"
+            assert first["resume_procedure"] is None
+            assert (await _call(server, "get_state"))["workflow"] is None
+            again = await _call(server, "join", name="alice", role="orchestrator")
+            assert again["guide"].startswith("unchanged (")
+            assert (await _call(server, "whoami"))["standing_role"] == "orchestrator"
+            with pytest.raises(ToolError, match="worker role"):
+                await _call(server, "await_assignment", timeout_s=0)
+        finally:
+            await client.close()
+
+
+async def test_unjoined_whoami_reports_discovery_failure_and_live_hubs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def missing(*args: Any, **kwargs: Any) -> None:
+        raise DiscoveryError(
+            "outside a checkout; Registered and live hubs: repo-a, repo-b; use hub="
+        )
+
+    monkeypatch.setattr("worker_mcp.client.discover", missing)
+    client = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}))
+    server = create_worker_mcp(client)
+    try:
+        who = await _call(server, "whoami")
+        assert who["joined"] is False and who["hub"] is None
+        assert "repo-a, repo-b" in who["discovery_error"]
+    finally:
+        await client.close()

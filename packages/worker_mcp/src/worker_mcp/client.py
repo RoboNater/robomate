@@ -9,7 +9,7 @@ import logging
 import re
 from collections.abc import Mapping
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -19,7 +19,6 @@ from agent_hub_common import (
     AGENT_HEADER,
     SCHEMA_VERSION,
     UNKNOWN,
-    WORKER_STANDING_ROLES,
     AgentProfile,
     ImplementerResult,
     MetaKeys,
@@ -33,6 +32,7 @@ from agent_hub_common.discovery import discover
 from agent_hub_common.workspace import canonical_workspace, read_identity
 
 from .config import WorkerSettings
+from .orchestrator import OrchestratorBridge
 from .telemetry import TelemetryLog, count_http_exchange, count_http_retry
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class WorkerHubClient:
         self.context_id: str | None = None
         self.standing_role: StandingRole | None = None
         self._joined: bool = False
+        self.orchestrator: OrchestratorBridge | None = None
         self.worker_instance_id = uuid4().hex
         self.telemetry = TelemetryLog(
             settings.telemetry_log,
@@ -111,6 +112,8 @@ class WorkerHubClient:
 
     async def close(self) -> None:
         await self.stop_heartbeat()
+        if self.orchestrator is not None:
+            await self.orchestrator.close()
         await self.detach()
         if self._external_client is None and self._client is not None:
             await self._client.aclose()
@@ -663,19 +666,15 @@ class WorkerHubClient:
 
         clean_name = validate_agent_name(name.strip())
         clean_role = role.strip().lower()
-        if clean_role == StandingRole.ORCHESTRATOR.value:
-            raise ValueError(
-                "role 'orchestrator' is not supported by the worker bridge (see #239); "
-                "choose one of: implementer, reviewer, worker"
-            )
         try:
             standing_role = StandingRole(clean_role)
         except ValueError as exc:
-            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
+            allowed = ", ".join(r.value for r in StandingRole)
             raise ValueError(f"role must be one of {allowed} (got {role!r})") from exc
-        if standing_role not in WORKER_STANDING_ROLES:
-            allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
-            raise ValueError(f"role must be one of {allowed} (got {role!r})")
+        if self.is_joined and (
+            self.settings.agent_name != clean_name or self.standing_role != standing_role
+        ):
+            raise ValueError("this bridge has already joined under another name or role")
 
         await self._bind_hub(hub)
         profile = self.profile(capabilities, model, effort=effort, harness=harness)
@@ -697,6 +696,25 @@ class WorkerHubClient:
                 profile = replace(profile, workspace_id=identity["workspace_id"])
             except Exception:
                 pass
+
+        if standing_role is StandingRole.ORCHESTRATOR:
+            if self.orchestrator is None:
+                self.orchestrator = OrchestratorBridge(
+                    clean_name,
+                    cwd=bridge_cwd,
+                    http_client=self._ensure_client(),
+                )
+            self.orchestrator.name = clean_name
+            result = await self.orchestrator.register(profile, takeover=takeover)
+            self.settings = replace(self.settings, agent_name=clean_name)
+            self.standing_role = standing_role
+            self._joined = True
+            return result | {
+                "workspace_path": str(resolved_workspace_path),
+                "workspace_id": profile.workspace_id,
+                "cwd_inside_workspace": cwd_inside_workspace,
+                "profile": asdict(profile),
+            }
 
         self.settings = replace(self.settings, agent_name=clean_name)
         self.telemetry.agent = clean_name
@@ -824,8 +842,8 @@ class WorkerHubClient:
                             "forge": who_data.get("forge"),
                             "default_branch": who_data.get("default_branch"),
                         }
-            except Exception:
-                hub_summary = None
+            except Exception as exc:
+                return {"joined": False, "hub": None, "discovery_error": str(exc)}
             return {"joined": False, "hub": hub_summary}
 
         await self._bind_hub()

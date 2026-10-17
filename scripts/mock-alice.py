@@ -975,6 +975,12 @@ def main() -> None:
             "to an existing robomate up hub)"
         ),
     )
+    parser.add_argument(
+        "--join",
+        action="store_true",
+        help="Join as orchestrator through MCP, print the response and exit (no workflow changes)",
+    )
+    parser.add_argument("--takeover", action="store_true", help="With --join: replace Alice")
     parser.add_argument("--agent", default="bob", help="Expected worker agent name")
     parser.add_argument("--role", default="implementer", help="Task role to assign")
     parser.add_argument(
@@ -1004,7 +1010,7 @@ def main() -> None:
     parser.add_argument(
         "--bridge-cmd",
         "--hub-cmd",
-        default=f'"{Path(sys.executable).with_name("robomate")}" mcp --role orchestrator',
+        default=None,
         help="Orchestrator bridge command for --mcp (parsed quote-aware)",
     )
     parser.add_argument(
@@ -1051,9 +1057,18 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.join:
+        args.mcp = True
+    if args.takeover and not args.join:
+        parser.error("--takeover requires --join")
     if args.hub and not args.mcp:
         parser.error("--hub goes with --mcp")
-    if args.mcp and not args.hub and not os.environ.get("ROBOMATE_HUB_URL", "").strip():
+    if (
+        args.mcp
+        and not args.join
+        and not args.hub
+        and not os.environ.get("ROBOMATE_HUB_URL", "").strip()
+    ):
         parser.error(
             "--mcp needs --hub <name | hub_id | checkout path>, or ROBOMATE_HUB_URL "
             "with ROBOMATE_TOKEN_FILE"
@@ -1102,7 +1117,11 @@ def main() -> None:
             )
             result["telemetry"] = telemetry
         elif args.mcp:
-            cmd_parts = _parse_cmd(args.bridge_cmd)
+            bridge_cmd = args.bridge_cmd or (
+                f'"{Path(sys.executable).with_name("robomate")}" mcp'
+                + ("" if args.join else " --role orchestrator")
+            )
+            cmd_parts = _parse_cmd(bridge_cmd)
             env, cwd = bridge_launch(args.hub)
             params = StdioServerParameters(
                 command=cmd_parts[0], args=cmd_parts[1:], env=env, cwd=cwd
@@ -1114,6 +1133,16 @@ def main() -> None:
                     ClientSession(read, write) as session,
                 ):
                     await session.initialize()
+                    if args.join:
+                        return await _call(
+                            session,
+                            "join",
+                            {
+                                "name": "alice",
+                                "role": "orchestrator",
+                                "takeover": args.takeover,
+                            },
+                        )
                     return await drive_one_task_mcp(
                         session=session,
                         expected_agent=args.agent,
@@ -1138,7 +1167,9 @@ def main() -> None:
                     crash_at=args.crash_at,
                 )
             )
-        print(f"SUCCESS: {result}")
+        # The join guide contains Unicode; keep the diagnostic result printable
+        # on Windows consoles such as cp1252 while preserving its Python literal.
+        print(f"SUCCESS: {ascii(result)}")
     except Exception as exc:
         logger.exception("Mock Alice failed: %s", exc)
         sys.exit(1)

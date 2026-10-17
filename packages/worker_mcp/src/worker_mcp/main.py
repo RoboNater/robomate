@@ -7,19 +7,23 @@ import json
 import logging
 import os
 import sys
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from dataclasses import replace
 from io import TextIOWrapper
 from pathlib import Path
 from typing import TextIO
 
 import anyio
 from agent_hub_common import reserve_stdout
+from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import discover
+from agent_hub_common.orchestrator_tools import OPERATIONS
 from mcp.server.fastmcp import FastMCP
 from mcp.server.stdio import stdio_server
 
-from .accounting import McpAccounting
+from .accounting import MCP_METHODS, McpAccounting
 from .client import WorkerHubClient
 from .config import WorkerSettings
 from .tools import create_worker_mcp
@@ -117,8 +121,37 @@ async def run_worker_bridge(
                 client = created
         return client
 
+    server = create_worker_mcp(
+        get_client,
+        server_name="robomate",
+        include_orchestrator=name is None,
+    )
+    pending: deque[CallRecord] = deque(maxlen=256)
+    orchestrator_tools = frozenset(
+        (*OPERATIONS, "join", "whoami", *MCP_METHODS, "other", "unknown")
+    )
+
+    def record_call(record: CallRecord) -> None:
+        # Before join there is no actor to attribute framing to. Keep a bounded
+        # startup batch, then send it only if this becomes an orchestrator.
+        if record.tool not in orchestrator_tools:
+            return
+        if client is None or not client.is_joined:
+            pending.append(record)
+        elif client.orchestrator is not None:
+            for row in (*pending, record):
+                client.orchestrator.record_call(replace(row, actor=client.settings.agent_name))
+            pending.clear()
+        else:
+            pending.clear()
+
+    observer = McpAccounting(
+        record_call,
+        frozenset(tool.name for tool in await server.list_tools()),
+        actor="unjoined",
+    )
     try:
-        await serve_mcp(create_worker_mcp(get_client, server_name="robomate"), stdout)
+        await serve_mcp(server, stdout, observer)
     finally:
         if client is not None:
             await client.close()

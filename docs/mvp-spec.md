@@ -370,11 +370,15 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   the extended A2A check-in route; workers never call `/rpc` (§12). `robomate mcp --role
   orchestrator|worker [--name NAME]` (or `AGENT_NAME`) and `check_in` (which defaults
   `standing_role` to `worker`) remain as aliases for prepared runs until M2 Step 11 removes
-  them. In M1 before orchestrator `join` (M2 Step 2), the orchestrator bridge sends a
-  session ID with its `/rpc` calls and a heartbeat every 30 s; the first call from a new
-  session makes it current, refusing older sessions and expiring outstanding event delivery
-  leases for immediate redelivery while leaving worker tasks, leases, and heartbeats
-  unaffected.
+  them. Orchestrator `join` uses `/rpc` with `X-Robomate-Actor` and
+  `X-Robomate-Session` (UUID); the name must match the actor header. The prepared-run
+  bridge may attach on its first operation, but no subsequent new session implicitly
+  replaces it. A different session must join with `takeover=true` (otherwise -32002),
+  fencing the old session's operations and heartbeats and releasing outstanding event
+  leases for redelivery. Worker tasks, leases and heartbeats remain unaffected. The
+  bridge sends a heartbeat every 30 s. The joined name, standing role and profile use
+  existing agent columns; this step adds no DB schema version.
+
 - **Names** are unique per hub, and validated like hub names (§4), since they appear in
   worktree paths and branch names (§6). Joining a name whose instance is alive returns 409 unless
   `takeover=true`, which supersedes the old instance at once (its heartbeats are ignored).
@@ -406,8 +410,15 @@ unjoined session can call besides `whoami`. Its description is the install-free 
 - `workspace_path`, `workspace_id`, and whether the bridge's working directory is inside it;
 - the standing role's guide (worker etiquette, or the orchestrator guide), with its hash;
 - for a worker: any reattached task; the next call to make (`await_assignment`);
-- for the orchestrator: queue and workflow summary, unacked deliveries, the resume procedure
+- for the orchestrator: compact `get_state` summary, `unacked_delivered`, the resume procedure
   if a workflow is active.
+
+Orchestrator join returns the composed guide and `guide_sha256`; a repeat join in the
+same bridge session returns `unchanged (<hash>)` for identical bytes. With an existing
+non-done workflow it also returns the resume procedure: read state first, reconcile the
+forge head/state/base/merge commit against stored tasks, results and unacknowledged
+deliveries, log discrepancies, and route one safe next action without duplicating tasks.
+Queue and run identity enter the compact state in M2 Step 3.
 
 **Liveness and listening** (shown by `robomate status`):
 - `alive` / `lost` — from the bridge's background heartbeat, as in the PoC (§4.3).
@@ -900,7 +911,10 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   Composition is the default: the route appends the appendix for the hub's forge (`gitlab`
   gives `gitlab.md`, anything else `github.md`, matching gate selection), `?forge=` overrides
   it, and a missing appendix for the effective forge is a 404. Appendices are worker-only:
-  they hold no merge commands, since no worker role merges.
+  they hold no merge commands, since no worker role merges. `orchestrator.md` instead
+  composes with `guides/forge/orchestrator-<forge>.md`, carrying merge and merged-state
+  read-back commands. GitHub still uses `--delete-branch` until M2 Step 8 implements
+  remote-only deletion; worker appendices remain merge-free.
 - **GitLab review comments:** through the Notes REST API via `glab api`
   (`POST projects/<project>/merge_requests/<iid>/notes`). Top-level notes are non-resolvable,
   so they can never become a `discussions_not_resolved` merge blocker. A note response carries
@@ -1082,6 +1096,7 @@ Denise remains usable while the hub is down and outside the joined team.
 | Forges | GitHub and GitLab (incl. self-hosted) |
 | Instruction delivery | Tool descriptions, join response, served guides for the joined team; local guide and generated context for Denise (§5.1); no harness-specific skill required |
 | Close-out | Hub-built `closeout` task with a validated typed result; `done` requires merge state per `deliver` and a completed close-out; run report replaces reading agent chat; `robomate abandon` is the operator's no-delivery exit. No general obligation ledger in the MVP |
+| Default `reviewer_harness_differs` | Keep `true`: an independent harness is the useful default for single-operator dogfooding. Set `role_policy.reviewer_harness_differs = false` in configuration or per run when both roles need the same harness (M2 Step 2, #239) |
 | Orchestrator mode | Interactive or headless; both supported via the inbox |
 | Users | Single operator; per-hub shared token plus the operator credential; loopback default |
 | Dependency licensing | Direct dependencies must be permissively licensed; the goal covers the entire resolved tree. Exceptions need owner approval. Authoritative policy: [dependency-licenses.md](dependency-licenses.md) (#191) |
@@ -1096,7 +1111,6 @@ Denise remains usable while the hub is down and outside the joined team.
 | Tool surface | One static list (simple) vs per-role list via `tools/list_changed` (fewer schema tokens; harness support varies) | M3, from measured schema bytes |
 | `gh`/`glab` merge vs local branch in a worktree | Remote-only branch delete + `robomate clean`, or merge from outside any checkout | M2 |
 | Certification bar | cycles / duration / pass rate over N attempts | M3 |
-| Default `reviewer_harness_differs` | keep `true` or relax to `false` for flexibility | M2 |
 
 ---
 
@@ -1168,7 +1182,7 @@ milestone shown, linking the robo-agents original for history.
 | `scripts/mock-alice.py`, `mock-worker.py` | Kept; become the engine of `robomate certify` and the scripted E2E tests |
 | `scripts/supervise-claude-code.sh` | Kept; referenced from the Claude Code harness profile |
 | `scripts/hub-report.py` | Folded into `robomate log` / `robomate status` |
-| `skills/alice-orchestrator` | Content moves to `guides/orchestrator.md` (M2); an optional thin `robomate` skill only points the agent at `join` |
+| `skills/alice-orchestrator` | Content served as forge-neutral `guides/orchestrator.md` with orchestrator-only forge appendix (M2 Step 2, #239); skill is a thin pointer to `join`. `prompts/alice.md` remains for prepared runs until Step 11 |
 | `skills/alice-relay`, `docs/historical/poc/notes/relay-trial-*` | Archived |
 | `skills/worker`, `prompts/*.md` | Joined-team content replaced by join responses (M2); Denise's local startup context and guide remain available without a hub |
 | `docs/user-guide.md` | Rewritten around `robomate` (M2, M3) |

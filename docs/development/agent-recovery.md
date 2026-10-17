@@ -192,8 +192,12 @@ unsupervised. The launcher:
   supersede Alice, and it never reads `.robomate/`.
 - on `done`, exits 0 without another launch. On `active` or `escalated`, backs
   off and resumes the same conversation with one fixed continuation prompt:
-  call `get_state` first, reconcile with the skill, keep escalation and pause,
-  do not repeat work. That prompt carries no state and no operator decision.
+  call `join` with the configured name, `role="orchestrator"` and `takeover=true`
+  first to replace the prior Alice bridge, then call `get_state` and reconcile
+  with the returned orchestrator guide. Keep escalation and pause; do not repeat
+  work. The manual `resume-alice` prompt uses the same join/read order. These
+  prompts carry no state or operator decision, and session replacement grants
+  no workflow authority.
   The wait doubles from `--resume-delay-s` (default 5 s) up to
   `--resume-max-delay-s` (default 1800 s, about 30 minutes), then repeats at
   the cap; a run lasting `--resume-series-reset-s` (default 300 s) starts a new

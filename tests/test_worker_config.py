@@ -227,7 +227,7 @@ async def test_max_hold_default_s_bounds_worker_orchestrator_and_guide_timeouts(
     wait_default = float(schema["properties"]["timeout_s"]["default"])
     guide_texts = {
         rel: (ROOT / rel).read_text(encoding="utf-8")
-        for rel in ("guides/worker.md", "prompts/worker.md")
+        for rel in ("guides/worker.md", "prompts/worker.md", "guides/orchestrator.md")
     }
 
     _check_hold_defaults(
@@ -248,8 +248,8 @@ async def test_max_hold_default_s_bounds_worker_orchestrator_and_guide_timeouts(
             wait_for_event_default_s=120.0,
             guide_texts=guide_texts,
         )
-    for rel in ("guides/worker.md", "prompts/worker.md"):
-        tampered = {**guide_texts, rel: guide_texts[rel] + "\nawait_assignment(timeout_s=120)\n"}
+    for rel in guide_texts:
+        tampered = {**guide_texts, rel: guide_texts[rel] + "\nwait_for_event(timeout_s=100.5)\n"}
         with pytest.raises(AssertionError, match=re.escape(rel)):
             _check_hold_defaults(
                 worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
