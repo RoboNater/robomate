@@ -862,3 +862,29 @@ def test_mock_alice_takeover_requires_join(
     with pytest.raises(SystemExit, match="2"):
         mock_alice.main()
     assert "--takeover requires --join" in capsys.readouterr().err
+
+
+def test_mock_alice_join_result_is_printable_on_cp1252_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#239 CI repair: a served guide can contain characters outside cp1252."""
+    import ast
+    from io import BytesIO, TextIOWrapper
+
+    result = {"guide": "approved ∧ head_matches — résumé", "guide_sha256": "abc"}
+
+    def fake_run(coro: Any) -> dict[str, str]:
+        coro.close()
+        return result
+
+    monkeypatch.setattr(mock_alice.asyncio, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["mock-alice.py", "--join"])
+    with TextIOWrapper(BytesIO(), encoding="cp1252", errors="strict") as stdout:
+        with monkeypatch.context() as output_patch:
+            output_patch.setattr(sys, "stdout", stdout)
+            mock_alice.main()
+        stdout.flush()
+        stdout.seek(0)
+        printed = stdout.read()
+    assert printed.isascii()
+    assert ast.literal_eval(printed.removeprefix("SUCCESS: ").strip()) == result

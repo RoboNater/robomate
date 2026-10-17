@@ -1153,7 +1153,9 @@ def main() -> None:
                     crash_at=args.crash_at,
                 )
             )
-        print(f"SUCCESS: {result}")
+        # The join guide contains Unicode; keep the diagnostic result printable
+        # on Windows consoles such as cp1252 while preserving its Python literal.
+        print(f"SUCCESS: {ascii(result)}")
     except Exception as exc:
         logger.exception("Mock Alice failed: %s", exc)
         sys.exit(1)
