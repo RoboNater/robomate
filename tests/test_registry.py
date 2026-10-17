@@ -2,6 +2,7 @@
 
 import ctypes
 import os
+import socket
 import sys
 import threading
 import time
@@ -334,6 +335,32 @@ def test_a_trickling_answer_is_cut_off_at_the_budget(
     assert registry.check_healthz(trickle_url("trickle-hub", 0.0), 10.0) == registry.HealthCheck(
         "trickle-hub"
     )
+
+
+def test_a_tls_handshake_gets_only_what_connecting_left(
+    silent_url: Callable[[], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#266 r2-1: a slow connect leaves the handshake only the rest of the budget.
+
+    The handshake used the timeout set before connecting, so a connect that
+    took most of the budget and a silent TLS peer ran to nearly twice it.
+    """
+
+    connect = socket.create_connection
+
+    def slow_connect(*args: Any, **kwargs: Any) -> socket.socket:
+        connected = connect(*args, **kwargs)
+        time.sleep(0.9)
+        return connected
+
+    monkeypatch.setattr(socket, "create_connection", slow_connect)
+    url = silent_url().replace("http://", "https://")
+    started = time.monotonic()
+    health = registry.check_healthz(url, 1.0)
+    elapsed = time.monotonic() - started
+    assert health == registry.HealthCheck(None, "did not answer /healthz within 1 s", True)
+    # 1 s, not 0.9 s + 1 s; the margin is for a loaded host.
+    assert elapsed < 1.6
 
 
 def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(

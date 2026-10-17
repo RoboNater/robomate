@@ -232,10 +232,19 @@ def _get_within(url: str, deadline: float) -> tuple[int, bytes]:
             raise TimeoutError
         return left
 
+    context = ssl.create_default_context() if parts.scheme == "https" else None
     sock = socket.create_connection((parts.hostname, port), timeout=remaining())
     try:
-        if parts.scheme == "https":
-            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=parts.hostname)
+        if context is not None:
+            # The handshake gets only what connecting left of the budget
+            # (#266 r2-1); CPython's do_handshake keeps to one deadline across
+            # its reads and writes.
+            tls = context.wrap_socket(
+                sock, server_hostname=parts.hostname, do_handshake_on_connect=False
+            )
+            sock = tls
+            tls.settimeout(remaining())
+            tls.do_handshake()
         host = parts.netloc.rpartition("@")[2]
         sock.settimeout(remaining())
         sock.sendall(
