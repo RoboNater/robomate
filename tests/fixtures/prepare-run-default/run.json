@@ -10,6 +10,24 @@
       "method": "absent"
     }
   },
+  "denise": {
+    "configs": "$RUN_DIR/denise/configs",
+    "context": "$RUN_DIR/denise/context.json",
+    "effort": "",
+    "guide": "$ROOT/docs/denise/guide.md",
+    "harness": "claude-code",
+    "model": "",
+    "reports": "$RUN_DIR/denise/reports",
+    "settings_from": "bob",
+    "skip_reason": "",
+    "startup": "$RUN_DIR/denise/startup.md",
+    "startup_status": "pending-step-2",
+    "status": "ready",
+    "tmp": "$RUN_DIR/denise/tmp",
+    "tooling_commit": "$TOOLING_COMMIT",
+    "tooling_root": "$ROOT",
+    "workdir": "$RUN_DIR/denise/workspace"
+  },
   "forge": "github",
   "harnesses": {
     "bob": "claude-code",

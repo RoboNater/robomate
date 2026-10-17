@@ -1,6 +1,7 @@
 """The hub's role-guide route (spec §4.2): static markdown behind the token."""
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -9,6 +10,8 @@ from agent_hub.guides import guide_response
 from agent_hub_common import HubSettings, RebaseResult, TaskRole
 from conftest import BASE_URL, TOKEN
 from fastapi import FastAPI, HTTPException
+from worker_mcp.client import WorkerHubClient
+from worker_mcp.config import WorkerSettings
 
 GUIDE = "# Worker\n\nLoop: await_assignment -> get_role_guide -> do -> submit_result.\n"
 
@@ -174,6 +177,32 @@ def test_only_a_role_slug_names_a_guide(guides: Path, role: str) -> None:
 
 
 CHECKED_IN_GUIDES = Path(__file__).resolve().parents[1] / "guides"
+
+
+async def test_local_doctor_guide_is_not_served_to_workers(settings: HubSettings) -> None:
+    from agent_hub.app import create_app
+
+    local_guide = CHECKED_IN_GUIDES.parent / "docs/denise/guide.md"
+    assert local_guide.is_file()
+    app = create_app(replace(settings, guides_dir=CHECKED_IN_GUIDES))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/denise.md")
+        assert response.status_code == 404
+        worker = WorkerHubClient(
+            WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"),
+            http_client=client,
+        )
+        with pytest.raises(FileNotFoundError):
+            await worker.get_role_guide("denise")
+        assert "# Implementer" in await worker.get_role_guide("implementer")
+        assert (await client.get("/guides/worker.md")).status_code == 200
 
 
 def test_the_rebase_guide_documents_every_result_field() -> None:

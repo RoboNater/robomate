@@ -215,6 +215,103 @@ def test_configs_use_bridge_and_existing_hub(
     assert manifest["configs"]["bob"].endswith("bob.mcp.json")
 
 
+@pytest.mark.parametrize("auto_start", [False, True])
+def test_doctor_context_is_separate_from_team_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auto_start: bool,
+) -> None:
+    source_config = tmp_path / "settings.toml"
+    source_config.write_text("# original config\n")
+    run_dir, manifest = prepare(
+        tmp_path,
+        monkeypatch,
+        bob_model="future model",
+        bob_effort="future effort",
+        source_config=source_config,
+        auto_start=auto_start,
+    )
+    doctor = manifest["denise"]
+    assert doctor["status"] == "ready" and doctor["startup_status"] == "pending-step-2"
+    assert (doctor["settings_from"], doctor["model"], doctor["effort"]) == (
+        "bob",
+        "future model",
+        "future effort",
+    )
+    assert set(manifest["launch"]["agents"]) == {"alice", "bob", "charlie"}
+    assert set(manifest["workspaces"]) == {"bob", "charlie"}
+    assert not list(run_dir.glob("start-denise*"))
+    context = json.loads(Path(doctor["context"]).read_text())
+    assert context["tooling"]["root"]["path"] == str(ROOT)
+    assert context["hub"]["checkout"]["path"] == manifest["hub_repo"]
+    assert context["original_config"]["path"] == str(source_config)
+    assert context["agents"]["alice"]["config"]["access"] == "present"
+    assert context["agents"]["bob"]["workspace_id"] == manifest["workspaces"]["bob"]["workspace_id"]
+    assert context["agents"]["bob"]["scripts"]["resume_script"]["access"] == "present"
+    assert "test-token" not in Path(doctor["context"]).read_text()
+    assert not list(Path(doctor["configs"]).iterdir())
+
+
+@pytest.mark.parametrize("harness", ["devin", "opencode", "antigravity"])
+@pytest.mark.parametrize("explicit_selector", [False, True])
+def test_unsupported_inherited_doctor_does_not_break_team_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+    explicit_selector: bool,
+) -> None:
+    options = {"denise_settings_from": "bob"} if explicit_selector else {}
+    run_dir, manifest = prepare(tmp_path, monkeypatch, bob_harness=harness, **options)
+    assert manifest["denise"]["status"] == "skipped"
+    assert "--denise-harness" in manifest["denise"]["skip_reason"]
+    assert "Warning: skipping Denise" in capsys.readouterr().err
+    assert "script" not in manifest["denise"]
+    assert not list(run_dir.glob("start-denise*"))
+    assert Path(manifest["launch"]["agents"]["bob"]["script"]).exists()
+
+
+def test_unsupported_explicit_doctor_fails_before_hub_or_repo_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected(*args: Any) -> None:
+        pytest.fail("doctor settings must be checked before accessing a hub")
+
+    monkeypatch.setattr(PREPARE_RUN, "read_hub_json", unexpected)
+    with pytest.raises(ValueError, match="explicit --denise-harness"):
+        PREPARE_RUN.prepare("repository", tmp_path / "new-run", denise_harness="devin")
+    assert not (tmp_path / "new-run").exists()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_existing_manifests_do_not_regenerate_or_retrofit_doctor_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy: bool,
+) -> None:
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    context_path = Path(manifest["denise"]["context"])
+    previous = context_path.read_bytes()
+    if legacy:
+        del manifest["denise"]
+        context_path.unlink()
+    (run_dir / "run.json").write_text(json.dumps(manifest))
+    again = PREPARE_RUN.prepare(
+        manifest["repository"],
+        run_dir,
+        issue=42,
+        account="tester",
+        hub_repo=Path(manifest["hub_repo"]),
+        denise_harness="codex",
+    )
+    if legacy:
+        assert "denise" not in again and not context_path.exists()
+    else:
+        assert again["denise"] == manifest["denise"]
+        assert context_path.read_bytes() == previous
+
+
 def test_codex_alice_uses_orchestrator_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1074,6 +1171,7 @@ def test_default_rendering_matches_the_golden_files(
         str(source): "$ORIGIN",
         str(target): "$HUB_REPO",
         str(ROOT): "$ROOT",
+        manifest["denise"]["tooling_commit"]: "$TOOLING_COMMIT",
         manifest["workspaces"]["bob"]["workspace_id"]: "$BOB_ID",
         manifest["workspaces"]["charlie"]["workspace_id"]: "$CHARLIE_ID",
     }

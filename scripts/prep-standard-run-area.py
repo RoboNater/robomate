@@ -17,6 +17,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from denise import resolve_settings  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS: dict[str, str | int | bool] = {
     "repository": "",
@@ -36,6 +39,10 @@ DEFAULTS: dict[str, str | int | bool] = {
     "charlie_harness": "codex",
     "charlie_model": "",
     "charlie_effort": "",
+    "denise_settings_from": "bob",
+    "denise_harness": "",
+    "denise_model": "",
+    "denise_effort": "",
     "auto_start": True,
 }
 PATH_KEYS = ("run_parent_dir", "work_file")
@@ -128,6 +135,13 @@ def validate(values: dict[str, Any], *, preparing: bool) -> None:
             "devin",
         ):
             raise ValueError(f"invalid {name}_harness")
+    resolve_settings(
+        {
+            name: {key: values[f"{name}_{key}"] for key in ("harness", "model", "effort")}
+            for name in ("alice", "bob", "charlie")
+        },
+        **{key: values[f"denise_{key}"] for key in ("settings_from", "harness", "model", "effort")},
+    )
     if not preparing:
         return
     for key in ("repository", "run_dir", "account"):
@@ -173,7 +187,7 @@ def hub_start_command(hub: Path, forge: str) -> str:
     )
 
 
-def prepare(values: dict[str, Any], *, yes: bool) -> None:
+def prepare(values: dict[str, Any], *, yes: bool, source_config: Path | None = None) -> None:
     validate(values, preparing=True)
     run_dir = Path(values["run_dir"])
     hub = run_dir / "hub"
@@ -212,10 +226,16 @@ def prepare(values: dict[str, Any], *, yes: bool) -> None:
         command += ["--work-file", values["work_file"]]
     if values["roadmap"]:
         command += ["--roadmap", values["roadmap"]]
-    for name in ("alice", "bob", "charlie"):
-        for option in ("harness", "model", "effort"):
+    if source_config is not None:
+        command += ["--source-config", str(source_config.expanduser().resolve())]
+    for name in ("alice", "bob", "charlie", "denise"):
+        for option in (
+            ("settings_from", "harness", "model", "effort")
+            if name == "denise"
+            else ("harness", "model", "effort")
+        ):
             if value := values[f"{name}_{option}"]:
-                command += [f"--{name}-{option}", value]
+                command += [f"--{name}-{option.replace('_', '-')}", value]
     if not values["auto_start"]:
         command.append("--no-auto-start")
     subprocess.run(command, check=True, cwd=ROOT)
@@ -232,7 +252,7 @@ def main(argv: list[str] | None = None) -> None:
             if args.generate_config:
                 write_config(args.generate_config, values)
             else:
-                prepare(values, yes=args.yes)
+                prepare(values, yes=args.yes, source_config=args.config)
     except (OSError, ValueError, subprocess.CalledProcessError, EOFError) as exc:
         cli.exit(1, f"prep-standard-run-area: error: {exc}\n")
     except KeyboardInterrupt:
