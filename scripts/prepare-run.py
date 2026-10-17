@@ -72,6 +72,8 @@ from agent_hub_common.discovery import state_dir as hub_state_dir
 from agent_hub_common.registry import hub_healthy, process_alive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from denise import render as render_denise  # noqa: E402
+from denise import resolve_settings as resolve_denise_settings  # noqa: E402
 from run_common import (  # noqa: E402
     ROOT,
     VERSION_COMMANDS,
@@ -2294,6 +2296,11 @@ def prepare(
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
     allow_credential_copy: bool = False,
+    denise_settings_from: str = "bob",
+    denise_harness: str = "",
+    denise_model: str = "",
+    denise_effort: str = "",
+    source_config: Path | None = None,
 ) -> dict[str, Any]:
     if not (isinstance(stall_after_min, int | float) and 0 < stall_after_min < float("inf")):
         raise ValueError("--stall-after-min must be a positive number of minutes")
@@ -2325,6 +2332,23 @@ def prepare(
     alice_harness = harness_name("--alice-harness", alice_harness)
     bob_harness = harness_name("--bob-harness", bob_harness)
     charlie_harness = harness_name("--charlie-harness", charlie_harness)
+    denise_settings = resolve_denise_settings(
+        {
+            "alice": {"harness": alice_harness, "model": alice_model, "effort": alice_effort},
+            "bob": {"harness": bob_harness, "model": bob_model, "effort": bob_effort},
+            "charlie": {
+                "harness": charlie_harness,
+                "model": charlie_model,
+                "effort": charlie_effort,
+            },
+        },
+        settings_from=denise_settings_from,
+        harness=denise_harness,
+        model=denise_model,
+        effort=denise_effort,
+    )
+    if denise_settings["status"] == "skipped":
+        print(f"Warning: skipping Denise: {denise_settings['skip_reason']}", file=sys.stderr)
     for h, m, e in (
         (alice_harness, alice_model, alice_effort),
         (bob_harness, bob_model, bob_effort),
@@ -2963,6 +2987,24 @@ def prepare(
             "resume_series_reset_s": resume_series_reset_s,
         }
     manifest["credential_exposure"] = exposures
+    # No retrofitting or regeneration of doctor artifacts in an existing run.
+    # A legacy manifest remains valid without the optional top-level field.
+    if manifest_path.exists():
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if "denise" in previous:
+            manifest["denise"] = previous["denise"]
+    else:
+        doctor_manifest = {
+            **manifest,
+            "configs": {"alice": str(alice_config), **rendered_configs},
+            "network": {**network, "remote_worker": remote_worker},
+        }
+        manifest["denise"] = render_denise(
+            doctor_manifest,
+            ROOT,
+            denise_settings,
+            original_config=source_config,
+        )
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
@@ -3254,6 +3296,23 @@ def main() -> None:
     )
     parser.add_argument("--account", default=None)
     parser.add_argument(
+        "--source-config",
+        type=Path,
+        default=None,
+        help="original standard-run config path (provenance only)",
+    )
+    parser.add_argument(
+        "--denise-settings-from",
+        default=None,
+        help="alice, bob (default), charlie or none; inherit final settings",
+    )
+    for option in ("harness", "model", "effort"):
+        parser.add_argument(
+            f"--denise-{option}",
+            default="",
+            help=f"doctor {option} override; Step 1 prepares context only, no start script",
+        )
+    parser.add_argument(
         "--allow-credential-copy",
         action="store_true",
         help="permit private credential copies if symlinks and hard links both fail; "
@@ -3412,6 +3471,11 @@ def main() -> None:
         # (goal, hub identity, policy) do not apply, but the resume backoff
         # does: it configures that worker's own launcher (#158 r1-2).
         hub_only = {
+            "--source-config": args.source_config is not None,
+            "--denise-settings-from": args.denise_settings_from is not None,
+            "--denise-harness": bool(args.denise_harness),
+            "--denise-model": bool(args.denise_model),
+            "--denise-effort": bool(args.denise_effort),
             "--issue": args.issue is not None,
             "--work-file": args.work_file is not None,
             "--account": args.account is not None,
@@ -3501,6 +3565,13 @@ def main() -> None:
             resume_total_s=args.resume_total_s,
             resume_series_reset_s=args.resume_series_reset_s,
             allow_credential_copy=args.allow_credential_copy,
+            denise_settings_from=args.denise_settings_from
+            if args.denise_settings_from is not None
+            else "bob",
+            denise_harness=args.denise_harness,
+            denise_model=args.denise_model,
+            denise_effort=args.denise_effort,
+            source_config=args.source_config,
         )
     except ValueError as exc:
         sys.exit(f"prepare-run: error: {exc}")
