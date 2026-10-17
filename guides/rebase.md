@@ -45,8 +45,11 @@ the approved changes unchanged. If you are unsure whether a file counts, list it
    counter: database schema version, migration number, wire `schema_version`,
    event kind. Take the value reserved for this issue in the roadmap's
    **Reservations** section. Any file you edit for this is a conflict file.
-5. **Run the full validation suite**, exactly as CI runs it, not only the
-   tests near the conflict. A clean merge can still break the build.
+5. **Validate the combined change.** Run the affected tests and non-pytest
+   repository checks. With no hand resolutions, rely on CI for the full suite
+   on the new head. With hand resolutions, also run the full suite locally:
+   `uv run --locked pytest -n auto`. CI remains the complete Linux and Windows
+   gate in both cases.
 6. **Push and read back the head.** After pushing, confirm the change
    request's head from the forge (see the forge appendix). That value is your
    `head_sha`. That read can lag a push by a few seconds: if it does not match

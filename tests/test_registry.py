@@ -409,3 +409,100 @@ def test_hub_entries_probes_silent_entries_together_and_outside_the_lock(
     }
     # The probe kept every entry, and did not drop the one written meanwhile.
     assert {x["hub_id"] for x in hub_entries(env)} >= {*silent, "slow", "late"}
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_lock_creation_permission_error_is_busy_only_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    path = tmp_path / "hubs.json"
+    real_open = os.open
+    attempts = 0
+
+    def flaky_open(*args: Any, **kwargs: Any) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("delete pending")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(os, "open", flaky_open)
+    if platform == "win32":
+        with registry._locked(path):
+            assert path.with_name("registry.lock").exists()
+        assert attempts == 2
+    else:
+        with pytest.raises(PermissionError, match="delete pending"), registry._locked(path):
+            pytest.fail("must not acquire")
+        assert attempts == 1
+    assert not path.with_name("registry.lock").exists()
+
+
+@pytest.mark.parametrize("failure", ["create", "stale_unlink", "stale_stat"])
+def test_lock_sharing_errors_obey_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    path = tmp_path / "hubs.json"
+    lock = path.with_name("registry.lock")
+    if failure != "create":
+        lock.touch()
+        os.utime(lock, (time.time() - 60,) * 2)
+    clock = 0.0
+
+    def advance(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    def denied(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(time, "monotonic", lambda: clock)
+    monkeypatch.setattr(time, "sleep", advance)
+    if failure == "create":
+        monkeypatch.setattr(os, "open", denied)
+    elif failure == "stale_unlink":
+        monkeypatch.setattr(Path, "unlink", denied)
+    else:
+        real_stat = Path.stat
+
+        def denied_lock_stat(self: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            if self == lock:
+                raise PermissionError("sharing violation")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", denied_lock_stat)
+    with (
+        pytest.raises(RegistryError, match="last failure: access or sharing error"),
+        registry._locked(path),
+    ):
+        pytest.fail("must time out")
+    assert 5 <= clock < 5.1
+
+
+def test_lock_cleanup_permission_error_preserves_completed_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(registry, "_RETRY_DELAYS_S", (0.0, 0.0))
+    attempts = 0
+
+    def denied(*args: Any, **kwargs: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(Path, "unlink", denied)
+    with registry._locked(tmp_path / "hubs.json"):
+        pass
+    assert attempts == 3
+
+
+def test_stale_registry_lock_is_reclaimed(tmp_path: Path) -> None:
+    lock = tmp_path / "registry.lock"
+    lock.touch()
+    os.utime(lock, (time.time() - 31,) * 2)
+    with registry._locked(tmp_path / "hubs.json"):
+        assert lock.stat().st_mtime > time.time() - 5
+    assert not lock.exists()

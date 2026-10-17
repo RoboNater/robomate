@@ -379,3 +379,43 @@ def test_bash_wrapper_preserves_arguments_and_stops_on_sync_failure(tmp_path: Pa
     )
     assert result.returncode == 7
     assert len(log.read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize("cli_value", [None, 3])
+def test_pytest_workers_config_and_flag_reach_prepare_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli_value: int | None
+) -> None:
+    config = tmp_path / "workers.toml"
+    config.write_text("pytest_workers = 2\n", encoding="utf-8")
+    arguments = [
+        "--config",
+        str(config),
+        "--repository",
+        "o/r",
+        "--run-dir",
+        str(tmp_path / "run"),
+        "--account",
+        "operator",
+        "--issue",
+        "264",
+    ]
+    if cli_value is not None:
+        arguments += ["--pytest-workers", str(cli_value)]
+    values = HELPER.settings(HELPER.parser().parse_args(arguments))
+    calls: list[list[str]] = []
+
+    def capture(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(HELPER.subprocess, "run", capture)
+    HELPER.prepare(values, yes=True)
+    command = calls[-1]
+    assert command[command.index("--pytest-workers") + 1] == str(cli_value or 2)
+
+
+def test_negative_pytest_workers_config_rejected(tmp_path: Path) -> None:
+    config = tmp_path / "invalid-workers.toml"
+    config.write_text("pytest_workers = -1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="pytest_workers"):
+        HELPER.settings(HELPER.parser().parse_args(["--config", str(config)]))

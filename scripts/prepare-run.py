@@ -921,6 +921,29 @@ def launch_lines(
     return [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, *lines]
 
 
+def pytest_worker_environment(
+    lines: list[str], workers: int, powershell: bool = False
+) -> list[str]:
+    """Set this run's xdist budget before invoking a launcher or recovery helper.
+
+    Zero clears an inherited override, letting xdist choose the CPU count.
+    Place the editable setting beside the temporary-directory environment.
+    """
+    if workers < 0:
+        raise ValueError("--pytest-workers must not be negative (0 means CPU count)")
+    variable = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+    if powershell:
+        setting = f"$env:{variable} = '{workers}'" if workers else f"$env:{variable} = $null"
+    else:
+        setting = f"export {variable}={workers}" if workers else f"unset {variable}"
+    position = 1
+    while position < len(lines) and lines[position].startswith(
+        ("export TMPDIR=", "export TEMP=", "export TMP=", "$env:TEMP =", "$env:TMP =")
+    ):
+        position += 1
+    return [*lines[:position], setting, *lines[position:]]
+
+
 def start_script(lines: list[str], powershell: bool = False) -> str:
     """A start script running ``lines``, stopping if its ``cd`` fails."""
     if powershell:
@@ -2048,6 +2071,7 @@ def render_worker_bundle(
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
     allow_credential_copy: bool = False,
+    pytest_workers: int = 0,
 ) -> dict[str, Any]:
     """Render one worker's config, prompt and start script for the host that runs it.
 
@@ -2119,6 +2143,7 @@ def render_worker_bundle(
         resume_total_s=resume_total_s,
         resume_series_reset_s=resume_series_reset_s,
     )
+    launch = pytest_worker_environment(launch, pytest_workers)
     write_script(out_dir / f"start-{name}.sh", start_script(launch))
     (out_dir / f"resume-{name}.prompt.md").write_text(
         render_resume_prompt(name, run_dir), encoding="utf-8"
@@ -2141,6 +2166,7 @@ def render_worker_bundle(
         resume_total_s=resume_total_s,
         resume_series_reset_s=resume_series_reset_s,
     )
+    resume = pytest_worker_environment(resume, pytest_workers)
     write_script(out_dir / f"resume-{name}.sh", start_script(resume))
     ask = ask_lines(name, harness, run_dir, workspace, model, effort, root=root, git_bash=True)
     write_script(out_dir / f"ask-{name}.sh", start_script(ask))
@@ -2224,6 +2250,7 @@ def worker_only_command(
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
+    pytest_workers: int = 0,
 ) -> str:
     """The ``--worker-only`` command to run on the remote worker's host.
 
@@ -2238,6 +2265,7 @@ def worker_only_command(
         f"--token-file '{remote_token_path(token_path)}'",
         f"--{name}-harness {harness}",
     ]
+    args.append(f"--pytest-workers {pytest_workers}")
     if model:
         args.append(f"--{name}-model '{model}'")
     if effort:
@@ -2306,7 +2334,11 @@ def prepare(
     denise_model: str = "",
     denise_effort: str = "",
     source_config: Path | None = None,
+    pytest_workers: int = 0,
 ) -> dict[str, Any]:
+    if pytest_workers < 0:
+        raise ValueError("--pytest-workers must not be negative (0 means CPU count)")
+
     if not (isinstance(stall_after_min, int | float) and 0 < stall_after_min < float("inf")):
         raise ValueError("--stall-after-min must be a positive number of minutes")
     if max_resumes is not None and max_resumes < 0:
@@ -2816,6 +2848,7 @@ def prepare(
         "clone_repository": clone_from,
         "slug": slug,
         "run_dir": str(run_dir),
+        "pytest_workers": pytest_workers,
         "state_dir": str(resolved_state),
         "hub_repo": str(hub_repo),
         "hub_id": str(hub_info["hub_id"]),
@@ -2924,6 +2957,8 @@ def prepare(
                 resume_total_s=resume_total_s,
                 resume_series_reset_s=resume_series_reset_s,
             )
+        lines = pytest_worker_environment(lines, pytest_workers, os.name == "nt")
+        resume = pytest_worker_environment(resume, pytest_workers, os.name == "nt")
         script = run_dir / f"start-{name}.{suffix}"
         write_script(script, start_script(lines, os.name == "nt"))
         scripts[name] = str(script)
@@ -3045,6 +3080,7 @@ def prepare(
 
     report: dict[str, Any] = {
         "run_dir": str(run_dir),
+        "pytest_workers": pytest_workers,
         "repository": repository,
         "slug": slug,
         "issue": issue,
@@ -3109,6 +3145,7 @@ def prepare(
                 capabilities[remote_worker],
                 launch[remote_worker][2],
                 auto_start,
+                pytest_workers=pytest_workers,
                 max_resumes=max_resumes,
                 resume_delay_s=resume_delay_s,
                 resume_max_delay_s=resume_max_delay_s,
@@ -3145,12 +3182,16 @@ def prepare_worker(
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
     allow_credential_copy: bool = False,
+    pytest_workers: int = 0,
 ) -> dict[str, Any]:
     """Render one remote worker on the host that runs it (``--worker-only``).
 
     Reads the hub's token file in place, bootstraps the clone with this host's
     git, and renders the config, prompt and start script with this host's paths.
     """
+    if pytest_workers < 0:
+        raise ValueError("--pytest-workers must not be negative (0 means CPU count)")
+
     if name not in WORKERS:
         raise ValueError(f"--worker-only must be one of {list(WORKERS)}")
     harness = harness_name(f"--{name}-harness", harness)
@@ -3205,6 +3246,7 @@ def prepare_worker(
         resume_max_delay_s=resume_max_delay_s,
         resume_total_s=resume_total_s,
         resume_series_reset_s=resume_series_reset_s,
+        pytest_workers=pytest_workers,
     )
     manifest = {
         "schema_version": 1,
@@ -3213,6 +3255,7 @@ def prepare_worker(
         "clone_repository": clone_from,
         "slug": slug,
         "run_dir": str(run_dir),
+        "pytest_workers": pytest_workers,
         "hub_url": dial,
         "workspaces": {name: identity},
         "harnesses": {name: harness},
@@ -3262,6 +3305,7 @@ def prepare_worker(
         json.dumps(
             {
                 "run_dir": str(run_dir),
+                "pytest_workers": pytest_workers,
                 "worker_only": name,
                 "hub_url": dial,
                 "workspace": identity["path"],
@@ -3384,6 +3428,12 @@ def main() -> None:
         metavar="MINUTES",
         help="policy stall_after_min: minutes of agent inactivity before the hub "
         f"reports a stall (#144; default {DEFAULT_STALL_AFTER_MIN})",
+    )
+    parser.add_argument(
+        "--pytest-workers",
+        type=int,
+        default=0,
+        help="xdist workers for this run; 0 uses the CPU count",
     )
     parser.add_argument(
         "--max-resumes",
@@ -3517,6 +3567,7 @@ def main() -> None:
                 getattr(args, f"{name}_dir"),
                 getattr(args, f"{name}_effort"),
                 args.auto_start,
+                pytest_workers=args.pytest_workers,
                 max_resumes=args.max_resumes,
                 resume_delay_s=args.resume_delay_s,
                 resume_max_delay_s=args.resume_max_delay_s,
@@ -3564,6 +3615,7 @@ def main() -> None:
             roadmap=args.roadmap,
             hub_repo=args.hub_repo,
             stall_after_min=args.stall_after_min,
+            pytest_workers=args.pytest_workers,
             max_resumes=args.max_resumes,
             resume_delay_s=args.resume_delay_s,
             resume_max_delay_s=args.resume_max_delay_s,
