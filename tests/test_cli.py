@@ -3095,3 +3095,108 @@ def test_up_honours_legacy_forge_in_robomate_config_toml_with_warning(
     info = read_hub_json(root)
     assert info is not None
     assert info["forge"] == "gitlab"
+
+
+def test_submit_parses_policy_toml_values() -> None:
+    """M2 Step 4: `--policy k=v` uses TOML typing (int, bool, bare auto/squash)."""
+
+    import robomate.cli as cli_mod
+
+    assert cli_mod._parse_policy_override("max_review_rounds=5") == ("max_review_rounds", 5)
+    assert cli_mod._parse_policy_override("allow_no_ci=true") == ("allow_no_ci", True)
+    assert cli_mod._parse_policy_override("allow_no_ci=auto") == ("allow_no_ci", "auto")
+    assert cli_mod._parse_policy_override("merge_method=squash") == ("merge_method", "squash")
+    with pytest.raises(ValueError, match="k=v"):
+        cli_mod._parse_policy_override("max_review_rounds")
+
+
+def test_submit_over_cap_refused_through_main_with_cap_and_nothing_queued(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2 Step 4 (#10): over-cap refused via main() with cap in message, nothing queued."""
+
+    import robomate.cli as cli_mod
+    from agent_hub_common import MAX_STATEMENT_BYTES
+
+    big = tmp_path / "big.md"
+    big.write_bytes(b"x" * (MAX_STATEMENT_BYTES + 1))
+    called: list[str] = []
+
+    def _fail_rpc(*a: object, **k: object) -> dict[str, object]:
+        called.append("rpc")
+        return {}
+
+    monkeypatch.setattr(cli_mod, "_rpc", _fail_rpc)
+    monkeypatch.setattr(
+        cli_mod,
+        "_connect",
+        lambda selector=None: (type("E", (), {"url": "http://x", "token": "t"})(), None),
+    )
+    monkeypatch.setattr(cli_mod, "read_token_file", lambda *a, **k: "operator-token")
+    import argparse
+
+    args = argparse.Namespace(file=str(big), issue=None, policy=[], hub=None)
+    with pytest.raises(ValueError) as exc_info:
+        cli_mod._submit(args.file, args.issue, args.policy, args.hub)
+    assert str(MAX_STATEMENT_BYTES) in str(exc_info.value)
+    assert "Shorten" in str(exc_info.value) or "shorten" in str(exc_info.value).lower()
+    assert called == []
+
+
+def test_submit_renders_issue_and_takes_policy(tmp_path: Path) -> None:
+    """M2 Step 4: `--issue N` renders one-issue statement; `--policy` passes through."""
+
+    import robomate.cli as cli_mod
+
+    text = cli_mod._render_issue_statement(42, "git@github.com:example/repo.git", "github")
+    assert "example/repo#42" in text and "pull request" in text
+    gl = cli_mod._render_issue_statement(7, "git@gitlab-box.local:grp/proj.git", "gitlab")
+    assert "merge request" in gl
+
+
+def test_submit_uses_deadline_above_worst_case_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: `hub.submit` preflight (up to ~150 s) needs a client deadline above 15 s."""
+
+    import robomate.cli as cli_mod
+
+    sow = tmp_path / "sow.md"
+    sow.write_text("Do work\n", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    def _capture_rpc(
+        url: object,
+        token: object,
+        method: object,
+        *,
+        operator_token: object = None,
+        params: object = None,
+        timeout: object = None,
+    ) -> dict[str, object]:
+        seen["timeout"] = timeout
+        seen["method"] = method
+        return {"statement_sha256": "s" * 64, "status": "queued", "run_id": "r1"}
+
+    monkeypatch.setattr(cli_mod, "_rpc", _capture_rpc)
+    monkeypatch.setattr(
+        cli_mod,
+        "_connect",
+        lambda selector=None: (type("E", (), {"url": "http://x", "token": "t"})(), None),
+    )
+    monkeypatch.setattr(cli_mod, "read_token_file", lambda *a, **k: "operator-token")
+    cli_mod._submit(str(sow), None, [], None)
+    assert seen["method"] == "hub.submit"
+    assert seen["timeout"] == cli_mod._SUBMIT_RPC_TIMEOUT_S
+    assert cli_mod._SUBMIT_RPC_TIMEOUT_S > 5 * 30
+
+
+def test_submit_file_and_issue_are_mutually_exclusive(tmp_path: Path) -> None:
+    """r1-3: `submit FILE --issue N` must not silently drop `--issue`."""
+
+    import robomate.cli as cli_mod
+
+    sow = tmp_path / "sow.md"
+    sow.write_text("Do work\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        cli_mod._submit(str(sow), 42, [], None)

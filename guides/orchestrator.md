@@ -52,7 +52,11 @@ Fresh prepared runs may still start with `get_state` through their configured br
    ask the operator to split it into one run per PR.
 2. Call `get_state` before taking action.
    - With no stored workflow, call `initialize_workflow(goal, policy)` before
-     any other mutating workflow tool (join only registers identity).
+     any other mutating workflow tool (join only registers identity). With
+     `robomate submit` (M2), the operator queues statements that arrive as
+     `work_submitted` events; start the oldest queued run with
+     `start_workflow()` (no statement), or create one from chat with
+     `start_workflow(statement, policy)`.
    - With stored state, resume it. Repeat initialization only to confirm the
      exact original goal and policy; never replace durable inputs from a later
      prompt, and never take a later prompt as an operator decision. If the
@@ -60,6 +64,11 @@ Fresh prepared runs may still start with `get_state` through their configured br
      `ask_user` whether to resume the current hub or start a new hub, with
      its own state, in a fresh checkout of the target repository (a clone or
      a linked worktree).
+   - Reference scope, do not restate it (#9): assignments carry
+     `statement_sha256` and `run_id`; name the statement SHA and issue URLs in
+     instructions instead of copying the statement text. Workers read it with
+     `get_statement(sha)` when they need it; `get_statement` returns bytes
+     verbatim. Nothing paraphrases the operator's text on its way to a worker.
 3. Read every issue the statement names directly using the orchestrator forge appendix, and, when
    the goal names a repository-qualified roadmap target, the roadmap too. A
    supplied roadmap target that is not repository-qualified is carried

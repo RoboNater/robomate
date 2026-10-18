@@ -41,7 +41,10 @@ class WorkflowPolicy(BaseModel):
 
     max_review_rounds: int = Field(default=3, gt=0)
     merge_method: Literal["merge", "squash", "rebase"] = "squash"
-    allow_no_ci: bool = False
+    # `auto` probes CI presence at submit (M2 Step 4, #241); explicit bool skips
+    # the probe. Stored workflow policy holds the resolved bool; `auto` lives
+    # only in configuration layers and `--policy` overrides until submit resolves it.
+    allow_no_ci: bool | Literal["auto"] = False
     role_policy: RolePolicy = Field(default_factory=RolePolicy)
     pairing_wait_s: PositiveNumber = 120
     max_wall_minutes: PositiveNumber = 120
@@ -83,6 +86,8 @@ class EventKind(StrEnum):
     # kept heartbeating (#144); one per stall episode, never a lifecycle change.
     AGENT_STALLED = "agent_stalled"
     HOST_PAUSED = "host_paused"
+    # The operator submitted a statement of work; the hub queued a workflow (#241).
+    WORK_SUBMITTED = "work_submitted"
 
 
 class TaskRole(StrEnum):

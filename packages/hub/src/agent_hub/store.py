@@ -27,6 +27,7 @@ from uuid import uuid4
 from agent_hub_common import (
     DEFAULT_EVENT_LEASE_S,
     MAX_MESSAGE_PART_BYTES,
+    MAX_STATEMENT_BYTES,
     MAX_TYPED_RESULT_BYTES,
     SHA_HEX_40_RE,
     UNKNOWN,
@@ -506,6 +507,13 @@ def _validated_workflow_policy(policy: Mapping[str, Any] | None) -> dict[str, An
             f"invalid workflow policy: {details}. Correct the policy and retry "
             "initialize_workflow before assigning work."
         ) from exc
+    # `auto` is resolved to bool by `hub.submit` before storage (M2 Step 4, r1-2);
+    # the chat path must not store it unresolved, since the merge rule reads a bool.
+    if validated.allow_no_ci == "auto":
+        raise InvalidPolicyError(
+            "invalid workflow policy: allow_no_ci 'auto' must be resolved to a bool "
+            "via `robomate submit` (pass an explicit bool from chat)"
+        )
     return validated.model_dump(mode="json", exclude_unset=True)
 
 
@@ -608,6 +616,12 @@ class HubStore:
         """Store a statement of work verbatim and return its SHA-256 and bytes."""
 
         data = text.encode("utf-8")
+        if len(data) > MAX_STATEMENT_BYTES:
+            raise PayloadTooLargeError(
+                f"statement is {len(data)} bytes; maximum is {MAX_STATEMENT_BYTES} bytes "
+                "so it fits in one 16 KiB message part with its envelope. Shorten the "
+                "statement, or put the detail in an issue and submit that instead."
+            )
         sha256 = _statement_sha256(data)
         connection.execute(
             "INSERT OR IGNORE INTO statement (sha256, bytes, size, source, created)"
@@ -615,6 +629,37 @@ class HubStore:
             (sha256, data, len(data), source, now_iso),
         )
         return sha256, data
+
+    def get_statement(self, sha256: str) -> dict[str, Any]:
+        """Return a stored statement of work verbatim by its SHA-256 (M2 Step 4, #241).
+
+        Bytes are stored verbatim (CRLF and trailing newline preserved) and
+        returned unchanged as text. Unknown SHA raises `NotFoundError`
+        (mapped to -32001 on `/rpc`).
+        """
+
+        canonical = sha256.strip().lower()
+        if len(canonical) != 64 or any(ch not in "0123456789abcdef" for ch in canonical):
+            raise ValueError("sha256 must be a 64-character hex digest")
+        with database(self.path) as connection:
+            row = connection.execute(
+                "SELECT sha256, bytes, size, source, created FROM statement WHERE sha256 = ?",
+                (canonical,),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"unknown statement: {sha256}")
+            raw = bytes(row["bytes"])
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("stored statement is not valid UTF-8") from exc
+            return {
+                "sha256": str(row["sha256"]),
+                "statement": text,
+                "size": int(row["size"]),
+                "source": str(row["source"]),
+                "created": str(row["created"]),
+            }
 
     def _clear_stale_releases(self, connection: Connection) -> None:
         """Make a newly live run take returning workers (r1-1).
@@ -715,6 +760,8 @@ class HubStore:
         policy: Mapping[str, Any] | None = None,
         *,
         source: str = "chat",
+        force_queued: bool = False,
+        emit_work_submitted: bool = False,
     ) -> str:
         """Start the oldest queued run, or create one from chat (mvp-spec §7.1).
 
@@ -723,6 +770,11 @@ class HubStore:
         and nothing is queued, otherwise `queued` behind the live run. Only one
         live (`active`, `paused`, `escalated`) run and one `queued` run may
         exist; a further `start_workflow` while both exist is refused.
+
+        `force_queued` (for `hub.submit`, M2 Step 4) queues even when idle:
+        the orchestrator starts it with a later `start_workflow()` call.
+        `emit_work_submitted` appends `work_submitted` in the same transaction
+        (r1-5), so a queued run never lands without its event.
         """
 
         requested_policy = _validated_workflow_policy(policy)
@@ -775,7 +827,9 @@ class HubStore:
                             f"workflow {queued[0]['run_id']} is queued; call start_workflow() "
                             "with no statement to start it before queueing another run"
                         )
-                    status = WorkflowStatus.ACTIVE.value
+                    status = (
+                        WorkflowStatus.QUEUED.value if force_queued else WorkflowStatus.ACTIVE.value
+                    )
                 workflow_id = uuid4().hex
                 run_id = self._unique_run_id(connection, now)
                 connection.execute(
@@ -793,11 +847,26 @@ class HubStore:
                 )
                 if status == WorkflowStatus.ACTIVE.value:
                     self._clear_stale_releases(connection)
+                if emit_work_submitted:
+                    if statement is None:
+                        raise ValueError("emit_work_submitted needs a statement")
+                    self._add_event(
+                        connection,
+                        EventKind.WORK_SUBMITTED,
+                        {
+                            "workflow_id": workflow_id,
+                            "run_id": run_id,
+                            "statement_sha256": statement_sha256,
+                            "source": source,
+                        },
+                    )
                 row = connection.execute(
                     "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
                 ).fetchone()
                 assert row is not None
         self._write_manifest(row)
+        if emit_work_submitted:
+            self.signals.notify(EVENT_KEY)
         return workflow_id
 
     def _require_workflow(self, connection: Connection, operation: str) -> str:
@@ -1169,6 +1238,7 @@ class HubStore:
                     (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
                     "",
                 )[:160],
+                "statement_sha256": workflow["statement_sha256"],
             },
             "run_id": None if workflow is None else workflow["run_id"],
             "queue_length": len(queue),

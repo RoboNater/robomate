@@ -1655,3 +1655,62 @@ def test_new_run_clears_stale_releases(tmp_path: Path) -> None:
     claimed = store._claim_assignment("bob")
     assert claimed is not None and not isinstance(claimed, Released)
     assert claimed.id == task.id
+
+
+def test_get_statement_returns_bytes_verbatim_and_unknown_is_not_found(tmp_path: Path) -> None:
+    """M2 Step 4: stored bytes/SHA equal file's; CRLF preserved; unknown is NotFound."""
+
+    from agent_hub.database import initialize_database
+    from agent_hub.store import HubStore, NotFoundError
+
+    path = tmp_path / "stmt.db"
+    initialize_database(path)
+    store = HubStore(path)
+    text = "Fix the typo in README.\r\n"
+    store.start_workflow(text, source="submit:file")
+    state = store.get_state()
+    sha = state["workflow"]["statement_sha256"]
+    import hashlib
+
+    assert sha == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    got = store.get_statement(sha)
+    assert got["statement"] == text
+    assert got["sha256"] == sha
+    assert got["size"] == len(text.encode("utf-8"))
+    with pytest.raises(NotFoundError):
+        store.get_statement("0" * 64)
+
+
+def test_store_statement_over_cap_is_refused(tmp_path: Path) -> None:
+    """M2 Step 4: statement over 12 KiB cap refuses with cap in message."""
+
+    from agent_hub.database import initialize_database
+    from agent_hub.store import HubStore, PayloadTooLargeError
+    from agent_hub_common import MAX_STATEMENT_BYTES
+
+    path = tmp_path / "cap.db"
+    initialize_database(path)
+    store = HubStore(path)
+    big = "x" * (MAX_STATEMENT_BYTES + 1)
+    with pytest.raises(PayloadTooLargeError) as exc_info:
+        store.start_workflow(big, source="submit:file")
+    assert str(MAX_STATEMENT_BYTES) in str(exc_info.value)
+    assert "Shorten" in str(exc_info.value) or "shorten" in str(exc_info.value).lower()
+
+
+def test_chat_path_rejects_unresolved_allow_no_ci_auto(tmp_path: Path) -> None:
+    """r1-2: chat initialize/start must not store unresolved 'auto' (merge reads bool)."""
+
+    from agent_hub.database import initialize_database
+    from agent_hub.store import HubStore, InvalidPolicyError
+
+    path = tmp_path / "auto.db"
+    initialize_database(path)
+    store = HubStore(path)
+    with pytest.raises(InvalidPolicyError, match="auto"):
+        store.initialize_workflow("goal text", {"allow_no_ci": "auto"})
+    with pytest.raises(InvalidPolicyError, match="auto"):
+        store.start_workflow("statement text", {"allow_no_ci": "auto"})
+    # Explicit bools still store.
+    wid = store.start_workflow("statement text", {"allow_no_ci": True})
+    assert wid

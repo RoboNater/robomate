@@ -61,6 +61,9 @@ class OrchestratorOps(OrchestratorTools):
     async def get_state(self) -> dict[str, Any]:
         return self.store.get_state()
 
+    async def get_statement(self, sha256: str) -> dict[str, Any]:
+        return self.store.get_statement(sha256)
+
     async def initialize_workflow(
         self, goal: str, policy: dict[str, Any] | None = None
     ) -> dict[str, Any]:

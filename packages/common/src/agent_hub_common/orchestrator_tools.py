@@ -22,6 +22,7 @@ PositiveId = Annotated[int, Field(gt=0)]
 # Tool names in their listed order, which the tool list's bytes depend on.
 OPERATIONS = (
     "get_state",
+    "get_statement",
     "initialize_workflow",
     "start_workflow",
     "wait_for_event",
@@ -57,6 +58,13 @@ class OrchestratorTools:
 
     async def get_state(self) -> dict[str, Any]:
         """Read the workflow, agents and compact task summaries."""
+        raise NotImplementedError
+
+    async def get_statement(self, sha256: str) -> dict[str, Any]:
+        """Read a submitted statement of work verbatim by its SHA-256.
+
+        sha256: the 64-character hex digest the submit returned.
+        """
         raise NotImplementedError
 
     async def initialize_workflow(

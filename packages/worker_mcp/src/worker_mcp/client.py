@@ -886,6 +886,18 @@ class WorkerHubClient:
             raise WorkerProtocolError(None, "hub.operator_answer response was not a dict")
         return result
 
+    async def get_statement(self, sha256: str) -> dict[str, Any]:
+        """Read a submitted statement of work verbatim by its SHA-256 (M2 Step 4, #241).
+
+        A read with the bearer token alone, like `get_operator_answer`: the
+        bytes are stored verbatim (CRLF and trailing newline preserved) and
+        returned unchanged. Unknown SHA raises with code -32001.
+        """
+        result = await self._post_rpc("hub.get_statement", {"sha256": sha256}, path="/rpc")
+        if not isinstance(result, dict):
+            raise WorkerProtocolError(None, "hub.get_statement response was not a dict")
+        return result
+
     async def await_assignment(self, timeout_s: float | None = None) -> dict[str, Any]:
         """Poll the hub for the next task assignment, holding until assigned or released."""
         if not self.context_id:
@@ -938,6 +950,14 @@ class WorkerHubClient:
         pr_head_sha = metadata.get(MetaKeys.PR_HEAD_SHA)
         if isinstance(pr_head_sha, str) and pr_head_sha:
             assignment["pr_head_sha"] = pr_head_sha
+        # Run identity travels with the assignment so the worker can cite it
+        # and fetch the statement verbatim with `get_statement` (M2 Step 4, #9).
+        run_id = metadata.get(MetaKeys.RUN_ID)
+        if isinstance(run_id, str) and run_id:
+            assignment["run_id"] = run_id
+        statement_sha256 = metadata.get(MetaKeys.STATEMENT_SHA256)
+        if isinstance(statement_sha256, str) and statement_sha256:
+            assignment["statement_sha256"] = statement_sha256
         return assignment
 
     async def report_progress(

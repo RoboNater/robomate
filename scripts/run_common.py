@@ -29,6 +29,7 @@ TOOLS = [
     "ask_alice",
     "submit_result",
     "get_operator_answer",
+    "get_statement",
 ]
 
 #: CLI invoked with ``--version`` to report each harness version.

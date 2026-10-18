@@ -7,6 +7,17 @@ from enum import StrEnum
 MAX_MESSAGE_PART_BYTES = 16 * 1024
 MAX_TYPED_RESULT_BYTES = 32 * 1024
 
+# Statement of work cap for `robomate submit` (mvp-spec §7.1, #10, #241).
+# Workers read the statement with `get_statement(sha)` over A2A, so one
+# statement must fit in one 16 KiB message part with its envelope: the A2A
+# TextPart JSON (`{"kind":"text","text":...}`), message metadata
+# (`statement_sha256`, `kind`) and JSON escaping of quotes/newlines. 12 KiB
+# leaves 4 KiB headroom for that envelope and worst-case escaping, while
+# remaining large enough for a statement (typical issue text is a few KB).
+# The error states the cap and what to do instead (shorten, or put detail in
+# an issue and submit that).
+MAX_STATEMENT_BYTES = 12 * 1024
+
 # #12 / robo-agents #109: Claude Code backgrounds any MCP tool call still
 # running at 120 s, so every default hold across worker_mcp, orchestrator
 # wait_for_event, and the worker guides/prompts stays at or below 100 s.

@@ -30,7 +30,8 @@
         "report_progress",
         "ask_alice",
         "submit_result",
-        "get_operator_answer"
+        "get_operator_answer",
+        "get_statement"
       ],
       "timeoutSeconds": 330
     }

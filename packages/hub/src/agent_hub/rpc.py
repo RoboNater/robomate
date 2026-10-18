@@ -51,6 +51,7 @@ OPERATOR_HEADER = "X-Robomate-Operator"
 UNAUDITED_METHODS = frozenset(
     {
         "get_state",
+        "get_statement",
         "wait_for_event",
         "hub.info",
         "hub.status",
@@ -59,6 +60,7 @@ UNAUDITED_METHODS = frozenset(
         "hub.record_calls",
         "hub.questions",
         "hub.operator_answer",
+        "hub.get_statement",
     }
 )
 # The audit row a takeover leaves, under the session that took over.
@@ -279,6 +281,17 @@ class RpcDispatcher:
             ):
                 raise RpcError(INVALID_PARAMS, "hub.operator_answer takes an integer question_id")
             return self.ops.store.operator_answer(question_id)
+        # Workers read a submitted statement verbatim by its SHA-256 (#9, #241).
+        # Bearer-only like `hub.operator_answer`: the bridge calls it for the
+        # `get_statement` MCP tool. Unknown SHA is -32001.
+        if method == "hub.get_statement":
+            params = payload.get("params")
+            sha = None
+            if isinstance(params, dict):
+                sha = params.get("sha256", params.get("sha"))
+            if not isinstance(params, dict) or not isinstance(sha, str) or not sha.strip():
+                raise RpcError(INVALID_PARAMS, "hub.get_statement takes a string sha256")
+            return self.ops.store.get_statement(sha.strip())
         # Only the operator answers (#130): an agent holding the bearer token
         # must not be able to stand in for an operator decision.
         if method == "hub.answer":
@@ -295,6 +308,33 @@ class RpcDispatcher:
                     INVALID_PARAMS, "hub.answer takes an integer question_id and a string answer"
                 )
             return self.ops.store.answer_operator_question(params["question_id"], params["answer"])
+        # Operator-only work intake (M2 Step 4, #241): stores bytes verbatim,
+        # queues a workflow and emits `work_submitted`. Without the operator
+        # credential it is refused with -32005.
+        if method == "hub.submit":
+            require_operator(headers, self.operator_token)
+            audit.actor, audit.session = "operator", None
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                raise RpcError(INVALID_PARAMS, "hub.submit takes an object params")
+            statement = params.get("statement")
+            policy = params.get("policy")
+            source = params.get("source", "submit")
+            if not isinstance(statement, str):
+                raise RpcError(INVALID_PARAMS, "hub.submit takes a string statement")
+            if policy is not None and not isinstance(policy, dict):
+                raise RpcError(INVALID_PARAMS, "hub.submit policy must be an object")
+            if not isinstance(source, str):
+                raise RpcError(INVALID_PARAMS, "hub.submit source must be a string")
+            from .submit import submit_statement
+
+            return await submit_statement(
+                self.ops.store,
+                self.hub_info,
+                statement,
+                dict(policy) if isinstance(policy, dict) else None,
+                source.strip() or "submit",
+            )
         if method == "hub.shutdown" and self.shutdown is not None:
             require_operator(headers, self.operator_token)
             audit.actor, audit.session = "operator", None

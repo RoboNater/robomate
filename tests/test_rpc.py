@@ -1394,3 +1394,366 @@ async def test_assign_task_carries_run_id(client: httpx.AsyncClient, hub_store: 
         )
     )["result"]
     assert assigned["run_id"] == hub_store.get_state()["workflow"]["run_id"]
+
+
+async def _submit_hub_info(
+    app: FastAPI, origin: str = "/tmp/local-repo", forge: str = "github"
+) -> None:
+    from typing import cast
+
+    from agent_hub.rpc import RpcDispatcher
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "checkout": "/repo",
+        "git_common_dir": None,
+        "origin": origin,
+        "forge": forge,
+        "url": "http://hub.test",
+        "default_branch": "main",
+        "hub_id": "test-hub",
+        "name": "test",
+    }
+    dispatcher.operator_token = OPERATOR_TOKEN
+
+
+async def test_hub_submit_stores_verbatim_queues_and_emits_work_submitted(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    await _submit_hub_info(app)
+    text = "Fix the typo in README.\r\n"
+    body = await bare_call(app, "hub.submit", OPERATOR, statement=text, policy={}, source="file")
+    assert "result" in body, body
+    result = body["result"]
+    import hashlib
+
+    assert result["statement_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+    assert result["status"] == "queued"
+    # get_statement returns bytes unchanged.
+    got = await bare_call(app, "hub.get_statement", sha256=result["statement_sha256"])
+    assert got["result"]["statement"] == text
+    # Queue shows the statement; work_submitted is emitted.
+    status = (await bare_call(app, "hub.status"))["result"]
+    assert status["queue_length"] == 1
+    assert status["queue"][0]["statement_sha256"] == result["statement_sha256"]
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    with _sqlite3.connect(hub_store.path) as _conn:
+        _conn.row_factory = _sqlite3.Row
+        _row = _conn.execute(
+            "SELECT kind, payload_json FROM event WHERE kind = ? ORDER BY id DESC LIMIT 1",
+            ("work_submitted",),
+        ).fetchone()
+        assert _row is not None, "work_submitted event missing"
+        _payload = _json.loads(_row["payload_json"])
+        assert _payload["statement_sha256"] == result["statement_sha256"]
+        assert _payload["workflow_id"] == result["workflow_id"]
+    # Unknown SHA is -32001.
+    unknown = await bare_call(app, "hub.get_statement", sha256="0" * 64)
+    assert unknown["error"]["code"] == -32001
+    # Orchestrator get_statement works too.
+    # Use client with session headers for orchestrator op.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {TOKEN}", **CALLER_HEADERS},
+    ) as c:
+        resp = await c.post(
+            "/rpc",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "get_statement",
+                "params": {"sha256": result["statement_sha256"]},
+            },
+        )
+        assert resp.json()["result"]["statement"] == text
+
+
+async def test_hub_submit_needs_operator_and_origin(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    await _submit_hub_info(app)
+    body = await bare_call(app, "hub.submit", None, statement="Hi", policy={}, source="file")
+    assert body["error"]["code"] == -32005
+    # No origin refuses.
+    from typing import cast
+
+    from agent_hub.rpc import RpcDispatcher
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = dict(dispatcher.hub_info or {})
+    dispatcher.hub_info["origin"] = ""
+    refused = await bare_call(app, "hub.submit", OPERATOR, statement="Hi", policy={}, source="file")
+    assert "error" in refused
+    assert "origin" in refused["error"]["message"].lower()
+
+
+async def test_hub_submit_takes_repo_layer_policy_and_override(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, tmp_path: Path
+) -> None:
+    from typing import cast
+
+    from agent_hub.rpc import RpcDispatcher
+
+    tmp = tmp_path / "cfg"
+    common = tmp / "repo" / ".git"
+    common.mkdir(parents=True)
+    repo_cfg = common / "robomate" / "config.toml"
+    repo_cfg.parent.mkdir(parents=True, exist_ok=True)
+    repo_cfg.write_text("max_review_rounds = 7\n", encoding="utf-8")
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "checkout": "/repo",
+        "git_common_dir": str(common),
+        "origin": "/tmp/local-repo",
+        "forge": "github",
+        "url": "http://hub.test",
+        "default_branch": "main",
+        "hub_id": "test-hub",
+        "name": "test",
+    }
+    dispatcher.operator_token = OPERATOR_TOKEN
+    first = await bare_call(
+        app, "hub.submit", OPERATOR, statement="First", policy={}, source="file"
+    )
+    assert "result" in first, first
+    # Stored policy takes repo layer max_review_rounds=7.
+    # First submit queues (live exists from fixture? hub_store has active from fixture).
+    # Find queued workflow policy via DB.
+    import sqlite3
+
+    with sqlite3.connect(hub_store.path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT policy_json FROM workflow WHERE id = ?", (first["result"]["workflow_id"],)
+        ).fetchone()
+        import json
+
+        assert json.loads(row["policy_json"])["max_review_rounds"] == 7
+    # With override takes 5: free the queue slot (fresh check would also work).
+    second_text = "Second statement for override test"
+    import sqlite3 as _sqlite
+
+    with _sqlite.connect(hub_store.path) as _conn:
+        _conn.execute("DELETE FROM workflow WHERE id = ?", (first["result"]["workflow_id"],))
+        _conn.commit()
+    second = await bare_call(
+        app,
+        "hub.submit",
+        OPERATOR,
+        statement=second_text,
+        policy={"max_review_rounds": 5},
+        source="file",
+    )
+    assert "result" in second, second
+    with sqlite3.connect(hub_store.path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT policy_json FROM workflow WHERE id = ?", (second["result"]["workflow_id"],)
+        ).fetchone()
+        import json
+
+        assert json.loads(row["policy_json"])["max_review_rounds"] == 5
+
+
+async def test_hub_submit_refuses_unsupported_settings_strict(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M2 Step 4: strict refuse on any base refuse incl. Unsupported settings (r1-1)."""
+
+    from typing import cast
+
+    from agent_hub.forge_preflight import PreflightCheck
+    from agent_hub.gitlab_gate import GlabRunner
+    from agent_hub.rpc import RpcDispatcher
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "checkout": "/repo",
+        "git_common_dir": None,
+        "origin": "git@host:group/project.git",
+        "forge": "gitlab",
+        "url": "http://hub.test",
+        "default_branch": "main",
+        "hub_id": "test-hub",
+        "name": "test",
+    }
+    dispatcher.operator_token = OPERATOR_TOKEN
+
+    async def fake_base(origin: str, runner: GlabRunner | None = None) -> list[PreflightCheck]:
+        return [
+            PreflightCheck("glab version", "pass", "glab >= 1.36.0"),
+            PreflightCheck("Authenticated", "pass", "origin host host"),
+            PreflightCheck("Project readable", "pass", "web_url matches"),
+            PreflightCheck(
+                "Unsupported settings",
+                "refuse",
+                "merge trains enabled Disable these settings in project Settings > Merge requests.",
+            ),
+        ]
+
+    async def fake_policy(
+        origin: str,
+        merge_method: str = "squash",
+        allow_no_ci: str = "true",
+        runner: GlabRunner | None = None,
+    ) -> list[PreflightCheck]:
+        return [
+            PreflightCheck("Developer access", "pass", "ok"),
+            PreflightCheck("Merge compatibility", "pass", "ok"),
+            PreflightCheck("CI configuration", "note", "skipped"),
+        ]
+
+    monkeypatch.setattr("agent_hub.submit.gitlab_preflight", fake_base)
+    monkeypatch.setattr("agent_hub.submit.gitlab_policy_checks", fake_policy)
+    body = await bare_call(app, "hub.submit", OPERATOR, statement="Hi", policy={}, source="file")
+    assert "error" in body, body
+    assert body["error"]["code"] == -32002
+    assert (
+        "Unsupported settings" in body["error"]["message"]
+        or "merge trains" in body["error"]["message"].lower()
+    )
+
+
+async def test_hub_submit_github_runs_no_glab(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M2 Step 4: GitHub submit runs gh, never glab."""
+
+    from typing import Any, cast
+
+    from agent_hub.forge_preflight import GhRunner, PreflightCheck
+    from agent_hub.rpc import RpcDispatcher
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "checkout": "/repo",
+        "git_common_dir": None,
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": "http://hub.test",
+        "default_branch": "main",
+        "hub_id": "test-hub",
+        "name": "test",
+    }
+    dispatcher.operator_token = OPERATOR_TOKEN
+
+    async def fake_github(
+        origin: str,
+        merge_method: str = "squash",
+        allow_no_ci: str = "true",
+        runner: GhRunner | None = None,
+    ) -> list[PreflightCheck]:
+        return [
+            PreflightCheck("Repository access", "pass", "ok"),
+            PreflightCheck("Merge compatibility", "pass", "ok"),
+            PreflightCheck("CI configuration", "note", "skipped"),
+        ]
+
+    async def no_gitlab(*a: Any, **k: Any) -> list[PreflightCheck]:
+        raise AssertionError("GitHub submit must not call gitlab preflight (no glab)")
+
+    monkeypatch.setattr("agent_hub.submit.github_policy_checks", fake_github)
+    monkeypatch.setattr("agent_hub.submit.gitlab_preflight", no_gitlab)
+    monkeypatch.setattr("agent_hub.submit.gitlab_policy_checks", no_gitlab)
+    body = await bare_call(
+        app, "hub.submit", OPERATOR, statement="GitHub work", policy={}, source="file"
+    )
+    assert "result" in body, body
+
+
+async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> None:
+    """r1-4: submit resolves auto; explicit skips probe."""
+
+    import json
+    from collections.abc import Sequence
+    from typing import Any
+
+    from agent_hub.database import initialize_database
+    from agent_hub.gitlab_gate import GlabResult
+    from agent_hub.store import HubStore
+    from agent_hub.submit import submit_statement
+
+    origin = "git@host:group/project.git"
+    base_project: dict[str, Any] = {
+        "id": 1,
+        "web_url": "https://host/group/project",
+        "permissions": {"group_access": {"access_level": 30}},
+        "auto_devops_enabled": False,
+        "only_allow_merge_if_pipeline_succeeds": True,
+        "default_branch": "main",
+        "merge_method": "merge",
+        "squash_option": "default_off",
+    }
+
+    def _runner_with_ci(ci: GlabResult, file_calls: list[str]) -> Any:
+        async def _run(args: Sequence[str]) -> GlabResult:
+            args_list = list(args)
+            if args_list == ["version"]:
+                return GlabResult(0, "glab version 1.36.0", "")
+            if args_list[-1] == "user":
+                return GlabResult(0, '{"username":"u"}', "")
+            if args_list[-1] == "projects/group%2Fproject":
+                return GlabResult(0, json.dumps(base_project), "")
+            assert "repository/files" in args_list[-1]
+            file_calls.append(args_list[-1])
+            return ci
+
+        return _run
+
+    async def _submit_with(
+        policy: dict[str, Any] | None, ci: GlabResult, origin_arg: str = origin
+    ) -> tuple[bool, list[str]]:
+        path = tmp_path / f"submit-{len(list(tmp_path.iterdir()))}.db"
+        initialize_database(path)
+        store = HubStore(path)
+        file_calls: list[str] = []
+        result = await submit_statement(
+            store,
+            {
+                "origin": origin_arg,
+                "forge": "gitlab",
+                "git_common_dir": None,
+            },
+            "Do work",
+            policy,
+            "file",
+            glab_runner=_runner_with_ci(ci, file_calls),
+        )
+        import sqlite3
+
+        with sqlite3.connect(store.path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT policy_json FROM workflow WHERE id = ?",
+                (result["workflow_id"],),
+            ).fetchone()
+            stored = json.loads(row["policy_json"])["allow_no_ci"]
+        return stored, file_calls
+
+    # auto + CI present (pass) -> False, with one file call.
+    stored, calls = await _submit_with(
+        {"allow_no_ci": "auto"}, GlabResult(0, '{"file_name":".gitlab-ci.yml"}', "")
+    )
+    assert stored is False and len(calls) == 1
+    # auto + absent (404 note) -> True.
+    stored, _ = await _submit_with({"allow_no_ci": "auto"}, GlabResult(1, "", "(HTTP 404)"))
+    assert stored is True
+    # explicit True/False (bool, as CLI TOML parses) makes no CI call.
+    for allow, expected in ((True, True), (False, False)):
+        stored, calls = await _submit_with({"allow_no_ci": allow}, GlabResult(1, "boom", "boom"))
+        assert stored is expected and calls == []
+    # local origin + auto -> True without calls (no slug path here uses gitlab origin,
+    # so local case is github path; covered by github local test in forge_preflight).

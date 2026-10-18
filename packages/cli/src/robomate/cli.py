@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import errno
+import hashlib
 import json
 import logging
 import os
 import socket
 import sys
+import tomllib
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -23,9 +25,10 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import anyio
-from agent_hub.forge_preflight import gitlab_preflight
+from agent_hub.forge_preflight import gitlab_preflight, parse_github_slug
 from agent_hub.main import serve_http
 from agent_hub_common import (
+    MAX_STATEMENT_BYTES,
     HubSettings,
     load_config_layers,
     load_or_create_token,
@@ -142,6 +145,12 @@ def _bind(
 # Long enough for a loaded host (a CI runner mid-suite) to answer: at 2 s,
 # `down` and `answer` timed out against a live hub (#207).
 _RPC_TIMEOUT_S = 15.0
+# `hub.submit` runs forge preflight in-request: GitLab up to 3 base + 2 policy
+# `glab` calls, GitHub up to 2 `gh` calls, each allowed 30 s (worst-case ~150 s).
+# A 15 s client timeout would report failure while the hub goes on to queue the
+# run and emit `work_submitted`, and a retry then fails -32002 (r1-1). Submit
+# gets its own deadline above that worst case.
+_SUBMIT_RPC_TIMEOUT_S = 180.0
 
 
 def _timed_out(exc: BaseException) -> bool:
@@ -159,6 +168,7 @@ def _rpc(
     *,
     operator_token: str | None = None,
     params: dict[str, Any] | None = None,
+    timeout: float = _RPC_TIMEOUT_S,
 ) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if operator_token is not None:
@@ -170,7 +180,7 @@ def _rpc(
         ).encode(),
         headers=headers,
     )
-    with urllib.request.urlopen(request, timeout=_RPC_TIMEOUT_S) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         result: dict[str, Any] = json.load(response)
     if "error" in result:
         error = result["error"]
@@ -1006,14 +1016,19 @@ def _status(as_json: bool, selector: str | None) -> None:
         run_id = workflow.get("run_id") or status.get("run_id") or "-"
         print(f"Workflow: {workflow['status']} — {workflow['headline'][:120]}")
         print(f"Run ID: {run_id}")
+        if workflow.get("statement_sha256"):
+            print(f"Statement: {workflow['statement_sha256']}")
     else:
         print("Workflow: none")
     # Queued runs (M2 Step 3): the sequential queue behind the live run.
+    # Step 4 shows each queued statement and its SHA-256 (mvp-spec §7.1).
     queue_length = status.get("queue_length")
+    queue = status.get("queue") or []
     if queue_length is None:
-        queue = status.get("queue") or []
         queue_length = len(queue)
     print(f"Queue length: {queue_length}")
+    for entry in queue:
+        print(f"  queued {entry.get('run_id', '-')}: {entry.get('statement_sha256', '-')}")
     for line in _orchestrator_lines(status):
         print(line)
     # Absent from a hub older than #144, which may still be running.
@@ -1140,6 +1155,138 @@ def _answer(question_id: int, text: str | None, option: int | None, selector: st
     print(f"Answered question {question_id}: {_printable(text)}")
 
 
+def _parse_policy_override(spec: str) -> tuple[str, Any]:
+    """Parse one `--policy k=v` override with TOML value typing (M2 Step 4).
+
+    Values use TOML typing so `max_review_rounds=5` is int 5 and
+    `allow_no_ci=true` is bool; a bare word TOML rejects (`auto`, `squash`)
+    stays a string. Lists use TOML arrays (`k=["a","b"]`).
+    """
+
+    if "=" not in spec:
+        raise ValueError(f"--policy must be k=v, got {spec!r}")
+    key, _, raw = spec.partition("=")
+    key = key.strip()
+    raw = raw.strip()
+    if not key or not raw:
+        raise ValueError(f"--policy must be k=v with non-empty key and value, got {spec!r}")
+    try:
+        value: Any = tomllib.loads(f"x = {raw}")["x"]
+    except tomllib.TOMLDecodeError:
+        value = raw
+    return key, value
+
+
+def _read_submit_text(file: str | None, issue: int | None) -> tuple[str, str]:
+    """Read the statement bytes verbatim, preserving CRLF and trailing newline.
+
+    Returns (text, source) with source `file`, `issue` or `stdin`. File and
+    stdin bytes must be UTF-8; `--issue` renders the standard one-issue
+    statement (stored like any other). Empty statements are refused.
+    """
+
+    if file is not None and issue is not None:
+        raise ValueError("--issue and a file are mutually exclusive; give one statement source")
+    if issue is not None:
+        if issue <= 0:
+            raise ValueError("--issue must be a positive issue number")
+        # Rendered after connecting (needs forge); placeholder replaced by caller.
+        return "", "issue"
+    if file is None or file == "-":
+        try:
+            data = sys.stdin.buffer.read()
+        except OSError as exc:
+            raise ValueError(f"cannot read statement from stdin: {exc}") from exc
+        source = "stdin"
+    else:
+        path = Path(file)
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError as exc:
+            raise ValueError(f"statement file {file} does not exist") from exc
+        except OSError as exc:
+            raise ValueError(f"statement file {file} is not readable: {exc}") from exc
+        source = "file"
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"statement must be a readable UTF-8 text file: {exc}") from exc
+    if not text.strip():
+        raise ValueError("statement must not be empty; write the statement of work first")
+    return text, source
+
+
+def _render_issue_statement(issue: int, origin: str, forge: str) -> str:
+    """The standard one-issue statement, stored like any other (M2 Step 4)."""
+
+    slug: str | None = None
+    if forge == "gitlab":
+        try:
+            from agent_hub.gitlab_gate import GitLabProject
+
+            slug = GitLabProject.from_origin(origin).path
+        except Exception:
+            slug = None
+    else:
+        slug = parse_github_slug(origin)
+    target = f"{slug}#{issue}" if slug else f"#{issue}"
+    change_term = "merge request" if forge == "gitlab" else "pull request"
+    return f"Address issue `{target}`, merge its {change_term}, and close out."
+
+
+def _submit(
+    file: str | None, issue: int | None, policy: list[str] | None, selector: str | None
+) -> None:
+    """Submit a statement of work through operator-only `hub.submit` (M2 Step 4, #241)."""
+
+    if file is not None and issue is not None:
+        raise ValueError("--issue and a file are mutually exclusive; give one statement source")
+    escape_unencodable_output()
+    overrides: dict[str, Any] = {}
+    for spec in policy or []:
+        key, value = _parse_policy_override(spec)
+        # Last wins for repeated keys; dotted keys nest in the hub.
+        overrides[key] = value
+    endpoint, _ = _connect(selector)
+    operator_token = read_token_file(operator_token_path(), "operator token")
+    # For `--issue`, the statement needs the hub's forge/origin for the slug
+    # and change term; read them from `hub.status` before rendering.
+    if issue is not None and file is None:
+        try:
+            status = _rpc(endpoint.url, endpoint.token, "hub.status")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"hub at {endpoint.url} rejected status (HTTP {exc.code})") from exc
+        origin = str(status.get("origin") or "")
+        forge = str(status.get("forge") or "github")
+        text = _render_issue_statement(issue, origin, forge)
+        source = "issue"
+    else:
+        text, source = _read_submit_text(file, None)
+    data = text.encode("utf-8")
+    if len(data) > MAX_STATEMENT_BYTES:
+        raise ValueError(
+            f"statement is {len(data)} bytes; maximum is {MAX_STATEMENT_BYTES} bytes "
+            "so it fits in one 16 KiB message part with its envelope. Shorten the "
+            "statement, or put the detail in an issue and submit that instead."
+        )
+    try:
+        result = _rpc(
+            endpoint.url,
+            endpoint.token,
+            "hub.submit",
+            operator_token=operator_token,
+            params={"statement": text, "policy": overrides or {}, "source": source},
+            timeout=_SUBMIT_RPC_TIMEOUT_S,
+        )
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"hub at {endpoint.url} rejected submit (HTTP {exc.code})") from exc
+    sha = result.get("statement_sha256") or hashlib.sha256(data).hexdigest()
+    print(
+        f"Submitted {source} statement {sha} as {result.get('status', 'queued')}"
+        f" run {result.get('run_id', '-')}"
+    )
+
+
 def _ls(as_json: bool) -> None:
     """List every registered hub, live or stopped, with name, checkout and repository."""
 
@@ -1239,7 +1386,28 @@ def main() -> None:
     answer.add_argument("question_id", type=int, metavar="id")
     answer.add_argument("text", nargs="?", help="the answer; quote it")
     answer.add_argument("--option", type=int, metavar="N", help="answer with option N")
-    for command in (down, status, inbox, answer):
+    submit = commands.add_parser("submit", help="submit a statement of work to this checkout's hub")
+    sources = submit.add_mutually_exclusive_group()
+    sources.add_argument(
+        "file",
+        nargs="?",
+        metavar="FILE",
+        help="statement file (use - for stdin); omit with --issue N",
+    )
+    sources.add_argument(
+        "--issue", type=int, metavar="N", help="render the standard one-issue statement"
+    )
+    submit.add_argument(
+        "--policy",
+        action="append",
+        default=[],
+        metavar="k=v",
+        help=(
+            "override a policy default for this run (repeatable; TOML values,"
+            " e.g. max_review_rounds=5, allow_no_ci=auto)"
+        ),
+    )
+    for command in (down, status, inbox, answer, submit):
         command.add_argument(
             "--hub",
             metavar="NAME|HUB_ID|CHECKOUT",
@@ -1291,6 +1459,8 @@ def main() -> None:
             _inbox(args.json, args.hub)
         elif args.command == "answer":
             _answer(args.question_id, args.text, args.option, args.hub)
+        elif args.command == "submit":
+            _submit(args.file, args.issue, args.policy, args.hub)
         elif args.command == "ls":
             _ls(args.json)
         elif args.command == "forget":
