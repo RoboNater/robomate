@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -177,11 +177,18 @@ def _rpc(
     return value
 
 
+class HubLockBusy(RuntimeError):
+    """Another process holds this hub's up.lock (it is running or starting)."""
+
+
 @contextmanager
 def _hub_lock(checkout: Path) -> Iterator[None]:
     """Hold this hub's OS file lock for its lifetime, including startup.
 
     The lock is per hub, in its state directory: it never blocks a sibling hub.
+
+    Raises HubLockBusy when another process holds the lock (the hub is
+    running or starting).
     """
 
     fd = os.open(state_dir(checkout) / "up.lock", os.O_RDWR | os.O_CREAT, 0o600)
@@ -204,7 +211,7 @@ def _hub_lock(checkout: Path) -> Iterator[None]:
             info = read_hub_json(checkout) or {}
             url = info.get("url")
             message = f"hub already running at {url}" if url else "hub already starting"
-            raise RuntimeError(message) from exc
+            raise HubLockBusy(message) from exc
         yield
     finally:
         try:
@@ -630,61 +637,10 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
     entry_checkout = hub_checkout(entry)
     if entry_checkout is None:
         raise RuntimeError(f"hub {name} names no checkout; cannot forget it")
-    try:
-        with _hub_lock(entry_checkout):
-            fresh = {str(item.get("hub_id")): item for item in hub_entries()}
-            current = fresh.get(hub_id)
-            if current is None:
-                if not as_json:
-                    print(f"Hub {name} is already forgotten.")
-                return {"hub_id": hub_id, "name": name, "forgotten": False}
-            if current["live"]:
-                if forget_all:
-                    if not as_json:
-                        print(f"Skipping live hub {name} at {current.get('url')}; stop it first")
-                    return {"hub_id": hub_id, "name": name, "forgotten": False}
-                raise RuntimeError(
-                    f"hub {current.get('name')} is live at {current.get('url')}; "
-                    "stop it with robomate down first"
-                )
-            removed = forget_entry(hub_id)
-            if removed is None:
-                if not as_json:
-                    print(f"Hub {name} is already forgotten.")
-                return {"hub_id": hub_id, "name": name, "forgotten": False}
-            port = removed.get("port") or _entry_port(removed)
-            state = str(removed.get("state_dir") or state_dir(entry_checkout))
-            # Release the saved port: record it as released so the next up takes
-            # the first free port and says so. The last URL and port stay in
-            # hub.json so `status` still reports the stopped hub; only pid and
-            # started_at are cleared. Anything else — hub_id, name, checkout,
-            # origin — stays, as does hub.db.
-            stored = read_hub_json(entry_checkout)
-            if stored is not None and stored.get("hub_id") == hub_id:
-                stored["pid"] = None
-                stored["started_at"] = None
-                try:
-                    stored["released_port"] = int(port) if port is not None else None
-                except (TypeError, ValueError):
-                    stored["released_port"] = None
-                if stored.get("released_port") is None:
-                    stored.pop("released_port", None)
-                write_hub_json(entry_checkout, stored)
-            if not as_json:
-                print(
-                    f"Forgot hub {name} (hub_id {hub_id}): released its name"
-                    + (f" and port {port}" if port else "")
-                    + f"; state kept at {state}"
-                )
-            return {
-                "hub_id": hub_id,
-                "name": name,
-                "forgotten": True,
-                "port": port,
-                "state_dir": state,
-            }
-    except RuntimeError as exc:
-        if "already running" in str(exc) or "already starting" in str(exc):
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_hub_lock(entry_checkout))
+        except HubLockBusy as exc:
             # Lock contention (r2-1): a concurrent `up` holds the checkout
             # lock. Read fresh state to say whether that hub is live or still
             # starting. Under --all this is a skip, never an abort: the loop
@@ -703,7 +659,57 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
                     print(f"Skipping {reason}")
                 return {"hub_id": hub_id, "name": name, "forgotten": False, "reason": reason}
             raise RuntimeError(reason) from exc
-        raise
+        fresh = {str(item.get("hub_id")): item for item in hub_entries()}
+        current = fresh.get(hub_id)
+        if current is None:
+            if not as_json:
+                print(f"Hub {name} is already forgotten.")
+            return {"hub_id": hub_id, "name": name, "forgotten": False}
+        if current["live"]:
+            if forget_all:
+                if not as_json:
+                    print(f"Skipping live hub {name} at {current.get('url')}; stop it first")
+                return {"hub_id": hub_id, "name": name, "forgotten": False}
+            raise RuntimeError(
+                f"hub {current.get('name')} is live at {current.get('url')}; "
+                "stop it with robomate down first"
+            )
+        removed = forget_entry(hub_id)
+        if removed is None:
+            if not as_json:
+                print(f"Hub {name} is already forgotten.")
+            return {"hub_id": hub_id, "name": name, "forgotten": False}
+        port = removed.get("port") or _entry_port(removed)
+        state = str(removed.get("state_dir") or state_dir(entry_checkout))
+        # Release the saved port: record it as released so the next up takes
+        # the first free port and says so. The last URL and port stay in
+        # hub.json so `status` still reports the stopped hub; only pid and
+        # started_at are cleared. Anything else — hub_id, name, checkout,
+        # origin — stays, as does hub.db.
+        stored = read_hub_json(entry_checkout)
+        if stored is not None and stored.get("hub_id") == hub_id:
+            stored["pid"] = None
+            stored["started_at"] = None
+            try:
+                stored["released_port"] = int(port) if port is not None else None
+            except (TypeError, ValueError):
+                stored["released_port"] = None
+            if stored.get("released_port") is None:
+                stored.pop("released_port", None)
+            write_hub_json(entry_checkout, stored)
+        if not as_json:
+            print(
+                f"Forgot hub {name} (hub_id {hub_id}): released its name"
+                + (f" and port {port}" if port else "")
+                + f"; state kept at {state}"
+            )
+        return {
+            "hub_id": hub_id,
+            "name": name,
+            "forgotten": True,
+            "port": port,
+            "state_dir": state,
+        }
 
 
 def _age(elapsed: timedelta) -> str:

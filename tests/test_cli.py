@@ -2415,7 +2415,11 @@ def test_down_json_requires_all(repository: tuple[Path, dict[str, str]]) -> None
 def test_forget_one_lock_contention_skips_under_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#159 r2-1: a held _hub_lock is a skip under --all, with an accurate message."""
+    """#159 r2-1, #162: a held _hub_lock is a skip under --all, with an accurate message.
+
+    Contention is detected by HubLockBusy type, not message text: the raised
+    message deliberately lacks the old "already running/starting" wording.
+    """
 
     from agent_hub_common.discovery import write_hub_json as _write_hub_json
 
@@ -2441,7 +2445,7 @@ def test_forget_one_lock_contention_skips_under_all(
     }
 
     def locked(_checkout: Path) -> object:
-        raise RuntimeError("hub already running at http://127.0.0.1:8420")
+        raise cli.HubLockBusy("test contention")
 
     monkeypatch.setattr(cli, "_hub_lock", locked)
 
@@ -2468,6 +2472,117 @@ def test_forget_one_lock_contention_skips_under_all(
         "reason": "hub wt-a is starting; wait for robomate up to finish and try again",
     }
     with pytest.raises(RuntimeError, match="is starting"):
+        cli._forget_one(entry, forget_all=False, as_json=False)
+
+
+def test_forget_one_real_lock_contention_skips_under_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#162: holding the real _hub_lock makes _forget_one skip under --all."""
+
+    from agent_hub_common.discovery import write_hub_json as _write_hub_json
+
+    checkout = tmp_path / "wt-real"
+    (checkout / ".robomate").mkdir(parents=True)
+    _write_hub_json(
+        checkout,
+        {
+            "hub_id": "hid-real",
+            "name": "wt-real",
+            "url": "http://127.0.0.1:8420",
+            "port": 8420,
+            "pid": None,
+        },
+    )
+    entry = {
+        "hub_id": "hid-real",
+        "name": "wt-real",
+        "checkout": str(checkout),
+        "url": "http://127.0.0.1:8420",
+        "port": 8420,
+        "live": False,
+    }
+    with cli._hub_lock(checkout):
+        monkeypatch.setattr(cli, "hub_entries", lambda: [entry | {"live": True}])
+        outcome = cli._forget_one(entry, forget_all=True, as_json=True)
+        assert outcome == {
+            "hub_id": "hid-real",
+            "name": "wt-real",
+            "forgotten": False,
+            "reason": (
+                "hub wt-real is live at http://127.0.0.1:8420; stop it with robomate down first"
+            ),
+        }
+        with pytest.raises(RuntimeError, match="is live"):
+            cli._forget_one(entry, forget_all=False, as_json=False)
+
+        monkeypatch.setattr(cli, "hub_entries", lambda: [entry | {"live": False}])
+        outcome = cli._forget_one(entry, forget_all=True, as_json=True)
+        assert outcome == {
+            "hub_id": "hid-real",
+            "name": "wt-real",
+            "forgotten": False,
+            "reason": "hub wt-real is starting; wait for robomate up to finish and try again",
+        }
+        with pytest.raises(RuntimeError, match="is starting"):
+            cli._forget_one(entry, forget_all=False, as_json=False)
+
+
+def test_forget_one_body_registry_error_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#162: a RegistryError inside the locked body propagates, never a skip."""
+
+    from agent_hub_common.discovery import write_hub_json as _write_hub_json
+    from agent_hub_common.registry import RegistryError
+
+    checkout = tmp_path / "wt-body"
+    (checkout / ".robomate").mkdir(parents=True)
+    _write_hub_json(
+        checkout,
+        {
+            "hub_id": "hid-body",
+            "name": "wt-body",
+            "url": "http://127.0.0.1:8420",
+            "port": 8420,
+            "pid": None,
+        },
+    )
+    entry = {
+        "hub_id": "hid-body",
+        "name": "wt-body",
+        "checkout": str(checkout),
+        "url": "http://127.0.0.1:8420",
+        "port": 8420,
+        "live": False,
+    }
+
+    @contextmanager
+    def _uncontended(_checkout: Path) -> Iterator[None]:
+        yield
+
+    monkeypatch.setattr(cli, "_hub_lock", _uncontended)
+
+    def _boom() -> list[dict[str, Any]]:
+        raise RegistryError("registry boom")
+
+    monkeypatch.setattr(cli, "hub_entries", _boom)
+    with pytest.raises(RegistryError, match="registry boom"):
+        cli._forget_one(entry, forget_all=True, as_json=True)
+    with pytest.raises(RegistryError, match="registry boom"):
+        cli._forget_one(entry, forget_all=False, as_json=False)
+
+    # A body RuntimeError carrying the old lock wording still propagates: only
+    # lock acquisition is classified as contention.
+    monkeypatch.setattr(cli, "hub_entries", lambda: [entry | {"live": False}])
+
+    def _forget_boom(_hub_id: str) -> None:
+        raise RuntimeError("hub already running at http://127.0.0.1:8420")
+
+    monkeypatch.setattr(cli, "forget_entry", _forget_boom)
+    with pytest.raises(RuntimeError, match="already running"):
+        cli._forget_one(entry, forget_all=True, as_json=True)
+    with pytest.raises(RuntimeError, match="already running"):
         cli._forget_one(entry, forget_all=False, as_json=False)
 
 
