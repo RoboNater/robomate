@@ -52,7 +52,6 @@ owner-only. The worker host only reads the hub's token file; it never mints one.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import contextlib
 import hashlib
 import ipaddress
@@ -68,7 +67,10 @@ from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from agent_hub.forge_preflight import gitlab_policy_checks, gitlab_preflight
+from agent_hub.forge_preflight import (
+    gitlab_policy_checks_sync,
+    gitlab_preflight_sync,
+)
 from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, GlabResult
 from agent_hub_common.discovery import read_hub_json, token_file
 from agent_hub_common.discovery import state_dir as hub_state_dir
@@ -2523,43 +2525,48 @@ def prepare(
 
             async def _glab_runner(args: Sequence[str]) -> GlabResult:
                 try:
-                    stdout = run("glab", *args)
-                    return GlabResult(0, stdout, "")
+                    stdout, stderr = run_output("glab", *args)
+                    return GlabResult(0, stdout, stderr)
                 except subprocess.CalledProcessError as exc:
                     stdout = exc.stdout if isinstance(exc.stdout, str) else ""
                     stderr = exc.stderr if isinstance(exc.stderr, str) else ""
                     code = exc.returncode if isinstance(exc.returncode, int) else 1
                     return GlabResult(code, stdout or "", stderr or "")
 
-            base_checks = asyncio.run(gitlab_preflight(repository, runner=_glab_runner))
+            base_checks = gitlab_preflight_sync(repository, runner=_glab_runner)
             for check in base_checks:
+                if check.status == "refuse":
+                    raise ValueError(check.detail)
                 if check.name == "Authenticated" and check.status != "pass":
                     raise ValueError(
                         f"glab is not authenticated for host {gl_project.host} "
                         "(glab api user failed); "
                         f"run `glab auth login --hostname {gl_project.host}` and retry"
                     )
-                if check.name == "Project readable":
-                    if check.status == "refuse":
-                        raise ValueError(check.detail)
-                    if check.status == "warn" and "cannot read origin project" in check.detail:
-                        raise ValueError(
-                            f"cannot read project settings for {slug} on {gl_project.host}; "
-                            "check glab auth and repository name"
-                        )
-                    # A warn for unverified web_url/developer access is enforced
-                    # strictly by the shared policy checks below, which name the
-                    # remedy; other base advisories (version, unsupported
-                    # settings, Auto DevOps, pipelines) stay advisory for
-                    # prepare-run, as today.
+                if (
+                    check.name == "Project readable"
+                    and check.status == "warn"
+                    and "cannot read origin project" in check.detail
+                ):
+                    raise ValueError(
+                        f"cannot read project settings for {slug} on {gl_project.host}; "
+                        "check glab auth and repository name"
+                    )
+                # A warn for unverified web_url/developer access is enforced
+                # strictly by the shared policy checks below, which name the
+                # remedy. Remaining base advisories (glab version, Auto DevOps,
+                # Pipelines must succeed) are printed, not dropped.
+                if check.status in ("warn", "note") and check.name not in (
+                    "Authenticated",
+                    "Project readable",
+                ):
+                    print(f"GitLab preflight {check.name}: {check.detail}", file=sys.stderr)
 
-            policy_checks = asyncio.run(
-                gitlab_policy_checks(
-                    repository,
-                    merge_method=merge_method,
-                    allow_no_ci=allow_no_ci,
-                    runner=_glab_runner,
-                )
+            policy_checks = gitlab_policy_checks_sync(
+                repository,
+                merge_method=merge_method,
+                allow_no_ci=allow_no_ci,
+                runner=_glab_runner,
             )
             for check in policy_checks:
                 if check.status == "refuse":
@@ -2574,7 +2581,8 @@ def prepare(
             merge_note = merge_check.detail
             ci_note = ci_check.detail
             if allow_no_ci == "auto":
-                policy_allow_no_ci = "has no CI configured" in ci_note
+                # Typed fact: CI configuration pass means present, note means absent.
+                policy_allow_no_ci = ci_check.status == "note"
             else:
                 policy_allow_no_ci = allow_no_ci == "true"
         else:

@@ -180,6 +180,9 @@ async def gitlab_policy_checks(
       with a remedy that works (an explicit ``--allow-no-ci``).
     - The gate checks the MR head ref; this checks the default branch ref, so
       the ref is a parameter of the shared rule.
+    - ``CI configuration`` is typed data, not text to parse: ``pass`` means
+      the file (or an override) is present, ``note`` means absent (``auto``)
+      or skipped (explicit), ``refuse`` means the probe itself failed.
     """
 
     if allow_no_ci not in ("auto", "true", "false"):
@@ -355,11 +358,17 @@ async def gitlab_policy_checks(
         checks.append(
             PreflightCheck(
                 "CI configuration",
-                "pass",
+                "note",
                 f"{slug} has no CI configured (allow_no_ci=true)",
             )
         )
     return checks
+
+
+def gitlab_preflight_sync(origin: str, *, runner: GlabRunner) -> list[PreflightCheck]:
+    """Sync wrapper for the policy-independent base checks: no second implementation."""
+
+    return asyncio.run(gitlab_preflight(origin, runner=runner))
 
 
 def gitlab_policy_checks_sync(
