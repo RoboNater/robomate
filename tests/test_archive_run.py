@@ -70,3 +70,65 @@ def test_archive_refuses_output_inside_run_and_existing_output(tmp_path: Path) -
     with pytest.raises(FileExistsError):
         ARCHIVE.archive_run(run, output)
     assert output.read_text() == "keep me"
+
+
+def test_archive_includes_hub_database_but_not_token(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    state = run / "hub-target" / ".robomate"
+    state.mkdir(parents=True)
+    for name, content in (
+        ("hub.db", "synthetic hub database"),
+        ("hub.db-wal", "synthetic wal"),
+        ("hub.db-shm", "synthetic shm"),
+        ("hub.json", '{"hub": "synthetic"}'),
+        ("token", "synthetic bearer token"),
+        ("operator-token", "synthetic operator token"),
+    ):
+        (state / name).write_text(content)
+    output = tmp_path / "archive.tar.gz"
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--run-dir", str(run), "--output", str(output)],
+        check=True,
+    )
+    with tarfile.open(output) as archive:
+        assert sorted(archive.getnames()) == [
+            "hub-target/.robomate/hub.db",
+            "hub-target/.robomate/hub.db-shm",
+            "hub-target/.robomate/hub.db-wal",
+            "hub-target/.robomate/hub.json",
+        ]
+
+
+def test_main_reports_expected_failures_without_traceback(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    inside = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--run-dir",
+            str(run),
+            "--output",
+            str(run / "archive.tar.gz"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert inside.returncode != 0
+    assert "archive-run: error:" in inside.stderr
+    assert "Traceback" not in inside.stderr
+    assert "Traceback" not in inside.stdout
+    assert not (run / "archive.tar.gz").exists()
+
+    output = tmp_path / "archive.tar.gz"
+    output.write_text("keep me")
+    existing = subprocess.run(
+        [sys.executable, str(SCRIPT), "--run-dir", str(run), "--output", str(output)],
+        capture_output=True,
+        text=True,
+    )
+    assert existing.returncode != 0
+    assert "archive-run: error:" in existing.stderr
+    assert "Traceback" not in existing.stderr
+    assert "Traceback" not in existing.stdout
+    assert output.read_text() == "keep me"
