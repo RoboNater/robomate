@@ -1148,13 +1148,17 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
     root, env = repository
     processes = [start(root, env), start(root, env)]
     try:
-        for _ in range(200):
+        started = time.monotonic()
+        while (elapsed := time.monotonic() - started) < HUB_START_TIMEOUT_S:
             states = [process.poll() is None for process in processes]
             if sum(states) == 1 and read_hub_json(root):
                 break
             time.sleep(0.05)
         else:
-            raise AssertionError("expected exactly one live hub")
+            diagnostics = "\n".join(
+                _startup_diagnostics(root, process, elapsed) for process in processes
+            )
+            raise AssertionError(f"expected exactly one live hub\n{diagnostics}")
         winner = next(process for process in processes if process.poll() is None)
         loser = next(process for process in processes if process.poll() is not None)
         winner_info = await_hub(root, winner)
