@@ -296,7 +296,9 @@ async def test_validation_failure_leaves_task_working(
     )
     agent = hub_store.agent_by_name("charlie")
     assert agent is not None
-    rev_task = hub_store.assign_task("charlie", "reviewer", "Review PR", "Review instructions")
+    rev_task = hub_store.assign_task(
+        "charlie", "reviewer", "Review PR", "Review instructions", pr_head_sha="a" * 40
+    )
 
     # Approved without reviewed_head_sha -> HTTP 400
     bad_reviewer_1 = {
@@ -555,7 +557,9 @@ async def test_typed_result_roundtrip_a2a_to_get_state(
     )
     charlie_agent = hub_store.agent_by_name("charlie")
     assert charlie_agent is not None
-    rev_task = hub_store.assign_task("charlie", "reviewer", "Task Review", "Inst")
+    rev_task = hub_store.assign_task(
+        "charlie", "reviewer", "Task Review", "Inst", pr_head_sha="a" * 40
+    )
 
     rev_result = ReviewerResult(
         verdict=ReviewerVerdict.CHANGES_REQUESTED,

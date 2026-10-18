@@ -45,12 +45,15 @@ from agent_hub_common import (
     ConfigurationError,
     EventKind,
     HubSettings,
+    TaskRole,
     TaskState,
     WorkflowStatus,
 )
 from agent_hub_common.discovery import select_hub, verify_local_hub
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+DUMMY_PR_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -502,7 +505,13 @@ class AliceBackend(Protocol):
     async def wait_for_event(self, timeout_s: float, ack: str | None = None) -> dict[str, Any]: ...
 
     async def assign_task(
-        self, agent: str, role: str, title: str, instructions: str, event_id: int
+        self,
+        agent: str,
+        role: str,
+        title: str,
+        instructions: str,
+        event_id: int,
+        pr_head_sha: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def reply(self, task_id: str, text: str, message_id: int) -> dict[str, Any]: ...
@@ -541,10 +550,23 @@ class DirectStoreBackend:
         return {"event": None if event is None else asdict(event)}
 
     async def assign_task(
-        self, agent: str, role: str, title: str, instructions: str, event_id: int
+        self,
+        agent: str,
+        role: str,
+        title: str,
+        instructions: str,
+        event_id: int,
+        pr_head_sha: str | None = None,
     ) -> dict[str, Any]:
         task = asdict(
-            self.store.assign_task(agent, role, title, instructions, source_event_id=event_id)
+            self.store.assign_task(
+                agent,
+                role,
+                title,
+                instructions,
+                pr_head_sha=pr_head_sha,
+                source_event_id=event_id,
+            )
         )
         await asyncio.sleep(0)
         return task
@@ -596,19 +618,24 @@ class McpBackend:
         return await _call_dict(self.session, "wait_for_event", arguments)
 
     async def assign_task(
-        self, agent: str, role: str, title: str, instructions: str, event_id: int
+        self,
+        agent: str,
+        role: str,
+        title: str,
+        instructions: str,
+        event_id: int,
+        pr_head_sha: str | None = None,
     ) -> dict[str, Any]:
-        return await _call_dict(
-            self.session,
-            "assign_task",
-            {
-                "agent": agent,
-                "role": role,
-                "title": title,
-                "instructions": instructions,
-                "event_id": event_id,
-            },
-        )
+        arguments: dict[str, Any] = {
+            "agent": agent,
+            "role": role,
+            "title": title,
+            "instructions": instructions,
+            "event_id": event_id,
+        }
+        if pr_head_sha is not None:
+            arguments["pr_head_sha"] = pr_head_sha
+        return await _call_dict(self.session, "assign_task", arguments)
 
     async def reply(self, task_id: str, text: str, message_id: int) -> dict[str, Any]:
         return await _call_dict(
@@ -786,7 +813,14 @@ async def drive_one_task_with_backend(
         )
         if not isinstance(checkin_event_id, int):
             raise RuntimeError("Initial assignment has no durable check-in event id")
-        task = await backend.assign_task(agent_name, role, title, instructions, checkin_event_id)
+        pr_head_sha = DUMMY_PR_HEAD_SHA if role in (TaskRole.REVIEWER, TaskRole.REBASE) else None
+        task = (
+            await backend.assign_task(agent_name, role, title, instructions, checkin_event_id)
+            if pr_head_sha is None
+            else await backend.assign_task(
+                agent_name, role, title, instructions, checkin_event_id, pr_head_sha
+            )
+        )
         task_id = str(task.get("id") or "")
         logger.info("Task assigned: id=%s title=%r", task_id, title)
         if crash_at == "after_action":

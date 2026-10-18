@@ -44,6 +44,7 @@ from agent_hub_common import (
     ReviewerVerdict,
     StandingRole,
     TaskResult,
+    TaskRole,
     TaskState,
     WorkflowPolicy,
     WorkflowStatus,
@@ -2113,6 +2114,8 @@ class HubStore:
         replay returns the original task even after it has become terminal.
         """
 
+        if role in (TaskRole.REVIEWER, TaskRole.REBASE) and pr_head_sha is None:
+            raise ValueError(f"pr_head_sha is required for {role} tasks")
         if pr_head_sha is not None and not SHA_HEX_40_RE.fullmatch(pr_head_sha):
             raise ValueError("pr_head_sha must be a 40-character hex commit SHA")
         head = None if pr_head_sha is None else pr_head_sha.lower()
