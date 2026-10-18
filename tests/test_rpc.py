@@ -160,6 +160,8 @@ async def test_a_bridge_heartbeating_after_done_reads_as_finished_not_active(
 ) -> None:
     """#95: heartbeats keep the bridge connected but are never her activity."""
 
+    # #264: last-call ordering must not depend on WSL wall-clock resync.
+    hub_store.clock = MonotonicClock()
     dispatcher = cast(RpcDispatcher, app.state.rpc)
     dispatcher.hub_info = {
         "repo_root": "/repo",
