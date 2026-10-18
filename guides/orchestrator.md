@@ -573,7 +573,9 @@ delivery ID, or the merge/squash commit for that event. Use these routes:
 These routes compose: if a completion instead sources another REBASE,
 CI-REPAIR, NONBLOCKING, correction, or review task, it is consumed by that
 assignment. Continue from the subsequent task's completion and apply the
-table again. A RETRY uses its own completion in place of the failed task's;
+table again. A moved-head blocked REVIEW's `task_failed` event is likewise
+consumed by its RE-REVIEW; use the later approving RE-REVIEW completion for
+CLOSE-OUT. A RETRY uses its own completion in place of the failed task's;
 failed/canceled tasks cannot supply a successful close-out source. Keep the
 terminal completion unused for CLOSE-OUT until merge is verified; no extra
 task is needed just to manufacture an event.
