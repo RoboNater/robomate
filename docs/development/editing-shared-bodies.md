@@ -9,12 +9,14 @@ section; never rebuild whole sections from memory or an earlier fetch.
 
 Create a unique temporary directory (commands below). Save the following as
 `body-edit.py` inside it. This is a temporary recipe, not a repository script.
-It needs Python 3 and authenticated `gh`. Both shell recipes use it because
-Windows PowerShell 5.1 native-output pipelines/redirection can decode UTF-8 with
+It needs Python 3 and authenticated `gh`. If your host only provides `python3`,
+substitute `python3` for every `python` command below. Both shell recipes use it
+because Windows PowerShell 5.1 native-output pipelines/redirection can decode UTF-8 with
 the console code page and write a BOM. Python captures `gh` bytes directly and
 decodes JSON; it writes the body's UTF-8 bytes with **no added newline**. Never
 use `--jq .body` here or strip all trailing newlines. Legitimate trailing blank
-lines must survive.
+lines must survive. An API `null` body represents an empty description and is
+written as an empty file.
 
 Configure `EDITS` as tuples of `(section_start, section_end, old, new)`, with
 unique, exact start/end anchors in document order, and set `MAX_CHANGED_LINES`
@@ -46,7 +48,7 @@ def require(ok, message):
 
 def fetch():
     raw = subprocess.check_output(["gh", "api", endpoint])
-    return json.loads(raw.decode("utf-8"))["body"].encode("utf-8")
+    return (json.loads(raw.decode("utf-8"))["body"] or "").encode("utf-8")
 
 
 def planned():
@@ -135,9 +137,14 @@ python "$H" build "$D" "$E" &&
 python "$H" check "$D" "$E"
 ```
 
-After reviewing the diff, run this only for an authorized live edit:
+After reviewing the diff, run this only for an authorized live edit. Tool calls
+may not preserve shell variables: reassign these in the same call as the write,
+using the existing directory printed during preparation:
 
 ```bash
+D='<existing directory printed above>'
+H="$D/body-edit.py"
+E=repos/RoboNater/robomate/issues/2
 python "$H" fresh "$D" "$E" &&
 gh issue edit 2 --repo RoboNater/robomate --body-file "$D/body.md" &&
 python "$H" verify "$D" "$E"
@@ -146,8 +153,9 @@ python "$H" verify "$D" "$E"
 Keep every step through `gh issue edit` in the `&&` chain. Alternatively put the
 whole sequence in a script file with `set -euo pipefail` at its top and execute
 `bash <file>`; do not source it or run it as a conditional. Bare `set -e` in an
-agent tool shell may be suppressed (observed in Claude Code on WSL). An explicit
-chain or a fresh Bash script stops before the write on a failure.
+agent tool shell may be suppressed (observed in Claude Code on WSL and native
+Windows Git Bash). An explicit chain or a fresh Bash script stops before the
+write on a failure.
 
 ## Native PowerShell (Windows PowerShell 5.1 and PowerShell 7)
 

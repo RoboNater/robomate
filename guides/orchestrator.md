@@ -549,6 +549,8 @@ quote it as a task requirement, not as operator authorization.
 
 ## WRAP-UP
 
+Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) when editing shared issue or PR bodies.
+
 <!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42.
      Unresolved supplied roadmap targets: #34. -->
 

@@ -49,7 +49,7 @@ change.
 
 ## Close-out
 
-Use the [shared-body procedure](../docs/development/editing-shared-bodies.md) for roadmap edits.
+Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) for roadmap edits.
 
 Only perform close-out when Alice assigns it after merge. Update the roadmap
 issue's completion status and any reservation line as instructed, verify the
