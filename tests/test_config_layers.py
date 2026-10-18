@@ -278,26 +278,23 @@ def test_legacy_robomate_config_toml_forge_selects_gitlab_and_warns(
     )
     before_bytes = legacy_cfg.read_bytes()
 
-    with pytest.warns(UserWarning, match="robomate/config.toml") as recorded:
-        resolved = load_config_layers(
-            hub_config=legacy_cfg,
-            git_common_dir=common,
-        )
+    resolved = load_config_layers(
+        hub_config=legacy_cfg,
+        git_common_dir=common,
+    )
     assert resolved.forge.gitlab_hosts == ("gitlab-legacy.corp.example",)
     assert resolved.forge.detect("gitlab-legacy.corp.example") == "gitlab"
     assert len(resolved.warnings) == 1
     assert str(legacy_cfg) in resolved.warnings[0]
     assert str(repository_config_path(common)) in resolved.warnings[0]
-    assert len(recorded) == 1
     # Nothing is rewritten for the operator.
     assert legacy_cfg.read_bytes() == before_bytes
 
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        forge = detect_forge(
-            "git@gitlab-legacy.corp.example:team/project.git",
-            root=repo,
-            git_common_dir=common,
-        )
+    forge = detect_forge(
+        "git@gitlab-legacy.corp.example:team/project.git",
+        root=repo,
+        git_common_dir=common,
+    )
     assert forge == "gitlab"
 
 
@@ -315,6 +312,36 @@ def test_default_worktree_root_for_git_and_bare_common_dirs(tmp_path: Path) -> N
         assert resolved.closeout_steps == ()
         assert resolved.nits_issue is None
         assert resolved.setup is None
+
+
+def test_relative_worktree_root_in_repo_or_user_layer_is_an_error(tmp_path: Path) -> None:
+    repo_cfg = _write_toml(
+        tmp_path / "repo" / ".git" / "robomate" / "config.toml",
+        'worktree_root = "relative/worktrees"\n',
+    )
+    with pytest.raises(ConfigLayerError) as exc_info:
+        load_config_layers(repository_config=repo_cfg)
+    assert str(repo_cfg) in str(exc_info.value)
+    assert "worktree_root" in str(exc_info.value)
+
+    user_cfg = _write_toml(
+        tmp_path / "user" / "robomate" / "config.toml",
+        'worktree_root = "relative/worktrees"\n',
+    )
+    with pytest.raises(ConfigLayerError) as exc_info:
+        load_config_layers(user_config=user_cfg)
+    assert str(user_cfg) in str(exc_info.value)
+    assert "worktree_root" in str(exc_info.value)
+
+
+def test_non_utf8_config_toml_raises_config_layer_error_naming_file(tmp_path: Path) -> None:
+    repo_cfg = tmp_path / ".git" / "robomate" / "config.toml"
+    repo_cfg.parent.mkdir(parents=True, exist_ok=True)
+    repo_cfg.write_bytes(b"\xff\xfeinvalid utf-8")
+
+    with pytest.raises(ConfigLayerError) as exc_info:
+        load_config_layers(repository_config=repo_cfg)
+    assert str(repo_cfg) in str(exc_info.value)
 
 
 def test_unknown_key_and_invalid_values_name_file_and_key(tmp_path: Path) -> None:

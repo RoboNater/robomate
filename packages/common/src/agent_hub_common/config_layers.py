@@ -12,11 +12,9 @@ a disallowed or unknown key raises `ConfigLayerError` naming the file and key.
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
 import tomllib
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,15 +25,9 @@ from pydantic import ValidationError
 from .discovery import (
     DiscoveryError,
     repository_dir,
-    resolve_checkout,
     validate_agent_name,
 )
-from .discovery import (
-    state_dir as discovery_state_dir,
-)
 from .models import UNKNOWN, RolePolicy, WorkflowPolicy
-
-logger = logging.getLogger(__name__)
 
 LayerName = Literal["hub", "repository", "user"]
 
@@ -101,10 +93,6 @@ class ForgeConfig:
                 return "gitlab"
             if normalized in github:
                 return "github"
-        if normalized in self.gitlab_hosts:
-            return "gitlab"
-        if normalized in self.github_hosts:
-            return "github"
         return None
 
 
@@ -135,7 +123,6 @@ class ResolvedConfig:
     followup_label: str = DEFAULT_FOLLOWUP_LABEL
     closeout_steps: tuple[str, ...] = ()
     policy: WorkflowPolicy = field(default_factory=WorkflowPolicy)
-    allow_no_ci_setting: bool | Literal["auto"] = False
     policy_overrides: dict[str, Any] = field(default_factory=dict)
     agent_defaults: AgentConfig = field(default_factory=AgentConfig)
     agents: dict[str, AgentConfig] = field(default_factory=dict)
@@ -206,13 +193,6 @@ def default_worktree_root(git_common_dir: Path) -> Path:
     return repo_dir.parent / f"{name}.robomate"
 
 
-def hub_config_path(checkout_or_state_dir: Path) -> Path:
-    """Return the hub-layer `config.toml` path."""
-    if checkout_or_state_dir.name == ".robomate" or (checkout_or_state_dir / "hub.json").exists():
-        return checkout_or_state_dir / "config.toml"
-    return discovery_state_dir(checkout_or_state_dir) / "config.toml"
-
-
 def repository_config_path(git_common_dir: Path) -> Path:
     """Return `<git-common-dir>/robomate/config.toml` (mvp-spec §4)."""
     return git_common_dir / "robomate" / "config.toml"
@@ -266,11 +246,11 @@ def _read_toml(path: Path) -> dict[str, Any]:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ConfigLayerError(f"cannot read configuration in {path}: {exc}") from exc
     try:
         data = tomllib.loads(text)
-    except Exception as exc:
+    except tomllib.TOMLDecodeError as exc:
         raise ConfigLayerError(f"invalid configuration in {path}: {exc}") from exc
     return data
 
@@ -335,9 +315,6 @@ def _parse_policy_scalar(
 ) -> None:
     if key in target:
         raise _value_error(path, qualified, "duplicate policy setting in the same file")
-    if key == "allow_no_ci" and value == "auto":
-        target[key] = "auto"
-        return
     try:
         WorkflowPolicy.model_validate({key: value})
     except ValidationError as exc:
@@ -373,9 +350,6 @@ def _parse_agents_section(
                 raise _value_error(path, qualified, f"duplicate {key!r} setting in the same file")
             default_pins[key] = _validate_pin_str(path, qualified, value)
             continue
-        if key == "default" and isinstance(value, dict):
-            _parse_agent_pins_table(path, qualified, value, default_pins)
-            continue
         if not isinstance(value, dict):
             if key not in _AGENT_PIN_KEYS:
                 raise _unknown_key_error(path, qualified)
@@ -400,7 +374,10 @@ def _parse_layer(
         if key == "worktree_root":
             if layer not in _REPO_USER_LAYERS:
                 raise _layer_error(path, key, layer, _REPO_USER_LAYERS)
-            parsed.worktree_root = _validate_nonempty_str(path, key, value).strip()
+            raw_root = _validate_nonempty_str(path, key, value).strip()
+            if not Path(raw_root).expanduser().is_absolute():
+                raise _value_error(path, key, "expected an absolute path")
+            parsed.worktree_root = raw_root
             continue
 
         if key == "forge":
@@ -479,17 +456,7 @@ def _parse_layer(
                     raise _unknown_key_error(path, qualified)
             continue
 
-        if key in _AGENT_PIN_KEYS:
-            if key in parsed.agent_default_pins:
-                raise _value_error(path, key, f"duplicate {key!r} setting in the same file")
-            parsed.agent_default_pins[key] = _validate_pin_str(path, key, value)
-            continue
-
-        if key == "agent_defaults":
-            _parse_agent_pins_table(path, "agent_defaults", value, parsed.agent_default_pins)
-            continue
-
-        if key in ("agents", "agent"):
+        if key == "agents":
             _parse_agents_section(path, key, value, parsed.agent_default_pins, parsed.agent_pins)
             continue
 
@@ -504,7 +471,6 @@ def load_config_layers(
     user_config: Path | None = None,
     *,
     state_dir: Path | None = None,
-    checkout: Path | None = None,
     git_common_dir: Path | None = None,
     environ: Mapping[str, str] | None = None,
     platform: str | None = None,
@@ -517,21 +483,11 @@ def load_config_layers(
     naming the file and the key.
     """
     common = git_common_dir
-    if checkout is not None and common is None:
-        if (checkout / ".git").is_file() or (checkout / ".git" / "HEAD").is_file():
-            try:
-                _, common = resolve_checkout(checkout)
-            except DiscoveryError:
-                common = checkout / ".git"
-        else:
-            common = checkout / ".git"
 
     if hub_config is not None:
         hub_path: Path | None = hub_config
     elif state_dir is not None:
         hub_path = state_dir / "config.toml"
-    elif checkout is not None:
-        hub_path = discovery_state_dir(checkout) / "config.toml"
     else:
         hub_path = None
 
@@ -595,8 +551,6 @@ def load_config_layers(
                 f"{item.path}: [forge] in .robomate/config.toml is deprecated; move it to {target}"
             )
             warnings_list.append(msg)
-            logger.warning("%s", msg)
-            warnings.warn(msg, UserWarning, stacklevel=2)
 
     # 1. Resolve worktree_root (repository > user, else default from git_common_dir)
     worktree_root: Path | None = None
@@ -605,10 +559,7 @@ def load_config_layers(
         if item.layer in _REPO_USER_LAYERS and item.worktree_root is not None:
             raw = Path(item.worktree_root).expanduser()
             if item.layer == "repository":
-                if not raw.is_absolute() and common is not None:
-                    worktree_root = repository_dir(common).parent / raw
-                else:
-                    worktree_root = raw
+                worktree_root = raw
             else:
                 # User-level worktree_root is a parent directory (§4).
                 if common is not None:
@@ -673,14 +624,7 @@ def load_config_layers(
         for key, value in item.role_policy_fields.items():
             merged_role_policy.setdefault(key, value)
 
-    allow_no_ci_raw = merged_policy_scalars.get("allow_no_ci", False)
-    allow_no_ci_setting: bool | Literal["auto"] = (
-        "auto" if allow_no_ci_raw == "auto" else bool(allow_no_ci_raw)
-    )
-    policy_payload: dict[str, Any] = {
-        key: (False if key == "allow_no_ci" and val == "auto" else val)
-        for key, val in merged_policy_scalars.items()
-    }
+    policy_payload: dict[str, Any] = dict(merged_policy_scalars)
     if merged_role_policy:
         policy_payload["role_policy"] = merged_role_policy
     policy = WorkflowPolicy.model_validate(policy_payload)
@@ -727,12 +671,8 @@ def load_config_layers(
         followup_label=followup_label if followup_label is not None else DEFAULT_FOLLOWUP_LABEL,
         closeout_steps=closeout_steps if closeout_steps is not None else (),
         policy=policy,
-        allow_no_ci_setting=allow_no_ci_setting,
         policy_overrides=policy_overrides,
         agent_defaults=agent_defaults,
         agents=resolved_agents,
         warnings=tuple(warnings_list),
     )
-
-
-read_config_layers = load_config_layers

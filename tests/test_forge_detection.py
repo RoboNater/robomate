@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +17,11 @@ from agent_hub_common.discovery import (
 
 @pytest.fixture(autouse=True)
 def isolate_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure all tests run with an isolated XDG_CONFIG_HOME and fail on unmocked subprocesses."""
+    """Ensure tests run with isolated user config directories."""
     empty_config = tmp_path / "empty_xdg"
     empty_config.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(empty_config))
+    monkeypatch.setenv("APPDATA", str(empty_config))
 
 
 def test_extract_origin_host() -> None:
@@ -45,9 +47,11 @@ def test_detect_forge_well_known_hosts() -> None:
     assert detect_forge("https://gitlab.com/example/repo.git") == "gitlab"
 
 
+@pytest.mark.parametrize("sim_platform", ["linux", "win32"])
 def test_detect_forge_via_repository_and_user_config_layers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sim_platform: str
 ) -> None:
+    monkeypatch.setattr(sys, "platform", sim_platform)
     repo = tmp_path / "repo"
     common = repo / ".git"
     repo_config = common / "robomate" / "config.toml"
@@ -59,7 +63,8 @@ gitlab_hosts = ["gitlab-repo.corp.com", "shared.corp.com"]
         encoding="utf-8",
     )
 
-    user_config = tmp_path / "xdg" / "robomate" / "config.toml"
+    user_base = tmp_path / ("appdata" if sim_platform == "win32" else "xdg")
+    user_config = user_base / "robomate" / "config.toml"
     user_config.parent.mkdir(parents=True)
     user_config.write_text(
         """[forge]
@@ -69,6 +74,7 @@ github_hosts = ["github-user.corp.com", "shared.corp.com"]
         encoding="utf-8",
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
 
     assert detect_forge("git@gitlab-repo.corp.com:team/repo.git", root=repo) == "gitlab"
     # github_hosts is unset in repository layer, so user layer supplies it
@@ -94,14 +100,10 @@ github_hosts = ["github-internal.corp.com"]
     )
     before = config.read_text(encoding="utf-8")
 
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        assert detect_forge("git@gitlab-internal.corp.com:team/repo.git", root=repo) == "gitlab"
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        assert detect_forge("https://gl.local/team/repo.git", root=repo) == "gitlab"
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        assert detect_forge("git@github-internal.corp.com:team/repo.git", root=repo) == "github"
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        assert detect_forge("git@unknown-host.net:team/repo.git", root=repo) == "unknown"
+    assert detect_forge("git@gitlab-internal.corp.com:team/repo.git", root=repo) == "gitlab"
+    assert detect_forge("https://gl.local/team/repo.git", root=repo) == "gitlab"
+    assert detect_forge("git@github-internal.corp.com:team/repo.git", root=repo) == "github"
+    assert detect_forge("git@unknown-host.net:team/repo.git", root=repo) == "unknown"
     assert config.read_text(encoding="utf-8") == before
 
 

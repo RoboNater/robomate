@@ -3059,8 +3059,7 @@ def test_up_honours_legacy_forge_in_robomate_config_toml_with_warning(
         encoding="utf-8",
     )
 
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        repo = resolve_repository(root)
+    repo = resolve_repository(root)
     assert repo.forge == "gitlab"
 
     async def fake_gitlab_preflight(_origin: str) -> list[Any]:
@@ -3088,10 +3087,9 @@ def test_up_honours_legacy_forge_in_robomate_config_toml_with_warning(
     )
     buffer = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buffer)
-    with pytest.warns(UserWarning, match="robomate/config.toml"):
-        anyio.run(cli._run_up, args, repo, root / ".robomate")
+    anyio.run(cli._run_up, args, repo, root / ".robomate")
     out = buffer.getvalue()
-    assert "Warning:" in out
+    assert out.count("Warning:") == 1
     assert str(legacy_cfg) in out
     assert str(repo.git_common_dir / "robomate" / "config.toml") in out
     info = read_hub_json(root)
