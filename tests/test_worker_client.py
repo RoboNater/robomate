@@ -22,7 +22,6 @@ from conftest import BASE_URL, TOKEN
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
 
-
 # #264 r1-1: allow timer/request/telemetry scheduling on a loaded host;
 # each wait returns as soon as a heartbeat is observed.
 HEARTBEAT_WAIT_TIMEOUT_S = 10.0
