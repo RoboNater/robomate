@@ -348,7 +348,9 @@ search for the stable REVIEW title above. Only if it does not exist, choose the
 next unused finding ID prefix `r<number>-`, append it to that title, and call
 `assign_task`
 for the policy-selected reviewer with `role="reviewer"` and
-`pr_head_sha=<verified current head>`. Include each named issue URL (or the
+`pr_head_sha=<verified current head>` (the hub requires `pr_head_sha` on every
+`reviewer` and `rebase` assignment, including same-head correction and
+follow-up tasks). Include each named issue URL (or the
 statement of work when it names none), the PR URL, acceptance criteria, and:
 
 ```text
@@ -557,6 +559,8 @@ quote it as a task requirement, not as operator authorization.
   worker can confirm it with `get_operator_answer`.
 
 ## WRAP-UP
+
+Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) when editing shared issue or PR bodies.
 
 <!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42.
      Unresolved supplied roadmap targets: #34. -->

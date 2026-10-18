@@ -290,15 +290,32 @@ def test_assignment_marks_the_agent_busy_and_records_the_instructions(store: Hub
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 
-def test_a_review_assignment_is_bound_to_the_head_it_was_given(store: HubStore) -> None:
+@pytest.mark.parametrize("role", ["reviewer", "rebase"])
+def test_a_review_or_rebase_assignment_is_bound_to_the_head_it_was_given(
+    store: HubStore, role: str
+) -> None:
     store.check_in("bob")
 
-    task = store.assign_task("bob", "reviewer", "Review #7", "Review it", pr_head_sha=HEAD.upper())
+    task = store.assign_task("bob", role, f"{role} #7", "Work on it", pr_head_sha=HEAD.upper())
 
     assert task.pr_head_sha == HEAD
     assert store.get_state()["tasks"][0]["pr_head_sha"] == HEAD
     metadata = store.task_history(task.id)[0].parts[0]["metadata"]
     assert metadata[MetaKeys.PR_HEAD_SHA] == HEAD
+
+
+@pytest.mark.parametrize("role", ["reviewer", "rebase"])
+def test_a_review_or_rebase_assignment_without_pr_head_sha_is_refused(
+    store: HubStore, role: str
+) -> None:
+    store.check_in("bob")
+
+    with pytest.raises(ValueError, match=rf"pr_head_sha is required for {role} tasks"):
+        store.assign_task("bob", role, f"{role} #7", "Work on it")
+
+    assert store.tasks() == []
+    agent = store.agent_by_name("bob")
+    assert agent is not None and agent.status is AgentStatus.IDLE
 
 
 def test_an_unbound_assignment_carries_no_head(store: HubStore) -> None:
@@ -1370,22 +1387,23 @@ def test_standing_roles_enforce_compatible_task_assignments(store: HubStore) -> 
     store.check_in("dan", standing_role="worker", worker_instance_id="dan-1")
 
     with pytest.raises(ValueError, match=r"standing role '?implementer'?"):
-        store.assign_task("bob", "reviewer", "Review", "Look")
+        store.assign_task("bob", "reviewer", "Review", "Look", pr_head_sha=HEAD)
     with pytest.raises(ValueError, match=r"standing role '?reviewer'?"):
         store.assign_task("charlie", "implementer", "Impl", "Build")
     with pytest.raises(ValueError, match=r"standing role '?reviewer'?"):
-        store.assign_task("charlie", "rebase", "Rebase", "Rebase branch")
+        store.assign_task("charlie", "rebase", "Rebase", "Rebase branch", pr_head_sha=HEAD)
 
     impl_task = store.assign_task("bob", "implementer", "Impl", "Build")
     store.submit_result(impl_task.id, "bob", TaskState.COMPLETED, "done")
-    rebase_task = store.assign_task("bob", "rebase", "Rebase", "Rebase branch")
+    rebase_task = store.assign_task("bob", "rebase", "Rebase", "Rebase branch", pr_head_sha=HEAD)
     store.submit_result(rebase_task.id, "bob", TaskState.COMPLETED, "done")
-    rev_task = store.assign_task("charlie", "reviewer", "Review", "Look")
+    rev_task = store.assign_task("charlie", "reviewer", "Review", "Look", pr_head_sha=HEAD)
     store.submit_result(rev_task.id, "charlie", TaskState.COMPLETED, "done")
 
     # Standing role 'worker' accepts every task role.
     for task_role in ("implementer", "reviewer", "rebase"):
-        task = store.assign_task("dan", task_role, f"Task {task_role}", "Do work")
+        head = None if task_role == "implementer" else HEAD
+        task = store.assign_task("dan", task_role, f"Task {task_role}", "Do work", pr_head_sha=head)
         store.submit_result(task.id, "dan", TaskState.COMPLETED, "done")
 
 

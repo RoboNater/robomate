@@ -1215,6 +1215,7 @@ async def test_assign_task_refuses_standing_role_mismatch_with_invalid_params(
             title="Review #238",
             instructions="Review it",
             event_id=event.id,
+            pr_head_sha=HEAD,
         )
     )
     assert code == INVALID_PARAMS
@@ -1228,6 +1229,7 @@ async def test_assign_task_refuses_standing_role_mismatch_with_invalid_params(
         title="Rebase #238",
         instructions="Rebase it",
         event_id=event.id,
+        pr_head_sha=HEAD,
     )
     assert "result" in ok_rebase
 
@@ -1242,8 +1244,49 @@ async def test_assign_task_refuses_standing_role_mismatch_with_invalid_params(
         title="Review #238",
         instructions="Review it",
         event_id=event2.id,
+        pr_head_sha=HEAD,
     )
     assert "result" in ok_general
+
+
+@pytest.mark.parametrize("role", ["reviewer", "rebase"])
+async def test_assign_task_requires_pr_head_sha_for_reviewer_and_rebase(
+    client: httpx.AsyncClient, hub_store: HubStore, role: str
+) -> None:
+    from agent_hub_common import MetaKeys
+
+    hub_store.check_in("bob", AgentProfile())
+    event = hub_store.lease_next_event()
+    assert event is not None
+
+    code, text = error_of(
+        await call(
+            client,
+            "assign_task",
+            agent="bob",
+            role=role,
+            title=f"{role} #280",
+            instructions="Work on it",
+            event_id=event.id,
+        )
+    )
+    assert code == INVALID_PARAMS
+    assert text == f"pr_head_sha is required for {role} tasks"
+    assert hub_store.tasks() == []
+
+    ok = await call(
+        client,
+        "assign_task",
+        agent="bob",
+        role=role,
+        title=f"{role} #280",
+        instructions="Work on it",
+        event_id=event.id,
+        pr_head_sha=HEAD,
+    )
+    assert ok["result"]["pr_head_sha"] == HEAD
+    metadata = hub_store.task_history(ok["result"]["id"])[0].parts[0]["metadata"]
+    assert metadata[MetaKeys.PR_HEAD_SHA] == HEAD
 
 
 async def test_orchestrator_join_resume_hash_and_explicit_takeover(

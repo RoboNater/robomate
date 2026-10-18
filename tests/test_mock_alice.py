@@ -925,3 +925,41 @@ def test_mock_alice_join_result_is_printable_on_cp1252_stdout(
         printed = stdout.read()
     assert printed.isascii()
     assert ast.literal_eval(printed.removeprefix("SUCCESS: ").strip()) == result
+
+
+@pytest.mark.parametrize("backend_kind", ["direct", "mcp"])
+@pytest.mark.parametrize("role", ["reviewer", "rebase"])
+async def test_mock_alice_supplies_pr_head_sha_for_reviewer_and_rebase(
+    backend_kind: str, role: str, tmp_path: Path
+) -> None:
+    db_path = tmp_path / f"role_{role}_{backend_kind}.db"
+    initialize_database(db_path)
+    store = HubStore(db_path)
+    bob = store.check_in("bob", AgentProfile(harness="codex"))
+
+    async def finish_task() -> None:
+        task = await store.await_assignment(bob.context_id, timeout_s=FULL_TASK_TIMEOUT_S)
+        if not isinstance(task, TaskRecord):
+            pytest.fail(f"worker: no task assigned to bob within {FULL_TASK_TIMEOUT_S:g} s")
+        assert task.role == role
+        assert task.pr_head_sha == mock_alice.DUMMY_PR_HEAD_SHA
+        store.submit_result(
+            task_id=task.id,
+            agent="bob",
+            status=TaskState.COMPLETED,
+            summary="Done",
+        )
+
+    async with alice_backend(backend_kind, store) as backend:
+        drive_fut = asyncio.create_task(
+            mock_alice.drive_one_task_with_backend(
+                backend=backend,
+                expected_agent="bob",
+                role=role,
+                timeout_s=FULL_TASK_TIMEOUT_S,
+                expected_harness="codex",
+            )
+        )
+        finish_fut = asyncio.create_task(finish_task())
+        res, _ = await asyncio.gather(drive_fut, finish_fut)
+    assert res.get("summary") == "Done"

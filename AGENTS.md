@@ -133,12 +133,14 @@ wake a waiter on the other.
   A worker never starts or stops the run's hub or any agent; the only hub it
   starts by hand is the isolated smoke run under Validation (#145).
 - **Edit a shared issue or PR body (roadmap #2 above all) so that a failure
-  writes nothing.** Snapshot the live body first. Build the new one in a
-  `mktemp` file: `/tmp` is shared across runs and worker names repeat. Chain
-  the steps with `&&` or run them under `set -euo pipefail`, never `;`, so a
-  failed step cannot reach `gh issue edit`. Anchor each change inside its own
-  section, because phrases repeat between milestones. Afterwards, diff the live
-  body against the snapshot.
+  writes nothing.** Follow the [shared-body procedure](docs/development/editing-shared-bodies.md):
+  snapshot into a unique temporary directory, decode JSON and write the body
+  string as UTF-8 without a BOM or added newline, and replace only anchored text.
+  Check for U+FEFF, unintended non-ASCII changes and excessive changed lines;
+  re-fetch immediately before writing and stop or rebuild if the snapshot is stale,
+  then re-read and diff. In Bash use `&&` through the write, or a script file run
+  as `bash <file>` with `set -euo pipefail` at its top: some agent shells suppress
+  bare errexit; the linked PowerShell recipe checks each native exit code.
 
 ## Changing things
 
