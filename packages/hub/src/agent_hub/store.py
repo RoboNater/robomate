@@ -786,10 +786,18 @@ class HubStore:
                 merged_sha = result["head_sha"]
         return {"pr_url": pr_url, "approved_sha": approved_sha, "merged_sha": merged_sha}
 
-    def _previous_run_summary(self, connection: Connection) -> dict[str, Any] | None:
+    def _previous_run_summary(
+        self, connection: Connection, exclude_id: str | None = None
+    ) -> dict[str, Any] | None:
         """The previous run's summary (run ID, PR/MR, merged SHA), nothing else."""
 
-        row = self._most_recent_done_row(connection)
+        if exclude_id is None:
+            row = self._most_recent_done_row(connection)
+        else:
+            row = connection.execute(
+                "SELECT * FROM workflow WHERE status = ? AND id != ? ORDER BY created DESC LIMIT 1",
+                (WorkflowStatus.DONE.value, exclude_id),
+            ).fetchone()
         if row is None:
             return None
         summary: dict[str, Any] = {
@@ -929,12 +937,14 @@ class HubStore:
             # SELECT alone does not start a transaction in sqlite3's legacy mode.
             connection.execute("BEGIN")
             live = self._live_row(connection)
-            if live is None:
-                workflow = None
-                tasks: list[dict[str, Any]] = []
-            else:
-                workflow = dict(live)
-                workflow["policy"] = json.loads(workflow.pop("policy_json"))
+            queue = self._queued_summaries(connection)
+            workflow: dict[str, Any] | None
+            tasks: list[dict[str, Any]]
+            previous_run: dict[str, Any] | None
+            if live is not None:
+                live_dict = dict(live)
+                live_dict["policy"] = json.loads(live_dict.pop("policy_json"))
+                workflow = live_dict
                 tasks = []
                 for row in connection.execute(
                     "SELECT task.*, workflow.run_id, workflow.statement_sha256"
@@ -945,8 +955,39 @@ class HubStore:
                     summary = asdict(_task(row))
                     summary.pop("instructions")
                     tasks.append(summary)
-            queue = self._queued_summaries(connection)
-            previous_run = self._previous_run_summary(connection)
+                previous_run = self._previous_run_summary(connection)
+            elif queue:
+                # Queued runs wait behind no live run: no active workflow, but
+                # the queue and the previous summary say what is next.
+                workflow = None
+                tasks = []
+                previous_run = self._previous_run_summary(connection)
+            else:
+                # No live and nothing queued: show the most recent done run as
+                # the workflow, so a completed run still reports its status;
+                # the previous summary is the one before it.
+                recent = self._most_recent_done_row(connection)
+                if recent is None:
+                    workflow = None
+                    tasks = []
+                    previous_run = None
+                else:
+                    recent_dict = dict(recent)
+                    recent_dict["policy"] = json.loads(recent_dict.pop("policy_json"))
+                    workflow = recent_dict
+                    tasks = []
+                    for row in connection.execute(
+                        "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                        " FROM task JOIN workflow ON task.workflow_id = workflow.id"
+                        " WHERE task.workflow_id = ? ORDER BY task.created",
+                        (str(recent["id"]),),
+                    ).fetchall():
+                        summary = asdict(_task(row))
+                        summary.pop("instructions")
+                        tasks.append(summary)
+                    previous_run = self._previous_run_summary(
+                        connection, exclude_id=str(recent["id"])
+                    )
             agents = []
             for row in connection.execute("SELECT * FROM agent ORDER BY name").fetchall():
                 agent = _agent(row)
@@ -1168,7 +1209,15 @@ class HubStore:
         activated_row: Row | None = None
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            workflow_id = self._require_workflow(connection, "set_workflow_status")
+            try:
+                workflow_id = self._require_workflow(connection, "set_workflow_status")
+            except ConflictError:
+                # Replaying a `done` after the run already finished is a no-op,
+                # not a new workflow: the redelivery must not conjure one.
+                recent = self._most_recent_row(connection)
+                if recent is not None and recent["status"] == status.value:
+                    return
+                raise
             row = connection.execute(
                 "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
             ).fetchone()
