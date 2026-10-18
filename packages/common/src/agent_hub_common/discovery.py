@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,7 +133,7 @@ def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     if not origin:
         raise DiscoveryError("origin remote is empty")
     default_branch = _default_branch(root, common)
-    forge = detect_forge(origin, root, probe_cli=probe_cli)
+    forge = detect_forge(origin, root, probe_cli=probe_cli, git_common_dir=common)
     return Repository(root, common, origin, default_branch, forge)
 
 
@@ -241,8 +240,17 @@ def _match_yaml_host(content: str, host: str, *, under_hosts: bool = False) -> b
     return bool(pattern.search(search_text))
 
 
-def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = False) -> str:
+def detect_forge(
+    origin: str,
+    root: Path | None = None,
+    *,
+    probe_cli: bool = False,
+    git_common_dir: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
     """Detect forge ('github', 'gitlab', or 'unknown') (spec §10)."""
+    from .config_layers import load_config_layers
+
     host = extract_origin_host(origin)
     if not host:
         return "unknown"
@@ -251,25 +259,29 @@ def detect_forge(origin: str, root: Path | None = None, *, probe_cli: bool = Fal
     if host == "gitlab.com":
         return "gitlab"
 
-    # 1. Check repository config.toml (.robomate/config.toml only) if root is provided
-    if root is not None:
-        config_path = state_dir(root) / "config.toml"
-        if config_path.is_file():
+    # 1. Check configuration layers (repository, user, and legacy .robomate/config.toml)
+    common = git_common_dir
+    if common is None and root is not None:
+        if (root / ".git").is_file() or (root / ".git" / "HEAD").is_file():
             try:
-                data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                raise DiscoveryError(f"invalid configuration in {config_path}: {exc}") from exc
-            forge_cfg = data.get("forge")
-            if isinstance(forge_cfg, dict):
-                gitlab_hosts = forge_cfg.get("gitlab_hosts", [])
-                if isinstance(gitlab_hosts, list) and host in gitlab_hosts:
-                    return "gitlab"
-                github_hosts = forge_cfg.get("github_hosts", [])
-                if isinstance(github_hosts, list) and host in github_hosts:
-                    return "github"
+                _, common = resolve_checkout(root)
+            except DiscoveryError:
+                common = root / ".git"
+        else:
+            common = root / ".git"
+    hub_cfg = state_dir(root) / "config.toml" if root is not None else None
+    layered = load_config_layers(
+        hub_config=hub_cfg,
+        git_common_dir=common,
+        environ=environ,
+    )
+    configured_forge = layered.forge.detect(host)
+    if configured_forge is not None:
+        return configured_forge
 
     # 2. Check glab CLI configuration file
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    env = os.environ if environ is None else environ
+    config_home = Path(env.get("XDG_CONFIG_HOME") or Path.home() / ".config")
     glab_config = config_home / "glab-cli" / "config.yml"
     if glab_config.is_file():
         try:

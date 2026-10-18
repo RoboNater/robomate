@@ -104,6 +104,8 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         # registry_path() uses %LOCALAPPDATA% on Windows, so isolate it too;
         # otherwise the tests read and prune the operator's real hub registry.
         "LOCALAPPDATA": str(tmp_path / "localappdata"),
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
+        "APPDATA": str(tmp_path / "appdata"),
         # The first-free scan runs in this test's own block, not from 8420,
         # so hubs and test suites elsewhere on the host can't move it (#204).
         "ROBOMATE_BASE_PORT": str(reserve_port_block()),
@@ -3011,3 +3013,85 @@ def test_status_redirected_oem_output_escapes_unencodable_text(
         assert (
             "Workflow: active \\u2014" if encoding == "cp437" else "Workflow: active —"
         ) in output
+
+
+def test_up_refuses_disallowed_config_layer_keys(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    root, env = repository
+    hub_cfg = root / ".robomate" / "config.toml"
+    hub_cfg.parent.mkdir(parents=True, exist_ok=True)
+    hub_cfg.write_text('worktree_root = "/tmp/not-allowed-in-hub"\n', encoding="utf-8")
+
+    res = _run_cli([CLI, "up"], cwd=root, env=env, text=True, capture_output=True)
+    assert res.returncode == 1
+    assert str(hub_cfg) in res.stderr
+    assert "worktree_root" in res.stderr
+    assert read_hub_json(root) is None
+
+    hub_cfg.unlink()
+    user_base = Path(env["APPDATA"] if sys.platform == "win32" else env["XDG_CONFIG_HOME"])
+    user_cfg = user_base / "robomate" / "config.toml"
+    user_cfg.parent.mkdir(parents=True, exist_ok=True)
+    user_cfg.write_text("nits_issue = 4\n", encoding="utf-8")
+
+    res_user = _run_cli([CLI, "up"], cwd=root, env=env, text=True, capture_output=True)
+    assert res_user.returncode == 1
+    assert str(user_cfg) in res_user.stderr
+    assert "nits_issue" in res_user.stderr
+    assert read_hub_json(root) is None
+
+
+def test_up_honours_legacy_forge_in_robomate_config_toml_with_warning(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, env = repository
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", "git@gl-legacy.corp.example:team/repo.git"],
+        cwd=root,
+        check=True,
+    )
+    legacy_cfg = root / ".robomate" / "config.toml"
+    legacy_cfg.parent.mkdir(parents=True, exist_ok=True)
+    legacy_cfg.write_text(
+        '[forge]\ngitlab_hosts = ["gl-legacy.corp.example"]\n',
+        encoding="utf-8",
+    )
+
+    repo = resolve_repository(root)
+    assert repo.forge == "gitlab"
+
+    async def fake_gitlab_preflight(_origin: str) -> list[Any]:
+        return []
+
+    async def fake_serve_http(
+        _settings: Any, _sockets: list[socket.socket], _info: dict[str, Any], started: Any
+    ) -> None:
+        started()
+        for sock in _sockets:
+            sock.close()
+
+    monkeypatch.setattr(cli, "gitlab_preflight", fake_gitlab_preflight)
+    monkeypatch.setattr(cli, "serve_http", fake_serve_http)
+    for key, val in env.items():
+        monkeypatch.setenv(key, val)
+
+    args = argparse.Namespace(
+        forge=None,
+        name=None,
+        bind="127.0.0.1",
+        public_url=None,
+        port=None,
+        no_call_accounting=False,
+    )
+    buffer = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buffer)
+    anyio.run(cli._run_up, args, repo, root / ".robomate")
+    out = buffer.getvalue()
+    assert out.count("Warning:") == 1
+    assert str(legacy_cfg) in out
+    assert str(repo.git_common_dir / "robomate" / "config.toml") in out
+    info = read_hub_json(root)
+    assert info is not None
+    assert info["forge"] == "gitlab"

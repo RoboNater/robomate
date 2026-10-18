@@ -98,11 +98,11 @@ For a hub or CLI entry point (`robomate up` / `down` / `status` / `mcp`, the
 primary check (#145). A worker may also smoke-run this repository's entry
 points by hand, but only as the isolated smoke run in
 [`guides/worker.md`](guides/worker.md): its own state directory, operator
-token file and `XDG_STATE_HOME`/`LOCALAPPDATA`, `ROBOMATE_HUB_URL` and
-`ROBOMATE_TOKEN*` unset, its own port and a temporary checkout, stopped
-before the task ends and reported in the result. It never touches the run's
-hub, its `.robomate/`, the machine's `hubs.json` and operator credential, or
-another agent's process.
+token file, `XDG_STATE_HOME`/`LOCALAPPDATA` and `XDG_CONFIG_HOME`/`APPDATA`,
+`ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` unset, its own port and a temporary
+checkout, stopped before the task ends and reported in the result. It never
+touches the run's hub, its `.robomate/`, the machine's `hubs.json` and
+operator credential, or another agent's process.
 
 `uv run robomate up` starts the hub of the checkout it runs in, main checkout or linked worktree (first free port from 8420, reused on restart).
 

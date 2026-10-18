@@ -14,6 +14,7 @@ from agent_hub_common import (
     AgentStatus,
     HubSettings,
     TaskState,
+    load_config_layers,
     load_or_create_token,
     read_token_file,
 )
@@ -77,6 +78,12 @@ def create_app(
     """Create a configured hub application without starting a server."""
 
     resolved = settings or HubSettings.from_env()
+    common_raw = hub_info.get("git_common_dir") if hub_info is not None else None
+    common_dir = Path(str(common_raw)) if common_raw else None
+    config_layers = load_config_layers(
+        hub_config=resolved.state_dir / "config.toml",
+        git_common_dir=common_dir,
+    )
     hub_id = str(hub_info["hub_id"]) if hub_info is not None else uuid.uuid4().hex
     card = build_agent_card(resolved.public_url)
     store = HubStore(
@@ -154,6 +161,7 @@ def create_app(
         openapi_url=None,
     )
     app.state.settings = resolved
+    app.state.config_layers = config_layers
     app.state.store = store
     app.state.orchestrator = orchestrator
     app.state.rpc = dispatcher

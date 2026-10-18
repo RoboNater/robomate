@@ -253,17 +253,23 @@ moved silently.
 
 | Keys | Layers | Why |
 |---|---|---|
-| `worktree_root`, `forge.*` (e.g. `forge.gitlab_hosts`) | repository, user; a hub cannot override them | The worktree root holds the hub's own state, so the hub's config cannot choose it; the forge is a fact of the repository |
+| `worktree_root`, `forge.*` (`[forge]` `gitlab_hosts`, `github_hosts`) | repository, user; a hub cannot override them | The worktree root holds the hub's own state, so the hub's config cannot choose it; the forge is a fact of the repository |
 | `nits_issue`, `followup_label`, `closeout_steps` (§7.3), `setup` (§6) | repository; a hub may override | They describe the repository's process, so a new worktree's hub has them from its first start, with nothing copied. A hub may need a different setup or nits issue for its line of work |
-| policy defaults (§7.2), agent defaults (model, effort pins) | hub, repository, user | Operator preferences; per-hub where a team is set up differently |
+| policy defaults (§7.2: top-level or `[policy]` scalars, `[role_policy]` or `[policy.role_policy]`), agent defaults (`[agents]` `model`, `effort` scalars and `[agents.<name>]` per-agent `model`, `effort` pins) | hub, repository, user | Operator preferences; per-hub where a team is set up differently |
 
-A user-level `worktree_root` is a parent directory; the repository's root is then
-`<that>/<repo>.robomate/`. That alone does not keep two repositories apart: two
-independent repositories with the same `<repo>` name derive the same root. So each
-repository's worktree root records, when its first hub creates it, the git common
-directory it belongs to, and a hub of any other repository refuses that root and asks for
-a repository-level `worktree_root`. The same check applies to every root, default or
-configured.
+A key set in a layer that may not hold it is an error naming the file and key, never ignored.
+A legacy hub's `.robomate/config.toml` `[forge]` table is still honoured, with a warning
+naming the repository-level file (`<git-common-dir>/robomate/config.toml`) to move it to,
+until the hub is relocated; nothing is rewritten for the operator.
+
+A configured `worktree_root` must be an absolute path (after `~` expansion) in both the
+repository and user layers. A user-level `worktree_root` is a parent directory; the
+repository's root is then `<that>/<repo>.robomate/`. That alone does not keep two
+repositories apart: two independent repositories with the same `<repo>` name derive the
+same root. So each repository's worktree root records, when its first hub creates it, the
+git common directory it belongs to, and a hub of any other repository refuses that root and
+asks for a repository-level `worktree_root`. The same check applies to every root, default
+or configured.
 
 **Machine registry** — `$XDG_STATE_HOME/robomate/hubs.json` (Windows:
 `%LOCALAPPDATA%\robomate\hubs.json`): one entry per hub, **keyed by `hub_id`**, recording
