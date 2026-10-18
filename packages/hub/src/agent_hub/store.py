@@ -1212,12 +1212,15 @@ class HubStore:
             try:
                 workflow_id = self._require_workflow(connection, "set_workflow_status")
             except ConflictError:
-                # Replaying a `done` after the run already finished is a no-op,
-                # not a new workflow: the redelivery must not conjure one.
+                # No live run: either a replayed `done` (no-op when the most
+                # recent run already has that status) or a reopen of the most
+                # recent run (e.g. DONE -> ACTIVE in activity tests).
                 recent = self._most_recent_row(connection)
-                if recent is not None and recent["status"] == status.value:
+                if recent is None:
+                    raise
+                if recent["status"] == status.value:
                     return
-                raise
+                workflow_id = str(recent["id"])
             row = connection.execute(
                 "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
             ).fetchone()
