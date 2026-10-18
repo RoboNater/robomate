@@ -106,7 +106,7 @@ def test_operations_are_exactly_the_public_methods(cls: type) -> None:
     }
 
     assert public == set(OPERATIONS)
-    assert len(OPERATIONS) == 12
+    assert len(OPERATIONS) == 13
 
 
 def test_the_hub_implements_every_shared_tool() -> None:
@@ -162,6 +162,14 @@ async def initialize_workflow(store: HubStore) -> dict[str, Any]:
 
 async def initialize_workflow_conflict(store: HubStore) -> dict[str, Any]:
     return {"goal": "A different goal"}
+
+
+async def start_workflow(store: HubStore) -> dict[str, Any]:
+    return {"statement": "Second run from chat"}
+
+
+async def start_workflow_empty(store: HubStore) -> dict[str, Any]:
+    return {"statement": "   "}
 
 
 async def wait_for_event(store: HubStore) -> dict[str, Any]:
@@ -268,6 +276,8 @@ CASES: list[tuple[str, Prepare, bool]] = [
     ("get_state", get_state, OK),
     ("initialize_workflow", initialize_workflow, OK),
     ("initialize_workflow", initialize_workflow_conflict, FAILS),
+    ("start_workflow", start_workflow, OK),
+    ("start_workflow", start_workflow_empty, FAILS),
     ("wait_for_event", wait_for_event, OK),
     ("wait_for_event", wait_for_event_ack, OK),
     ("assign_task", assign_task, OK),

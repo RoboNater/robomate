@@ -1299,3 +1299,55 @@ async def test_invalid_orchestrator_join_does_not_attach(
 ) -> None:
     assert error_of(await call(client, "join", **params))[0] == INVALID_PARAMS
     assert app.state.rpc.orchestrator is None
+
+
+async def test_start_workflow_queues_and_second_starts_after_done(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    # The fixture already holds one live run; that is the first.
+    first = (await call(client, "get_state"))["result"]["workflow"]
+    assert first["run_id"] and first["status"] == "active"
+    second = (await call(client, "start_workflow", statement="Second run"))["result"]
+    assert second["status"] == "queued" and second["run_id"] != first["run_id"]
+    # Third while live + queued exist is refused with -32002.
+    assert error_of(await call(client, "start_workflow", statement="Third"))[0] == CONFLICT
+    state = (await call(client, "get_state"))["result"]
+    assert state["workflow"]["run_id"] == first["run_id"]
+    assert len(state["queue"]) == 1 and state["queue"][0]["run_id"] == second["run_id"]
+    assert state["run_id"] == first["run_id"]
+    await call(client, "set_workflow_status", status="done", summary="Done")
+    after = (await call(client, "get_state"))["result"]
+    assert after["workflow"]["run_id"] == second["run_id"]
+    assert after["queue"] == []
+    assert after["previous_run"]["run_id"] == first["run_id"]
+
+
+async def test_initialize_workflow_confirms_active_and_starts_new_after_done(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    current = (await call(client, "get_state"))["result"]["workflow"]
+    first = (await call(client, "initialize_workflow", goal=current["goal"]))["result"]
+    assert first["id"] == current["id"]
+    again = (await call(client, "initialize_workflow", goal=current["goal"]))["result"]
+    assert again["id"] == first["id"] and again["run_id"] == first["run_id"]
+    await call(client, "set_workflow_status", status="done", summary="Done")
+    second = (await call(client, "initialize_workflow", goal="New goal"))["result"]
+    assert second["id"] != first["id"] and second["run_id"] != first["run_id"]
+
+
+async def test_assign_task_carries_run_id(client: httpx.AsyncClient, hub_store: HubStore) -> None:
+    await check_in(client, "bob")
+    event = hub_store.lease_next_event()
+    assert event is not None
+    assigned = (
+        await call(
+            client,
+            "assign_task",
+            agent="bob",
+            role="implementer",
+            title="Build",
+            instructions="Do it",
+            event_id=event.id,
+        )
+    )["result"]
+    assert assigned["run_id"] == hub_store.get_state()["workflow"]["run_id"]

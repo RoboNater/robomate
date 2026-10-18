@@ -134,6 +134,7 @@ DEFAULT_STALL_AFTER_MIN = 20
 ALICE_TOOLS = [
     "get_state",
     "initialize_workflow",
+    "start_workflow",
     "wait_for_event",
     "assign_task",
     "check_merge_gate",
@@ -322,17 +323,29 @@ def check_manifest(manifest_path: Path, run_dir: Path, repository: str) -> None:
 def check_hub_workflow(
     hub_repo: Path, run_dir: Path, goal: str, policy: dict[str, Any] | None = None
 ) -> None:
-    """Refuse a different run on a hub whose single workflow is initialized."""
+    """Refuse a different run on a hub with a live workflow; all-`done` hubs are free.
+
+    M2 Step 3 keeps every workflow: a hub whose workflows are all `done`
+    accepts a new run, while a hub with a live (`active`, `paused`,
+    `escalated`) or `queued` workflow still requires the same run and goal.
+    """
     path = hub_state_dir(hub_repo) / "hub.db"
     if not path.exists():
         return
     try:
         with contextlib.closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
-            row = db.execute("SELECT goal, status, policy_json FROM workflow LIMIT 1").fetchone()
+            rows = db.execute(
+                "SELECT goal, status, policy_json FROM workflow ORDER BY created"
+            ).fetchall()
     except sqlite3.Error as exc:
         raise ValueError(f"cannot read workflow from {path}: {exc}") from exc
-    if row is None:
+    if not rows:
         return
+    if all(row[1] == "done" for row in rows):
+        return
+    # The live run is the oldest non-done workflow; queued runs wait behind it.
+    live = next((row for row in rows if row[1] != "done"), rows[0])
+    row = live
     manifest_path = run_dir / "run.json"
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))

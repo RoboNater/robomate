@@ -606,26 +606,49 @@ permissions, which certification catches per harness.
   SHA-256 (#9), size-capped with a clear error (#10). `--issue N` renders the standard
   one-issue statement.
 - `start_workflow(statement?, policy?)` (orchestrator tool) starts the next queued statement;
-  with `statement` it creates one from chat. The hub stores exactly what it received.
-- Assignments carry `statement_sha256`; workers read it with `get_statement(sha)` when they
-  need it (#8, #9). Nothing paraphrases the operator's text on its way to a worker.
+  with `statement` it creates one from chat. The hub stores exactly what it received,
+  in the `statement` table (SHA-256 key, bytes, size, source, created; DB schema v22),
+  and the workflow carries its `statement_sha256`.
+- Assignments carry `statement_sha256` and `run_id`; workers read the statement with
+  `get_statement(sha)` when they need it (#8, #9). Nothing paraphrases the operator's
+  text on its way to a worker.
 
 ### 7.2 Workflow states and sequencing
+- **Run identity.** Every workflow gets a `run_id` when it is created: `<UTC date YYYYMMDD>_<8 hex>`,
+  unique per hub and stored on the workflow row beside its `id` (DB schema v22), which stays
+  the key every table references. A database at the previous version migrates each existing
+  workflow to a `run_id` from its `created` date and the first 8 hex of its `id`. The run ID
+  is what operators, file names and evidence use; the workflow ID stays what tasks and events
+  reference. `get_state` and assignments carry the `run_id`, and `runs/<run_id>/manifest.json`
+  is written atomically at start and completed at `done` (§11).
 - Statuses: `queued → active → (paused | escalated) → done | abandoned`. One `active` at a
-  time per hub. `abandoned` is set only by the operator (`robomate abandon [--reason]`): the explicit exit
+  time per hub (`active`, `paused` or `escalated` count as live); at most one `live` run and
+  one `queued` run may exist. `abandoned` is set only by the operator (`robomate abandon [--reason]`): the explicit exit
   for a run that should end without delivering. It bypasses the `done` check, keeps
   worktrees, and is recorded in the run report.
-- **One run = one PR/MR** (locked). Sequential runs come from the queue.
+- `start_workflow(statement?, policy?)` starts the oldest `queued` workflow, or creates one
+  from chat. With a `statement` it stores the statement (§7.1) and creates `active` when no
+  run is live and nothing is queued, otherwise `queued` behind the live run. A further
+  `start_workflow` while one run is live and one is queued is refused with -32002.
+  `initialize_workflow` stays as an alias until M2 Step 11, scoped to the current run: with
+  the same goal it confirms the live run, and after `done` it starts a new run with a new
+  `run_id`. That alone removes the fresh-checkout-per-run rule (#53) for prepared runs.
+- **One run = one PR/MR** (locked). Sequential runs come from the queue: the second starts
+  only after the first is `done`, via `start_workflow` with no statement or automatically
+  when `done` finds a queued run.
 - **The queue and history are per hub.** `robomate submit` queues on the selected hub
   (§4 discovery). Parallel work in one repository uses parallel hubs, one per checkout;
-  there is no cross-hub scheduling (§6).
+  there is no cross-hub scheduling (§6). `get_state` carries the queue (oldest first) and
+  `robomate status` shows the run ID and queue length.
 - **Carried context between runs** is explicit and small: the previous run's summary
-  (PR/MR, merged SHA, follow-ups filed) is available in `get_state`; nothing else carries over.
+  (run ID, PR/MR, approved and merged SHAs) is available in `get_state`; nothing else carries over.
 - Policy additions (to PoC `WorkflowPolicy`):
   - `deliver: merge | pr` (default `merge`) — #14.
   - `closeout: true | false` (default `true`) — run the close-out task (§7.3).
-  - `on_done: release | standby` (default `release`). Standby keeps workers joined for the
-    next queued run; idle holds cost tokens, so `release` is the default when the queue is empty.
+  - `on_done: release | standby` (default `release`). `release` releases workers when a run
+    ends with the queue empty; `standby` keeps them joined for the next queued run. With a
+    queued run waiting, workers stay for it under either value. Idle holds cost tokens, so
+    `release` is the default when the queue is empty.
   - the hub's forge (§4, §10) applies; it is not a policy field.
 - Operator policy defaults come from the configuration layers (§4): the hub's `config.toml`,
   then the repository's, then the user's; `robomate submit --policy k=v` overrides per run.
@@ -929,16 +952,20 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
 ## 11. Observability and token budget
 
 - `robomate status`: one screen — repo, URL, forge, agents (role, harness, model, alive/listening),
-  workflow phase and round, PR/MR and last gate result, close-out status, inbox count.
+  workflow phase and round, run ID and queue length, PR/MR and last gate result, close-out
+  status, inbox count.
 - `robomate log [--timeline] [--follow]`: interleaved events, decisions, and results using closed-set
   labels, never printing untrusted payload text (#20). This is the drill-down and the future
   dashboard's feed.
 - `robomate report [run]`: the rendered run report (§7.3).
 - Summaries come from typed results and events, not from agent prose.
-- **Run identity:** every workflow gets a run ID and a manifest in `runs/<id>/` in the hub's
-  state directory (§4)
-  (robomate version, git revision, harness profiles, policy, statement SHA)
-  ([`docs/poc-lessons.md`](poc-lessons.md)).
+- **Run identity:** every workflow gets a run ID and a manifest in `runs/<run_id>/manifest.json`
+  in the hub's state directory (§4), written atomically when the run starts (as `active` or
+  `queued`) and rewritten at its end, so a hub restart in between leaves valid JSON
+  ([`docs/poc-lessons.md`](poc-lessons.md)). At start: robomate version and git revision,
+  `hub_id` and name, origin, forge, default branch, statement SHA-256 and source, policy,
+  and the profile of each agent that held a task. At the end it adds the status, PR/MR URL,
+  and approved and merged SHAs. `report.md` is M4's.
 - **Accounting on by default** (#7); `call_log` retention bounded (#23), since hubs now live
   for days.
 - Alice's bridge measures MCP request, response, content, and repeat bytes on its

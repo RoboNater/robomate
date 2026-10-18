@@ -991,9 +991,17 @@ def _status(as_json: bool, selector: str | None) -> None:
     print(f"Forge: {status['forge']}  Default branch: {status['default_branch']}")
     workflow = status["workflow"]
     if workflow:
+        run_id = workflow.get("run_id") or status.get("run_id") or "-"
         print(f"Workflow: {workflow['status']} — {workflow['headline'][:120]}")
+        print(f"Run ID: {run_id}")
     else:
         print("Workflow: none")
+    # Queued runs (M2 Step 3): the sequential queue behind the live run.
+    queue_length = status.get("queue_length")
+    if queue_length is None:
+        queue = status.get("queue") or []
+        queue_length = len(queue)
+    print(f"Queue length: {queue_length}")
     for line in _orchestrator_lines(status):
         print(line)
     # Absent from a hub older than #144, which may still be running.

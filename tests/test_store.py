@@ -89,7 +89,7 @@ def test_state_uses_one_read_snapshot(tmp_path: Path, monkeypatch: pytest.Monkey
 
     def between_queries(sql: str) -> None:
         nonlocal changed
-        if "SELECT * FROM task" in sql and not changed:
+        if "FROM task" in sql and not changed:
             changed = True
             with database(path) as writer:
                 writer.execute("UPDATE task SET state = 'completed' WHERE id = ?", (task.id,))
@@ -916,7 +916,7 @@ def test_initial_workflow_policy_is_immutable_durable_and_used_by_rails(
     task = restarted.assign_task("bob", "implementer", "Task", "Work", lease_min=30)
     assert task.lease_expires == to_iso(clock.now + timedelta(minutes=10))
 
-    with pytest.raises(ConflictError, match="fresh checkout of the target") as error:
+    with pytest.raises(ConflictError, match="queue a different run") as error:
         restarted.initialize_workflow(
             "Address issue #5", {"max_task_lease_min": 20, "merge_method": "merge"}
         )
@@ -1434,3 +1434,206 @@ def test_takeover_supersedes_old_instance_and_reattaches_live_task(store: HubSto
     # The old instance's heartbeats are ignored; the new instance's heartbeats are accepted.
     assert store.heartbeat("bob", "bob-1", task.id) is False
     assert store.heartbeat("bob", "bob-2", task.id) is True
+
+
+def _run_id_format(run_id: str) -> bool:
+    import re
+
+    return bool(re.fullmatch(r"\d{8}_[0-9a-f]{8}", run_id))
+
+
+def test_run_identity_has_unique_run_ids_and_statement(tmp_path: Path) -> None:
+    """M2 Step 3: every workflow gets a `<YYYYMMDD>_<8 hex>` run_id and statement."""
+
+    from agent_hub.database import database as db_conn
+
+    path = tmp_path / "run-id.db"
+    initialize_database(path)
+    store = HubStore(path)
+    first = store.initialize_workflow("First run")
+    state = store.get_state()
+    assert state["workflow"] is not None
+    first_run_id = state["workflow"]["run_id"]
+    assert _run_id_format(first_run_id)
+    assert state["workflow"]["statement_sha256"] is not None
+    assert state["run_id"] == first_run_id
+    with db_conn(path) as connection:
+        row = connection.execute(
+            "SELECT run_id, statement_sha256 FROM workflow WHERE id = ?", (first,)
+        ).fetchone()
+        assert row["run_id"] == first_run_id
+        assert row["statement_sha256"] is not None
+        srow = connection.execute(
+            "SELECT sha256, size, source FROM statement WHERE sha256 = ?",
+            (row["statement_sha256"],),
+        ).fetchone()
+        assert srow is not None and srow["sha256"] == row["statement_sha256"]
+    # Second run after done gets a new run_id.
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    second = store.start_workflow("Second run")
+    assert second != first
+    second_state = store.get_state()
+    assert second_state["workflow"] is not None
+    second_run_id = second_state["workflow"]["run_id"]
+    assert _run_id_format(second_run_id) and second_run_id != first_run_id
+
+
+def test_sequential_queue_second_starts_after_first_done(tmp_path: Path) -> None:
+    """Two statements queued; the second starts only after the first is done."""
+
+    path = tmp_path / "queue.db"
+    initialize_database(path)
+    store = HubStore(path)
+    first = store.start_workflow("First statement")
+    assert store.get_state()["workflow"]["id"] == first
+    assert store.get_state()["workflow"]["status"] == "active"
+    second = store.start_workflow("Second statement")
+    assert second != first
+    state = store.get_state()
+    # Live stays first; second is queued.
+    assert state["workflow"]["id"] == first
+    assert len(state["queue"]) == 1 and state["queue"][0]["workflow_id"] == second
+    # A third while live + queued exist is refused with conflict.
+    with pytest.raises(ConflictError):
+        store.start_workflow("Third statement")
+    # Completing the first activates the second.
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    after = store.get_state()
+    assert after["workflow"] is not None and after["workflow"]["id"] == second
+    assert after["workflow"]["status"] == "active"
+    assert after["queue"] == []
+    assert after["previous_run"] is not None
+    assert after["previous_run"]["run_id"] != after["workflow"]["run_id"]
+
+
+def test_initialize_workflow_confirms_active_and_starts_new_after_done(
+    tmp_path: Path,
+) -> None:
+    """initialize_workflow with the same goal confirms; after done it starts new."""
+
+    path = tmp_path / "init-alias.db"
+    initialize_database(path)
+    store = HubStore(path)
+    first = store.initialize_workflow("Same goal")
+    assert store.initialize_workflow("Same goal") == first
+    first_run_id = store.get_state()["workflow"]["run_id"]
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    second = store.initialize_workflow("New goal")
+    assert second != first
+    assert store.get_state()["workflow"]["run_id"] != first_run_id
+
+
+def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None:
+    """Manifest is written at start and completed at done; restart keeps valid JSON."""
+
+    import json
+
+    path = tmp_path / "hub.db"
+    initialize_database(path)
+    store = HubStore(path)
+    workflow_id = store.start_workflow("Manifest run")
+    run_id = store.get_state()["workflow"]["run_id"]
+    manifest_path = tmp_path / "runs" / run_id / "manifest.json"
+    assert manifest_path.is_file()
+    first = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert first["run_id"] == run_id and first["workflow_id"] == workflow_id
+    assert first["status"] in ("active", "queued")
+    assert first["completed"] is None
+    assert first["agents"] == []
+    # Restart: a new store on the same path sees the same run and valid JSON.
+    restarted = HubStore(path)
+    assert restarted.get_state()["workflow"]["run_id"] == run_id
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["run_id"] == run_id
+    # Give the run a task, an agent and a PR result so the end fields populate.
+    restarted.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = restarted.assign_task("bob", "implementer", "Build", "Do work")
+    restarted.submit_result(
+        task.id,
+        "bob",
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "pr_url": "https://github.com/octo/sandbox/pull/7",
+            "head_sha": "a" * 40,
+        },
+    )
+    restarted.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    completed = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert completed["status"] == "done" and completed["run_id"] == run_id
+    assert completed["completed"] is not None
+    assert completed["pr_url"] == "https://github.com/octo/sandbox/pull/7"
+    assert completed["approved_sha"] is None
+    # merged_sha stays null until the hub records a merge commit (r1-2).
+    assert completed["merged_sha"] is None
+    assert any(agent["name"] == "bob" for agent in completed["agents"])
+
+
+def test_on_done_release_vs_standby(tmp_path: Path) -> None:
+    """on_done release frees workers when the queue is empty; standby keeps them."""
+
+    for on_done, expect_released in (("release", True), ("standby", False)):
+        path = tmp_path / f"on-done-{on_done}.db"
+        initialize_database(path)
+        store = HubStore(path)
+        store.initialize_workflow("Policy run", {"on_done": on_done})
+        store.check_in("bob")
+        bob = store.agent_by_name("bob")
+        assert bob is not None
+        assert bob.status is AgentStatus.IDLE
+        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+        bob = store.agent_by_name("bob")
+        assert bob is not None
+        if expect_released:
+            assert bob.status is AgentStatus.RELEASED
+        else:
+            assert bob.status is AgentStatus.IDLE
+    # With a queued run waiting, even release keeps workers for the next run.
+    path = tmp_path / "on-done-queued.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("First", {"on_done": "release"})
+    store.check_in("bob")
+    store.start_workflow("Second")
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    bob = store.agent_by_name("bob")
+    assert bob is not None
+    assert bob.status is AgentStatus.IDLE
+    assert store.get_state()["workflow"]["goal"] == "Second"
+
+
+def test_assignments_carry_run_id(tmp_path: Path) -> None:
+    """Assignments carry the run_id so agents can cite it."""
+
+    path = tmp_path / "assign-run-id.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("Run with task")
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    assert task.run_id is not None
+    assert task.run_id == store.get_state()["workflow"]["run_id"]
+    assert task.statement_sha256 == store.get_state()["workflow"]["statement_sha256"]
+
+
+def test_new_run_clears_stale_releases(tmp_path: Path) -> None:
+    """A new live run stops returning releases to returning workers (r1-1)."""
+
+    path = tmp_path / "stale-release.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("Run one")
+    store.check_in("bob", worker_instance_id="bob-1")
+    # Default on_done=release with an empty queue releases bob at done.
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    bob = store.agent_by_name("bob")
+    assert bob is not None
+    assert bob.status is AgentStatus.RELEASED
+    # A new run becomes live; the stale release must not stick.
+    store.initialize_workflow("Run two")
+    store.check_in("bob", worker_instance_id="bob-2")
+    agent = store.agent_by_name("bob")
+    assert agent is not None and agent.status is AgentStatus.IDLE
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    claimed = store._claim_assignment("bob")
+    assert claimed is not None and not isinstance(claimed, Released)
+    assert claimed.id == task.id

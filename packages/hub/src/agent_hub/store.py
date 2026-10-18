@@ -8,8 +8,12 @@ deals only in records and in the wakeups that release a held request.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
+import subprocess
+import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass, field, replace
@@ -87,6 +91,89 @@ CLOCK_JUMP_TOLERANCE_S = 5.0
 
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED)
 OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
+# A hub runs one live workflow at a time; `queued` waits behind it (M2 Step 3).
+LIVE_STATUSES = (WorkflowStatus.ACTIVE, WorkflowStatus.PAUSED, WorkflowStatus.ESCALATED)
+LIVE_STATUS_VALUES = tuple(status.value for status in LIVE_STATUSES)
+
+
+def _live_placeholders() -> str:
+    return ", ".join("?" * len(LIVE_STATUSES))
+
+
+def _new_run_id(now: datetime) -> str:
+    """A new run ID: `<YYYYMMDD>_<8 hex>`, unique per hub (mvp-spec §7.2)."""
+
+    return f"{now.strftime('%Y%m%d')}_{uuid4().hex[:8]}"
+
+
+def _statement_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _robomate_version() -> str:
+    """The installed robomate version for run manifests (r1-3)."""
+
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        for dist in ("robomate-cli", "agent-hub", "robomate"):
+            try:
+                return version(dist)
+            except PackageNotFoundError:
+                continue
+    except Exception:
+        pass
+    return UNKNOWN
+
+
+_GIT_REVISION: str | None = None
+
+
+def _git_revision() -> str:
+    """The robomate checkout's revision for run manifests; `unknown` when unreadable.
+
+    Computed once per process (r1-4): manifest writes must not shell out on
+    every call, and a non-checkout install must not attribute an unrelated
+    repository's HEAD to robomate.
+    """
+
+    global _GIT_REVISION
+    if _GIT_REVISION is not None:
+        return _GIT_REVISION
+    try:
+        repo_root = Path(__file__).resolve().parents[4]
+        # Only a robomate checkout has both markers; an installed wheel's
+        # ancestor could be any directory.
+        if (repo_root / ".git").exists() and (repo_root / "pyproject.toml").is_file():
+            completed = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            revision = completed.stdout.strip()
+            if len(revision) == 40 and all(ch in "0123456789abcdef" for ch in revision.lower()):
+                _GIT_REVISION = revision.lower()
+                return _GIT_REVISION
+    except Exception:
+        pass
+    _GIT_REVISION = UNKNOWN
+    return _GIT_REVISION
+
+
+def _read_hub_json_for_manifest(state_dir: Path) -> dict[str, Any]:
+    """Best-effort hub identity for manifests; missing files read as unknown."""
+
+    try:
+        raw = (state_dir / "hub.json").read_text(encoding="utf-8")
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            return value
+    except Exception:
+        pass
+    return {}
+
 
 T = TypeVar("T")
 
@@ -168,6 +255,11 @@ class TaskRecord:
     pr_head_sha: str | None = None
     # The durable event whose handling created this task (#51); direct tasks are unbound.
     source_event_id: int | None = None
+    # The run this task belongs to (M2 Step 3, #240); None only for rows read
+    # without their workflow join.
+    run_id: str | None = None
+    # The statement this run was started from, if any.
+    statement_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +382,7 @@ def _profile_fields(
 
 
 def _task(row: Row) -> TaskRecord:
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
     return TaskRecord(
         id=row["id"],
         workflow_id=row["workflow_id"],
@@ -305,6 +398,10 @@ def _task(row: Row) -> TaskRecord:
         updated=row["updated"],
         pr_head_sha=row["pr_head_sha"],
         source_event_id=row["source_event_id"],
+        run_id=str(row["run_id"]) if "run_id" in keys and row["run_id"] is not None else None,
+        statement_sha256=str(row["statement_sha256"])
+        if "statement_sha256" in keys and row["statement_sha256"] is not None
+        else None,
     )
 
 
@@ -438,6 +535,10 @@ class HubStore:
     # Hub calls and holds per agent, in memory only (#144).
     activity: ActivityTracker = field(default_factory=ActivityTracker)
     monotonic_clock: Callable[[], float] = monotonic
+    # Durable state directory for runs/ and hub.json (mvp-spec §11, r1-8).
+    # Defaults to the database's parent, which is the state directory for
+    # every layout except the `hub` entry point with a custom HUB_DB_PATH.
+    state_dir: Path | None = None
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
@@ -448,7 +549,88 @@ class HubStore:
     def _now_iso(self) -> str:
         return to_iso(self._now())
 
+    def _state_dir(self) -> Path:
+        return self.state_dir if self.state_dir is not None else self.path.parent
+
     # -- workflow -----------------------------------------------------------
+
+    def _live_row(self, connection: Connection) -> Row | None:
+        """The single live workflow, if any (M2 Step 3, #240)."""
+
+        row: Row | None = connection.execute(
+            f"SELECT * FROM workflow WHERE status IN ({_live_placeholders()})"
+            " ORDER BY created LIMIT 1",
+            tuple(status.value for status in LIVE_STATUSES),
+        ).fetchone()
+        return row
+
+    def _queued_rows(self, connection: Connection) -> list[Row]:
+        return list(
+            connection.execute(
+                "SELECT * FROM workflow WHERE status = ? ORDER BY created",
+                (WorkflowStatus.QUEUED.value,),
+            ).fetchall()
+        )
+
+    def _most_recent_row(self, connection: Connection) -> Row | None:
+        row: Row | None = connection.execute(
+            "SELECT * FROM workflow ORDER BY created DESC LIMIT 1"
+        ).fetchone()
+        return row
+
+    def _most_recent_done_row(self, connection: Connection) -> Row | None:
+        row: Row | None = connection.execute(
+            "SELECT * FROM workflow WHERE status = ? ORDER BY created DESC LIMIT 1",
+            (WorkflowStatus.DONE.value,),
+        ).fetchone()
+        return row
+
+    def _unique_run_id(self, connection: Connection, now: datetime) -> str:
+        """A `<YYYYMMDD>_<8 hex>` run ID not used by any workflow on this hub."""
+
+        for _ in range(100):
+            candidate = _new_run_id(now)
+            if (
+                connection.execute(
+                    "SELECT 1 FROM workflow WHERE run_id = ?", (candidate,)
+                ).fetchone()
+                is None
+            ):
+                return candidate
+        # Practically unreachable; the date plus 32 bits makes a collision
+        # vanishingly unlikely, but a bounded loop must not spin forever.
+        raise ConflictError("could not allocate a unique run_id; retry start_workflow")
+
+    def _store_statement(
+        self, connection: Connection, text: str, source: str, now_iso: str
+    ) -> tuple[str, bytes]:
+        """Store a statement of work verbatim and return its SHA-256 and bytes."""
+
+        data = text.encode("utf-8")
+        sha256 = _statement_sha256(data)
+        connection.execute(
+            "INSERT OR IGNORE INTO statement (sha256, bytes, size, source, created)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (sha256, data, len(data), source, now_iso),
+        )
+        return sha256, data
+
+    def _clear_stale_releases(self, connection: Connection) -> None:
+        """Make a newly live run take returning workers (r1-1).
+
+        `on_done: release` (and Alice's explicit `release_agent`) leaves workers
+        `released` when a run ends. `_readmitted` keeps that sticky across
+        `check_in`, so without clearing, the next run's returning workers would
+        get `release: true` from their first `await_assignment`. A new live run
+        clears it: released non-orchestrators become idle again, with their
+        instance slot freed so a fresh bridge can check in without takeover.
+        """
+
+        connection.execute(
+            "UPDATE agent SET status = ?, worker_instance_id = ''"
+            " WHERE status = ? AND standing_role != 'orchestrator'",
+            (AgentStatus.IDLE.value, AgentStatus.RELEASED.value),
+        )
 
     def initialize_workflow(
         self, goal: str = DEFAULT_GOAL, policy: Mapping[str, Any] | None = None
@@ -457,49 +639,352 @@ class HubStore:
 
         Goal and policy are immutable workflow inputs. A restarted Alice repeats
         this call with the same values; a different prompt must not silently
-        replace rails that existing tasks were created under.
+        replace rails that existing tasks were created under. After a run is
+        `done`, the same call with a new goal starts a new run with a new
+        `run_id` (M2 Step 3, #240); `start_workflow` queues instead of
+        conflicting while a run is live.
         """
 
         requested_policy = _validated_workflow_policy(policy)
         encoded_policy = json.dumps(requested_policy, sort_keys=True)
+        now = self._now()
+        now_iso = to_iso(now)
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT id, goal, status, policy_json FROM workflow ORDER BY created LIMIT 1"
-            ).fetchone()
-            if row is None:
+            live = self._live_row(connection)
+            if live is not None:
+                stored_policy = _json_object(live["policy_json"]) or {}
+                if live["goal"] != goal or stored_policy != requested_policy:
+                    raise ConflictError(
+                        "workflow is already initialized with "
+                        f"status={live['status']!r}, goal={live['goal']!r}, and a different goal "
+                        "or policy; use get_state to resume it, or queue a different run with "
+                        "start_workflow(statement) and start it after this one is done"
+                    )
+                return str(live["id"])
+            queued = self._queued_rows(connection)
+            if queued:
+                oldest = queued[0]
+                stored_policy = _json_object(oldest["policy_json"]) or {}
+                if oldest["goal"] == goal and stored_policy == requested_policy:
+                    connection.execute(
+                        "UPDATE workflow SET status = ? WHERE id = ?",
+                        (WorkflowStatus.ACTIVE.value, oldest["id"]),
+                    )
+                    self._clear_stale_releases(connection)
+                    workflow_id = str(oldest["id"])
+                else:
+                    raise ConflictError(
+                        f"workflow {oldest['run_id']} is queued with goal={oldest['goal']!r}; "
+                        "call start_workflow() with no statement to start it, or "
+                        "initialize_workflow with its exact goal and policy to confirm it"
+                    )
+            else:
                 workflow_id = uuid4().hex
+                run_id = self._unique_run_id(connection, now)
+                statement_sha256, _ = self._store_statement(
+                    connection, goal, "initialize_workflow", now_iso
+                )
                 connection.execute(
-                    "INSERT INTO workflow (id, goal, status, policy_json, created) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO workflow (id, run_id, goal, status, policy_json,"
+                    " statement_sha256, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         workflow_id,
+                        run_id,
                         goal,
                         WorkflowStatus.ACTIVE.value,
                         encoded_policy,
-                        self._now_iso(),
+                        statement_sha256,
+                        now_iso,
                     ),
                 )
-                return workflow_id
-            stored_policy = _json_object(row["policy_json"]) or {}
-            if row["goal"] != goal or stored_policy != requested_policy:
-                raise ConflictError(
-                    "workflow is already initialized with "
-                    f"status={row['status']!r}, goal={row['goal']!r}, and a different goal "
-                    "or policy; use get_state to resume it, or run robomate up "
-                    "in a fresh checkout of the target (a clone or linked worktree) "
-                    "for a different workflow"
+                self._clear_stale_releases(connection)
+            # Read the row for the manifest before committing: the file must
+            # describe exactly the workflow the database just stored.
+            row = connection.execute(
+                "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
+            ).fetchone()
+            assert row is not None
+        self._write_manifest(row)
+        return workflow_id
+
+    def start_workflow(
+        self,
+        statement: str | None = None,
+        policy: Mapping[str, Any] | None = None,
+        *,
+        source: str = "chat",
+    ) -> str:
+        """Start the oldest queued run, or create one from chat (mvp-spec §7.1).
+
+        With no `statement`, the oldest `queued` workflow becomes `active`. With
+        a `statement`, a new workflow is created: `active` when no run is live
+        and nothing is queued, otherwise `queued` behind the live run. Only one
+        live (`active`, `paused`, `escalated`) run and one `queued` run may
+        exist; a further `start_workflow` while both exist is refused.
+        """
+
+        requested_policy = _validated_workflow_policy(policy)
+        encoded_policy = json.dumps(requested_policy, sort_keys=True)
+        now = self._now()
+        now_iso = to_iso(now)
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            live = self._live_row(connection)
+            queued = self._queued_rows(connection)
+            if statement is None:
+                if live is not None:
+                    raise ConflictError(
+                        f"workflow {live['run_id']} is {live['status']}; "
+                        "wait for it to finish before starting the queued run, "
+                        "or call start_workflow(statement) to queue behind it"
+                    )
+                if not queued:
+                    raise ConflictError(
+                        "no queued workflow to start; call start_workflow(statement, policy) "
+                        "with a statement of work to create one"
+                    )
+                oldest = queued[0]
+                connection.execute(
+                    "UPDATE workflow SET status = ? WHERE id = ?",
+                    (WorkflowStatus.ACTIVE.value, oldest["id"]),
                 )
-            return str(row["id"])
+                self._clear_stale_releases(connection)
+                workflow_id = str(oldest["id"])
+                row = connection.execute(
+                    "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
+                ).fetchone()
+                assert row is not None
+            else:
+                if not statement.strip():
+                    raise ValueError("statement must not be empty")
+                statement_sha256, _ = self._store_statement(connection, statement, source, now_iso)
+                goal = statement
+                if live is not None:
+                    if queued:
+                        raise ConflictError(
+                            f"workflow {live['run_id']} is {live['status']} and workflow "
+                            f"{queued[0]['run_id']} is already queued; only one queued run "
+                            "is kept (use get_state to see the queue)"
+                        )
+                    status = WorkflowStatus.QUEUED.value
+                else:
+                    if queued:
+                        raise ConflictError(
+                            f"workflow {queued[0]['run_id']} is queued; call start_workflow() "
+                            "with no statement to start it before queueing another run"
+                        )
+                    status = WorkflowStatus.ACTIVE.value
+                workflow_id = uuid4().hex
+                run_id = self._unique_run_id(connection, now)
+                connection.execute(
+                    "INSERT INTO workflow (id, run_id, goal, status, policy_json,"
+                    " statement_sha256, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        workflow_id,
+                        run_id,
+                        goal,
+                        status,
+                        encoded_policy,
+                        statement_sha256,
+                        now_iso,
+                    ),
+                )
+                if status == WorkflowStatus.ACTIVE.value:
+                    self._clear_stale_releases(connection)
+                row = connection.execute(
+                    "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
+                ).fetchone()
+                assert row is not None
+        self._write_manifest(row)
+        return workflow_id
 
     def _require_workflow(self, connection: Connection, operation: str) -> str:
-        row = connection.execute("SELECT id FROM workflow ORDER BY created LIMIT 1").fetchone()
+        row = self._live_row(connection)
         if row is None:
             raise ConflictError(
                 f"workflow is not initialized; call initialize_workflow(goal, policy) "
-                f"before {operation}"
+                f"or start_workflow(statement, policy) before {operation}"
             )
         return str(row["id"])
+
+    def _require_live_or_recent(self, connection: Connection) -> Row | None:
+        """The live workflow, else the most recent one, for read-only views."""
+
+        live = self._live_row(connection)
+        if live is not None:
+            return live
+        return self._most_recent_row(connection)
+
+    def _workflow_pr_summary(
+        self, connection: Connection, workflow_id: str
+    ) -> dict[str, Any | None]:
+        """Best-effort PR/MR facts for a run, from its typed task results."""
+
+        pr_url: str | None = None
+        approved_sha: str | None = None
+        # The hub never records the merge commit itself (r1-2): the squash
+        # merge the orchestrator performs always differs from the PR head, so
+        # reporting the head as merged would mislabel evidence M4 builds on.
+        merged_sha: str | None = None
+        for row in connection.execute(
+            "SELECT result_json FROM task WHERE workflow_id = ?"
+            " AND result_json IS NOT NULL ORDER BY created",
+            (workflow_id,),
+        ).fetchall():
+            result = _json_object(row["result_json"]) or {}
+            if isinstance(result.get("pr_url"), str) and result["pr_url"]:
+                pr_url = result["pr_url"]
+            # Reviewer approval binds the approved head.
+            if result.get("verdict") == "approved" and isinstance(
+                result.get("reviewed_head_sha"), str
+            ):
+                approved_sha = result["reviewed_head_sha"]
+        return {"pr_url": pr_url, "approved_sha": approved_sha, "merged_sha": merged_sha}
+
+    def _previous_run_summary(
+        self, connection: Connection, exclude_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """The previous run's summary (run ID, PR/MR, merged SHA), nothing else."""
+
+        if exclude_id is None:
+            row = self._most_recent_done_row(connection)
+        else:
+            row = connection.execute(
+                "SELECT * FROM workflow WHERE status = ? AND id != ? ORDER BY created DESC LIMIT 1",
+                (WorkflowStatus.DONE.value, exclude_id),
+            ).fetchone()
+        if row is None:
+            return None
+        summary: dict[str, Any] = {
+            "run_id": str(row["run_id"]),
+            "workflow_id": str(row["id"]),
+            "status": str(row["status"]),
+            "goal": str(row["goal"]),
+        }
+        summary.update(self._workflow_pr_summary(connection, str(row["id"])))
+        return summary
+
+    def _queued_summaries(self, connection: Connection) -> list[dict[str, Any]]:
+        """Queued workflows, oldest first, for `get_state` and `status`."""
+
+        return [
+            {
+                "workflow_id": str(row["id"]),
+                "run_id": str(row["run_id"]),
+                "goal": str(row["goal"]),
+                "statement_sha256": row["statement_sha256"],
+                "created": str(row["created"]),
+            }
+            for row in self._queued_rows(connection)
+        ]
+
+    def _write_manifest(self, workflow_row: Row) -> Path:
+        """Write `runs/<run_id>/manifest.json` atomically for a workflow row.
+
+        The manifest is written at start (active or queued) and rewritten at
+        `done`: robomate version and git revision, hub identity, statement
+        SHA-256 and source, policy, agent profiles that held a task, and at the
+        end the status, PR/MR URL and approved/merged SHAs. A hub restart
+        between start and done leaves valid JSON because the write is atomic.
+        """
+
+        workflow_id = str(workflow_row["id"])
+        run_id = str(workflow_row["run_id"])
+        state_dir = self._state_dir()
+        runs_dir = state_dir / "runs" / run_id
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        with database(self.path) as connection:
+            policy = _json_object(str(workflow_row["policy_json"])) or {}
+            statement_sha256 = workflow_row["statement_sha256"]
+            statement_source: str | None = None
+            statement_size: int | None = None
+            if statement_sha256 is not None:
+                prow = connection.execute(
+                    "SELECT source, size FROM statement WHERE sha256 = ?",
+                    (str(statement_sha256),),
+                ).fetchone()
+                if prow is not None:
+                    statement_source = str(prow["source"])
+                    statement_size = int(prow["size"])
+            pr_summary = self._workflow_pr_summary(connection, workflow_id)
+            # Profiles of every agent that held a task in this run.
+            agents: list[dict[str, Any]] = []
+            assignees = [
+                str(r["assignee"])
+                for r in connection.execute(
+                    "SELECT DISTINCT assignee FROM task WHERE workflow_id = ?"
+                    " AND assignee IS NOT NULL",
+                    (workflow_id,),
+                ).fetchall()
+            ]
+            for name in sorted(assignees):
+                arow = connection.execute("SELECT * FROM agent WHERE name = ?", (name,)).fetchone()
+                if arow is None:
+                    agents.append({"name": name})
+                    continue
+                agent = _agent(arow)
+                agents.append(
+                    {
+                        "name": agent.name,
+                        "standing_role": agent.standing_role.value,
+                        "harness": agent.harness,
+                        "harness_version": agent.harness_version,
+                        "provider": agent.provider,
+                        "model": agent.model,
+                        "model_source": agent.model_source.value,
+                        "declared_model": agent.declared_model,
+                        "effort": agent.effort,
+                        "effort_source": agent.effort_source.value,
+                        "capabilities": list(agent.capabilities),
+                        "workspace_id": agent.workspace_id,
+                    }
+                )
+        hub_info = _read_hub_json_for_manifest(state_dir)
+        manifest = {
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "goal": str(workflow_row["goal"]),
+            "status": str(workflow_row["status"]),
+            "created": str(workflow_row["created"]),
+            "completed": None
+            if str(workflow_row["status"]) != WorkflowStatus.DONE.value
+            else to_iso(self._now()),
+            "statement_sha256": statement_sha256,
+            "statement_source": statement_source,
+            "statement_size": statement_size,
+            "policy": policy,
+            "hub": {
+                "hub_id": hub_info.get("hub_id"),
+                "name": hub_info.get("name"),
+                "checkout": hub_info.get("checkout") or hub_info.get("repo_root"),
+                "origin": hub_info.get("origin"),
+                "forge": hub_info.get("forge"),
+                "default_branch": hub_info.get("default_branch"),
+                "url": hub_info.get("url"),
+            },
+            "robomate_version": _robomate_version(),
+            "git_revision": _git_revision(),
+            "agents": agents,
+            "pr_url": pr_summary["pr_url"],
+            "approved_sha": pr_summary["approved_sha"],
+            "merged_sha": pr_summary["merged_sha"],
+        }
+        # Atomic: write beside the target, then replace, so a crash never
+        # leaves a half-written manifest behind.
+        descriptor, temporary = tempfile.mkstemp(prefix=".manifest-", dir=runs_dir, text=True)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(manifest, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, runs_dir / "manifest.json")
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(temporary)
+            raise
+        return runs_dir / "manifest.json"
 
     def get_state(self) -> dict[str, Any]:
         """Return compact state without task instructions or transcripts."""
@@ -507,15 +992,58 @@ class HubStore:
         with database(self.path) as connection:
             # SELECT alone does not start a transaction in sqlite3's legacy mode.
             connection.execute("BEGIN")
-            row = connection.execute("SELECT * FROM workflow ORDER BY created LIMIT 1").fetchone()
-            workflow = None if row is None else dict(row)
-            if workflow is not None:
-                workflow["policy"] = json.loads(workflow.pop("policy_json"))
-            tasks = []
-            for row in connection.execute("SELECT * FROM task ORDER BY created").fetchall():
-                summary = asdict(_task(row))
-                summary.pop("instructions")
-                tasks.append(summary)
+            live = self._live_row(connection)
+            queue = self._queued_summaries(connection)
+            workflow: dict[str, Any] | None
+            tasks: list[dict[str, Any]]
+            previous_run: dict[str, Any] | None
+            if live is not None:
+                live_dict = dict(live)
+                live_dict["policy"] = json.loads(live_dict.pop("policy_json"))
+                workflow = live_dict
+                tasks = []
+                for row in connection.execute(
+                    "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                    " FROM task JOIN workflow ON task.workflow_id = workflow.id"
+                    " WHERE task.workflow_id = ? ORDER BY task.created",
+                    (str(live["id"]),),
+                ).fetchall():
+                    summary = asdict(_task(row))
+                    summary.pop("instructions")
+                    tasks.append(summary)
+                previous_run = self._previous_run_summary(connection)
+            elif queue:
+                # Queued runs wait behind no live run: no active workflow, but
+                # the queue and the previous summary say what is next.
+                workflow = None
+                tasks = []
+                previous_run = self._previous_run_summary(connection)
+            else:
+                # No live and nothing queued: show the most recent done run as
+                # the workflow, so a completed run still reports its status;
+                # the previous summary is the one before it.
+                recent = self._most_recent_done_row(connection)
+                if recent is None:
+                    workflow = None
+                    tasks = []
+                    previous_run = None
+                else:
+                    recent_dict = dict(recent)
+                    recent_dict["policy"] = json.loads(recent_dict.pop("policy_json"))
+                    workflow = recent_dict
+                    tasks = []
+                    for row in connection.execute(
+                        "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                        " FROM task JOIN workflow ON task.workflow_id = workflow.id"
+                        " WHERE task.workflow_id = ? ORDER BY task.created",
+                        (str(recent["id"]),),
+                    ).fetchall():
+                        summary = asdict(_task(row))
+                        summary.pop("instructions")
+                        tasks.append(summary)
+                    previous_run = self._previous_run_summary(
+                        connection, exclude_id=str(recent["id"])
+                    )
             agents = []
             for row in connection.execute("SELECT * FROM agent ORDER BY name").fetchall():
                 agent = _agent(row)
@@ -536,13 +1064,20 @@ class HubStore:
                 "SELECT * FROM event WHERE state = 'delivered' ORDER BY id ASC"
             ).fetchall()
             unacked_delivered = [asdict(_event(r)) for r in unacked_rows]
-        return {
+        result: dict[str, Any] = {
             "workflow": workflow,
             "agents": agents,
             "tasks": tasks,
             "queued_events": queued_count,
             "unacked_delivered": unacked_delivered,
+            "queue": queue,
+            "previous_run": previous_run,
         }
+        # The run identity is what operators, file names and evidence use; the
+        # workflow ID stays what tasks and events reference.
+        if workflow is not None:
+            result["run_id"] = workflow.get("run_id")
+        return result
 
     def status_summary(self) -> dict[str, Any]:
         """Return the small operator view without instructions or result bodies.
@@ -554,9 +1089,8 @@ class HubStore:
         now = self._now()
         with database(self.path) as connection:
             connection.execute("BEGIN")
-            workflow = connection.execute(
-                "SELECT id, status, goal FROM workflow ORDER BY created LIMIT 1"
-            ).fetchone()
+            workflow = self._require_live_or_recent(connection)
+            queue = self._queued_summaries(connection)
             assessment = self._assess(connection, now)
             agents = [
                 {
@@ -628,12 +1162,16 @@ class HubStore:
             if workflow is None
             else {
                 "id": workflow["id"],
+                "run_id": workflow["run_id"],
                 "status": workflow["status"],
                 "headline": next(
                     (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
                     "",
                 )[:160],
             },
+            "run_id": None if workflow is None else workflow["run_id"],
+            "queue_length": len(queue),
+            "queue": queue,
             "agents": agents,
             "tasks": tasks,
             "pending_questions": pending_questions,
@@ -655,9 +1193,7 @@ class HubStore:
         now = self._now()
         with database(self.path) as connection:
             connection.execute("BEGIN")
-            workflow = connection.execute(
-                "SELECT id, status FROM workflow ORDER BY created LIMIT 1"
-            ).fetchone()
+            workflow = self._require_live_or_recent(connection)
             tasks = [
                 {
                     "id": row["id"],
@@ -694,7 +1230,11 @@ class HubStore:
             "taken_at": to_iso(now),
             "workflow": None
             if workflow is None
-            else {"id": workflow["id"], "status": workflow["status"]},
+            else {
+                "id": workflow["id"],
+                "run_id": workflow["run_id"],
+                "status": workflow["status"],
+            },
             "tasks": tasks,
             "deliveries": deliveries,
             "queued_events": queued,
@@ -709,23 +1249,43 @@ class HubStore:
         `operator` with no session. Only `ask_user` escalates, and the
         workflow leaves escalation only once no operator question is open
         (#132); the decision row then distinguishes answers from withdrawals.
+
+        Setting a run to `done` completes its manifest, starts the oldest
+        queued run when one waits, and applies `on_done`: `release` releases
+        workers when the queue is empty, `standby` keeps them joined (M2 Step 3).
         """
         if status == WorkflowStatus.ESCALATED:
             raise ValueError(
                 "set_workflow_status cannot escalate; call ask_user, which escalates "
                 "with the question the operator answers"
             )
+        if status == WorkflowStatus.QUEUED:
+            raise ValueError("set_workflow_status cannot queue; call start_workflow instead")
+        done_row: Row | None = None
+        activated_row: Row | None = None
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            workflow_id = self._require_workflow(connection, "set_workflow_status")
+            try:
+                workflow_id = self._require_workflow(connection, "set_workflow_status")
+            except ConflictError:
+                # No live run: either a replayed `done` (no-op when the most
+                # recent run already has that status) or a reopen of the most
+                # recent run (e.g. DONE -> ACTIVE in activity tests).
+                recent = self._most_recent_row(connection)
+                if recent is None:
+                    raise
+                if recent["status"] == status.value:
+                    return
+                workflow_id = str(recent["id"])
             row = connection.execute(
-                "SELECT status FROM workflow WHERE id = ?", (workflow_id,)
+                "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
             ).fetchone()
-            if row is not None and row["status"] == status.value:
+            assert row is not None
+            if row["status"] == status.value:
                 return
             rationale = f"Workflow status set to {status.value}"
             resumed: list[int] = []
-            if row is not None and row["status"] == WorkflowStatus.ESCALATED.value:
+            if row["status"] == WorkflowStatus.ESCALATED.value:
                 open_ids = self._open_question_ids(connection, workflow_id)
                 if open_ids:
                     raise ConflictError(
@@ -761,7 +1321,7 @@ class HubStore:
             connection.execute(
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
-            if row is not None and row["status"] == WorkflowStatus.PAUSED.value:
+            if row["status"] == WorkflowStatus.PAUSED.value:
                 # Stall clocks restart when a pause ends (#144).
                 self.activity.note_resumed(self._now())
             cursor = connection.execute(
@@ -773,14 +1333,57 @@ class HubStore:
                 "UPDATE operator_question SET resumed_by = ? WHERE id = ?",
                 [(cursor.lastrowid, question_id) for question_id in resumed],
             )
+            if status == WorkflowStatus.DONE:
+                done_row = connection.execute(
+                    "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
+                ).fetchone()
+                assert done_row is not None
+                queued = self._queued_rows(connection)
+                if queued:
+                    oldest = queued[0]
+                    connection.execute(
+                        "UPDATE workflow SET status = ? WHERE id = ?",
+                        (WorkflowStatus.ACTIVE.value, oldest["id"]),
+                    )
+                    self._clear_stale_releases(connection)
+                    activated_row = connection.execute(
+                        "SELECT * FROM workflow WHERE id = ?", (oldest["id"],)
+                    ).fetchone()
+                else:
+                    policy = _json_object(str(done_row["policy_json"])) or {}
+                    on_done = policy.get("on_done", "release")
+                    if on_done != "standby":
+                        connection.execute(
+                            "UPDATE agent SET status = ?"
+                            " WHERE status IN (?, ?)"
+                            " AND standing_role != 'orchestrator'",
+                            (
+                                AgentStatus.RELEASED.value,
+                                AgentStatus.IDLE.value,
+                                AgentStatus.BUSY.value,
+                            ),
+                        )
+        # Manifests are files, not rows: write them after the transaction
+        # commits, so a crash between the two cannot leave a half-written
+        # database row behind a completed manifest.
+        if done_row is not None:
+            self._write_manifest(done_row)
+        if activated_row is not None:
+            self._write_manifest(activated_row)
+            self.signals.notify(EVENT_KEY)
+        if status == WorkflowStatus.DONE and activated_row is None:
+            # A released worker's NEXT returns the release marker.
+            for agent_row in self.agents():
+                if agent_row.status == AgentStatus.RELEASED:
+                    self.signals.notify(context_key(agent_row.context_id))
 
     def refuse_while_escalated(self, operation: str) -> None:
         """Refuse an operation that must wait for the operator (#132)."""
 
         with database(self.path) as connection:
-            row = connection.execute("SELECT id FROM workflow ORDER BY created LIMIT 1").fetchone()
+            row = self._live_row(connection)
             if row is not None:
-                self._refuse_while_escalated(connection, row["id"], operation)
+                self._refuse_while_escalated(connection, str(row["id"]), operation)
 
     def _refuse_while_escalated(
         self, connection: Connection, workflow_id: str, operation: str
@@ -1083,9 +1686,7 @@ class HubStore:
             ]
         )
         with database(self.path) as connection:
-            workflow = connection.execute(
-                "SELECT id FROM workflow ORDER BY created LIMIT 1"
-            ).fetchone()
+            workflow = self._require_live_or_recent(connection)
             cursor = connection.execute(
                 "INSERT INTO gate_reading (ts, workflow_id, pr_url, expected_head_sha,"
                 " current_head_sha, pr_state, head_matches, ci, mergeable, merge_state_status,"
@@ -1515,17 +2116,26 @@ class HubStore:
         if pr_head_sha is not None and not SHA_HEX_40_RE.fullmatch(pr_head_sha):
             raise ValueError("pr_head_sha must be a 40-character hex commit SHA")
         head = None if pr_head_sha is None else pr_head_sha.lower()
-        assignment_metadata: dict[str, Any] = {
-            MetaKeys.KIND: "assignment",
-            MetaKeys.ROLE: role,
-            MetaKeys.TITLE: title,
-        }
-        if head is not None:
-            assignment_metadata[MetaKeys.PR_HEAD_SHA] = head
         now_moment = self._now()
         now = to_iso(now_moment)
         with database(self.path) as connection:
             workflow_id = self._require_workflow(connection, "assign_task")
+            workflow_row = connection.execute(
+                "SELECT run_id, statement_sha256 FROM workflow WHERE id = ?", (workflow_id,)
+            ).fetchone()
+            assert workflow_row is not None
+            run_id = str(workflow_row["run_id"])
+            statement_sha256 = workflow_row["statement_sha256"]
+            assignment_metadata: dict[str, Any] = {
+                MetaKeys.KIND: "assignment",
+                MetaKeys.ROLE: role,
+                MetaKeys.TITLE: title,
+                MetaKeys.RUN_ID: run_id,
+            }
+            if statement_sha256 is not None:
+                assignment_metadata[MetaKeys.STATEMENT_SHA256] = str(statement_sha256)
+            if head is not None:
+                assignment_metadata[MetaKeys.PR_HEAD_SHA] = head
             lease_cap_min = self._max_task_lease_min(connection, workflow_id)
             effective_lease_min = min(lease_min, lease_cap_min)
             if source_event_id is not None:
@@ -1535,7 +2145,10 @@ class HubStore:
                 if source is None:
                     raise NotFoundError(f"unknown source event: {source_event_id}")
                 existing = connection.execute(
-                    "SELECT * FROM task WHERE source_event_id = ?", (source_event_id,)
+                    "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                    " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
+                    " WHERE task.source_event_id = ?",
+                    (source_event_id,),
                 ).fetchone()
                 if existing is not None:
                     task = _task(existing)
@@ -1620,7 +2233,12 @@ class HubStore:
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         with database(self.path) as connection:
-            row = connection.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+            row = connection.execute(
+                "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
+                " WHERE task.id = ?",
+                (task_id,),
+            ).fetchone()
         return None if row is None else _task(row)
 
     def task_context_id(self, task_id: str) -> str:
@@ -1631,7 +2249,11 @@ class HubStore:
 
     def tasks(self) -> list[TaskRecord]:
         with database(self.path) as connection:
-            rows = connection.execute("SELECT * FROM task ORDER BY created").fetchall()
+            rows = connection.execute(
+                "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
+                " ORDER BY task.created"
+            ).fetchall()
         return [_task(row) for row in rows]
 
     def task_history(self, task_id: str, limit: int | None = None) -> list[MessageRecord]:
@@ -2051,7 +2673,12 @@ class HubStore:
         return canceled
 
     def _require_task(self, connection: Connection, task_id: str) -> TaskRecord:
-        row = connection.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+        row = connection.execute(
+            "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+            " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
+            " WHERE task.id = ?",
+            (task_id,),
+        ).fetchone()
         if row is None:
             raise NotFoundError(f"unknown task: {task_id}")
         return _task(row)
@@ -2728,9 +3355,7 @@ class HubStore:
 
         tracker = self.activity
         tracker.mark_started(now)
-        row = connection.execute(
-            "SELECT id, status, policy_json FROM workflow ORDER BY created LIMIT 1"
-        ).fetchone()
+        row = self._require_live_or_recent(connection)
         if row is None:
             # Workers may check in before Alice initializes the workflow; they
             # are listed, never assessed.

@@ -326,9 +326,11 @@ def test_done_workflows_report_no_stalls(hub: HubStore, clock: FakeClock) -> Non
     report = hub.assess_activity()
     assert report["orchestrator"]["suppressed"] == "workflow_done"
     assert not report["orchestrator"]["stalled"]
+    # The default `on_done: release` releases workers when the queue is empty,
+    # so a done run reports them as released, never stalled.
     assert report["agents"]["bob"] == report["agents"]["bob"] | {
         "stalled": False,
-        "suppressed": "workflow_done",
+        "suppressed": "released",
     }
 
 

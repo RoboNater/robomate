@@ -390,6 +390,12 @@ def _task_object(
     bound_head: dict[str, Any] = (
         {} if record.pr_head_sha is None else {MetaKeys.PR_HEAD_SHA: record.pr_head_sha}
     )
+    # Run identity travels with the assignment so an agent can cite it (M2 Step 3).
+    run_identity: dict[str, Any] = {}
+    if record.run_id is not None:
+        run_identity[MetaKeys.RUN_ID] = record.run_id
+    if record.statement_sha256 is not None:
+        run_identity[MetaKeys.STATEMENT_SHA256] = record.statement_sha256
     if status_message is None:
         status_message = _agent_message(
             record.instructions,
@@ -400,7 +406,8 @@ def _task_object(
                 MetaKeys.ROLE: record.role,
                 MetaKeys.TITLE: record.title,
             }
-            | bound_head,
+            | bound_head
+            | run_identity,
         )
     return Task(
         id=record.id,
@@ -419,7 +426,8 @@ def _task_object(
             MetaKeys.LEASE_EXPIRES: record.lease_expires,
             MetaKeys.RESULT: record.result,
         }
-        | bound_head,
+        | bound_head
+        | run_identity,
     )
 
 

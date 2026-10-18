@@ -13,6 +13,7 @@ from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile
 TOOLS = {
     "get_state",
     "initialize_workflow",
+    "start_workflow",
     "wait_for_event",
     "assign_task",
     "reply",

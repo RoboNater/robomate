@@ -488,6 +488,28 @@ def test_existing_hub_workflow_requires_the_same_run_and_goal(
     assert resumed["work"]["goal"] == goal
 
 
+def test_hub_with_all_done_workflows_accepts_a_new_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M2 Step 3: `check_hub_workflow` accepts a hub whose workflows are all done."""
+
+    from agent_hub_common import WorkflowStatus
+
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    database_path = target / ".robomate/hub.db"
+    initialize_database(database_path)
+    run_dir = tmp_path / "run1"
+    first = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
+    store = HubStore(database_path)
+    store.initialize_workflow(first["work"]["goal"], first["policy"])
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    # A new issue on the same hub with all workflows done prepares cleanly.
+    second = PREPARE_RUN.prepare(str(source), tmp_path / "run2", issue=43, hub_repo=target)
+    assert second["work"]["goal"] != first["work"]["goal"]
+
+
 def test_worker_only_uses_token_file_not_bearer_value(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

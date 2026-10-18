@@ -1371,6 +1371,50 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
         stop(root, env, process)
 
 
+def test_status_shows_run_id_and_queue_length(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """M2 Step 3: `robomate status` shows the run ID and queue length."""
+
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    database_path = directory / "hub.db"
+    initialize_database(database_path)
+    hub_store = HubStore(database_path)
+    hub_store.initialize_workflow("First run")
+    first_run_id = hub_store.get_state()["workflow"]["run_id"]
+    hub_store.start_workflow("Second run")
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        result = _run_cli(
+            [CLI, "status"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
+        )
+        assert result.returncode == 0, result.stderr
+        assert f"Run ID: {first_run_id}" in result.stdout
+        assert "Queue length: 1" in result.stdout
+        as_json = _run_cli(
+            [CLI, "status", "--json"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
+        )
+        assert as_json.returncode == 0, as_json.stderr
+        payload = json.loads(as_json.stdout)
+        assert payload["run_id"] == first_run_id
+        assert payload["queue_length"] == 1
+    finally:
+        stop(root, env, process)
+
+
 def _rpc_as_alice(url: str, token: str, method: str) -> dict[str, Any]:
     request = urllib.request.Request(
         f"{url}/rpc",
@@ -1677,7 +1721,9 @@ def test_status_snapshot_matches_get_state_and_changes_nothing(
         snapshot = json.loads(result.stdout)
         assert snapshot["hub_id"] == info["hub_id"]
         assert snapshot["stopped_at"] == "2026-10-08T12:00:00Z"
-        assert snapshot["workflow"] == {"id": workflow_id, "status": "active"}
+        assert snapshot["workflow"]["id"] == workflow_id
+        assert snapshot["workflow"]["status"] == "active"
+        assert snapshot["workflow"]["run_id"] == state["workflow"]["run_id"]
         assert snapshot["orchestrator"]["session"] == "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a"
         open_tasks = [t for t in state["tasks"] if t["state"] not in TERMINAL]
         assert [(t["id"], t["assignee"], t["role"], t["state"]) for t in snapshot["tasks"]] == [

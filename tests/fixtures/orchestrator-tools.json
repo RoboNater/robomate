@@ -49,6 +49,46 @@
     }
   },
   {
+    "name": "start_workflow",
+    "description": "Start the oldest queued run, or create one from chat.\n\n        With no statement, the oldest queued workflow becomes active. With a\n        statement, a new run is created: active when no run is live and nothing\n        is queued, otherwise queued behind the live run. Only one live and one\n        queued run may exist.\n        ",
+    "inputSchema": {
+      "properties": {
+        "statement": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Statement"
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Policy"
+        }
+      },
+      "title": "start_workflowArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "start_workflowDictOutput",
+      "type": "object"
+    }
+  },
+  {
     "name": "wait_for_event",
     "description": "Wait for and lease the oldest event. On event=null, call again.\n\n        ack: the delivery_id of the event just handled. It still acks after\n        the delivery lease has expired, so a long action \u2014 merging, say \u2014 is\n        not redone once it has finished.\n        ",
     "inputSchema": {
@@ -271,6 +311,7 @@
       "$defs": {
         "WorkflowStatus": {
           "enum": [
+            "queued",
             "active",
             "paused",
             "done",
