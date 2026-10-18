@@ -20,6 +20,9 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v22 is #240's run identity and sequential queue: `workflow.run_id`
+# (unique), `workflow.statement_sha256`, `queued` status, and the `statement`
+# table (SHA-256 key, bytes, size, source, created).
 # v21 is #238's `agent.standing_role` and `join` profile columns
 # (`harness_source`, `effort`, `effort_source`).
 # v20 is #95's `orchestrator_last_call`: one row, the orchestrator's latest
@@ -39,7 +42,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 class DatabaseVersionError(RuntimeError):
@@ -98,12 +101,23 @@ _AGENT_SQL = "".join(
 
 
 SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS statement (
+    sha256 TEXT PRIMARY KEY,
+    bytes BLOB NOT NULL,
+    size INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    created TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS workflow (
     id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE,
     goal TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ({_sql_values(WorkflowStatus)})),
     policy_json TEXT NOT NULL DEFAULT '{{}}',
-    created TEXT NOT NULL
+    statement_sha256 TEXT,
+    created TEXT NOT NULL,
+    FOREIGN KEY (statement_sha256) REFERENCES statement(sha256)
 );
 
 CREATE TABLE IF NOT EXISTS agent (
@@ -298,8 +312,9 @@ CREATE INDEX IF NOT EXISTS idx_stall_episode_open ON stall_episode(cleared, role
 # `ALTER TABLE` can only append columns, and cannot add a column-level UNIQUE
 # at all, so a migrated database reaches the current version with its columns in
 # arrival order rather than the order `SCHEMA` declares. These are the tables
-# that drift (#59); v8 rebuilds them into the declared shape.
-REBUILT_TABLES = ("agent", "task", "event", "decision", "operator_question")
+# that drift (#59); v8 rebuilds them into the declared shape. `workflow` drifts
+# at v22 (new `run_id` UNIQUE, `statement_sha256`, and the `queued` CHECK).
+REBUILT_TABLES = ("agent", "task", "event", "decision", "operator_question", "workflow")
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\(", re.IGNORECASE)
 
@@ -364,7 +379,7 @@ def initialize_database(path: Path) -> None:
             )
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
-        # (any of v1-v19 -> v20).
+        # (any of v1-v21 -> v22).
         _migrate_agent_profile(connection)
         _migrate_operation_table(connection)
         _migrate_worker_heartbeat(connection)
@@ -384,6 +399,7 @@ def initialize_database(path: Path) -> None:
         _migrate_lease_clock_shift(connection)
         _migrate_orchestrator_last_call(connection)
         _migrate_standing_role_and_join_profile(connection)
+        _migrate_run_identity_and_queue(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -406,6 +422,51 @@ def _migrate_standing_role_and_join_profile(connection: sqlite3.Connection) -> N
     for name, spec in JOIN_COLUMNS.items():
         if name not in columns:
             connection.execute(f"ALTER TABLE agent ADD COLUMN {name} {spec}")
+
+
+def _migrate_run_identity_and_queue(connection: sqlite3.Connection) -> None:
+    """Add run identity, statement storage and the queued status (#240, v22).
+
+    Every existing workflow gets a `run_id` from its `created` date and the
+    first 8 hex of its `id` (`<YYYYMMDD>_<8 hex>`). `statement_sha256` stays
+    NULL for legacy rows: no statement was stored before v22.
+    """
+
+    connection.execute(_canonical_tables()["statement"])
+    columns = _columns(connection, "workflow")
+    if "run_id" not in columns:
+        connection.execute("ALTER TABLE workflow ADD COLUMN run_id TEXT")
+    if "statement_sha256" not in columns:
+        connection.execute("ALTER TABLE workflow ADD COLUMN statement_sha256 TEXT")
+    import hashlib as _hashlib
+
+    for row in connection.execute(
+        "SELECT id, created FROM workflow WHERE run_id IS NULL OR run_id = ''"
+    ).fetchall():
+        workflow_id = str(row["id"])
+        created = str(row["created"] or "")
+        date_part = "".join(ch for ch in created[:10] if ch.isdigit())
+        if len(date_part) != 8:
+            date_part = "19700101"
+        hex_chars = "".join(ch for ch in workflow_id[:8] if ch in "0123456789abcdefABCDEF")
+        if len(hex_chars) == 8:
+            hex_part = hex_chars.lower()
+        else:
+            # Legacy test ids (e.g. 'wf-...') are not hex; derive deterministically.
+            hex_part = _hashlib.sha256(workflow_id.encode("utf-8")).hexdigest()[:8]
+        run_id = f"{date_part}_{hex_part.lower()}"
+        # The pre-v22 invariant allowed only one workflow, so a collision
+        # cannot happen on a real hub; the loop below keeps the migration
+        # total rather than failing on a hand-built fixture.
+        suffix = 0
+        candidate = run_id
+        while (
+            connection.execute("SELECT 1 FROM workflow WHERE run_id = ?", (candidate,)).fetchone()
+            is not None
+        ):
+            suffix += 1
+            candidate = f"{run_id}{suffix}"
+        connection.execute("UPDATE workflow SET run_id = ? WHERE id = ?", (candidate, workflow_id))
 
 
 def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:

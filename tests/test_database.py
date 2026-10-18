@@ -821,8 +821,12 @@ def test_migration_from_v11_adds_nullable_peer_addresses(tmp_path: Path) -> None
 def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: Path) -> None:
     path = tmp_path / "v12.db"
     _legacy_database(path, 12)
-    store = HubStore(path)
-    workflow_id = store.initialize_workflow("Existing v12 run")
+    workflow_id = "wf-v12-legacy"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, created) VALUES (?, ?, ?, ?)",
+            (workflow_id, "Existing v12 run", "active", "2026-09-10T00:00:00Z"),
+        )
     with database(path) as connection:
         assert (
             connection.execute(
@@ -838,6 +842,7 @@ def test_migration_from_v12_adds_gate_readings_and_preserves_workflow(tmp_path: 
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert connection.execute("SELECT * FROM gate_reading").fetchall() == []
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    store = HubStore(path)
     assert store.get_state()["workflow"]["id"] == workflow_id
     store.record_gate_reading(
         "https://github.com/example/repo/pull/1",
@@ -1106,3 +1111,43 @@ def test_migration_from_v20_adds_standing_role_and_join_profile_sources(tmp_path
     store.submit_result(t1.id, "bob", TaskState.COMPLETED, "done")
     t2 = store.assign_task("bob", "reviewer", "Rev", "Do review")
     assert t2.role == "reviewer"
+
+
+def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> None:
+    """#240's v22: a done workflow migrates with a run_id from its created date."""
+
+    path = tmp_path / "v21.db"
+    _legacy_database(path, 21)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, policy_json, created)"
+            " VALUES ('wf-done-1', 'Old goal', 'done', '{}', '2026-10-02T03:04:05Z')"
+        )
+    initialize_database(path)
+    initialize_database(path)
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        row = connection.execute(
+            "SELECT run_id, status FROM workflow WHERE id = ?", ("wf-done-1",)
+        ).fetchone()
+        assert row is not None
+        assert row["run_id"].startswith("20261002_")
+        assert len(row["run_id"]) == 8 + 1 + 8
+        assert row["status"] == "done"
+        assert "statement" in {
+            r["name"]
+            for r in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        # `queued` is now a valid workflow status.
+        connection.execute(
+            "INSERT INTO workflow (id, run_id, goal, status, created)"
+            " VALUES ('wf-queued', '20261018_deadbeef', 'Queued goal', 'queued',"
+            " '2026-10-18T00:00:00Z')"
+        )
+    store = HubStore(path)
+    # A hub whose workflows are all done (plus queued) accepts a new run only
+    # via the queue: starting with no statement activates the queued run.
+    assert store.get_state()["queue"]
+    assert store.start_workflow() != "wf-done-1"

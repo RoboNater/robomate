@@ -13,6 +13,7 @@ UNKNOWN = "unknown"
 
 
 class WorkflowStatus(StrEnum):
+    QUEUED = "queued"
     ACTIVE = "active"
     PAUSED = "paused"
     DONE = "done"
@@ -47,6 +48,9 @@ class WorkflowPolicy(BaseModel):
     max_task_lease_min: PositiveNumber = 120
     # Minutes without agent activity before the hub reports a stall (#144).
     stall_after_min: PositiveNumber = 20
+    # What happens when a run ends with the queue empty (mvp-spec §7.2, M2 Step 3).
+    # `release` releases workers; `standby` keeps them joined for the next run.
+    on_done: Literal["release", "standby"] = "release"
 
 
 class AgentStatus(StrEnum):

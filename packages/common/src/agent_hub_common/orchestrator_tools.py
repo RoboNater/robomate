@@ -23,6 +23,7 @@ PositiveId = Annotated[int, Field(gt=0)]
 OPERATIONS = (
     "get_state",
     "initialize_workflow",
+    "start_workflow",
     "wait_for_event",
     "assign_task",
     "check_merge_gate",
@@ -65,6 +66,18 @@ class OrchestratorTools:
 
         This must be Alice's first mutating call. Goal and policy are immutable;
         use get_state to resume the stored workflow after a restart.
+        """
+        raise NotImplementedError
+
+    async def start_workflow(
+        self, statement: str | None = None, policy: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Start the oldest queued run, or create one from chat.
+
+        With no statement, the oldest queued workflow becomes active. With a
+        statement, a new run is created: active when no run is live and nothing
+        is queued, otherwise queued behind the live run. Only one live and one
+        queued run may exist.
         """
         raise NotImplementedError
 

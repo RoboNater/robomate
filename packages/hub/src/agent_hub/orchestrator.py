@@ -65,8 +65,60 @@ class OrchestratorOps(OrchestratorTools):
         self, goal: str, policy: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         workflow_id = self.store.initialize_workflow(goal, policy)
-        workflow = self.store.get_state()["workflow"]
-        return {"id": workflow_id, "goal": workflow["goal"], "policy": workflow["policy"]}
+        state = self.store.get_state()
+        workflow = state["workflow"]
+        if workflow is None:
+            # The call queued behind a live run; report the queued run.
+            queued = [q for q in state["queue"] if q["workflow_id"] == workflow_id]
+            if queued:
+                return {
+                    "id": workflow_id,
+                    "run_id": queued[0]["run_id"],
+                    "goal": queued[0]["goal"],
+                    "policy": policy or {},
+                    "status": "queued",
+                }
+            raise RuntimeError("initialize_workflow returned an unknown workflow")
+        return {
+            "id": workflow_id,
+            "run_id": workflow.get("run_id"),
+            "goal": workflow["goal"],
+            "policy": workflow["policy"],
+        }
+
+    async def start_workflow(
+        self, statement: str | None = None, policy: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        workflow_id = self.store.start_workflow(statement, policy)
+        state = self.store.get_state()
+        workflow = state["workflow"]
+        if workflow is not None and workflow["id"] == workflow_id:
+            return {
+                "id": workflow_id,
+                "run_id": workflow.get("run_id"),
+                "goal": workflow["goal"],
+                "policy": workflow["policy"],
+                "status": workflow["status"],
+            }
+        queued = [q for q in state["queue"] if q["workflow_id"] == workflow_id]
+        if queued:
+            return {
+                "id": workflow_id,
+                "run_id": queued[0]["run_id"],
+                "goal": queued[0]["goal"],
+                "policy": policy or {},
+                "status": "queued",
+            }
+        previous = state.get("previous_run") or {}
+        if previous.get("workflow_id") == workflow_id:
+            return {
+                "id": workflow_id,
+                "run_id": previous.get("run_id"),
+                "goal": previous.get("goal"),
+                "policy": policy or {},
+                "status": previous.get("status"),
+            }
+        raise RuntimeError("start_workflow returned an unknown workflow")
 
     async def wait_for_event(
         self, timeout_s: Timeout = 100, ack: str | None = None

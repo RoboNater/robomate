@@ -135,7 +135,8 @@ Read `get_state.workflow.policy` and apply these defaults for omitted values:
   "pairing_wait_s": 120,
   "max_wall_minutes": 120,
   "max_task_lease_min": 120,
-  "stall_after_min": 20
+  "stall_after_min": 20,
+  "on_done": "release"
 }
 ```
 
