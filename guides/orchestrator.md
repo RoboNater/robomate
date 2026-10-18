@@ -383,7 +383,7 @@ Apply `max_review_rounds` (default 3) exactly:
   disagreement across two rounds, escalate even before the cap.
 
 An approval with only nonblocking findings gives the implementer a choice in
-an ADDRESS task: handle them now and trigger RE-REVIEW if the head changes, or
+a NONBLOCKING task: handle them now and trigger RE-REVIEW if the head changes, or
 decline them. After a decline, give the reviewer a same-head task to file and
 reference a follow-up issue. If the implementer reports the same head with no
 changes, the existing approval remains bound to that head.
@@ -552,6 +552,38 @@ quote it as a task requirement, not as operator authorization.
 <!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42.
      Unresolved supplied roadmap targets: #34. -->
 
+The forge merge creates no hub event. Source `CLOSE-OUT for <merged sha7>`
+from the `task_completed` event at the end of the task chain that reached
+MERGE for the verified approved PR head. Retain its stable `EventRecord.id`
+while checking CI and merging; do not substitute a gate reading, decision,
+delivery ID, or the merge/squash commit for that event. Use these routes:
+
+| Route to the merged head | CLOSE-OUT source `task_completed` event |
+|---|---|
+| IMPLEMENT -> approving REVIEW -> MERGE | Approving REVIEW completion; IMPLEMENT completion already sourced REVIEW. |
+| Blocking REVIEW -> ADDRESS -> approving RE-REVIEW -> MERGE | Final approving RE-REVIEW completion; ADDRESS completion already sourced that review. |
+| REBASE with `conflict_files: []` -> MERGE | Clean REBASE completion, whose head retained approval. |
+| REBASE with conflict files -> approving focused RE-REVIEW -> MERGE | Focused RE-REVIEW completion; REBASE completion already sourced that review. |
+| CI-REPAIR -> approving RE-REVIEW -> MERGE | Approving RE-REVIEW completion; CI-REPAIR completion already sourced that review. |
+| Approving REVIEW -> NONBLOCKING, changed head -> approving RE-REVIEW -> MERGE | New approving RE-REVIEW completion; NONBLOCKING completion already sourced that review. |
+| Approving REVIEW -> NONBLOCKING, same head, no follow-up task -> MERGE | NONBLOCKING completion; the original approval remains valid, but its event already sourced NONBLOCKING. |
+| NONBLOCKING decline -> FOLLOW-UP -> MERGE | FOLLOW-UP completion; NONBLOCKING completion already sourced FOLLOW-UP. |
+| Missing review comment -> REVIEW-COMMENT-CORRECTION -> MERGE | Completed same-head correction supplying the required review comment, if no further task is needed. |
+
+These routes compose: if a completion instead sources another REBASE,
+CI-REPAIR, NONBLOCKING, correction, or review task, it is consumed by that
+assignment. Continue from the subsequent task's completion and apply the
+table again. A RETRY uses its own completion in place of the failed task's;
+failed/canceled tasks cannot supply a successful close-out source. Keep the
+terminal completion unused for CLOSE-OUT until merge is verified; no extra
+task is needed just to manufacture an event.
+
+On resume, reconcile the task chain and retained source event with the forge
+merge as described above. Inspect all tasks before assigning CLOSE-OUT. If
+it already exists, route that task; never reuse its source for another task.
+If the chain or source cannot be established unambiguously, escalate rather
+than choosing an unrelated unused event.
+
 After a verified merge, follow the close-out target from the durable goal. When
 it names a repository-qualified roadmap issue, assign the implementer a
 close-out task to update that issue's status and any reservation line. Include
@@ -561,6 +593,10 @@ herself; she edits the roadmap only for reservations and sequencing.
 Verify the update directly with
 the orchestrator forge appendix's issue-read command. If it is missing, send one
 correction task naming that same repository-qualified issue and verify again.
+Source `ROADMAP-CORRECTION for <close-out task id>` from that CLOSE-OUT task's
+`task_completed` event, using its stable event `id` as `event_id`. Do not reuse
+the event that sourced CLOSE-OUT. Inspect existing tasks first so a replay
+routes the original correction instead of assigning another.
 When the goal names a supplied roadmap target, first resolve it to an
 `owner/repository#number` when it is not repository-qualified already, then
 read that issue directly: if it resolves to a readable issue, proceed as above
