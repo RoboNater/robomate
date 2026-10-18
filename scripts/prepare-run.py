@@ -52,6 +52,7 @@ owner-only. The worker host only reads the hub's token file; it never mints one.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import hashlib
 import ipaddress
@@ -62,11 +63,13 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
-from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, check_merge_compatibility
+from agent_hub.forge_preflight import gitlab_policy_checks, gitlab_preflight
+from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, GlabResult
 from agent_hub_common.discovery import read_hub_json, token_file
 from agent_hub_common.discovery import state_dir as hub_state_dir
 from agent_hub_common.registry import HEALTHZ_LIVE_PID_TIMEOUT_S, hub_healthy, process_alive
@@ -2482,18 +2485,20 @@ def prepare(
                 f"got {repository!r}: {exc}"
             ) from None
         hub_origin = hub_info.get("origin") if hub_info is not None else None
-        if hub_origin:
-            try:
-                hub_gl_project = GitLabProject.from_origin(str(hub_origin))
-                if gl_project != hub_gl_project:
-                    raise ValueError(
-                        f"--repository differs from the running hub origin {hub_origin!r}"
-                    )
-            except GitLabGateError:
-                if repository != str(hub_origin):
-                    raise ValueError(
-                        f"--repository differs from the running hub origin {hub_origin!r}"
-                    ) from None
+        if not hub_origin:
+            raise ValueError(
+                "hub has no origin recorded; restart hub with robomate up which records origin "
+                f"(for GitLab, --repository {repository!r} cannot be bound without it)"
+            )
+        try:
+            hub_gl_project = GitLabProject.from_origin(str(hub_origin))
+            if gl_project != hub_gl_project:
+                raise ValueError(f"--repository differs from the running hub origin {hub_origin!r}")
+        except GitLabGateError:
+            if repository != str(hub_origin):
+                raise ValueError(
+                    f"--repository differs from the running hub origin {hub_origin!r}"
+                ) from None
         slug = gl_project.path
         clone_from = repository
     else:
@@ -2515,113 +2520,63 @@ def prepare(
     if forge == "gitlab":
         assert gl_project is not None
         if not skip_github_checks:
-            try:
-                user_res = run("glab", "api", "--hostname", gl_project.host, "user")
-                user_data = json.loads(user_res)
-                if (
-                    not isinstance(user_data, dict)
-                    or not isinstance(user_data.get("username"), str)
-                    or "message" in user_data
-                ):
-                    raise ValueError(f"glab is not authenticated for host {gl_project.host}")
-            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
-                raise ValueError(
-                    f"glab is not authenticated for host {gl_project.host} (glab api user failed); "
-                    f"run `glab auth login --hostname {gl_project.host}` and retry"
-                ) from exc
 
-            try:
-                proj_res = run(
-                    "glab",
-                    "api",
-                    "--hostname",
-                    gl_project.host,
-                    f"projects/{quote(gl_project.path, safe='')}",
+            async def _glab_runner(args: Sequence[str]) -> GlabResult:
+                try:
+                    stdout = run("glab", *args)
+                    return GlabResult(0, stdout, "")
+                except subprocess.CalledProcessError as exc:
+                    stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+                    stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+                    code = exc.returncode if isinstance(exc.returncode, int) else 1
+                    return GlabResult(code, stdout or "", stderr or "")
+
+            base_checks = asyncio.run(gitlab_preflight(repository, runner=_glab_runner))
+            for check in base_checks:
+                if check.name == "Authenticated" and check.status != "pass":
+                    raise ValueError(
+                        f"glab is not authenticated for host {gl_project.host} "
+                        "(glab api user failed); "
+                        f"run `glab auth login --hostname {gl_project.host}` and retry"
+                    )
+                if check.name == "Project readable":
+                    if check.status == "refuse":
+                        raise ValueError(check.detail)
+                    if check.status == "warn" and "cannot read origin project" in check.detail:
+                        raise ValueError(
+                            f"cannot read project settings for {slug} on {gl_project.host}; "
+                            "check glab auth and repository name"
+                        )
+                    # A warn for unverified web_url/developer access is enforced
+                    # strictly by the shared policy checks below, which name the
+                    # remedy; other base advisories (version, unsupported
+                    # settings, Auto DevOps, pipelines) stay advisory for
+                    # prepare-run, as today.
+
+            policy_checks = asyncio.run(
+                gitlab_policy_checks(
+                    repository,
+                    merge_method=merge_method,
+                    allow_no_ci=allow_no_ci,
+                    runner=_glab_runner,
                 )
-                proj_data = json.loads(proj_res)
-                if (
-                    not isinstance(proj_data, dict)
-                    or not isinstance(proj_data.get("id"), int)
-                    or "message" in proj_data
-                ):
-                    raise ValueError(f"cannot read project settings for {slug}")
-            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            )
+            for check in policy_checks:
+                if check.status == "refuse":
+                    raise ValueError(check.detail)
+            merge_check = next((c for c in policy_checks if c.name == "Merge compatibility"), None)
+            ci_check = next((c for c in policy_checks if c.name == "CI configuration"), None)
+            if merge_check is None or ci_check is None:
                 raise ValueError(
                     f"cannot read project settings for {slug} on {gl_project.host}; "
                     "check glab auth and repository name"
-                ) from exc
-
-            web_url = proj_data.get("web_url")
-            if isinstance(web_url, str) and web_url.lower() != gl_project.web_url.lower():
-                raise ValueError(
-                    f"project web_url {web_url!r} differs from expected {gl_project.web_url!r}"
                 )
-
-            permissions = proj_data.get("permissions")
-            levels = []
-            if isinstance(permissions, dict):
-                for key in ("project_access", "group_access"):
-                    access = permissions.get(key)
-                    if isinstance(access, dict) and isinstance(access.get("access_level"), int):
-                        levels.append(access["access_level"])
-            developer = bool(levels and max(levels) >= 30)
-            if not developer:
-                raise ValueError(
-                    f"repository {slug} requires developer access or more "
-                    f"(permissions {permissions!r}); check repo permissions"
-                )
-
-            errors = check_merge_compatibility(proj_data, merge_method)
-            if errors:
-                raise ValueError(
-                    f"repository {slug} does not allow the {merge_method!r} merge method: "
-                    f"{' '.join(errors)}"
-                )
-            merge_note = f"{slug} allows {merge_method}"
-
-            default_branch = str(proj_data.get("default_branch") or "main")
-            has_ci = False
-            try:
-                proj_path = quote(gl_project.path, safe="")
-                ci_path = quote(".gitlab-ci.yml", safe="")
-                ref = quote(default_branch, safe="")
-                file_res = run(
-                    "glab",
-                    "api",
-                    "--hostname",
-                    gl_project.host,
-                    f"projects/{proj_path}/repository/files/{ci_path}?ref={ref}",
-                )
-                if "404 File Not Found" not in file_res:
-                    has_ci = True
-            except subprocess.CalledProcessError as exc:
-                err_text = f"{exc.stdout or ''} {exc.stderr or ''} {exc}"
-                if not (
-                    "(HTTP 404)" in err_text
-                    or "404 File Not Found" in err_text
-                    or "404" in err_text
-                ):
-                    raise ValueError(
-                        f"cannot check CI configuration for {slug} on {gl_project.host}: {exc}; "
-                        "check network/auth or pass explicit --allow-no-ci true|false"
-                    ) from exc
-            except OSError as exc:
-                raise ValueError(
-                    f"cannot check CI configuration for {slug} on {gl_project.host}: {exc}; "
-                    "check network/auth or pass explicit --allow-no-ci true|false"
-                ) from exc
-            if not has_ci:
-                has_ci = bool(
-                    proj_data.get("ci_config_path") or proj_data.get("auto_devops_enabled") is True
-                )
-
-            ci_note = (
-                f"{slug} has CI configured (allow_no_ci=false)"
-                if has_ci
-                else f"{slug} has no CI configured (allow_no_ci=true)"
-            )
-            detected = not has_ci
-            policy_allow_no_ci = detected if allow_no_ci == "auto" else allow_no_ci == "true"
+            merge_note = merge_check.detail
+            ci_note = ci_check.detail
+            if allow_no_ci == "auto":
+                policy_allow_no_ci = "has no CI configured" in ci_note
+            else:
+                policy_allow_no_ci = allow_no_ci == "true"
         else:
             policy_allow_no_ci = allow_no_ci == "true"
     else:

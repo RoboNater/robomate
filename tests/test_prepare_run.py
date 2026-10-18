@@ -2464,6 +2464,8 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             calls.append(list(args))
             assert args[0] != "gh", f"gh command unexpectedly invoked: {args}"
             assert args[0] == "glab"
+            if list(args) == ["glab", "version"]:
+                return "glab version 1.36.0 (build)"
             if list(args[1:4]) == ["api", "--hostname", "gitlab-box.local"]:
                 endpoint = args[4]
                 if endpoint == "user":
@@ -2575,6 +2577,201 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     )
     assert "Forge comment identity account: `testuser`." in alice_prompt
     assert "merge its merge request" in alice_prompt
+
+
+def gitlab_hub_repo_no_origin(tmp_path: Path, url: str = "http://127.0.0.1:8521") -> Path:
+    repo = tmp_path / "gl-target-no-origin"
+    state = repo / ".robomate"
+    state.mkdir(parents=True, exist_ok=True)
+    token = state / "token"
+    token.write_text("test-token\n")
+    token.chmod(0o600)
+    (state / "hub.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "url": url,
+                "port": PREPARE_RUN.url_port(url, "test"),
+                "hub_id": "abc",
+                "forge": "gitlab",
+            }
+        )
+    )
+    return repo
+
+
+def test_gitlab_no_origin_refuses_with_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = gitlab_hub_repo_no_origin(tmp_path)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    with pytest.raises(ValueError, match="restart hub with robomate up which records origin"):
+        PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run-no-origin", hub_repo=target)
+
+
+@pytest.mark.parametrize(
+    "hub_origin,repository",
+    [
+        (
+            "https://gitlab-box.local/RoboNater/robomate-glab-sandbox.git",
+            "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git",
+        ),
+        (
+            "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git",
+            "https://gitlab-box.local/RoboNater/robomate-glab-sandbox.git",
+        ),
+    ],
+)
+def test_gitlab_origin_match_incl_ssh_https(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hub_origin: str, repository: str
+) -> None:
+    target = gitlab_hub_repo(tmp_path, origin_url=hub_origin)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "bootstrap_clone",
+        lambda name, path, clone_from: {
+            "agent": name,
+            "path": str(path),
+            "repository": clone_from,
+            "workspace_id": f"w-{name}",
+        },
+    )
+
+    def runner(*args: str, **kwargs: Any) -> str:
+        assert args[0] == "glab"
+        if list(args) == ["glab", "version"]:
+            return "glab version 1.36.0 (build)"
+        assert list(args[1:4]) == ["api", "--hostname", "gitlab-box.local"]
+        endpoint = args[4]
+        if endpoint == "user":
+            return json.dumps({"username": "testuser"})
+        if "repository/files" in endpoint:
+            return json.dumps({"file_name": ".gitlab-ci.yml"})
+        assert endpoint == "projects/RoboNater%2Frobomate-glab-sandbox"
+        return json.dumps(GL_BASE_PROJECT)
+
+    monkeypatch.setattr(PREPARE_RUN, "run", runner)
+    manifest = PREPARE_RUN.prepare(repository, tmp_path / "run-match", hub_repo=target)
+    assert manifest["forge"] == "gitlab"
+    assert manifest["policy"]["allow_no_ci"] is False
+
+
+@pytest.mark.parametrize("project_method", ["merge", "rebase_merge", "ff"])
+@pytest.mark.parametrize("squash", ["default_on", "default_off", "always", "never"])
+@pytest.mark.parametrize("policy", ["merge", "squash", "rebase"])
+def test_gitlab_merge_matrix_same_as_before(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    project_method: str,
+    squash: str,
+    policy: str,
+) -> None:
+    from agent_hub.gitlab_gate import check_merge_compatibility
+
+    target = gitlab_hub_repo(tmp_path)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "bootstrap_clone",
+        lambda name, path, clone_from: {
+            "agent": name,
+            "path": str(path),
+            "repository": clone_from,
+            "workspace_id": f"w-{name}",
+        },
+    )
+    project_data = {
+        **GL_BASE_PROJECT,
+        "merge_method": project_method,
+        "squash_option": squash,
+    }
+
+    def runner(*args: str, **kwargs: Any) -> str:
+        assert args[0] == "glab"
+        if list(args) == ["glab", "version"]:
+            return "glab version 1.36.0 (build)"
+        assert list(args[1:4]) == ["api", "--hostname", "gitlab-box.local"]
+        endpoint = args[4]
+        if endpoint == "user":
+            return json.dumps({"username": "testuser"})
+        if "repository/files" in endpoint:
+            return json.dumps({"file_name": ".gitlab-ci.yml"})
+        assert endpoint == "projects/RoboNater%2Frobomate-glab-sandbox"
+        return json.dumps(project_data)
+
+    monkeypatch.setattr(PREPARE_RUN, "run", runner)
+    should_refuse = bool(check_merge_compatibility(project_data, policy))
+    if should_refuse:
+        with pytest.raises(ValueError, match="does not allow the"):
+            PREPARE_RUN.prepare(
+                GL_ORIGIN, tmp_path / "run-matrix", hub_repo=target, merge_method=policy
+            )
+    else:
+        manifest = PREPARE_RUN.prepare(
+            GL_ORIGIN, tmp_path / "run-matrix", hub_repo=target, merge_method=policy
+        )
+        assert manifest["policy"]["merge_method"] == policy
+
+
+@pytest.mark.parametrize("allow", ["true", "false"])
+def test_gitlab_explicit_allow_no_ci_makes_no_ci_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow: str
+) -> None:
+    target = gitlab_hub_repo(tmp_path)
+    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "probe_versions",
+        lambda _: ({"claude": "2", "codex": "1"}, {"claude-code": "2", "codex": "1"}),
+    )
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "bootstrap_clone",
+        lambda name, path, clone_from: {
+            "agent": name,
+            "path": str(path),
+            "repository": clone_from,
+            "workspace_id": f"w-{name}",
+        },
+    )
+    calls: list[list[str]] = []
+
+    def runner(*args: str, **kwargs: Any) -> str:
+        calls.append(list(args))
+        assert args[0] == "glab"
+        if list(args) == ["glab", "version"]:
+            return "glab version 1.36.0 (build)"
+        assert list(args[1:4]) == ["api", "--hostname", "gitlab-box.local"]
+        endpoint = args[4]
+        if endpoint == "user":
+            return json.dumps({"username": "testuser"})
+        if "repository/files" in endpoint:
+            raise AssertionError("CI file must not be probed with explicit allow_no_ci")
+        assert endpoint == "projects/RoboNater%2Frobomate-glab-sandbox"
+        return json.dumps(GL_BASE_PROJECT)
+
+    monkeypatch.setattr(PREPARE_RUN, "run", runner)
+    manifest = PREPARE_RUN.prepare(
+        GL_ORIGIN, tmp_path / f"run-explicit-{allow}", hub_repo=target, allow_no_ci=allow
+    )
+    assert manifest["policy"]["allow_no_ci"] is (allow == "true")
+    assert not [c for c in calls if "repository/files" in " ".join(c)]
 
 
 def test_opencode_title_is_stable_and_names_the_agent() -> None:
