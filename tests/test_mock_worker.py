@@ -167,7 +167,9 @@ async def test_mock_worker_reviewer_task(tmp_path: Path) -> None:
                     break
                 await asyncio.sleep(0.01)
 
-            task = store.assign_task("charlie", "reviewer", "Review PR", "Review diff")
+            task = store.assign_task(
+                "charlie", "reviewer", "Review PR", "Review diff", pr_head_sha="a" * 40
+            )
 
             for _ in range(100):
                 t = store.get_task(task.id)
@@ -463,7 +465,11 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
         ),
     )
     review1 = store.assign_task(
-        "charlie", "reviewer", f"REVIEW for {implement.id} @ {sha1[:7]} [findings r1-]", "review"
+        "charlie",
+        "reviewer",
+        f"REVIEW for {implement.id} @ {sha1[:7]} [findings r1-]",
+        "review",
+        pr_head_sha=sha1,
     )
     store.submit_result(
         review1.id,
@@ -490,7 +496,11 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
         ),
     )
     review2 = store.assign_task(
-        "charlie", "reviewer", f"REVIEW for {address.id} @ {sha2[:7]} [findings r2-]", "review"
+        "charlie",
+        "reviewer",
+        f"REVIEW for {address.id} @ {sha2[:7]} [findings r2-]",
+        "review",
+        pr_head_sha=sha2,
     )
     store.submit_result(
         review2.id,

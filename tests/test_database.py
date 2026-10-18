@@ -1110,7 +1110,7 @@ def test_migration_from_v20_adds_standing_role_and_join_profile_sources(tmp_path
     store.initialize_workflow()
     t1 = store.assign_task("bob", "implementer", "Impl", "Do impl")
     store.submit_result(t1.id, "bob", TaskState.COMPLETED, "done")
-    t2 = store.assign_task("bob", "reviewer", "Rev", "Do review")
+    t2 = store.assign_task("bob", "reviewer", "Rev", "Do review", pr_head_sha="a" * 40)
     assert t2.role == "reviewer"
 
 

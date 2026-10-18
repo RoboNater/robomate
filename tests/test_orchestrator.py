@@ -206,6 +206,12 @@ async def assign_task_too_large(store: HubStore) -> dict[str, Any]:
     return {**args, "instructions": "x" * MAX_MESSAGE_PART_BYTES}
 
 
+async def assign_task_missing_pr_head_sha(store: HubStore) -> dict[str, Any]:
+    args = await assign_task(store)
+    args.pop("pr_head_sha")
+    return args
+
+
 async def check_merge_gate(store: HubStore) -> dict[str, Any]:
     return {"pr_url": PR, "expected_head_sha": HEAD}
 
@@ -283,6 +289,7 @@ CASES: list[tuple[str, Prepare, bool]] = [
     ("assign_task", assign_task, OK),
     ("assign_task", assign_task_unknown_agent, FAILS),
     ("assign_task", assign_task_too_large, FAILS),
+    ("assign_task", assign_task_missing_pr_head_sha, FAILS),
     ("check_merge_gate", check_merge_gate, OK),
     ("reply", reply, OK),
     ("reply", reply_unknown_task, FAILS),

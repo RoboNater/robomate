@@ -368,7 +368,7 @@ def test_state_guards_idempotency(store: HubStore) -> None:
     store.check_in("worker-1", AgentProfile())
     task = store.assign_task("worker-1", "implementer", "Task 1", "Instructions")
     with pytest.raises(ConflictError, match="already holds task"):
-        store.assign_task("worker-1", "reviewer", "Task 2", "Instructions")
+        store.assign_task("worker-1", "reviewer", "Task 2", "Instructions", pr_head_sha="a" * 40)
 
     # 4. reply guard when task not in INPUT_REQUIRED
     # task is in WORKING state; reply should return False and not write messages

@@ -551,7 +551,13 @@ async def test_worker_submit_typed_reviewer_result(
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
     await worker.check_in()
-    task = hub_store.assign_task("bob", "reviewer", "Review PR", "Review it")
+    task = hub_store.assign_task(
+        "bob",
+        "reviewer",
+        "Review PR",
+        "Review it",
+        pr_head_sha="0123456789abcdef0123456789abcdef01234567",
+    )
 
     res = await worker.submit_result(
         task.id,
