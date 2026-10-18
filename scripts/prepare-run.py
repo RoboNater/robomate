@@ -138,6 +138,7 @@ DEFAULT_STALL_AFTER_MIN = 20
 #: The hub's MCP tools, which a Codex or AntiGravity Alice's config enables and approves.
 ALICE_TOOLS = [
     "get_state",
+    "get_statement",
     "initialize_workflow",
     "start_workflow",
     "wait_for_event",

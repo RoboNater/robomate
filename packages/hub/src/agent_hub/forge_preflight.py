@@ -1,11 +1,18 @@
-"""Policy-independent GitLab startup checks; unavailable facts only warn."""
+"""Policy-independent GitLab startup checks; unavailable facts only warn.
+
+Also policy-dependent GitLab checks and GitHub checks shared by
+`prepare-run.py` and `robomate submit` (M2 Step 4, #241).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+import shutil
+import subprocess
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -26,6 +33,50 @@ class PreflightCheck:
     name: str
     status: Literal["pass", "warn", "note", "refuse"]
     detail: str
+
+
+@dataclass(frozen=True)
+class ProjectFacts:
+    """One parsed GitLab project response, shared by both check suites (r1-5).
+
+    `is_valid` means the response names a project (`id` int, no `message`);
+    `web_url_matches` compares `web_url` case-insensitively to the origin's;
+    `access_levels` are the `project_access`/`group_access` levels found.
+    Callers map these typed facts to `pass`/`warn`/`refuse` without parsing
+    detail text (r2-1); `robomate up` keeps its warn-only details unchanged.
+    """
+
+    is_valid: bool
+    web_url: str | None
+    web_url_matches: bool
+    access_levels: tuple[int, ...] = field(default_factory=tuple)
+
+    @property
+    def has_developer_access(self) -> bool:
+        return bool(self.access_levels and max(self.access_levels) >= 30)
+
+
+def project_facts(data: Any, project: GitLabProject) -> ProjectFacts:
+    """Parse one project API response into typed facts (r1-5)."""
+
+    if not isinstance(data, dict) or not isinstance(data.get("id"), int) or "message" in data:
+        return ProjectFacts(is_valid=False, web_url=None, web_url_matches=False)
+    web_url = data.get("web_url")
+    web_url_str = web_url if isinstance(web_url, str) else None
+    matches = isinstance(web_url, str) and web_url.lower() == project.web_url.lower()
+    levels: list[int] = []
+    permissions = data.get("permissions")
+    if isinstance(permissions, dict):
+        for key in ("project_access", "group_access"):
+            access = permissions.get(key)
+            if isinstance(access, dict) and isinstance(access.get("access_level"), int):
+                levels.append(int(access["access_level"]))
+    return ProjectFacts(
+        is_valid=True,
+        web_url=web_url_str,
+        web_url_matches=bool(matches),
+        access_levels=tuple(levels),
+    )
 
 
 async def gitlab_preflight(
@@ -79,10 +130,10 @@ async def gitlab_preflight(
         )
     )
     data = await api(f"projects/{quote(project.path, safe='')}")
-    readable = data is not None and isinstance(data.get("id"), int)
-    if readable and data is not None:
-        web_url = data.get("web_url")
-        if isinstance(web_url, str) and web_url.lower() != project.web_url.lower():
+    facts = project_facts(data, project)
+    if facts.is_valid:
+        web_url = facts.web_url
+        if not facts.web_url_matches:
             checks.append(
                 PreflightCheck(
                     "Project readable",
@@ -94,15 +145,7 @@ async def gitlab_preflight(
             )
             data = None
         else:
-            permissions = data.get("permissions")
-            levels = []
-            if isinstance(permissions, dict):
-                for key in ("project_access", "group_access"):
-                    access = permissions.get(key)
-                    if isinstance(access, dict) and isinstance(access.get("access_level"), int):
-                        levels.append(access["access_level"])
-            developer = bool(levels and max(levels) >= 30)
-            verified = developer and isinstance(web_url, str)
+            verified = facts.has_developer_access and isinstance(web_url, str)
             checks.append(
                 PreflightCheck(
                     "Project readable",
@@ -231,11 +274,8 @@ async def gitlab_policy_checks(
                 "check glab auth and repository name",
             )
         ]
-    if (
-        not isinstance(proj_data, dict)
-        or not isinstance(proj_data.get("id"), int)
-        or "message" in proj_data
-    ):
+    facts = project_facts(proj_data, project)
+    if not facts.is_valid:
         return [
             PreflightCheck(
                 "Project readable",
@@ -245,25 +285,18 @@ async def gitlab_policy_checks(
             )
         ]
 
-    web_url = proj_data.get("web_url")
-    if isinstance(web_url, str) and web_url.lower() != project.web_url.lower():
+    if not facts.web_url_matches:
         return [
             PreflightCheck(
                 "Project readable",
                 "refuse",
-                f"project web_url {web_url!r} differs from expected {project.web_url!r}",
+                f"project web_url {facts.web_url!r} differs from expected {project.web_url!r}",
             )
         ]
 
-    permissions = proj_data.get("permissions")
-    levels: list[int] = []
-    if isinstance(permissions, dict):
-        for key in ("project_access", "group_access"):
-            access = permissions.get(key)
-            if isinstance(access, dict) and isinstance(access.get("access_level"), int):
-                levels.append(access["access_level"])
     checks: list[PreflightCheck] = []
-    if not (levels and max(levels) >= 30):
+    if not facts.has_developer_access:
+        permissions = proj_data.get("permissions") if isinstance(proj_data, dict) else None
         return [
             PreflightCheck(
                 "Developer access",
@@ -385,3 +418,255 @@ def gitlab_policy_checks_sync(
             origin, merge_method=merge_method, allow_no_ci=allow_no_ci, runner=runner
         )
     )
+
+
+GH_TIMEOUT_S = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class GhResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+GhRunner = Callable[[Sequence[str]], Awaitable[GhResult]]
+
+
+async def run_gh(args: Sequence[str]) -> GhResult:
+    """Run `gh` without letting it touch the hub's MCP stdin or stdout (M2 Step 4).
+
+    Mirrors `gitlab_gate.run_glab` (including its timeout) so submit's GitHub
+    checks see the same failures as the merge gate would, not prepare-run's
+    untimed adapter.
+    """
+
+    import os
+
+    executable = shutil.which("gh")
+    if executable is None:
+        raise OSError("the gh CLI is not on PATH")
+    env = os.environ | {"NO_COLOR": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
+    process = await asyncio.create_subprocess_exec(
+        executable,
+        *args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), GH_TIMEOUT_S)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise TimeoutError(f"gh {' '.join(args[:2])} timed out after {GH_TIMEOUT_S:g} s") from None
+    return GhResult(
+        returncode=process.returncode if process.returncode is not None else -1,
+        stdout=stdout.decode("utf-8", errors="replace"),
+        stderr=stderr.decode("utf-8", errors="replace"),
+    )
+
+
+def parse_github_slug(origin: str) -> str | None:
+    """Return `owner/repo` for a GitHub origin, else None for local paths.
+
+    Hub origins are full remotes (SSH or HTTPS), never bare slugs; a local
+    path (no remote) has no slug and skips forge checks, like prepare-run.
+    """
+
+    text = origin.strip()
+    if text.startswith("git@github.com:"):
+        slug = text.removeprefix("git@github.com:").removesuffix(".git")
+    elif "github.com/" in text:
+        slug = text.split("github.com/", 1)[1].removesuffix(".git").lstrip("/")
+    else:
+        return None
+    parts = slug.strip("/").split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+async def github_policy_checks(
+    origin: str,
+    *,
+    merge_method: str,
+    allow_no_ci: str,
+    runner: GhRunner = run_gh,
+) -> list[PreflightCheck]:
+    """Policy-dependent GitHub checks for `robomate submit` (M2 Step 4, #241).
+
+    Shared hub functions (no second copy in the CLI): repository access, merge
+    compatibility and CI presence. Explicit `allow_no_ci` `true`/`false` runs
+    no workflow probe; `auto` lists workflows and refuses on failure naming
+    the check. A local origin (no slug) returns no checks. GitHub runs no glab.
+    `CI configuration` is typed like the GitLab suite: `pass` means present,
+    `note` means absent (`auto`) or skipped (explicit).
+    """
+
+    if allow_no_ci not in ("auto", "true", "false"):
+        return [
+            PreflightCheck(
+                "CI configuration",
+                "refuse",
+                f"unknown allow_no_ci={allow_no_ci!r}; want one of auto, true, false",
+            )
+        ]
+    slug = parse_github_slug(origin)
+    if slug is None:
+        return []
+    try:
+        result = await runner(
+            [
+                "repo",
+                "view",
+                slug,
+                "--json",
+                "viewerPermission,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed",
+            ]
+        )
+    except (OSError, TimeoutError) as exc:
+        return [
+            PreflightCheck(
+                "Repository readable",
+                "refuse",
+                f"cannot read repository settings for {slug}; check `gh auth status` "
+                f"and the repository name: {exc}",
+            )
+        ]
+    if result.returncode:
+        detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")[
+            :500
+        ]
+        return [
+            PreflightCheck(
+                "Repository readable",
+                "refuse",
+                f"cannot read repository settings for {slug}; check `gh auth status` "
+                f"and the repository name: {detail}",
+            )
+        ]
+    try:
+        settings: Any = json.loads(result.stdout)
+    except ValueError:
+        return [
+            PreflightCheck(
+                "Repository readable",
+                "refuse",
+                f"cannot read repository settings for {slug}; check `gh auth status` "
+                "and the repository name",
+            )
+        ]
+    if not isinstance(settings, dict):
+        return [
+            PreflightCheck(
+                "Repository readable",
+                "refuse",
+                f"cannot read repository settings for {slug}; check `gh auth status` "
+                "and the repository name",
+            )
+        ]
+    if settings.get("viewerPermission") not in ("ADMIN", "MAINTAIN", "WRITE"):
+        return [
+            PreflightCheck(
+                "Repository access",
+                "refuse",
+                f"repository {slug} requires push access "
+                f"(viewerPermission {settings.get('viewerPermission')!r}); "
+                "check `gh auth status` and repo permissions",
+            )
+        ]
+    checks: list[PreflightCheck] = [
+        PreflightCheck("Repository access", "pass", f"{slug} allows push access")
+    ]
+    allowed = {
+        "squash": settings.get("squashMergeAllowed"),
+        "merge": settings.get("mergeCommitAllowed"),
+        "rebase": settings.get("rebaseMergeAllowed"),
+    }
+    if merge_method not in ("squash", "merge", "rebase"):
+        return [
+            *checks,
+            PreflightCheck(
+                "Merge compatibility",
+                "refuse",
+                f"unknown merge_method={merge_method!r}; want one of squash, merge, rebase",
+            ),
+        ]
+    if not allowed.get(merge_method):
+        return [
+            *checks,
+            PreflightCheck(
+                "Merge compatibility",
+                "refuse",
+                f"repository {slug} does not allow the {merge_method!r} merge method; "
+                "enable it in repository settings or pass another merge_method",
+            ),
+        ]
+    checks.append(PreflightCheck("Merge compatibility", "pass", f"{slug} allows {merge_method}"))
+    if allow_no_ci in ("true", "false"):
+        checks.append(
+            PreflightCheck(
+                "CI configuration",
+                "note",
+                f"{slug} CI check skipped (explicit allow_no_ci={allow_no_ci})",
+            )
+        )
+        return checks
+    try:
+        wf_result = await runner(["api", f"repos/{slug}/actions/workflows"])
+    except (OSError, TimeoutError) as exc:
+        return [
+            *checks,
+            PreflightCheck(
+                "CI configuration",
+                "refuse",
+                f"cannot check CI configuration for {slug}: {exc}; "
+                "check network/auth or pass explicit allow_no_ci true|false",
+            ),
+        ]
+    if wf_result.returncode:
+        detail = (
+            wf_result.stderr.strip() or wf_result.stdout.strip() or f"exit {wf_result.returncode}"
+        )[:500]
+        return [
+            *checks,
+            PreflightCheck(
+                "CI configuration",
+                "refuse",
+                f"cannot check CI configuration for {slug}: {detail}; "
+                "check network/auth or pass explicit allow_no_ci true|false",
+            ),
+        ]
+    try:
+        payload: Any = json.loads(wf_result.stdout)
+    except ValueError:
+        return [
+            *checks,
+            PreflightCheck(
+                "CI configuration",
+                "refuse",
+                f"cannot check CI configuration for {slug}: invalid JSON; "
+                "check network/auth or pass explicit allow_no_ci true|false",
+            ),
+        ]
+    workflows = payload.get("workflows", []) if isinstance(payload, dict) else []
+    has_workflows = bool(workflows)
+    if has_workflows:
+        checks.append(
+            PreflightCheck(
+                "CI configuration",
+                "pass",
+                f"{slug} has workflows (allow_no_ci=false)",
+            )
+        )
+    else:
+        checks.append(
+            PreflightCheck(
+                "CI configuration",
+                "note",
+                f"{slug} has no workflows (allow_no_ci=true)",
+            )
+        )
+    return checks

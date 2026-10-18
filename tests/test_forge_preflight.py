@@ -531,3 +531,101 @@ def test_sync_wrappers_match_async() -> None:
             ORIGIN, merge_method="squash", allow_no_ci="auto", runner=policy_runner
         )
     )
+
+
+def test_project_facts_helper_parses_once_for_both_suites() -> None:
+    """Deferred r1-5: one helper for project re-read/parsing (id/message, web_url, access)."""
+
+    from agent_hub.forge_preflight import project_facts
+
+    project = GitLabProject.from_origin(ORIGIN)
+    facts = project_facts(BASE, project)
+    assert facts.is_valid is True
+    assert facts.web_url_matches is True
+    assert facts.has_developer_access is True
+    assert facts.access_levels == (30,)
+    bad = project_facts({**BASE, "web_url": "https://host/other"}, project)
+    assert bad.is_valid is True and bad.web_url_matches is False
+    assert project_facts({"message": "404"}, project).is_valid is False
+    assert project_facts(None, project).is_valid is False
+
+
+async def test_github_explicit_skips_workflow_probe() -> None:
+    """GitLab parity: explicit allow_no_ci runs no workflow probe; GitHub runs no glab."""
+
+    from collections.abc import Sequence
+
+    from agent_hub.forge_preflight import GhResult, github_policy_checks
+
+    calls: list[list[str]] = []
+
+    async def runner(args: Sequence[str]) -> GhResult:
+        calls.append(list(args))
+        args_list = list(args)
+        if args_list[:2] == ["repo", "view"]:
+            return GhResult(
+                0,
+                '{"viewerPermission":"WRITE","squashMergeAllowed":true,'
+                '"mergeCommitAllowed":true,"rebaseMergeAllowed":true}',
+                "",
+            )
+        raise AssertionError(f"unexpected gh call (explicit must skip probe): {args_list}")
+
+    for allow in ("true", "false"):
+        calls.clear()
+        checks = await github_policy_checks(
+            "git@github.com:example/repo.git",
+            merge_method="squash",
+            allow_no_ci=allow,
+            runner=runner,
+        )
+        assert [c for c in calls if "actions/workflows" in " ".join(c)] == []
+        by_name = {c.name: c for c in checks}
+        assert by_name["CI configuration"].status == "note"
+        assert f"explicit allow_no_ci={allow}" in by_name["CI configuration"].detail
+
+
+async def test_github_auto_non404_refuses_naming_check() -> None:
+    from collections.abc import Sequence
+
+    from agent_hub.forge_preflight import GhResult, github_policy_checks
+
+    async def runner(args: Sequence[str]) -> GhResult:
+        args_list = list(args)
+        if args_list[:2] == ["repo", "view"]:
+            return GhResult(
+                0,
+                '{"viewerPermission":"WRITE","squashMergeAllowed":true,'
+                '"mergeCommitAllowed":true,"rebaseMergeAllowed":true}',
+                "",
+            )
+        assert args_list[0] == "api"
+        return GhResult(1, "", "500 Internal Server Error")
+
+    checks = await github_policy_checks(
+        "git@github.com:example/repo.git",
+        merge_method="squash",
+        allow_no_ci="auto",
+        runner=runner,
+    )
+    refusal = next(c for c in checks if c.status == "refuse")
+    assert refusal.name == "CI configuration"
+    assert "CI configuration" in refusal.detail
+    assert "explicit allow_no_ci" in refusal.detail
+
+
+async def test_github_local_origin_skips_checks() -> None:
+    from collections.abc import Sequence
+
+    from agent_hub.forge_preflight import GhResult, github_policy_checks
+
+    async def runner(args: Sequence[str]) -> GhResult:
+        raise AssertionError("local origin must not call gh")
+
+    checks = await github_policy_checks(
+        "/tmp/local-repo",
+        merge_method="squash",
+        allow_no_ci="auto",
+        runner=runner,
+    )
+    assert checks == []

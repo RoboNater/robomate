@@ -238,6 +238,23 @@ def create_worker_mcp(
         )
 
     @server.tool()
+    async def get_statement(sha256: str) -> dict[str, Any]:
+        """Read a submitted statement of work verbatim by its SHA-256.
+
+        Returns {sha256, statement, size, source, created}; bytes are stored
+        verbatim (CRLF and trailing newline preserved). Unknown SHA is -32001.
+        Assignments carry statement_sha256; call this when you need the text.
+        """
+        resolved = await resolve()
+        require_joined(resolved, allow_preconfigured=True)
+        return await invoke(
+            resolved,
+            "get_statement",
+            resolved.get_statement(sha256),
+            {"sha256": sha256},
+        )
+
+    @server.tool()
     async def submit_result(
         task_id: str,
         # RebaseResult last: a body that fits several models validates as the

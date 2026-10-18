@@ -17,6 +17,7 @@ from .constants import (
     AGENT_HEADER,
     MAX_HOLD_DEFAULT_S,
     MAX_MESSAGE_PART_BYTES,
+    MAX_STATEMENT_BYTES,
     MAX_TYPED_RESULT_BYTES,
     MetaKeys,
 )
@@ -77,6 +78,7 @@ __all__ = [
     "ImplementerResult",
     "MAX_HOLD_DEFAULT_S",
     "MAX_MESSAGE_PART_BYTES",
+    "MAX_STATEMENT_BYTES",
     "MAX_TYPED_RESULT_BYTES",
     "MetaKeys",
     "ModelSource",

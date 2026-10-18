@@ -14,6 +14,28 @@
     }
   },
   {
+    "name": "get_statement",
+    "description": "Read a submitted statement of work verbatim by its SHA-256.\n\n        sha256: the 64-character hex digest the submit returned.\n        ",
+    "inputSchema": {
+      "properties": {
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "title": "get_statementArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "get_statementDictOutput",
+      "type": "object"
+    }
+  },
+  {
     "name": "initialize_workflow",
     "description": "Persist the initial prompt's goal and policy, or confirm them on restart.\n\n        This must be Alice's first mutating call. Goal and policy are immutable;\n        use get_state to resume the stored workflow after a restart.\n        ",
     "inputSchema": {

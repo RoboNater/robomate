@@ -106,7 +106,7 @@ def test_operations_are_exactly_the_public_methods(cls: type) -> None:
     }
 
     assert public == set(OPERATIONS)
-    assert len(OPERATIONS) == 13
+    assert len(OPERATIONS) == 14
 
 
 def test_the_hub_implements_every_shared_tool() -> None:
@@ -154,6 +154,16 @@ async def working_task(store: HubStore, name: str) -> str:
 async def get_state(store: HubStore) -> dict[str, Any]:
     await working_task(store, "bob")
     return {}
+
+
+async def get_statement(store: HubStore) -> dict[str, Any]:
+    sha = store.get_state()["workflow"]["statement_sha256"]
+    assert isinstance(sha, str)
+    return {"sha256": sha}
+
+
+async def get_statement_unknown(store: HubStore) -> dict[str, Any]:
+    return {"sha256": "0" * 64}
 
 
 async def initialize_workflow(store: HubStore) -> dict[str, Any]:
@@ -274,6 +284,8 @@ OK, FAILS = False, True
 # once, and the failures check that /rpc carries the store's error text.
 CASES: list[tuple[str, Prepare, bool]] = [
     ("get_state", get_state, OK),
+    ("get_statement", get_statement, OK),
+    ("get_statement", get_statement_unknown, FAILS),
     ("initialize_workflow", initialize_workflow, OK),
     ("initialize_workflow", initialize_workflow_conflict, FAILS),
     ("start_workflow", start_workflow, OK),

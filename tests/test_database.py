@@ -496,10 +496,17 @@ def _populate(path: Path, version: int) -> None:
     """Write one row into every table the shipped schema at `version` has."""
 
     with sqlite3.connect(path) as connection:
-        connection.execute(
-            "INSERT INTO workflow (id, goal, status, created)"
-            " VALUES ('wf', 'Ship it', 'active', '2026-09-10T00:00:00Z')"
-        )
+        if version >= 22:
+            connection.execute(
+                "INSERT INTO workflow (id, run_id, goal, status, created)"
+                " VALUES ('wf', '20260910_abcdef12', 'Ship it', 'active',"
+                " '2026-09-10T00:00:00Z')"
+            )
+        else:
+            connection.execute(
+                "INSERT INTO workflow (id, goal, status, created)"
+                " VALUES ('wf', 'Ship it', 'active', '2026-09-10T00:00:00Z')"
+            )
         connection.execute(
             "INSERT INTO agent (name, capabilities_json, status, context_id, last_seen)"
             " VALUES ('bob', '[\"python\"]', 'idle', 'ctx-bob', '2026-09-10T00:00:00Z')"
@@ -1181,3 +1188,28 @@ def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> 
         "wf-queued",
         new_id,
     )
+
+
+def test_migration_from_v22_admits_work_submitted(tmp_path: Path) -> None:
+    """#241's v23: existing DBs accept the `work_submitted` event kind."""
+
+    from agent_hub.store import HubStore
+
+    path = tmp_path / "v22.db"
+    # Build a real v22 database from the shipped fixture.
+    import sqlite3
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "schema_v22.sql"
+    sql = fixture.read_text(encoding="utf-8")
+    with sqlite3.connect(path) as connection:
+        connection.executescript(sql)
+    initialize_database(path)
+    initialize_database(path)
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        connection.execute(
+            "INSERT INTO event (kind, payload_json, state, ts) VALUES (?, ?, 'queued', ?)",
+            ("work_submitted", '{"workflow_id":"w1"}', "2026-10-18T00:00:00Z"),
+        )
+    store = HubStore(path)
+    store.append_event(EventKind.WORK_SUBMITTED, {"workflow_id": "w2"})

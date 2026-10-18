@@ -23,8 +23,10 @@ owns orchestration; you own only the task currently assigned to you.
    Never poll in a tight loop. Keep holds under 120 s: Claude Code backgrounds
    any tool call still running at 120 s.
 3. When assigned, retain the `task_id`, `role`, instructions, and any
-   `pr_head_sha`. Call `get_role_guide(role)` for every assignment and follow
-   that fresh guide together with the assignment.
+   `pr_head_sha`, `statement_sha256` and `run_id`. Call `get_role_guide(role)`
+   for every assignment and follow that fresh guide together with the
+   assignment. Read the statement verbatim with `get_statement(sha)` when you
+   need it (#9).
 4. Do the work only in your own configured workspace. Use `report_progress`
    for concise, useful milestones; heartbeats are sent by `worker-mcp`, not by
    you.

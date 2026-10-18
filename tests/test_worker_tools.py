@@ -21,6 +21,7 @@ EXPECTED_TOOLS = {
     "ask_alice",
     "submit_result",
     "get_operator_answer",
+    "get_statement",
 }
 
 
@@ -48,6 +49,10 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
     client.ask_orchestrator = AsyncMock(return_value={"reply": "yes"})  # type: ignore[method-assign]
     client.ask_alice = AsyncMock(return_value={"reply": "yes"})  # type: ignore[method-assign]
     client.submit_result = AsyncMock(return_value={"status": "completed", "task_id": "t1"})  # type: ignore[method-assign]
+    client.get_operator_answer = AsyncMock(return_value={"question_id": 1, "status": "unanswered"})  # type: ignore[method-assign]
+    client.get_statement = AsyncMock(  # type: ignore[method-assign]
+        return_value={"sha256": "s" * 64, "statement": "Do it", "size": 5}
+    )
 
     server = create_worker_mcp(client)
     tools = await server.list_tools()
@@ -106,6 +111,15 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
             },
         )
     ) == {"status": "completed", "task_id": "t1"}
+    assert (await call("get_operator_answer", question_id=1)) == {
+        "question_id": 1,
+        "status": "unanswered",
+    }
+    assert (await call("get_statement", sha256="s" * 64)) == {
+        "sha256": "s" * 64,
+        "statement": "Do it",
+        "size": 5,
+    }
 
 
 async def test_unjoined_bridge_refuses_other_tools_and_names_join() -> None:
@@ -136,6 +150,7 @@ async def test_unjoined_bridge_refuses_other_tools_and_names_join() -> None:
             },
         ),
         ("get_operator_answer", {"question_id": 1}),
+        ("get_statement", {"sha256": "s" * 64}),
     ]
     for tool_name, args in guarded_calls:
         with pytest.raises(ToolError, match="join"):

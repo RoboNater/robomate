@@ -1586,6 +1586,7 @@ def test_fresh_run_produces_every_file(
         "ask_alice",
         "submit_result",
         "get_operator_answer",
+        "get_statement",
     }
     for name in ("alice", "bob", "charlie"):
         assert (run_dir / f"{name}.prompt.md").exists()

@@ -101,7 +101,8 @@ robomate log --timeline    # drill down when something looks wrong
   before serving. `--forge github|gitlab` overrides detection and is recorded in `hub.json`.
   An unknown forge warns that `check_merge_gate` uses the GitHub gate. GitLab startup checks
   are listed in §10; CI presence and merge-policy compatibility are checked where the policy
-  is known (the run preparation path, then `submit` in M2). Prints the hub name, its state
+  is known (`submit` in M2, from the hub's shared functions, strict refuse incl. Unsupported
+  settings; a hub without origin refuses submit). Prints the hub name, its state
   location, the hub URL, and join lines.
 - For CLI harnesses, `robomate workspace bob` (or `robomate up --agents bob,charlie`) creates the agent's
   worktree and prints the path to start the harness in. IDE harnesses open that folder.
@@ -609,8 +610,10 @@ permissions, which certification catches per harness.
 
 ### 7.1 Statement of work
 - `robomate submit <file>` / `robomate submit --issue N` / `robomate submit -` (stdin). Stored verbatim with its
-  SHA-256 (#9), size-capped with a clear error (#10). `--issue N` renders the standard
-  one-issue statement.
+  SHA-256 (#9), size-capped with a clear error (#10): at most 12 KiB (`MAX_STATEMENT_BYTES`),
+  so one statement fits in one 16 KiB message part with its A2A envelope and JSON escaping;
+  over-cap refuses with the cap and a remedy (shorten, or put detail in an issue and submit that).
+  `--issue N` renders the standard one-issue statement.
 - `start_workflow(statement?, policy?)` (orchestrator tool) starts the next queued statement;
   with `statement` it creates one from chat. The hub stores exactly what it received,
   in the `statement` table (SHA-256 key, bytes, size, source, created; DB schema v22),
@@ -811,16 +814,22 @@ validation), -32001 not found, -32002 conflict, -32003 payload too large, -32004
 unavailable, -32005 operator credential required, -32603 anything else.
 Every orchestrator operation carries `X-Robomate-Actor` and `X-Robomate-Session` and is refused
 without them; `hub.info`, `hub.status`, and the read-only `hub.questions` (open operator
-questions) and `hub.operator_answer(question_id)` (the question, its answer and answer time, or
-`unanswered`; not found is -32001) need only the bearer token (#129), as does `hub.snapshot`,
+questions), `hub.operator_answer(question_id)` (the question, its answer and answer time, or
+`unanswered`; not found is -32001) and `hub.get_statement(sha256)` (the statement text verbatim;
+unknown SHA is -32001; M2 Step 4) need only the bearer token (#129), as does `hub.snapshot`,
 the operator's before-snapshot for a manual resume (#146: hub ID, workflow, current session,
 open tasks, unacknowledged deliveries; it accepts no session and leases nothing). Operator-only methods,
 `hub.shutdown` first, also need `X-Robomate-Operator` with the operator token that `robomate up`
 creates beside the machine registry (#128). `hub.answer(question_id, answer)` is one (#130): it
 records the answer, its time and actor `operator`, and queues `user_answered`; an unknown id is
--32001 and a second answer to a question is -32002. Each call other than `get_state`, `wait_for_event`,
-`hub.info`, `hub.status`, `hub.snapshot`, `hub.heartbeat`, `hub.record_calls`, `hub.questions` and
-`hub.operator_answer` leaves an `rpc_audit` row (actor,
+-32001 and a second answer to a question is -32002. `hub.submit(statement, policy?, source?)` is
+operator-only (M2 Step 4): it stores bytes verbatim with SHA-256 (12 KiB cap, #10), resolves policy
+from configuration layers plus `--policy` overrides (`allow_no_ci="auto"` probes CI), runs the
+policy-dependent forge checks from the hub's shared functions (strict refuse, incl. Unsupported
+settings; no origin refuses), queues a workflow and emits `work_submitted`. Each call other than
+`get_state`, `get_statement`, `wait_for_event`,
+`hub.info`, `hub.status`, `hub.snapshot`, `hub.heartbeat`, `hub.record_calls`, `hub.questions`,
+`hub.operator_answer` and `hub.get_statement` leaves an `rpc_audit` row (actor,
 session, method, outcome; never params), as does each orchestrator session takeover.
 
 ---
@@ -933,6 +942,14 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   `never` allows only `merge`, for each of project `merge`, `rebase_merge`, and `ff`.
   The orchestrator supplies the squash flag explicitly. Live matrix verification and its
   run-path caller landed in M5 Step 4 (#75).
+- **Preflight at submit (M2 Step 4):** `hub.submit` runs the policy-dependent forge checks
+  from the hub's shared functions, strict: any base `refuse` (incl. Unsupported settings)
+  refuses, as does any policy-check `refuse`. `allow_no_ci=true|false` runs no CI probe;
+  `auto` probes (GitLab `.gitlab-ci.yml` on the default branch with the definite-404 rule;
+  GitHub workflows) and refuses on non-404 failure naming `CI configuration`; a 404 only in
+  the args is not absence. `CI configuration` is typed `pass` (present), `note` (absent/skip)
+  or `refuse` (probe failed); `auto` resolves to bool for storage. GitHub runs no `glab`.
+  A hub without origin refuses submit.
 - **Guides:** one guide per role, forge-neutral ("open a change request with your forge CLI"),
   composed at serve time with a short forge appendix (`guides/forge/github.md`,
   `guides/forge/gitlab.md`) holding the forge CLI commands the roles need

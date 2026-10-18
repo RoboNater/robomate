@@ -21,6 +21,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v23 is #241's `work_submitted` event kind for `robomate submit`.
 # v22 is #240's run identity and sequential queue: `workflow.run_id`
 # (unique), `workflow.statement_sha256`, `queued` status, and the `statement`
 # table (SHA-256 key, bytes, size, source, created).
@@ -43,7 +44,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 
 class DatabaseVersionError(RuntimeError):

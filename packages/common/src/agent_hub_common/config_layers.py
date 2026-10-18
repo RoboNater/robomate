@@ -137,7 +137,7 @@ class ResolvedConfig:
         return self.policy.merge_method
 
     @property
-    def allow_no_ci(self) -> bool:
+    def allow_no_ci(self) -> bool | str:
         return self.policy.allow_no_ci
 
     @property

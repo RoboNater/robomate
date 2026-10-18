@@ -344,6 +344,32 @@ def test_non_utf8_config_toml_raises_config_layer_error_naming_file(tmp_path: Pa
     assert str(repo_cfg) in str(exc_info.value)
 
 
+def test_allow_no_ci_auto_across_all_three_layers(tmp_path: Path) -> None:
+    """Step 4 (#241, r2-1): `allow_no_ci = \"auto\"` validates in every layer.
+
+    `auto` probes CI presence at submit; explicit bool skips the probe. The
+    three layers share one validator through `WorkflowPolicy`, so `auto` must
+    survive hub, repository and user files alike.
+    """
+
+    hub_cfg = tmp_path / "state" / "config.toml"
+    repo_cfg = tmp_path / "repo" / ".git" / "robomate" / "config.toml"
+    user_cfg = tmp_path / "user" / "robomate" / "config.toml"
+
+    _write_toml(user_cfg, 'allow_no_ci = "auto"\n')
+    assert load_config_layers(hub_cfg, repo_cfg, user_cfg).policy.allow_no_ci == "auto"
+
+    _write_toml(repo_cfg, 'allow_no_ci = "auto"\n')
+    resolved_repo = load_config_layers(hub_cfg, repo_cfg, user_cfg)
+    assert resolved_repo.allow_no_ci == "auto"
+    assert resolved_repo.policy.allow_no_ci == "auto"
+
+    _write_toml(hub_cfg, '[policy]\nallow_no_ci = "auto"\n')
+    resolved_hub = load_config_layers(hub_cfg, repo_cfg, user_cfg)
+    assert resolved_hub.allow_no_ci == "auto"
+    assert resolved_hub.policy.allow_no_ci == "auto"
+
+
 def test_unknown_key_and_invalid_values_name_file_and_key(tmp_path: Path) -> None:
     repo_cfg = tmp_path / ".git" / "robomate" / "config.toml"
 
