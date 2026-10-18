@@ -41,6 +41,19 @@ GLAB_TIMEOUT_S = 30.0
 _STDERR_LIMIT = 500
 HTTP_ERROR_RE = re.compile(r"\(HTTP\s+([45]\d\d)\)")
 
+
+def is_definite_ci_absence(stdout: str, stderr: str) -> bool:
+    """Only a definite 404 means the CI file is absent (#93 r2-2, #96).
+
+    Checks only the response bodies, never the command line, so a host,
+    project path or ref containing ``404`` (for example ``release-404``)
+    cannot fake absence. Matches ``GitLabGate._has_ci_config``: only
+    ``(HTTP 404)`` in stderr or ``404 File Not Found`` in stdout counts.
+    """
+
+    return "(HTTP 404)" in stderr or "404 File Not Found" in stdout
+
+
 # GitLab's project path rules: letters, digits, `_`, `-` and `.`, never
 # opening with `-`. The dot segments `.` and `..` are refused separately.
 _SEGMENT_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")
@@ -518,9 +531,8 @@ class GitLabGate:
         ):
             return True
 
-        # Affirmative 404 (file absent)
-        is_404 = "(HTTP 404)" in result.stderr or "404 File Not Found" in result.stdout
-        if not is_404:
+        # Affirmative 404 (file absent); anything else fails closed.
+        if not is_definite_ci_absence(result.stdout, result.stderr):
             raise _failure(file_args, result)
 
         proj_args = ref.api("")
