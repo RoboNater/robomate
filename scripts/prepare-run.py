@@ -334,12 +334,14 @@ def check_hub_workflow(
         return
     try:
         with contextlib.closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
-            rows = db.execute("SELECT goal, status, policy_json FROM workflow").fetchall()
+            rows = db.execute(
+                "SELECT goal, status, policy_json FROM workflow ORDER BY created"
+            ).fetchall()
     except sqlite3.Error as exc:
         raise ValueError(f"cannot read workflow from {path}: {exc}") from exc
     if not rows:
         return
-    if rows and all(row[1] == "done" for row in rows):
+    if all(row[1] == "done" for row in rows):
         return
     # The live run is the oldest non-done workflow; queued runs wait behind it.
     live = next((row for row in rows if row[1] != "done"), rows[0])

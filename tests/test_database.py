@@ -21,6 +21,7 @@ from agent_hub_common import (
     MetaKeys,
     ModelSource,
     TaskState,
+    WorkflowStatus,
 )
 from conftest import BASE_URL, TOKEN
 
@@ -1116,12 +1117,21 @@ def test_migration_from_v20_adds_standing_role_and_join_profile_sources(tmp_path
 def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> None:
     """#240's v22: a done workflow migrates with a run_id from its created date."""
 
+    import uuid
+
     path = tmp_path / "v21.db"
     _legacy_database(path, 21)
+    hex_id = uuid.uuid4().hex
     with sqlite3.connect(path) as connection:
         connection.execute(
             "INSERT INTO workflow (id, goal, status, policy_json, created)"
-            " VALUES ('wf-done-1', 'Old goal', 'done', '{}', '2026-10-02T03:04:05Z')"
+            " VALUES (?, 'Old goal', 'done', '{}', '2026-10-02T03:04:05Z')",
+            ("wf-done-1",),
+        )
+        connection.execute(
+            "INSERT INTO workflow (id, goal, status, policy_json, created)"
+            " VALUES (?, 'Hex goal', 'done', '{}', '2026-10-03T04:05:06Z')",
+            (hex_id,),
         )
     initialize_database(path)
     initialize_database(path)
@@ -1134,6 +1144,12 @@ def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> 
         assert row["run_id"].startswith("20261002_")
         assert len(row["run_id"]) == 8 + 1 + 8
         assert row["status"] == "done"
+        hex_row = connection.execute(
+            "SELECT run_id FROM workflow WHERE id = ?", (hex_id,)
+        ).fetchone()
+        assert hex_row is not None
+        # Real uuid4 ids use their first 8 hex directly.
+        assert hex_row["run_id"] == f"20261003_{hex_id[:8]}"
         assert "statement" in {
             r["name"]
             for r in connection.execute(
@@ -1151,3 +1167,17 @@ def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> 
     # via the queue: starting with no statement activates the queued run.
     assert store.get_state()["queue"]
     assert store.start_workflow() != "wf-done-1"
+    # After the queued run is done with an empty queue, a fresh statement or
+    # goal starts a brand-new run (not just a promoted hand-inserted row).
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    assert store.get_state()["queue"] == []
+    new_id = store.start_workflow("Fresh after migration")
+    assert new_id not in ("wf-done-1", hex_id, "wf-queued")
+    assert store.get_state()["workflow"]["id"] == new_id
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    assert store.initialize_workflow("Another fresh goal") not in (
+        "wf-done-1",
+        hex_id,
+        "wf-queued",
+        new_id,
+    )

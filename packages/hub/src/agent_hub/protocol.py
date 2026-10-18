@@ -393,9 +393,9 @@ def _task_object(
     # Run identity travels with the assignment so an agent can cite it (M2 Step 3).
     run_identity: dict[str, Any] = {}
     if record.run_id is not None:
-        run_identity["hub.run_id"] = record.run_id
+        run_identity[MetaKeys.RUN_ID] = record.run_id
     if record.statement_sha256 is not None:
-        run_identity["hub.statement_sha256"] = record.statement_sha256
+        run_identity[MetaKeys.STATEMENT_SHA256] = record.statement_sha256
     if status_message is None:
         status_message = _agent_message(
             record.instructions,

@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from time import monotonic
 from typing import Any, Literal
 
-from agent_hub_common import TaskState, WorkflowStatus
+from agent_hub_common import TaskState, WorkflowPolicy, WorkflowStatus
 from agent_hub_common.orchestrator_tools import (
     Lease,
     OrchestratorTools,
@@ -71,11 +71,14 @@ class OrchestratorOps(OrchestratorTools):
             # The call queued behind a live run; report the queued run.
             queued = [q for q in state["queue"] if q["workflow_id"] == workflow_id]
             if queued:
+                validated = WorkflowPolicy.model_validate(dict(policy or {})).model_dump(
+                    mode="json", exclude_unset=True
+                )
                 return {
                     "id": workflow_id,
                     "run_id": queued[0]["run_id"],
                     "goal": queued[0]["goal"],
-                    "policy": policy or {},
+                    "policy": validated,
                     "status": "queued",
                 }
             raise RuntimeError("initialize_workflow returned an unknown workflow")
@@ -90,6 +93,9 @@ class OrchestratorOps(OrchestratorTools):
         self, statement: str | None = None, policy: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         workflow_id = self.store.start_workflow(statement, policy)
+        validated = WorkflowPolicy.model_validate(dict(policy or {})).model_dump(
+            mode="json", exclude_unset=True
+        )
         state = self.store.get_state()
         workflow = state["workflow"]
         if workflow is not None and workflow["id"] == workflow_id:
@@ -106,7 +112,7 @@ class OrchestratorOps(OrchestratorTools):
                 "id": workflow_id,
                 "run_id": queued[0]["run_id"],
                 "goal": queued[0]["goal"],
-                "policy": policy or {},
+                "policy": validated,
                 "status": "queued",
             }
         previous = state.get("previous_run") or {}
@@ -115,7 +121,7 @@ class OrchestratorOps(OrchestratorTools):
                 "id": workflow_id,
                 "run_id": previous.get("run_id"),
                 "goal": previous.get("goal"),
-                "policy": policy or {},
+                "policy": validated,
                 "status": previous.get("status"),
             }
         raise RuntimeError("start_workflow returned an unknown workflow")

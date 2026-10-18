@@ -88,8 +88,6 @@ LOST_REASON = "worker_lost"
 MAX_CHECK_NAME_CHARS = 256
 # Ignore small wall/monotonic differences from sampling and clock correction.
 CLOCK_JUMP_TOLERANCE_S = 5.0
-# The robomate version recorded in run manifests (mirrors cli.VERSION).
-ROBOMATE_VERSION = "0.1.0"
 
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED)
 OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
@@ -112,24 +110,56 @@ def _statement_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _git_revision() -> str:
-    """The robomate checkout's revision for run manifests; `unknown` when unreadable."""
+def _robomate_version() -> str:
+    """The installed robomate version for run manifests (r1-3)."""
 
     try:
-        repo_root = Path(__file__).resolve().parents[4]
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        revision = completed.stdout.strip()
-        if len(revision) == 40 and all(ch in "0123456789abcdef" for ch in revision.lower()):
-            return revision.lower()
+        from importlib.metadata import PackageNotFoundError, version
+
+        for dist in ("robomate-cli", "agent-hub", "robomate"):
+            try:
+                return version(dist)
+            except PackageNotFoundError:
+                continue
     except Exception:
         pass
     return UNKNOWN
+
+
+_GIT_REVISION: str | None = None
+
+
+def _git_revision() -> str:
+    """The robomate checkout's revision for run manifests; `unknown` when unreadable.
+
+    Computed once per process (r1-4): manifest writes must not shell out on
+    every call, and a non-checkout install must not attribute an unrelated
+    repository's HEAD to robomate.
+    """
+
+    global _GIT_REVISION
+    if _GIT_REVISION is not None:
+        return _GIT_REVISION
+    try:
+        repo_root = Path(__file__).resolve().parents[4]
+        # Only a robomate checkout has both markers; an installed wheel's
+        # ancestor could be any directory.
+        if (repo_root / ".git").exists() and (repo_root / "pyproject.toml").is_file():
+            completed = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            revision = completed.stdout.strip()
+            if len(revision) == 40 and all(ch in "0123456789abcdef" for ch in revision.lower()):
+                _GIT_REVISION = revision.lower()
+                return _GIT_REVISION
+    except Exception:
+        pass
+    _GIT_REVISION = UNKNOWN
+    return _GIT_REVISION
 
 
 def _read_hub_json_for_manifest(state_dir: Path) -> dict[str, Any]:
@@ -505,6 +535,10 @@ class HubStore:
     # Hub calls and holds per agent, in memory only (#144).
     activity: ActivityTracker = field(default_factory=ActivityTracker)
     monotonic_clock: Callable[[], float] = monotonic
+    # Durable state directory for runs/ and hub.json (mvp-spec §11, r1-8).
+    # Defaults to the database's parent, which is the state directory for
+    # every layout except the `hub` entry point with a custom HUB_DB_PATH.
+    state_dir: Path | None = None
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
@@ -514,6 +548,9 @@ class HubStore:
 
     def _now_iso(self) -> str:
         return to_iso(self._now())
+
+    def _state_dir(self) -> Path:
+        return self.state_dir if self.state_dir is not None else self.path.parent
 
     # -- workflow -----------------------------------------------------------
 
@@ -578,6 +615,23 @@ class HubStore:
         )
         return sha256, data
 
+    def _clear_stale_releases(self, connection: Connection) -> None:
+        """Make a newly live run take returning workers (r1-1).
+
+        `on_done: release` (and Alice's explicit `release_agent`) leaves workers
+        `released` when a run ends. `_readmitted` keeps that sticky across
+        `check_in`, so without clearing, the next run's returning workers would
+        get `release: true` from their first `await_assignment`. A new live run
+        clears it: released non-orchestrators become idle again, with their
+        instance slot freed so a fresh bridge can check in without takeover.
+        """
+
+        connection.execute(
+            "UPDATE agent SET status = ?, worker_instance_id = ''"
+            " WHERE status = ? AND standing_role != 'orchestrator'",
+            (AgentStatus.IDLE.value, AgentStatus.RELEASED.value),
+        )
+
     def initialize_workflow(
         self, goal: str = DEFAULT_GOAL, policy: Mapping[str, Any] | None = None
     ) -> str:
@@ -604,9 +658,8 @@ class HubStore:
                     raise ConflictError(
                         "workflow is already initialized with "
                         f"status={live['status']!r}, goal={live['goal']!r}, and a different goal "
-                        "or policy; use get_state to resume it, or run robomate up "
-                        "in a fresh checkout of the target (a clone or linked worktree) "
-                        "for a different workflow"
+                        "or policy; use get_state to resume it, or queue a different run with "
+                        "start_workflow(statement) and start it after this one is done"
                     )
                 return str(live["id"])
             queued = self._queued_rows(connection)
@@ -618,6 +671,7 @@ class HubStore:
                         "UPDATE workflow SET status = ? WHERE id = ?",
                         (WorkflowStatus.ACTIVE.value, oldest["id"]),
                     )
+                    self._clear_stale_releases(connection)
                     workflow_id = str(oldest["id"])
                 else:
                     raise ConflictError(
@@ -644,15 +698,14 @@ class HubStore:
                         now_iso,
                     ),
                 )
+                self._clear_stale_releases(connection)
             # Read the row for the manifest before committing: the file must
             # describe exactly the workflow the database just stored.
             row = connection.execute(
                 "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
             ).fetchone()
             assert row is not None
-            run_id = str(row["run_id"])
         self._write_manifest(row)
-        _ = run_id
         return workflow_id
 
     def start_workflow(
@@ -696,6 +749,7 @@ class HubStore:
                     "UPDATE workflow SET status = ? WHERE id = ?",
                     (WorkflowStatus.ACTIVE.value, oldest["id"]),
                 )
+                self._clear_stale_releases(connection)
                 workflow_id = str(oldest["id"])
                 row = connection.execute(
                     "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
@@ -736,6 +790,8 @@ class HubStore:
                         now_iso,
                     ),
                 )
+                if status == WorkflowStatus.ACTIVE.value:
+                    self._clear_stale_releases(connection)
                 row = connection.execute(
                     "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
                 ).fetchone()
@@ -767,6 +823,9 @@ class HubStore:
 
         pr_url: str | None = None
         approved_sha: str | None = None
+        # The hub never records the merge commit itself (r1-2): the squash
+        # merge the orchestrator performs always differs from the PR head, so
+        # reporting the head as merged would mislabel evidence M4 builds on.
         merged_sha: str | None = None
         for row in connection.execute(
             "SELECT result_json FROM task WHERE workflow_id = ?"
@@ -781,9 +840,6 @@ class HubStore:
                 result.get("reviewed_head_sha"), str
             ):
                 approved_sha = result["reviewed_head_sha"]
-            # Implementer/rebase heads track the newest PR head.
-            if isinstance(result.get("head_sha"), str) and result["head_sha"]:
-                merged_sha = result["head_sha"]
         return {"pr_url": pr_url, "approved_sha": approved_sha, "merged_sha": merged_sha}
 
     def _previous_run_summary(
@@ -835,7 +891,7 @@ class HubStore:
 
         workflow_id = str(workflow_row["id"])
         run_id = str(workflow_row["run_id"])
-        state_dir = self.path.parent
+        state_dir = self._state_dir()
         runs_dir = state_dir / "runs" / run_id
         runs_dir.mkdir(parents=True, exist_ok=True)
         with database(self.path) as connection:
@@ -907,7 +963,7 @@ class HubStore:
                 "default_branch": hub_info.get("default_branch"),
                 "url": hub_info.get("url"),
             },
-            "robomate_version": ROBOMATE_VERSION,
+            "robomate_version": _robomate_version(),
             "git_revision": _git_revision(),
             "agents": agents,
             "pr_url": pr_summary["pr_url"],
@@ -1289,6 +1345,7 @@ class HubStore:
                         "UPDATE workflow SET status = ? WHERE id = ?",
                         (WorkflowStatus.ACTIVE.value, oldest["id"]),
                     )
+                    self._clear_stale_releases(connection)
                     activated_row = connection.execute(
                         "SELECT * FROM workflow WHERE id = ?", (oldest["id"],)
                     ).fetchone()
@@ -2073,10 +2130,10 @@ class HubStore:
                 MetaKeys.KIND: "assignment",
                 MetaKeys.ROLE: role,
                 MetaKeys.TITLE: title,
-                "hub.run_id": run_id,
+                MetaKeys.RUN_ID: run_id,
             }
             if statement_sha256 is not None:
-                assignment_metadata["hub.statement_sha256"] = str(statement_sha256)
+                assignment_metadata[MetaKeys.STATEMENT_SHA256] = str(statement_sha256)
             if head is not None:
                 assignment_metadata[MetaKeys.PR_HEAD_SHA] = head
             lease_cap_min = self._max_task_lease_min(connection, workflow_id)

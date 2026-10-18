@@ -83,6 +83,7 @@ def create_app(
         path=resolved.database_path,
         signals=Signals(),
         default_event_lease_s=resolved.event_lease_s,
+        state_dir=resolved.state_dir,
     )
     protocol = A2AProtocol(store=store, settings=resolved)
     orchestrator = OrchestratorOps(store, select_gate(hub_info))

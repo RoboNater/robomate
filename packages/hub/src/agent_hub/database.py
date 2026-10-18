@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -438,7 +439,6 @@ def _migrate_run_identity_and_queue(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE workflow ADD COLUMN run_id TEXT")
     if "statement_sha256" not in columns:
         connection.execute("ALTER TABLE workflow ADD COLUMN statement_sha256 TEXT")
-    import hashlib as _hashlib
 
     for row in connection.execute(
         "SELECT id, created FROM workflow WHERE run_id IS NULL OR run_id = ''"
@@ -453,7 +453,7 @@ def _migrate_run_identity_and_queue(connection: sqlite3.Connection) -> None:
             hex_part = hex_chars.lower()
         else:
             # Legacy test ids (e.g. 'wf-...') are not hex; derive deterministically.
-            hex_part = _hashlib.sha256(workflow_id.encode("utf-8")).hexdigest()[:8]
+            hex_part = hashlib.sha256(workflow_id.encode("utf-8")).hexdigest()[:8]
         run_id = f"{date_part}_{hex_part.lower()}"
         # The pre-v22 invariant allowed only one workflow, so a collision
         # cannot happen on a real hub; the loop below keeps the migration

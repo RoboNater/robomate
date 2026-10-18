@@ -916,7 +916,7 @@ def test_initial_workflow_policy_is_immutable_durable_and_used_by_rails(
     task = restarted.assign_task("bob", "implementer", "Task", "Work", lease_min=30)
     assert task.lease_expires == to_iso(clock.now + timedelta(minutes=10))
 
-    with pytest.raises(ConflictError, match="fresh checkout of the target") as error:
+    with pytest.raises(ConflictError, match="queue a different run") as error:
         restarted.initialize_workflow(
             "Address issue #5", {"max_task_lease_min": 20, "merge_method": "merge"}
         )
@@ -1538,13 +1538,34 @@ def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None
     first = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert first["run_id"] == run_id and first["workflow_id"] == workflow_id
     assert first["status"] in ("active", "queued")
+    assert first["completed"] is None
+    assert first["agents"] == []
     # Restart: a new store on the same path sees the same run and valid JSON.
     restarted = HubStore(path)
     assert restarted.get_state()["workflow"]["run_id"] == run_id
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["run_id"] == run_id
+    # Give the run a task, an agent and a PR result so the end fields populate.
+    restarted.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = restarted.assign_task("bob", "implementer", "Build", "Do work")
+    restarted.submit_result(
+        task.id,
+        "bob",
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "pr_url": "https://github.com/octo/sandbox/pull/7",
+            "head_sha": "a" * 40,
+        },
+    )
     restarted.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
     completed = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert completed["status"] == "done" and completed["run_id"] == run_id
+    assert completed["completed"] is not None
+    assert completed["pr_url"] == "https://github.com/octo/sandbox/pull/7"
+    assert completed["approved_sha"] is None
+    # merged_sha stays null until the hub records a merge commit (r1-2).
+    assert completed["merged_sha"] is None
+    assert any(agent["name"] == "bob" for agent in completed["agents"])
 
 
 def test_on_done_release_vs_standby(tmp_path: Path) -> None:
@@ -1592,3 +1613,27 @@ def test_assignments_carry_run_id(tmp_path: Path) -> None:
     assert task.run_id is not None
     assert task.run_id == store.get_state()["workflow"]["run_id"]
     assert task.statement_sha256 == store.get_state()["workflow"]["statement_sha256"]
+
+
+def test_new_run_clears_stale_releases(tmp_path: Path) -> None:
+    """A new live run stops returning releases to returning workers (r1-1)."""
+
+    path = tmp_path / "stale-release.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("Run one")
+    store.check_in("bob", worker_instance_id="bob-1")
+    # Default on_done=release with an empty queue releases bob at done.
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    bob = store.agent_by_name("bob")
+    assert bob is not None
+    assert bob.status is AgentStatus.RELEASED
+    # A new run becomes live; the stale release must not stick.
+    store.initialize_workflow("Run two")
+    store.check_in("bob", worker_instance_id="bob-2")
+    agent = store.agent_by_name("bob")
+    assert agent is not None and agent.status is AgentStatus.IDLE
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    claimed = store._claim_assignment("bob")
+    assert claimed is not None and not isinstance(claimed, Released)
+    assert claimed.id == task.id

@@ -55,3 +55,5 @@ class MetaKeys(StrEnum):
     CURRENT_TASK_ID = "hub.current_task_id"
     ACCEPTED = "hub.accepted"
     DETACH = "hub.detach"
+    RUN_ID = "hub.run_id"
+    STATEMENT_SHA256 = "hub.statement_sha256"
