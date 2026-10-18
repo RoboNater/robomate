@@ -23,8 +23,9 @@ change request, or merge it.
 4. Make the smallest change that satisfies the issue. Do not add scope or mix
    unrelated cleanup into the change request. Commit coherent increments as
    you go.
-5. Run the issue's named acceptance commands and every repository validation or
-   entry point touched by the change. Re-read each edited function in final
+5. During iteration, run the affected test files. Before submitting, run the
+   full `uv run --locked pytest -n auto` suite once, the issue's named acceptance
+   commands, other repository validation, and every touched entry point. Re-read each edited function in final
    form. Record the exact commands and outcomes.
 6. Push the branch and create or update the change request. For a new change
    request, use your forge CLI's create command (see the forge appendix) and

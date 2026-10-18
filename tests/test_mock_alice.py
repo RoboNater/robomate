@@ -14,8 +14,8 @@ import pytest
 from agent_hub import create_app
 from agent_hub.database import database, initialize_database
 from agent_hub.mcp import create_mcp
-from agent_hub.store import HubStore, TaskRecord
-from agent_hub_common import AgentProfile, HubSettings, TaskState, WorkflowStatus
+from agent_hub.store import EventRecord, HubStore, TaskRecord
+from agent_hub_common import AgentProfile, EventKind, HubSettings, TaskState, WorkflowStatus
 from agent_hub_common.discovery import DiscoveryError, local_hub
 from conftest import BASE_URL, TOKEN, MonotonicClock, closed_port_url, record_local_hub
 from mcp import ClientSession
@@ -410,7 +410,9 @@ ENDURANCE_LOST_AFTER_S = 2.0
 ENDURANCE_LONG_WORK_S = 2.5
 
 
-async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> None:
+async def test_mock_alice_drives_scaled_endurance_scenario(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert ENDURANCE_LONG_WORK_S > ENDURANCE_LOST_AFTER_S >= 40 * ENDURANCE_HEARTBEAT_S
     db_path = tmp_path / "endurance.db"
     initialize_database(db_path)
@@ -431,7 +433,8 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
     app = create_app(settings)
     # Mock Alice checks the heartbeat stamp moved across a monotonic sleep; a
     # wall clock stepped back by more than that sleep would hold it still.
-    app.state.store.clock = MonotonicClock()
+    store: HubStore = app.state.store
+    store.clock = MonotonicClock()
     worker_settings = WorkerSettings(
         hub_url=BASE_URL,
         token=TOKEN,
@@ -443,6 +446,21 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
         backoff_factor_s=0.01,
     )
     observed = {"assignment_timeouts": 0, "question_timeouts": 0, "cycles": 0}
+    assignment_timed_out = asyncio.Event()
+    question_timed_out = asyncio.Event()
+    wait_for_event = HubStore.wait_for_event
+
+    async def deliver_after_timeout(
+        self: HubStore, timeout_s: float, ack: str | None = None, lease_s: float | None = None
+    ) -> EventRecord | None:
+        event = await wait_for_event(self, timeout_s, ack=ack, lease_s=lease_s)
+        if self is store and event is not None and event.kind is EventKind.WORKER_QUESTION:
+            # #264 r1-1: Alice observes the question after the worker has
+            # received a real timeout. Timer ordering under load is immaterial.
+            await question_timed_out.wait()
+        return event
+
+    monkeypatch.setattr(HubStore, "wait_for_event", deliver_after_timeout)
 
     async with (
         app.router.lifespan_context(app),
@@ -460,6 +478,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
                     assignment = await worker.await_assignment(timeout_s=0.1)
                     if assignment.get("timeout"):
                         observed["assignment_timeouts"] += 1
+                        assignment_timed_out.set()
                         continue
                     if assignment.get("release"):
                         return
@@ -467,14 +486,14 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
                     observed["cycles"] += 1
                     task_id = assignment["task_id"]
                     if observed["cycles"] == 1:
-                        reply = await worker.ask_alice(
-                            task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=0.1
-                        )
-                        if reply.get("timeout"):
-                            observed["question_timeouts"] += 1
+                        while True:
                             reply = await worker.ask_alice(
-                                task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=1.0
+                                task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=0.1
                             )
+                            if not reply.get("timeout"):
+                                break
+                            observed["question_timeouts"] += 1
+                            question_timed_out.set()
                         assert "Approved" in reply.get("reply", "")
                     elif observed["cycles"] == 2:
                         await asyncio.sleep(ENDURANCE_LONG_WORK_S)
@@ -489,27 +508,33 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
                         },
                     )
 
-        alice_task = asyncio.create_task(
-            mock_alice.drive_endurance(
-                app.state.store,
-                "bob",
-                expected_harness="codex",
-                cycles=3,
-                min_elapsed_s=1.5,
-                assignment_delay_s=0.2,
-                cycle_gap_s=0.1,
-                worker_hold_s=0.1,
-                question_hold_s=0.1,
-                question_reply_delay_s=0.2,
-                long_work_s=ENDURANCE_LONG_WORK_S,
-                lost_after_s=ENDURANCE_LOST_AFTER_S,
-                # Bounds only the wait for check-in, which a healthy run
-                # passes at once; a fixed 2 s failed nothing yet but is the
-                # same short-budget pattern as #231 and #260.
-                checkin_timeout_s=FULL_TASK_TIMEOUT_S,
-            )
-        )
-        result, _ = await asyncio.gather(alice_task, run_worker())
+        # Three cycle budgets bound the whole scenario. Start Alice only once
+        # an actual assignment timeout has occurred, rather than racing sleeps.
+        async with asyncio.timeout(3 * FULL_TASK_TIMEOUT_S):
+            async with asyncio.TaskGroup() as group:
+                group.create_task(run_worker())
+                await assignment_timed_out.wait()
+                alice_task = group.create_task(
+                    mock_alice.drive_endurance(
+                        store,
+                        "bob",
+                        expected_harness="codex",
+                        cycles=3,
+                        min_elapsed_s=1.5,
+                        assignment_delay_s=0.2,
+                        cycle_gap_s=0.1,
+                        worker_hold_s=0.1,
+                        question_hold_s=0.1,
+                        question_reply_delay_s=0.2,
+                        long_work_s=ENDURANCE_LONG_WORK_S,
+                        lost_after_s=ENDURANCE_LOST_AFTER_S,
+                        # Bounds only the wait for check-in, which a healthy run
+                        # passes at once; a fixed 2 s failed nothing yet but is the
+                        # same short-budget pattern as #231 and #260.
+                        checkin_timeout_s=FULL_TASK_TIMEOUT_S,
+                    )
+                )
+        result = alice_task.result()
 
     assert result["cycles"] == 3
     assert result["elapsed_s"] >= 1.5
@@ -522,7 +547,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(tmp_path: Path) -> No
         "results": 3,
     }
     assert observed["assignment_timeouts"] >= 1
-    assert observed["question_timeouts"] == 1
+    assert observed["question_timeouts"] >= 1
     assert observed["cycles"] == 3
 
 

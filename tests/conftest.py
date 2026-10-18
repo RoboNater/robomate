@@ -1,6 +1,7 @@
 """Fixtures shared by the hub's HTTP and state tests."""
 
 import json
+import os
 import random
 import re
 import socket
@@ -59,6 +60,23 @@ class MonotonicClock:
         """Move this clock forward without waiting for real time."""
 
         self.start += timedelta(seconds=seconds)
+
+
+@pytest.fixture(autouse=True)
+def isolated_machine_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#264: inherited worker credentials must never select the run's hub/state.
+
+    Every xdist process has its own monkeypatch state and each test its own
+    directory. Tests needing explicit discovery overrides set them afterwards.
+    The default operator credential follows the isolated registry.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    for name in list(os.environ):
+        if name in ("ROBOMATE_HUB_URL", "ROBOMATE_OPERATOR_TOKEN_FILE") or name.startswith(
+            "ROBOMATE_TOKEN"
+        ):
+            monkeypatch.delenv(name)
 
 
 @pytest.fixture

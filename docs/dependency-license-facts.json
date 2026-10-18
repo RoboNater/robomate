@@ -1,5 +1,5 @@
 {
-  "lock_sha256": "3f6998a37512c81cb08fd6a0a2cbcdbf780f083e56671f2aac28efdb272cf4e3",
+  "lock_sha256": "0efdfce6a1e018fc96314f87eba365495e4627b3c736f588a9b3d03cbfa1f736",
   "matrix": {
     "artifacts": "all sdists and every compatible locked wheel; no environment sampling",
     "os": [
@@ -12188,6 +12188,31 @@
               "package": "colorama@0.4.6:{\"registry\": \"https://pypi.org/simple\"}"
             }
           ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest@9.1.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": "sys_platform == 'win32'",
+              "package": "colorama@0.4.6:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
         }
       ],
       "resolution_markers": [],
@@ -13928,6 +13953,142 @@
         "registry": "https://pypi.org/simple"
       },
       "version": "50.0.1"
+    },
+    {
+      "artifacts": [
+        {
+          "filename": "execnet-2.1.2.tar.gz",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: MIT License",
+                "Operating System :: MacOS :: MacOS X",
+                "Operating System :: Microsoft :: Windows",
+                "Operating System :: POSIX",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.8",
+                "Programming Language :: Python :: 3.9",
+                "Programming Language :: Python :: Implementation :: CPython",
+                "Programming Language :: Python :: Implementation :: PyPy",
+                "Topic :: Software Development :: Libraries",
+                "Topic :: System :: Distributed Computing",
+                "Topic :: System :: Networking"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "execnet",
+              "path": "execnet-2.1.2/PKG-INFO",
+              "requires_dist": [
+                "hatch; extra == 'testing'",
+                "pre-commit; extra == 'testing'",
+                "pytest; extra == 'testing'",
+                "tox; extra == 'testing'"
+              ],
+              "requires_python": ">=3.8",
+              "version": "2.1.2"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "execnet-2.1.2/LICENSE",
+              "sha256": "e89eed1074d3a943198ba139b80844f5b445b860bba74a8aeadc0610566164ea"
+            }
+          ],
+          "sha256": "63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd",
+          "url": "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz"
+        },
+        {
+          "filename": "execnet-2.1.2-py3-none-any.whl",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Intended Audience :: Developers",
+                "License :: OSI Approved :: MIT License",
+                "Operating System :: MacOS :: MacOS X",
+                "Operating System :: Microsoft :: Windows",
+                "Operating System :: POSIX",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.8",
+                "Programming Language :: Python :: 3.9",
+                "Programming Language :: Python :: Implementation :: CPython",
+                "Programming Language :: Python :: Implementation :: PyPy",
+                "Topic :: Software Development :: Libraries",
+                "Topic :: System :: Distributed Computing",
+                "Topic :: System :: Networking"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "execnet",
+              "path": "execnet-2.1.2.dist-info/METADATA",
+              "requires_dist": [
+                "hatch; extra == 'testing'",
+                "pre-commit; extra == 'testing'",
+                "pytest; extra == 'testing'",
+                "tox; extra == 'testing'"
+              ],
+              "requires_python": ">=3.8",
+              "version": "2.1.2"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "execnet-2.1.2.dist-info/licenses/LICENSE",
+              "sha256": "e89eed1074d3a943198ba139b80844f5b445b860bba74a8aeadc0610566164ea"
+            }
+          ],
+          "sha256": "67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec",
+          "url": "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl"
+        }
+      ],
+      "dependencies": [],
+      "dev_dependencies": {},
+      "id": "execnet@2.1.2:{\"registry\": \"https://pypi.org/simple\"}",
+      "name": "execnet",
+      "optional_dependencies": {},
+      "reachability": [
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "execnet@2.1.2:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        }
+      ],
+      "resolution_markers": [],
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "version": "2.1.2"
     },
     {
       "artifacts": [
@@ -22977,6 +23138,31 @@
               "package": "iniconfig@2.3.0:{\"registry\": \"https://pypi.org/simple\"}"
             }
           ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest@9.1.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "iniconfig@2.3.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
         }
       ],
       "resolution_markers": [],
@@ -26652,6 +26838,31 @@
               "package": "packaging@26.3:{\"registry\": \"https://pypi.org/simple\"}"
             }
           ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest@9.1.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "packaging@26.3:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
         }
       ],
       "resolution_markers": [],
@@ -26979,6 +27190,31 @@
               "extras": [],
               "marker": null,
               "package": "pytest-asyncio@1.4.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest@9.1.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pluggy@1.6.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
             },
             {
               "extras": [],
@@ -34549,6 +34785,31 @@
               "package": "pygments@2.21.0:{\"registry\": \"https://pypi.org/simple\"}"
             }
           ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest@9.1.1:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pygments@2.21.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
         }
       ],
       "resolution_markers": [],
@@ -35106,6 +35367,185 @@
     {
       "artifacts": [
         {
+          "filename": "pytest_xdist-3.8.0.tar.gz",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Framework :: Pytest",
+                "Intended Audience :: Developers",
+                "Operating System :: MacOS :: MacOS X",
+                "Operating System :: Microsoft :: Windows",
+                "Operating System :: POSIX",
+                "Programming Language :: Python",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.9",
+                "Topic :: Software Development :: Quality Assurance",
+                "Topic :: Software Development :: Testing",
+                "Topic :: Utilities"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "pytest-xdist",
+              "path": "pytest_xdist-3.8.0/PKG-INFO",
+              "requires_dist": [
+                "execnet>=2.1",
+                "filelock; extra == \"testing\"",
+                "psutil>=3.0; extra == \"psutil\"",
+                "pytest>=7.0.0",
+                "setproctitle; extra == \"setproctitle\""
+              ],
+              "requires_python": ">=3.9",
+              "version": "3.8.0"
+            },
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Framework :: Pytest",
+                "Intended Audience :: Developers",
+                "Operating System :: MacOS :: MacOS X",
+                "Operating System :: Microsoft :: Windows",
+                "Operating System :: POSIX",
+                "Programming Language :: Python",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.9",
+                "Topic :: Software Development :: Quality Assurance",
+                "Topic :: Software Development :: Testing",
+                "Topic :: Utilities"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "pytest-xdist",
+              "path": "pytest_xdist-3.8.0/src/pytest_xdist.egg-info/PKG-INFO",
+              "requires_dist": [
+                "execnet>=2.1",
+                "filelock; extra == \"testing\"",
+                "psutil>=3.0; extra == \"psutil\"",
+                "pytest>=7.0.0",
+                "setproctitle; extra == \"setproctitle\""
+              ],
+              "requires_python": ">=3.9",
+              "version": "3.8.0"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "pytest_xdist-3.8.0/LICENSE",
+              "sha256": "36c15bf831b218a24d122e3b30256b3e1ca285716c24937fe6d8475074ee9032"
+            }
+          ],
+          "sha256": "7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1",
+          "url": "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz"
+        },
+        {
+          "filename": "pytest_xdist-3.8.0-py3-none-any.whl",
+          "inspection": "inspected",
+          "metadata": [
+            {
+              "classifiers": [
+                "Development Status :: 5 - Production/Stable",
+                "Framework :: Pytest",
+                "Intended Audience :: Developers",
+                "Operating System :: MacOS :: MacOS X",
+                "Operating System :: Microsoft :: Windows",
+                "Operating System :: POSIX",
+                "Programming Language :: Python",
+                "Programming Language :: Python :: 3",
+                "Programming Language :: Python :: 3 :: Only",
+                "Programming Language :: Python :: 3.10",
+                "Programming Language :: Python :: 3.11",
+                "Programming Language :: Python :: 3.12",
+                "Programming Language :: Python :: 3.13",
+                "Programming Language :: Python :: 3.9",
+                "Topic :: Software Development :: Quality Assurance",
+                "Topic :: Software Development :: Testing",
+                "Topic :: Utilities"
+              ],
+              "license": null,
+              "license_expression": "MIT",
+              "license_files": [
+                "LICENSE"
+              ],
+              "name": "pytest-xdist",
+              "path": "pytest_xdist-3.8.0.dist-info/METADATA",
+              "requires_dist": [
+                "execnet>=2.1",
+                "filelock; extra == \"testing\"",
+                "psutil>=3.0; extra == \"psutil\"",
+                "pytest>=7.0.0",
+                "setproctitle; extra == \"setproctitle\""
+              ],
+              "requires_python": ">=3.9",
+              "version": "3.8.0"
+            }
+          ],
+          "missing_license_files": [],
+          "notices": [
+            {
+              "path": "pytest_xdist-3.8.0.dist-info/licenses/LICENSE",
+              "sha256": "36c15bf831b218a24d122e3b30256b3e1ca285716c24937fe6d8475074ee9032"
+            }
+          ],
+          "sha256": "202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88",
+          "url": "https://files.pythonhosted.org/packages/ca/31/d4e37e9e550c2b92a9cbc2e4d0b7420a27224968580b5a447f420847c975/pytest_xdist-3.8.0-py3-none-any.whl"
+        }
+      ],
+      "dependencies": [
+        {
+          "name": "execnet"
+        },
+        {
+          "name": "pytest"
+        }
+      ],
+      "dev_dependencies": {},
+      "id": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}",
+      "name": "pytest-xdist",
+      "optional_dependencies": {},
+      "reachability": [
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        }
+      ],
+      "resolution_markers": [],
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "version": "3.8.0"
+    },
+    {
+      "artifacts": [
+        {
           "filename": "pytest-9.1.1.tar.gz",
           "inspection": "inspected",
           "metadata": [
@@ -35325,6 +35765,26 @@
               "extras": [],
               "marker": null,
               "package": "pytest-asyncio@1.4.0:{\"registry\": \"https://pypi.org/simple\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest@9.1.1:{\"registry\": \"https://pypi.org/simple\"}"
+            }
+          ]
+        },
+        {
+          "kind": "dev",
+          "path": [
+            {
+              "extras": [],
+              "marker": null,
+              "package": "robomate@0.1.0:{\"virtual\": \".\"}"
+            },
+            {
+              "extras": [],
+              "marker": null,
+              "package": "pytest-xdist@3.8.0:{\"registry\": \"https://pypi.org/simple\"}"
             },
             {
               "extras": [],
@@ -37459,6 +37919,9 @@
           },
           {
             "name": "pytest-asyncio"
+          },
+          {
+            "name": "pytest-xdist"
           },
           {
             "name": "ruff"

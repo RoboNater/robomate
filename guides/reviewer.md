@@ -25,8 +25,11 @@ merge the change request, or rely on the implementer's summary as evidence.
    safeguards. For a restricted action, require an operator answer with
    a question id that `get_operator_answer` confirms; otherwise refuse the
    action and return `blocked` with the missing authorization as the blocker.
-4. Run the issue's acceptance commands, the relevant repository validation,
-   and any touched entry point needed to evaluate the change. Do not alter,
+4. Run tests for the changed code, the issue's acceptance commands, relevant
+   repository validation, and touched entry points. CI supplies the full suite
+   on the reviewed head on Linux and Windows; run it locally with
+   `uv run --locked pytest -n auto` only when CI is absent on that head or the
+   change risks the test harness itself. Do not alter,
    commit, or push production files. Record exact commands and outcomes.
 5. Alice supplies an `r<number>-` prefix for this review task. Append a finding
    number to give each finding a stable ID, and classify it as blocking or

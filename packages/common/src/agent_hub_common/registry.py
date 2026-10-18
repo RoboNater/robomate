@@ -66,24 +66,45 @@ def _locked(path: Path) -> Iterator[None]:
     lock = path.with_name("registry.lock")
     deadline = time.monotonic() + 5
     while True:
+        failure = "lock already exists"
         try:
             fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             os.close(fd)
             break
+        except PermissionError:
+            if sys.platform != "win32":
+                raise
+            # Windows can refuse exclusive creation while an unlinked file is
+            # delete-pending (for example while a scanner holds it), #257.
+            failure = "access or sharing error"
         except FileExistsError:
             try:
                 if time.time() - lock.stat().st_mtime > 30:
                     lock.unlink(missing_ok=True)
-                    continue
             except FileNotFoundError:
-                continue
-            if time.monotonic() >= deadline:
-                raise RegistryError(f"timed out waiting for registry lock {lock}") from None
-            time.sleep(0.05)
+                pass
+            except PermissionError:
+                if sys.platform != "win32":
+                    raise
+                failure = "access or sharing error"
+        # Even stale removal and failed stat/unlink must respect the deadline.
+        if time.monotonic() >= deadline:
+            raise RegistryError(
+                f"timed out waiting for registry lock {lock}; last failure: {failure}"
+            ) from None
+        time.sleep(0.05)
     try:
         yield
     finally:
-        lock.unlink(missing_ok=True)
+        try:
+            retry_sharing_violation(lambda: lock.unlink(missing_ok=True), _RETRY_DELAYS_S)
+        except PermissionError:
+            if sys.platform != "win32":
+                raise
+            # A completed operation remains successful. A surviving lock is
+            # reclaimed by the existing 30 s stale-lock policy, without an
+            # unbounded cleanup wait. Subsequent operations may hit their 5 s
+            # wait limit until that 30 s stale threshold is reached.
 
 
 # The registry lock serializes robomate's own readers and writers, but not a

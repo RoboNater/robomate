@@ -22,6 +22,10 @@ from conftest import BASE_URL, TOKEN
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
 
+# #264 r1-1: allow timer/request/telemetry scheduling on a loaded host;
+# each wait returns as soon as a heartbeat is observed.
+HEARTBEAT_WAIT_TIMEOUT_S = 10.0
+
 
 @pytest.fixture
 def worker_settings() -> WorkerSettings:
@@ -73,7 +77,14 @@ async def test_background_heartbeat_runs_without_llm_tool_calls(
         before = hub_store.agent_by_name("bob")
         assert before is not None
 
-        await asyncio.sleep(0.04)
+        # #264 r1-1: wait for evidence, rather than a 40 ms scheduler window.
+        async with asyncio.timeout(HEARTBEAT_WAIT_TIMEOUT_S):
+            while True:
+                after = hub_store.agent_by_name("bob")
+                assert after is not None
+                if after.last_heartbeat > before.last_heartbeat:
+                    break
+                await asyncio.sleep(0.01)
 
         after = hub_store.agent_by_name("bob")
         assert after is not None and after.last_heartbeat > before.last_heartbeat
@@ -99,7 +110,17 @@ async def test_telemetry_records_the_hub_url_at_startup_and_on_each_heartbeat(
     configured = replace(worker_settings, heartbeat_s=0.01, telemetry_log=telemetry_path)
     async with WorkerHubClient(configured, http_client=client) as worker:
         await worker.check_in()
-        await asyncio.sleep(0.05)
+        # The same scheduler race as the background-heartbeat test (#264).
+        # Observe the emitted record, so the request and telemetry write finish.
+        async with asyncio.timeout(HEARTBEAT_WAIT_TIMEOUT_S):
+            while True:
+                records = [
+                    json.loads(line)
+                    for line in telemetry_path.read_text(encoding="utf-8").splitlines()
+                ]
+                if any(record.get("event") == "heartbeat" for record in records):
+                    break
+                await asyncio.sleep(0.01)
 
     records = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
     [started] = [record for record in records if record["event"] == "session_started"]

@@ -33,11 +33,50 @@ from agent_hub_common.discovery import (
     resolve_repository,
     write_hub_json,
 )
-from agent_hub_common.registry import HealthCheck, process_alive, register, registry_path
+from agent_hub_common.registry import (
+    HEALTHZ_LIVE_PID_TIMEOUT_S,
+    HealthCheck,
+    process_alive,
+    register,
+    registry_path,
+)
 from conftest import reserve_port_block
 from robomate.cli import _bind
 
 CLI = str(Path(sys.executable).with_name("robomate.exe" if sys.platform == "win32" else "robomate"))
+
+
+# #270: allow two 5 s registry locks, a 15 s live-PID health probe, and
+# two 15 s RPCs (answer --option). Add the same 30 s loaded-Windows startup
+# margin as await_hub: 10 + 15 + 30 + 30 = 85 s.
+CLI_COMMAND_TIMEOUT_S = 10 + HEALTHZ_LIVE_PID_TIMEOUT_S + 2 * cli._RPC_TIMEOUT_S + 30
+# After down/terminate, allow scheduling and the launcher to reap its child.
+PROCESS_EXIT_TIMEOUT_S = 30.0
+
+
+def _run_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Capture UTF-8 on both ends; report partial output and elapsed time on a hang."""
+    kwargs["env"] = {**kwargs.get("env", os.environ), "PYTHONIOENCODING": "utf-8"}
+    kwargs["encoding"] = "utf-8"
+    kwargs.setdefault("timeout", CLI_COMMAND_TIMEOUT_S)
+    started = time.monotonic()
+    try:
+        return subprocess.run(argv, **kwargs)
+    except subprocess.TimeoutExpired as exc:
+
+        def decoded(output: str | bytes | None) -> str:
+            return (
+                output.decode("utf-8", errors="replace")
+                if isinstance(output, bytes)
+                else output or ""
+            )
+
+        raise AssertionError(
+            f"{argv!r} timed out after {time.monotonic() - started:.1f}s "
+            f"(budget {kwargs['timeout']:g}s)\n"
+            f"--- child stdout (partial) ---\n{decoded(exc.stdout)}\n"
+            f"--- child stderr (partial) ---\n{decoded(exc.stderr)}"
+        ) from exc
 
 
 def init_checkout(root: Path) -> None:
@@ -68,6 +107,7 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         # The first-free scan runs in this test's own block, not from 8420,
         # so hubs and test suites elsewhere on the host can't move it (#204).
         "ROBOMATE_BASE_PORT": str(reserve_port_block()),
+        "PYTHONIOENCODING": "utf-8",
     }
     return root, env
 
@@ -105,7 +145,7 @@ def _start_logged(root: Path, env: dict[str, str], argv: list[str]) -> subproces
 def _hub_stdout(process: subprocess.Popen[str]) -> str:
     path = getattr(process, "_stdout_log", None)
     if path is not None:
-        return Path(path).read_text(errors="replace")
+        return Path(path).read_text(encoding="utf-8", errors="replace")
     assert process.stdout is not None
     return process.stdout.read()
 
@@ -113,7 +153,7 @@ def _hub_stdout(process: subprocess.Popen[str]) -> str:
 def _hub_stderr(process: subprocess.Popen[str]) -> str:
     path = getattr(process, "_stderr_log", None)
     if path is not None:
-        return Path(path).read_text(errors="replace")
+        return Path(path).read_text(encoding="utf-8", errors="replace")
     assert process.stderr is not None
     return process.stderr.read()
 
@@ -219,16 +259,21 @@ def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> Non
     pending = sys.exception()
     try:
         with _cleanup_step(pending, f"`robomate down` in {root}"):
-            result = subprocess.run(
-                [CLI, "down"], cwd=root, env=env, text=True, capture_output=True, timeout=30
+            result = _run_cli(
+                [CLI, "down"],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             assert result.returncode == 0, result.stderr
-            assert process.wait(timeout=10) == 0
+            assert process.wait(timeout=PROCESS_EXIT_TIMEOUT_S) == 0
     finally:
         with _cleanup_step(pending, f"terminating pid {process.pid}"):
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=10)
+                process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 # Stands in for a hub that is alive but never records itself in hub.json.
@@ -255,7 +300,7 @@ def test_await_hub_timeout_reports_the_hub_output(
         assert "hub stdout so far" in message and "hub stderr so far" in message
     finally:
         process.terminate()
-        process.wait(timeout=10)
+        process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def _failed_down(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -333,8 +378,13 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
         assert "/.robomate/" in (root / ".git/info/exclude").read_text()
         with urllib.request.urlopen(f"{info['url']}/healthz") as response:
             assert json.load(response)["hub_id"] == info["hub_id"]
-        second = subprocess.run(
-            [CLI, "up"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        second = _run_cli(
+            [CLI, "up"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert second.returncode == 1
         assert "already running" in second.stderr
@@ -351,7 +401,7 @@ def test_up_down_reuse_and_duplicate(repository: tuple[Path, dict[str, str]]) ->
     finally:
         if first.poll() is None:
             first.terminate()
-            first.wait(timeout=10)
+            first.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_up_redirected_output_escapes_unencodable_checkout(
@@ -420,8 +470,13 @@ def _commit_and_add_worktrees(root: Path, *paths: Path) -> None:
 
 
 def _cli(cwd: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [CLI, *args], cwd=cwd, env=env, text=True, capture_output=True, timeout=30
+    return _run_cli(
+        [CLI, *args],
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
     )
 
 
@@ -643,7 +698,7 @@ def test_up_creates_the_operator_token_beside_the_registry(
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_operator_token_file_override_is_honoured_but_never_in_the_repository(
@@ -661,16 +716,16 @@ def test_operator_token_file_override_is_honoured_but_never_in_the_repository(
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
     for inside in (root / ".robomate" / "operator-token", root / "operator-token"):
-        result = subprocess.run(
+        result = _run_cli(
             [CLI, "up"],
             cwd=root,
             env={**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(inside)},
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert result.returncode == 1
         assert "must not be inside the repository" in result.stderr
@@ -719,7 +774,7 @@ def test_isolated_smoke_hub_leaves_the_machine_state_untouched(
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
     assert not registry_path(machine).parent.exists()
     assert not (tmp_path / "run-hub-token").exists()
@@ -734,8 +789,13 @@ def test_recorded_busy_port_is_refused(repository: tuple[Path, dict[str, str]]) 
         occupied.listen()
         port = occupied.getsockname()[1]
         write_hub_json(root, {"port": port, "hub_id": "old"})
-        result = subprocess.run(
-            [CLI, "up"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        result = _run_cli(
+            [CLI, "up"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
     assert result.returncode == 1
     assert str(port) in result.stderr and "--port" in result.stderr
@@ -753,18 +813,23 @@ def test_recorded_busy_port_with_unsafe_operator_token_file_prefers_token_diagno
         port = occupied.getsockname()[1]
         write_hub_json(root, {"port": port, "hub_id": "old"})
         # A valid token location still reports the occupied port.
-        busy_saved = subprocess.run(
-            [CLI, "up"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        busy_saved = _run_cli(
+            [CLI, "up"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert busy_saved.returncode == 1
         assert str(port) in busy_saved.stderr and "--port" in busy_saved.stderr
-        busy_explicit = subprocess.run(
+        busy_explicit = _run_cli(
             [CLI, "up", "--port", str(port)],
             cwd=root,
             env=env,
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert busy_explicit.returncode == 1
         assert str(port) in busy_explicit.stderr and "--port" in busy_explicit.stderr
@@ -772,26 +837,26 @@ def test_recorded_busy_port_with_unsafe_operator_token_file_prefers_token_diagno
         # the token-path diagnostic even though the saved port is occupied, and
         # no operator credential is created there.
         for inside in (root / "operator-token", root / ".robomate" / "operator-token"):
-            result = subprocess.run(
+            result = _run_cli(
                 [CLI, "up"],
                 cwd=root,
                 env={**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(inside)},
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             assert result.returncode == 1
             assert "must not be inside the repository" in result.stderr
             assert not inside.exists()
             assert str(inside) not in result.stdout + result.stderr
         # The same holds for an explicitly requested occupied port.
-        explicit_unsafe = subprocess.run(
+        explicit_unsafe = _run_cli(
             [CLI, "up", "--port", str(port)],
             cwd=root,
             env={**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(root / "operator-token")},
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert explicit_unsafe.returncode == 1
         assert "must not be inside the repository" in explicit_unsafe.stderr
@@ -1083,13 +1148,17 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
     root, env = repository
     processes = [start(root, env), start(root, env)]
     try:
-        for _ in range(200):
+        started = time.monotonic()
+        while (elapsed := time.monotonic() - started) < HUB_START_TIMEOUT_S:
             states = [process.poll() is None for process in processes]
             if sum(states) == 1 and read_hub_json(root):
                 break
             time.sleep(0.05)
         else:
-            raise AssertionError("expected exactly one live hub")
+            diagnostics = "\n".join(
+                _startup_diagnostics(root, process, elapsed) for process in processes
+            )
+            raise AssertionError(f"expected exactly one live hub\n{diagnostics}")
         winner = next(process for process in processes if process.poll() is None)
         loser = next(process for process in processes if process.poll() is not None)
         winner_info = await_hub(root, winner)
@@ -1104,7 +1173,7 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
         for process in processes:
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=10)
+                process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> None:
@@ -1113,8 +1182,13 @@ def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> N
     try:
         info = await_hub(root, process)
         wrong = {**env, "ROBOMATE_HUB_URL": str(info["url"]), "ROBOMATE_TOKEN": "wrong"}
-        response = subprocess.run(
-            [CLI, "down"], cwd=root, env=wrong, capture_output=True, text=True, timeout=10
+        response = _run_cli(
+            [CLI, "down"],
+            cwd=root,
+            env=wrong,
+            capture_output=True,
+            text=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert response.returncode == 1
         assert "HTTP 401" in response.stderr
@@ -1123,7 +1197,7 @@ def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> N
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_down_tells_a_slow_hub_from_an_unreachable_one(
@@ -1182,8 +1256,13 @@ def test_status_from_nested_directory_and_worktree(
         info = await_hub(root, process)
         # The linked worktree owns no hub, so it reaches the main checkout's
         # hub only when selected (#147).
-        refused = subprocess.run(
-            [CLI, "status"], cwd=worktree, env=env, text=True, capture_output=True, timeout=10
+        refused = _run_cli(
+            [CLI, "status"],
+            cwd=worktree,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert refused.returncode == 1
         assert f"no hub is recorded for checkout {worktree}" in refused.stderr
@@ -1193,13 +1272,13 @@ def test_status_from_nested_directory_and_worktree(
             (worktree, ["--hub", "repo"]),
             (tmp_path, ["--hub", str(root)]),
         ):
-            result = subprocess.run(
+            result = _run_cli(
                 [CLI, "status", *selector],
                 cwd=cwd,
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             assert result.returncode == 0, result.stderr
             assert "Hub: repo  " in result.stdout and str(info["url"]) in result.stdout
@@ -1207,20 +1286,25 @@ def test_status_from_nested_directory_and_worktree(
             assert f"Repository: {root}" in result.stdout
             assert f"State: {root / '.robomate'}" in result.stdout
             assert "Workflow: none" in result.stdout
-            result = subprocess.run(
+            result = _run_cli(
                 [CLI, "status", "--json", *selector],
                 cwd=cwd,
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             status = json.loads(result.stdout)
             assert (status["repo_root"], status["checkout"]) == (str(root), str(root))
             assert (status["name"], status["git_common_dir"]) == ("repo", str(root / ".git"))
         stop(root, env, process)
-        stopped = subprocess.run(
-            [CLI, "status"], cwd=nested, env=env, text=True, capture_output=True, timeout=10
+        stopped = _run_cli(
+            [CLI, "status"],
+            cwd=nested,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert stopped.returncode != 0
         assert f"Hub repo ({root}): not running" in stopped.stdout
@@ -1229,7 +1313,7 @@ def test_status_from_nested_directory_and_worktree(
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[str, str]]) -> None:
@@ -1261,8 +1345,13 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             assert json.load(response)["result"] == {"ok": True}
-        result = subprocess.run(
-            [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        result = _run_cli(
+            [CLI, "status"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert result.returncode == 0, result.stderr
         assert "Workflow: active — Build issue #43" in result.stdout
@@ -1327,8 +1416,13 @@ def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_cal
         token = (directory / "token").read_text().strip()
 
         def status_text() -> str:
-            result = subprocess.run(
-                [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            result = _run_cli(
+                [CLI, "status"],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             assert result.returncode == 0, result.stderr
             return result.stdout
@@ -1353,13 +1447,13 @@ def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_cal
         ), out
         assert "last seen" not in out and "STALLED" not in out
         status = json.loads(
-            subprocess.run(
+            _run_cli(
                 [CLI, "status", "--json"],
                 cwd=root,
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             ).stdout
         )
         # Additive: the legacy session block is still there.
@@ -1470,6 +1564,10 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
     """#144: a fresh bridge heartbeat with no hub call reads STALLED, with its evidence."""
 
     root, env = repository
+    # #264 r1-2: status computes stalls on demand. Keep the background sweeper
+    # from appending agent_stalled events during slow CLI startup; this test
+    # asserts the seeded backlog and that status itself writes nothing.
+    env = {**env, "HUB_SWEEP_INTERVAL_S": "3600"}
     directory = root / ".robomate"
     directory.mkdir()
     database_path = directory / "hub.db"
@@ -1485,8 +1583,13 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
         token = (directory / "token").read_text().strip()
         assert _rpc_as_alice(str(info["url"]), token, "hub.heartbeat")["result"] == {"ok": True}
         time.sleep(0.2)
-        result = subprocess.run(
-            [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        result = _run_cli(
+            [CLI, "status"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert result.returncode == 0, result.stderr
         out = result.stdout
@@ -1507,13 +1610,13 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
         assert "secret instructions" not in out
 
         status = json.loads(
-            subprocess.run(
+            _run_cli(
                 [CLI, "status", "--json"],
                 cwd=root,
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             ).stdout
         )
         (bob,) = status["agents"]
@@ -1558,8 +1661,13 @@ def test_status_snapshot_matches_get_state_and_changes_nothing(
         state = _rpc_as_alice(url, token, "get_state")["result"]
 
         def robomate(*args: str) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                [CLI, *args], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            return _run_cli(
+                [CLI, *args],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
 
         result = robomate(
@@ -1655,8 +1763,13 @@ def test_inbox_answer_and_status_serve_the_operator(
     hub_store.ask_user("Which follow-up label?", None, actor="alice", session=None)
 
     def robomate(*args: str, environ: dict[str, str] = env) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [CLI, *args], cwd=root, env=environ, text=True, capture_output=True, timeout=10
+        return _run_cli(
+            [CLI, *args],
+            cwd=root,
+            env=environ,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
 
     process = start(root, env)
@@ -1752,8 +1865,13 @@ def test_status_reports_auth_failure_without_calling_hub_stopped(
         original = token_file.read_text()
         try:
             token_file.write_text("incorrect-token")
-            result = subprocess.run(
-                [CLI, "status"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+            result = _run_cli(
+                [CLI, "status"],
+                cwd=root,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             assert result.returncode == 1
             assert "HTTP 401" in result.stderr
@@ -1775,8 +1893,13 @@ def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
     try:
         info = await_hub(root, process)
         for command in (["status"], ["status", "--snapshot"], ["inbox"], ["down"]):
-            refused = subprocess.run(
-                [CLI, *command], cwd=other, env=env, text=True, capture_output=True, timeout=10
+            refused = _run_cli(
+                [CLI, *command],
+                cwd=other,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CLI_COMMAND_TIMEOUT_S,
             )
             assert refused.returncode == 1, command
             assert "no hub is recorded" in refused.stderr and str(root) in refused.stderr
@@ -1786,13 +1909,13 @@ def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
             "ROBOMATE_HUB_URL": str(info["url"]),
             "ROBOMATE_TOKEN_FILE": str(root / ".robomate/token"),
         }
-        explicit = subprocess.run(
+        explicit = _run_cli(
             [CLI, "status"],
             cwd=tmp_path,
             env=explicit_env,
             text=True,
             capture_output=True,
-            timeout=10,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert explicit.returncode == 0, explicit.stderr
         assert str(root) in explicit.stdout and str(info["url"]) in explicit.stdout
@@ -1805,13 +1928,13 @@ def test_status_with_unreachable_explicit_url_does_not_claim_current_repo(
 ) -> None:
     root, env = repository
     explicit_env = {**env, "ROBOMATE_HUB_URL": "http://127.0.0.1:1", "ROBOMATE_TOKEN": "test-token"}
-    result = subprocess.run(
+    result = _run_cli(
         [CLI, "status", "--json"],
         cwd=root,
         env=explicit_env,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=CLI_COMMAND_TIMEOUT_S,
     )
     assert result.returncode == 1
     assert json.loads(result.stdout) == {
@@ -1820,8 +1943,13 @@ def test_status_with_unreachable_explicit_url_does_not_claim_current_repo(
         "url": "http://127.0.0.1:1",
         "port": 1,
     }
-    human = subprocess.run(
-        [CLI, "status"], cwd=root, env=explicit_env, text=True, capture_output=True, timeout=10
+    human = _run_cli(
+        [CLI, "status"],
+        cwd=root,
+        env=explicit_env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
     )
     assert human.returncode == 1
     assert human.stdout.startswith("Hub: not running")
@@ -1969,8 +2097,13 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
             {"repo_root": "/stale", "url": "http://127.0.0.1:1", "hub_id": "stale", "pid": 999999},
             env,
         )
-        result = subprocess.run(
-            [CLI, "ls"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        result = _run_cli(
+            [CLI, "ls"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert result.returncode == 0, result.stderr
         lines = result.stdout.splitlines()
@@ -1980,8 +2113,13 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
         assert all("agents 0" in line and "workflow none" in line for line in lines)
         entries = await_registry(env, lambda found: all(e["hub_id"] != "stale" for e in found))
         assert "stale" not in [e["hub_id"] for e in entries]
-        result = subprocess.run(
-            [CLI, "ls", "--json"], cwd=root, env=env, text=True, capture_output=True, timeout=10
+        result = _run_cli(
+            [CLI, "ls", "--json"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=CLI_COMMAND_TIMEOUT_S,
         )
         assert len(json.loads(result.stdout)) == 2
     finally:
@@ -2088,7 +2226,7 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
         assert not result.get("isError"), result
         assert json.loads(result["content"][0]["text"])["status"] == "registered"
         stdin.close()
-        worker.wait(timeout=10)
+        worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
         stdout.close()
         reader.join(timeout=10)
         stop(root, env, hub)
@@ -2096,14 +2234,14 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
         if worker is not None:
             if worker.poll() is None:
                 worker.kill()
-                worker.wait(timeout=10)
+                worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
             if worker.stdin is not None and not worker.stdin.closed:
                 worker.stdin.close()
             if worker.stdout is not None and not worker.stdout.closed:
                 worker.stdout.close()
         if hub.poll() is None:
             hub.terminate()
-            hub.wait(timeout=10)
+            hub.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 @pytest.mark.parametrize(
@@ -2135,7 +2273,7 @@ def test_up_malformed_origin_warns_and_serves(
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str]]) -> None:
@@ -2152,7 +2290,7 @@ def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=10)
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_forget_releases_name_and_port_and_next_up_takes_first_free(
@@ -2266,7 +2404,7 @@ def test_forget_all_only_forgets_stopped_hubs(
         finally:
             if second.poll() is None:
                 second.terminate()
-                second.wait(timeout=10)
+                second.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
     finally:
         for checkout, process in ((wt_a, hub_a), (wt_b, hub_b)):
             if process.poll() is None:
@@ -2289,8 +2427,8 @@ def test_down_all_stops_every_live_hub(
         assert result.returncode == 0, result.stderr
         assert f"Stopping hub wt-a at {a['url']}" in result.stdout
         assert f"Stopping hub wt-b at {b['url']}" in result.stdout
-        assert hub_a.wait(timeout=10) == 0
-        assert hub_b.wait(timeout=10) == 0
+        assert hub_a.wait(timeout=PROCESS_EXIT_TIMEOUT_S) == 0
+        assert hub_b.wait(timeout=PROCESS_EXIT_TIMEOUT_S) == 0
         rows = json.loads(_cli(root, env, "ls", "--json").stdout)
         assert len(rows) == 2 and all(not row["live"] for row in rows)
         assert (wt_a / ".robomate" / "hub.db").is_file()
@@ -2301,7 +2439,7 @@ def test_down_all_stops_every_live_hub(
         for process in (hub_a, hub_b):
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=10)
+                process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_forgotten_hub_can_be_renamed_and_pinned(
@@ -2751,7 +2889,7 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         assert after_body["hub"] == info["url"]
 
         stdin.close()
-        worker.wait(timeout=10)
+        worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
         stdout.close()
         reader.join(timeout=10)
         stop(root, env, hub)
@@ -2759,11 +2897,71 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         if worker is not None:
             if worker.poll() is None:
                 worker.kill()
-                worker.wait(timeout=10)
+                worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
             if worker.stdin is not None and not worker.stdin.closed:
                 worker.stdin.close()
             if worker.stdout is not None and not worker.stdout.closed:
                 worker.stdout.close()
         if hub.poll() is None:
             hub.terminate()
-            hub.wait(timeout=10)
+            hub.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+
+@pytest.mark.parametrize("parent_encoding", ["cp437", "cp1252"])
+def test_cli_capture_uses_utf8_independent_of_parent_code_page(
+    monkeypatch: pytest.MonkeyPatch, parent_encoding: str
+) -> None:
+    monkeypatch.setenv("PYTHONIOENCODING", parent_encoding)
+    result = _run_cli(
+        [sys.executable, "-c", "print('Workflow: active \u2014 issue')"],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Workflow: active \u2014 issue\n"
+
+
+def test_cli_timeout_reports_elapsed_and_partial_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    def timed_out(argv: list[str], **kwargs: Any) -> Any:
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"], b"partial out", b"partial err")
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    with pytest.raises(AssertionError, match="timed out after") as caught:
+        _run_cli([CLI, "status"], text=True, capture_output=True)
+    message = str(caught.value)
+    assert "budget 85s" in message
+    assert "partial out" in message and "partial err" in message
+
+
+@pytest.mark.parametrize("encoding", ["cp437", "cp1252"])
+def test_status_redirected_oem_output_escapes_unencodable_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, encoding: str
+) -> None:
+    status: dict[str, Any] = {
+        "repo_root": str(tmp_path),
+        "url": "http://hub.test",
+        "origin": "o/r",
+        "forge": "github",
+        "default_branch": "main",
+        "workflow": {
+            "status": "active",
+            "headline": "Build \u0101",
+        },
+        "orchestrator": None,
+        "agents": [],
+        "tasks": [],
+        "pending_questions": 0,
+    }
+    monkeypatch.setattr(
+        cli, "find_hub", lambda *args, **kwargs: HubEndpoint("http://hub.test", "t")
+    )
+    monkeypatch.setattr(cli, "_rpc", lambda *args, **kwargs: status)
+    with io.BytesIO() as buffer, io.TextIOWrapper(buffer, encoding=encoding) as stdout:
+        monkeypatch.setattr(sys, "stdout", stdout)
+        cli._status(False, None)
+        stdout.flush()
+        output = buffer.getvalue().decode(encoding)
+        assert "Build \\u0101" in output
+        assert (
+            "Workflow: active \\u2014" if encoding == "cp437" else "Workflow: active —"
+        ) in output

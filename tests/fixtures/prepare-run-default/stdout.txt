@@ -32,6 +32,7 @@
     "bob": "$RUN_DIR/bob.prompt.md",
     "charlie": "$RUN_DIR/charlie.prompt.md"
   },
+  "pytest_workers": 0,
   "repository": "$ORIGIN",
   "resume_prompts": {
     "alice": "$RUN_DIR/resume-alice.prompt.md",

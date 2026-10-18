@@ -614,16 +614,21 @@ def test_an_overdue_lease_is_reported_exactly_once(store: HubStore) -> None:
 
 
 def test_a_silent_worker_is_lost_and_its_task_fails(store: HubStore) -> None:
+    # #264: WSL wall-clock resync can outpace a negative one-second cutoff.
+    # Model silence explicitly; wall-clock rollback has its own regression.
+    clock = FakeClock()
+    store.clock = clock
     store.check_in("bob")
     task_id = assign(store)
-    store.sweep(lost_after_s=-1)
+    clock.advance(seconds=2)
+    store.sweep(lost_after_s=1)
 
     agent = store.agent_by_name("bob")
     task = store.get_task(task_id)
     assert agent is not None and agent.status is AgentStatus.LOST
     assert task is not None and task.state is TaskState.FAILED
     assert task.result is not None and task.result["reason"] == "worker_lost"
-    assert store.sweep(lost_after_s=-1) == []
+    assert store.sweep(lost_after_s=1) == []
 
 
 def test_a_release_survives_the_worker_restarting(store: HubStore) -> None:

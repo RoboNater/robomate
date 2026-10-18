@@ -51,10 +51,23 @@ uv sync --locked --all-packages --dev
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
-uv run --locked pytest
+uv run --locked pytest -n auto
 uv run --locked python scripts/dependency-licenses.py --check
 uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/
 ```
+
+During implementation, run affected test files while iterating and the full
+`pytest -n auto` suite once before submitting. Reviewers run changed-code tests
+and issue acceptance commands; rely on CI's full Linux and Windows runs on the
+reviewed head unless CI is absent or the test harness itself is at risk. A
+clean rebase without hand resolutions relies on CI for the full suite; hand
+resolutions require a local full run too. Other validation and touched entry
+points still run. See the role guides for details.
+
+`-n auto` respects each run's `PYTEST_XDIST_AUTO_NUM_WORKERS`. Set
+`pytest_workers` in the standard-run TOML or `--pytest-workers N` when preparing
+(0 means CPU count); generated launch and resume scripts carry the setting.
+CI uses the runner's CPU count and keeps both required checks.
 
 Don't pipe a check through `tail` or `head` to shorten it: the pipeline
 returns the last command's exit status, so a failing suite looks green. Use
