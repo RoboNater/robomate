@@ -176,9 +176,9 @@ allowed, only under all of these limits:
 - Fully isolated state, set in your own shell for that command only:
   `HUB_STATE_DIR` is a fresh `mktemp -d` directory, or one under your
   workspace; `ROBOMATE_OPERATOR_TOKEN_FILE` is a file in that directory; and
-  `XDG_STATE_HOME` (POSIX) or `LOCALAPPDATA` (Windows) also points into that
-  directory. `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` from your MCP environment
-  are unset for that command.
+  `XDG_STATE_HOME` and `XDG_CONFIG_HOME` (POSIX) or `LOCALAPPDATA` and
+  `APPDATA` (Windows) also point into that directory. `ROBOMATE_HUB_URL` and
+  `ROBOMATE_TOKEN*` from your MCP environment are unset for that command.
 - `robomate up` and `down` keep their state in the checkout's `.robomate/`
   whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a
   clone, or `git init`) inside that directory, never from your workspace

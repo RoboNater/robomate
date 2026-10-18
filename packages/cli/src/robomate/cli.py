@@ -25,7 +25,13 @@ from typing import Any, NoReturn
 import anyio
 from agent_hub.forge_preflight import gitlab_preflight
 from agent_hub.main import serve_http
-from agent_hub_common import HubSettings, load_or_create_token, read_token_file, reserve_stdout
+from agent_hub_common import (
+    HubSettings,
+    load_config_layers,
+    load_or_create_token,
+    read_token_file,
+    reserve_stdout,
+)
 from agent_hub_common.discovery import (
     DiscoveryError,
     HubEndpoint,
@@ -258,6 +264,12 @@ def _entry_port(entry: dict[str, Any]) -> int | None:
 
 
 async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -> None:
+    layered_config = load_config_layers(
+        hub_config=directory / "config.toml",
+        git_common_dir=repo.git_common_dir,
+    )
+    for warning in layered_config.warnings:
+        print(f"Warning: {warning}", flush=True)
     ensure_excluded(repo.git_common_dir)
     old = read_hub_json(repo.root) or {}
     old_pid = int(old.get("pid") or 0)

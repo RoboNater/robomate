@@ -72,6 +72,8 @@ def isolated_machine_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     for name in list(os.environ):
         if name in ("ROBOMATE_HUB_URL", "ROBOMATE_OPERATOR_TOKEN_FILE") or name.startswith(
             "ROBOMATE_TOKEN"

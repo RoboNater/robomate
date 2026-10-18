@@ -257,6 +257,11 @@ moved silently.
 | `nits_issue`, `followup_label`, `closeout_steps` (§7.3), `setup` (§6) | repository; a hub may override | They describe the repository's process, so a new worktree's hub has them from its first start, with nothing copied. A hub may need a different setup or nits issue for its line of work |
 | policy defaults (§7.2), agent defaults (model, effort pins) | hub, repository, user | Operator preferences; per-hub where a team is set up differently |
 
+A key set in a layer that may not hold it is an error naming the file and key, never ignored.
+A legacy hub's `.robomate/config.toml` `[forge]` table is still honoured, with a warning
+naming the repository-level file (`<git-common-dir>/robomate/config.toml`) to move it to,
+until the hub is relocated; nothing is rewritten for the operator.
+
 A user-level `worktree_root` is a parent directory; the repository's root is then
 `<that>/<repo>.robomate/`. That alone does not keep two repositories apart: two
 independent repositories with the same `<repo>` name derive the same root. So each

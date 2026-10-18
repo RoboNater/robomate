@@ -45,6 +45,41 @@ def test_detect_forge_well_known_hosts() -> None:
     assert detect_forge("https://gitlab.com/example/repo.git") == "gitlab"
 
 
+def test_detect_forge_via_repository_and_user_config_layers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    common = repo / ".git"
+    repo_config = common / "robomate" / "config.toml"
+    repo_config.parent.mkdir(parents=True)
+    repo_config.write_text(
+        """[forge]
+gitlab_hosts = ["gitlab-repo.corp.com", "shared.corp.com"]
+""",
+        encoding="utf-8",
+    )
+
+    user_config = tmp_path / "xdg" / "robomate" / "config.toml"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(
+        """[forge]
+gitlab_hosts = ["gitlab-user.corp.com"]
+github_hosts = ["github-user.corp.com", "shared.corp.com"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert detect_forge("git@gitlab-repo.corp.com:team/repo.git", root=repo) == "gitlab"
+    # github_hosts is unset in repository layer, so user layer supplies it
+    assert detect_forge("git@github-user.corp.com:team/repo.git", root=repo) == "github"
+    # Repository layer overrides user layer for gitlab_hosts and shared hosts
+    assert detect_forge("git@shared.corp.com:team/repo.git", root=repo) == "gitlab"
+    assert detect_forge("git@gitlab-user.corp.com:team/repo.git", root=repo) == "unknown"
+    # Without a repository layer, user layer gitlab_hosts applies
+    assert detect_forge("git@gitlab-user.corp.com:team/repo.git") == "gitlab"
+
+
 def test_detect_forge_via_config_toml(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -57,11 +92,17 @@ github_hosts = ["github-internal.corp.com"]
 """,
         encoding="utf-8",
     )
+    before = config.read_text(encoding="utf-8")
 
-    assert detect_forge("git@gitlab-internal.corp.com:team/repo.git", root=repo) == "gitlab"
-    assert detect_forge("https://gl.local/team/repo.git", root=repo) == "gitlab"
-    assert detect_forge("git@github-internal.corp.com:team/repo.git", root=repo) == "github"
-    assert detect_forge("git@unknown-host.net:team/repo.git", root=repo) == "unknown"
+    with pytest.warns(UserWarning, match="robomate/config.toml"):
+        assert detect_forge("git@gitlab-internal.corp.com:team/repo.git", root=repo) == "gitlab"
+    with pytest.warns(UserWarning, match="robomate/config.toml"):
+        assert detect_forge("https://gl.local/team/repo.git", root=repo) == "gitlab"
+    with pytest.warns(UserWarning, match="robomate/config.toml"):
+        assert detect_forge("git@github-internal.corp.com:team/repo.git", root=repo) == "github"
+    with pytest.warns(UserWarning, match="robomate/config.toml"):
+        assert detect_forge("git@unknown-host.net:team/repo.git", root=repo) == "unknown"
+    assert config.read_text(encoding="utf-8") == before
 
 
 def test_detect_forge_ignores_repo_root_config_toml(tmp_path: Path) -> None:
