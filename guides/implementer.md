@@ -49,6 +49,8 @@ change.
 
 ## Close-out
 
+Use the [shared-body procedure](../docs/development/editing-shared-bodies.md) for roadmap edits.
+
 Only perform close-out when Alice assigns it after merge. Update the roadmap
 issue's completion status and any reservation line as instructed, verify the
 change on the forge, and report the merged change-request URL and final SHA.
