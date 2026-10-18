@@ -6,7 +6,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import time
 from collections.abc import Callable
 from importlib.metadata import requires
 from pathlib import Path
@@ -19,7 +18,7 @@ from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
 from agent_hub_common.accounting import CallRecord
-from agent_hub_common.discovery import DiscoveryError, read_hub_json
+from agent_hub_common.discovery import DiscoveryError
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
@@ -329,6 +328,8 @@ async def test_worker_task_survives_orchestrator_session_restart(
 
 
 async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -> None:
+    from test_cli import await_hub, start, stop
+
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
@@ -351,29 +352,13 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         "LOCALAPPDATA": str(tmp_path / "localappdata"),
         # Scan this test's own block, not 842x (#204).
         "ROBOMATE_BASE_PORT": str(reserve_port_block()),
+        "PYTHONIOENCODING": "utf-8",
     }
-    hub = subprocess.Popen(
-        [command, "up"],
-        cwd=repo,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    # #264 r1-1: the same startup/cleanup budgets and file-backed diagnostics
+    # as the other live CLI tests; 10 s is shorter than loaded Windows startup.
+    hub = start(repo, env)
     try:
-        deadline = time.monotonic() + 10
-        while True:
-            info = read_hub_json(repo)
-            # On Windows robomate.exe is a launcher running the hub as its
-            # child, so hub.json records another pid. Before the hub serves,
-            # hub.json holds only its identity, with no pid (#147).
-            if info is not None and (
-                info.get("pid") == hub.pid or (os.name == "nt" and info.get("pid"))
-            ):
-                break
-            if hub.poll() is not None or time.monotonic() >= deadline:
-                raise AssertionError("hub did not start")
-            await asyncio.sleep(0.05)
+        info = await asyncio.to_thread(await_hub, repo, hub)
         bridge_env = {
             **env,
             "ROBOMATE_HUB_URL": str(info["url"]),
@@ -497,20 +482,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             tool == "initialize_workflow" and content_bytes > 0 for tool, content_bytes in rows
         )
     finally:
-        if hub.poll() is None:
-            stopped = subprocess.run(
-                [command, "down"],
-                cwd=repo,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=30,
-            )
-            assert stopped.returncode == 0, stopped.stderr
-            hub.wait(timeout=10)
-        for stream in (hub.stdout, hub.stderr):
-            if stream is not None:
-                stream.close()
+        stop(repo, env, hub)
 
 
 async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(

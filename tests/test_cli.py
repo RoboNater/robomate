@@ -109,10 +109,6 @@ def repository(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "ROBOMATE_BASE_PORT": str(reserve_port_block()),
         "PYTHONIOENCODING": "utf-8",
     }
-    for key in list(env):
-        if key == "ROBOMATE_HUB_URL" or key.startswith("ROBOMATE_TOKEN"):
-            env.pop(key)
-    env.pop("ROBOMATE_OPERATOR_TOKEN_FILE", None)
     return root, env
 
 
@@ -1564,6 +1560,10 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
     """#144: a fresh bridge heartbeat with no hub call reads STALLED, with its evidence."""
 
     root, env = repository
+    # #264 r1-2: status computes stalls on demand. Keep the background sweeper
+    # from appending agent_stalled events during slow CLI startup; this test
+    # asserts the seeded backlog and that status itself writes nothing.
+    env = {**env, "HUB_SWEEP_INTERVAL_S": "3600"}
     directory = root / ".robomate"
     directory.mkdir()
     database_path = directory / "hub.db"

@@ -103,7 +103,8 @@ def _locked(path: Path) -> Iterator[None]:
                 raise
             # A completed operation remains successful. A surviving lock is
             # reclaimed by the existing 30 s stale-lock policy, without an
-            # unbounded cleanup wait.
+            # unbounded cleanup wait. Subsequent operations may hit their 5 s
+            # wait limit until that 30 s stale threshold is reached.
 
 
 # The registry lock serializes robomate's own readers and writers, but not a
