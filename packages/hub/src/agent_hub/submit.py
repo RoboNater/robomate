@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agent_hub_common import MAX_STATEMENT_BYTES, EventKind, WorkflowPolicy, load_config_layers
+from agent_hub_common import MAX_STATEMENT_BYTES, WorkflowPolicy, load_config_layers
 from pydantic import ValidationError
 
 from .forge_preflight import (
@@ -89,8 +89,8 @@ async def submit_statement(
     policy_overrides: dict[str, Any] | None,
     source: str,
     *,
-    glab_runner: GlabRunner = run_glab,
-    gh_runner: GhRunner = run_gh,
+    glab_runner: GlabRunner | None = None,
+    gh_runner: GhRunner | None = None,
 ) -> dict[str, Any]:
     """Queue one statement of work and emit `work_submitted` (M2 Step 4).
 
@@ -149,14 +149,20 @@ async def submit_statement(
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
     # Forge preflight (strict): any `refuse` in base or policy checks refuses.
+    # Runners resolve here (not in defaults) so tests can monkeypatch them (r1-4).
+    resolved_glab: GlabRunner = glab_runner if glab_runner is not None else run_glab
+    resolved_gh: GhRunner = gh_runner if gh_runner is not None else run_gh
     ci_status: str | None = None
     if forge == "gitlab":
-        base_checks = await gitlab_preflight(origin, runner=glab_runner)
+        base_checks = await gitlab_preflight(origin, runner=resolved_glab)
         for check in base_checks:
             if check.status == "refuse":
                 raise ConflictError(f"{check.name}: {check.detail}")
         policy_checks = await gitlab_policy_checks(
-            origin, merge_method=merge_method, allow_no_ci=allow_no_ci_input, runner=glab_runner
+            origin,
+            merge_method=merge_method,
+            allow_no_ci=allow_no_ci_input,
+            runner=resolved_glab,
         )
         for check in policy_checks:
             if check.status == "refuse":
@@ -167,7 +173,10 @@ async def submit_statement(
                 break
     else:
         policy_checks = await github_policy_checks(
-            origin, merge_method=merge_method, allow_no_ci=allow_no_ci_input, runner=gh_runner
+            origin,
+            merge_method=merge_method,
+            allow_no_ci=allow_no_ci_input,
+            runner=resolved_gh,
         )
         for check in policy_checks:
             if check.status == "refuse":
@@ -199,10 +208,15 @@ async def submit_statement(
     submit_source = (
         f"submit:{source}" if source and not source.startswith("submit:") else (source or "submit")
     )
+    # `work_submitted` is emitted in the same transaction as the queued run (r1-5).
     workflow_id = store.start_workflow(
-        statement, policy=final_policy, source=submit_source, force_queued=True
+        statement,
+        policy=final_policy,
+        source=submit_source,
+        force_queued=True,
+        emit_work_submitted=True,
     )
-    # Read back run identity for the event and response.
+    # Read back run identity for the response.
     state = store.get_state()
     run_id: str | None = None
     statement_sha256: str | None = None
@@ -220,19 +234,8 @@ async def submit_statement(
                 status = "queued"
                 break
     if run_id is None or statement_sha256 is None:
-        # Fallback: the workflow exists (start succeeded) but state shape
-        # changed; still emit with what we have.
         run_id = run_id or ""
         statement_sha256 = statement_sha256 or ""
-    store.append_event(
-        EventKind.WORK_SUBMITTED,
-        {
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "statement_sha256": statement_sha256,
-            "source": submit_source,
-        },
-    )
     return {
         "workflow_id": workflow_id,
         "run_id": run_id,

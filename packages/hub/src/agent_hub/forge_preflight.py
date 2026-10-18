@@ -1,7 +1,8 @@
 """Policy-independent GitLab startup checks; unavailable facts only warn.
 
-Also policy-dependent GitLab checks and GitHub checks shared by
-`prepare-run.py` and `robomate submit` (M2 Step 4, #241).
+Also policy-dependent GitLab checks shared by `prepare-run.py` and
+`robomate submit`, and GitHub checks for `robomate submit` (M2 Step 4, #241;
+prepare-run keeps its own GitHub checks until Step 11).
 """
 
 from __future__ import annotations

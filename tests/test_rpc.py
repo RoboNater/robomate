@@ -1449,15 +1449,13 @@ async def test_hub_submit_needs_operator_and_origin(
 
 
 async def test_hub_submit_takes_repo_layer_policy_and_override(
-    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, tmp_path: Path
 ) -> None:
-    import tempfile
-    from pathlib import Path
     from typing import cast
 
     from agent_hub.rpc import RpcDispatcher
 
-    tmp = Path(tempfile.mkdtemp())
+    tmp = tmp_path / "cfg"
     common = tmp / "repo" / ".git"
     common.mkdir(parents=True)
     repo_cfg = common / "robomate" / "config.toml"
@@ -1631,3 +1629,88 @@ async def test_hub_submit_github_runs_no_glab(
         app, "hub.submit", OPERATOR, statement="GitHub work", policy={}, source="file"
     )
     assert "result" in body, body
+
+
+async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> None:
+    """r1-4: submit resolves auto; explicit skips probe."""
+
+    import json
+    from collections.abc import Sequence
+    from typing import Any
+
+    from agent_hub.database import initialize_database
+    from agent_hub.gitlab_gate import GlabResult
+    from agent_hub.store import HubStore
+    from agent_hub.submit import submit_statement
+
+    origin = "git@host:group/project.git"
+    base_project: dict[str, Any] = {
+        "id": 1,
+        "web_url": "https://host/group/project",
+        "permissions": {"group_access": {"access_level": 30}},
+        "auto_devops_enabled": False,
+        "only_allow_merge_if_pipeline_succeeds": True,
+        "default_branch": "main",
+        "merge_method": "merge",
+        "squash_option": "default_off",
+    }
+
+    def _runner_with_ci(ci: GlabResult, file_calls: list[str]) -> Any:
+        async def _run(args: Sequence[str]) -> GlabResult:
+            args_list = list(args)
+            if args_list == ["version"]:
+                return GlabResult(0, "glab version 1.36.0", "")
+            if args_list[-1] == "user":
+                return GlabResult(0, '{"username":"u"}', "")
+            if args_list[-1] == "projects/group%2Fproject":
+                return GlabResult(0, json.dumps(base_project), "")
+            assert "repository/files" in args_list[-1]
+            file_calls.append(args_list[-1])
+            return ci
+
+        return _run
+
+    async def _submit_with(
+        policy: dict[str, Any] | None, ci: GlabResult, origin_arg: str = origin
+    ) -> tuple[bool, list[str]]:
+        path = tmp_path / f"submit-{len(list(tmp_path.iterdir()))}.db"
+        initialize_database(path)
+        store = HubStore(path)
+        file_calls: list[str] = []
+        result = await submit_statement(
+            store,
+            {
+                "origin": origin_arg,
+                "forge": "gitlab",
+                "git_common_dir": None,
+            },
+            "Do work",
+            policy,
+            "file",
+            glab_runner=_runner_with_ci(ci, file_calls),
+        )
+        import sqlite3
+
+        with sqlite3.connect(store.path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT policy_json FROM workflow WHERE id = ?",
+                (result["workflow_id"],),
+            ).fetchone()
+            stored = json.loads(row["policy_json"])["allow_no_ci"]
+        return stored, file_calls
+
+    # auto + CI present (pass) -> False, with one file call.
+    stored, calls = await _submit_with(
+        {"allow_no_ci": "auto"}, GlabResult(0, '{"file_name":".gitlab-ci.yml"}', "")
+    )
+    assert stored is False and len(calls) == 1
+    # auto + absent (404 note) -> True.
+    stored, _ = await _submit_with({"allow_no_ci": "auto"}, GlabResult(1, "", "(HTTP 404)"))
+    assert stored is True
+    # explicit True/False (bool, as CLI TOML parses) makes no CI call.
+    for allow, expected in ((True, True), (False, False)):
+        stored, calls = await _submit_with({"allow_no_ci": allow}, GlabResult(1, "boom", "boom"))
+        assert stored is expected and calls == []
+    # local origin + auto -> True without calls (no slug path here uses gitlab origin,
+    # so local case is github path; covered by github local test in forge_preflight).

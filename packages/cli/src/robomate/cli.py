@@ -145,6 +145,12 @@ def _bind(
 # Long enough for a loaded host (a CI runner mid-suite) to answer: at 2 s,
 # `down` and `answer` timed out against a live hub (#207).
 _RPC_TIMEOUT_S = 15.0
+# `hub.submit` runs forge preflight in-request: GitLab up to 3 base + 2 policy
+# `glab` calls, GitHub up to 2 `gh` calls, each allowed 30 s (worst-case ~150 s).
+# A 15 s client timeout would report failure while the hub goes on to queue the
+# run and emit `work_submitted`, and a retry then fails -32002 (r1-1). Submit
+# gets its own deadline above that worst case.
+_SUBMIT_RPC_TIMEOUT_S = 180.0
 
 
 def _timed_out(exc: BaseException) -> bool:
@@ -162,6 +168,7 @@ def _rpc(
     *,
     operator_token: str | None = None,
     params: dict[str, Any] | None = None,
+    timeout: float = _RPC_TIMEOUT_S,
 ) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     if operator_token is not None:
@@ -173,7 +180,7 @@ def _rpc(
         ).encode(),
         headers=headers,
     )
-    with urllib.request.urlopen(request, timeout=_RPC_TIMEOUT_S) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         result: dict[str, Any] = json.load(response)
     if "error" in result:
         error = result["error"]
@@ -1232,6 +1239,8 @@ def _submit(
 ) -> None:
     """Submit a statement of work through operator-only `hub.submit` (M2 Step 4, #241)."""
 
+    if file is not None and issue is not None:
+        raise ValueError("--issue and a file are mutually exclusive; give one statement source")
     escape_unencodable_output()
     overrides: dict[str, Any] = {}
     for spec in policy or []:
@@ -1267,6 +1276,7 @@ def _submit(
             "hub.submit",
             operator_token=operator_token,
             params={"statement": text, "policy": overrides or {}, "source": source},
+            timeout=_SUBMIT_RPC_TIMEOUT_S,
         )
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"hub at {endpoint.url} rejected submit (HTTP {exc.code})") from exc
@@ -1377,13 +1387,14 @@ def main() -> None:
     answer.add_argument("text", nargs="?", help="the answer; quote it")
     answer.add_argument("--option", type=int, metavar="N", help="answer with option N")
     submit = commands.add_parser("submit", help="submit a statement of work to this checkout's hub")
-    submit.add_argument(
+    sources = submit.add_mutually_exclusive_group()
+    sources.add_argument(
         "file",
         nargs="?",
         metavar="FILE",
         help="statement file (use - for stdin); omit with --issue N",
     )
-    submit.add_argument(
+    sources.add_argument(
         "--issue", type=int, metavar="N", help="render the standard one-issue statement"
     )
     submit.add_argument(

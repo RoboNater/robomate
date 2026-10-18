@@ -1678,3 +1678,21 @@ def test_store_statement_over_cap_is_refused(tmp_path: Path) -> None:
         store.start_workflow(big, source="submit:file")
     assert str(MAX_STATEMENT_BYTES) in str(exc_info.value)
     assert "Shorten" in str(exc_info.value) or "shorten" in str(exc_info.value).lower()
+
+
+def test_chat_path_rejects_unresolved_allow_no_ci_auto(tmp_path: Path) -> None:
+    """r1-2: chat initialize/start must not store unresolved 'auto' (merge reads bool)."""
+
+    from agent_hub.database import initialize_database
+    from agent_hub.store import HubStore, InvalidPolicyError
+
+    path = tmp_path / "auto.db"
+    initialize_database(path)
+    store = HubStore(path)
+    with pytest.raises(InvalidPolicyError, match="auto"):
+        store.initialize_workflow("goal text", {"allow_no_ci": "auto"})
+    with pytest.raises(InvalidPolicyError, match="auto"):
+        store.start_workflow("statement text", {"allow_no_ci": "auto"})
+    # Explicit bools still store.
+    wid = store.start_workflow("statement text", {"allow_no_ci": True})
+    assert wid

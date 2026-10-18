@@ -506,6 +506,13 @@ def _validated_workflow_policy(policy: Mapping[str, Any] | None) -> dict[str, An
             f"invalid workflow policy: {details}. Correct the policy and retry "
             "initialize_workflow before assigning work."
         ) from exc
+    # `auto` is resolved to bool by `hub.submit` before storage (M2 Step 4, r1-2);
+    # the chat path must not store it unresolved, since the merge rule reads a bool.
+    if validated.allow_no_ci == "auto":
+        raise InvalidPolicyError(
+            "invalid workflow policy: allow_no_ci 'auto' must be resolved to a bool "
+            "via `robomate submit` (pass an explicit bool from chat)"
+        )
     return validated.model_dump(mode="json", exclude_unset=True)
 
 
@@ -639,14 +646,7 @@ class HubStore:
                 (canonical,),
             ).fetchone()
             if row is None:
-                # Retry with the original case: stored keys are lowercase, but
-                # accept uppercase input without a second code path.
-                row = connection.execute(
-                    "SELECT sha256, bytes, size, source, created FROM statement WHERE sha256 = ?",
-                    (sha256.strip(),),
-                ).fetchone()
-                if row is None:
-                    raise NotFoundError(f"unknown statement: {sha256}")
+                raise NotFoundError(f"unknown statement: {sha256}")
             raw = bytes(row["bytes"])
             try:
                 text = raw.decode("utf-8")
@@ -760,6 +760,7 @@ class HubStore:
         *,
         source: str = "chat",
         force_queued: bool = False,
+        emit_work_submitted: bool = False,
     ) -> str:
         """Start the oldest queued run, or create one from chat (mvp-spec §7.1).
 
@@ -771,6 +772,8 @@ class HubStore:
 
         `force_queued` (for `hub.submit`, M2 Step 4) queues even when idle:
         the orchestrator starts it with a later `start_workflow()` call.
+        `emit_work_submitted` appends `work_submitted` in the same transaction
+        (r1-5), so a queued run never lands without its event.
         """
 
         requested_policy = _validated_workflow_policy(policy)
@@ -843,11 +846,26 @@ class HubStore:
                 )
                 if status == WorkflowStatus.ACTIVE.value:
                     self._clear_stale_releases(connection)
+                if emit_work_submitted:
+                    if statement is None:
+                        raise ValueError("emit_work_submitted needs a statement")
+                    self._add_event(
+                        connection,
+                        EventKind.WORK_SUBMITTED,
+                        {
+                            "workflow_id": workflow_id,
+                            "run_id": run_id,
+                            "statement_sha256": statement_sha256,
+                            "source": source,
+                        },
+                    )
                 row = connection.execute(
                     "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
                 ).fetchone()
                 assert row is not None
         self._write_manifest(row)
+        if emit_work_submitted:
+            self.signals.notify(EVENT_KEY)
         return workflow_id
 
     def _require_workflow(self, connection: Connection, operation: str) -> str:
