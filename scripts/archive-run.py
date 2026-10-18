@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -21,7 +22,6 @@ def excluded(path: str) -> bool:
         name in {"auth.json", "antigravity-oauth-token", "jetski_state.pbtxt", ".git-credentials"}
         or tuple(part.lower() for part in parts[-3:])
         == (".gemini", "antigravity-cli", "settings.json")
-        or ".robomate" in (part.lower() for part in parts)
         or name in {"token", "operator-token"}
     )
 
@@ -69,7 +69,10 @@ def main() -> None:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    archive_run(args.run_dir, args.output)
+    try:
+        archive_run(args.run_dir, args.output)
+    except (ValueError, OSError) as exc:
+        sys.exit(f"archive-run: error: {exc}")
 
 
 if __name__ == "__main__":

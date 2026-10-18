@@ -90,11 +90,14 @@ tar -tzf /absolute/path/to/my-run.tar.gz
 ```
 
 The same Python command works in native PowerShell with Windows paths. The
-output must be a new file outside the run. The helper excludes `auth.json`,
-`antigravity-oauth-token`, `jetski_state.pbtxt`, `.git-credentials`, and only
-the AntiGravity `.gemini/antigravity-cli/settings.json` path (Claude settings
-remain). It also excludes `.robomate` state, files named `token` or
-`operator-token`, and all symlinks. These exclusions apply equally to copies
+output must be a new file outside the run. Stop the run before archiving: a
+database still being written can be archived in an inconsistent state. The
+helper excludes `auth.json`, `antigravity-oauth-token`, `jetski_state.pbtxt`,
+`.git-credentials`, and only the AntiGravity
+`.gemini/antigravity-cli/settings.json` path (Claude settings remain). It also
+excludes files named `token` or `operator-token`, and all symlinks. It includes
+the hub database (`.robomate/hub.db` with its `-wal`/`-shm` files and
+`hub.json`). These exclusions apply equally to copies
 and hard links, including older runs. Credentials remain in the stopped run;
 after checking the archive, remove the retired run directory using your usual
 operator procedure. Logs and task data may still be sensitive: this local
