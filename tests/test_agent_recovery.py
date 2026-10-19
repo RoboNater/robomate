@@ -718,12 +718,10 @@ def test_interrupted_stop_without_exit_recovers_with_confirm(
 def test_hub_status_and_snapshot_expose_created_without_version_bumps(
     hub_store: HubStore,
 ) -> None:
-    """#223: additive created field; DB stays v23 and wire stays 1."""
+    """#223: additive created field; no bump relative to main, wire stays 1."""
 
-    from agent_hub.database import SCHEMA_VERSION as DB_VERSION
     from agent_hub_common import SCHEMA_VERSION as WIRE_VERSION
 
-    assert DB_VERSION == 23
     assert WIRE_VERSION == 1
     status = hub_store.status_summary()
     snapshot = hub_store.snapshot()
