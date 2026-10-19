@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from time import monotonic
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from agent_hub_common import SHA_HEX_40_RE
 
@@ -38,11 +38,18 @@ _STDERR_LIMIT = 500
 # Each part lands in a `gh api` path, so none may be a dot segment or open
 # with a hyphen.
 PR_URL_RE = re.compile(
-    r"https://(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)"
+    r"https://(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)(?::443)?"
     r"/(?P<owner>[A-Za-z0-9][A-Za-z0-9-]*)"
     r"/(?P<repo>(?!\.\.?/)[A-Za-z0-9_.][A-Za-z0-9_.-]*)"
     r"/pull/(?P<number>[1-9][0-9]*)/?"
 )
+
+_HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
+_OWNER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_REPO_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")
+_NUMBER_RE = re.compile(r"[1-9][0-9]*")
+_SCP_ORIGIN_RE = re.compile(r"(?:[^@/:]+@)?(?P<host>[^@/:]+):(?P<path>[^/].*)")
+_URL_LIMIT = 200
 
 
 class CiStatus(StrEnum):
@@ -149,6 +156,147 @@ class PullRequestRef:
 
 
 @dataclass(frozen=True, slots=True)
+class GitHubProject:
+    """The hub's own GitHub repository: the only one its gate will read (§10).
+
+    The host and owner/repo come from the operator's `origin`, never from a PR
+    URL, so a URL in a worker's result cannot point `gh` at another host or
+    repository.
+    """
+
+    host: str
+    owner: str
+    repo: str
+
+    @property
+    def slug(self) -> str:
+        return f"{self.owner}/{self.repo}"
+
+    @property
+    def web_url(self) -> str:
+        return f"https://{self.host}/{self.owner}/{self.repo}"
+
+    @classmethod
+    def from_origin(cls, origin: str) -> GitHubProject:
+        """Parse an SSH, scp-style or HTTPS origin into its host and owner/repo.
+
+        The web URL is assumed to be `https://<host>/<owner>/<repo>`. An origin
+        that says otherwise — plain `http`, or HTTPS on a port other than 443 —
+        is refused. `https://<host>:443/...` is accepted like the PR URLs are.
+        """
+
+        text = origin.strip()
+        if "://" in text:
+            try:
+                # urlsplit rejects a malformed bracketed host; .port a bad port.
+                parts = urlsplit(text)
+                port = parts.port
+                hostname = parts.hostname
+            except ValueError:
+                raise MergeGateError("the origin's host or port is malformed") from None
+            scheme = parts.scheme.lower()
+            if scheme not in ("https", "ssh"):
+                raise MergeGateError(
+                    f"the GitHub gate needs an https or ssh origin, not {scheme or 'none'}://"
+                )
+            if scheme == "https" and port not in (None, 443):
+                raise MergeGateError(
+                    f"GitHub on HTTPS port {port} is not supported; only the default port"
+                )
+            host = hostname or ""
+            path = parts.path.removeprefix("/")
+            if parts.query or parts.fragment:
+                path = ""
+        elif match := _SCP_ORIGIN_RE.fullmatch(text):
+            host, path = match["host"], match["path"]
+        else:
+            raise MergeGateError("the origin is not an SSH or HTTPS remote URL")
+        path = path.removesuffix("/").removesuffix(".git")
+        segments = tuple(path.split("/"))
+        if (
+            len(segments) != 2
+            or any(segment in (".", "..") for segment in segments)
+            or not _OWNER_RE.fullmatch(segments[0])
+            or not _REPO_RE.fullmatch(segments[1])
+            or segments[1] in (".", "..")
+        ):
+            # Name the host only: an HTTPS origin's userinfo may hold a token.
+            raise MergeGateError(
+                f"cannot read a GitHub repository from the origin on host {host!r}"
+            )
+        if not _HOST_RE.fullmatch(host):
+            raise MergeGateError(
+                f"cannot read a GitHub repository from the origin on host {host!r}"
+            )
+        return cls(host=host.lower(), owner=segments[0], repo=segments[1])
+
+    def parse_pr_url(self, url: str) -> PullRequestRef:
+        """Accept only a pull request of this repository, so nothing else reaches `gh`.
+
+        `https://<host>/<owner>/<repo>/pull/<n>` and nothing more: no userinfo,
+        port other than 443, query, fragment, percent-encoding or dot segment.
+        Surrounding whitespace is trimmed, as `PullRequestRef.parse` does; any
+        left inside is refused. The host and owner/repo compare
+        case-insensitively, as GitHub routes them; the API calls use this
+        project's own spelling.
+        """
+
+        text = url.strip()
+
+        def refuse(reason: str) -> MergeGateError:
+            shown = text if len(text) <= _URL_LIMIT else text[:_URL_LIMIT] + "..."
+            return MergeGateError(
+                f"refusing pull request URL {shown!r}: {reason}; "
+                f"this hub's GitHub repository is {self.web_url}"
+            )
+
+        if not text.isascii() or not text.isprintable() or " " in text:
+            raise refuse("it contains whitespace, control or non-ASCII characters")
+        if not text.startswith("https://"):
+            raise refuse("only https:// is accepted")
+        if "?" in text or "#" in text:
+            raise refuse("a query or fragment is not accepted")
+        if "%" in text or "\\" in text:
+            raise refuse("percent-encoding and backslashes are not accepted")
+        authority, _, path = text.removeprefix("https://").partition("/")
+        if "@" in authority:
+            raise refuse("userinfo is not accepted")
+        host, colon, port = authority.partition(":")
+        if colon and port != "443":
+            raise refuse(f"port {port!r} is not accepted; only the default HTTPS port")
+        if not _HOST_RE.fullmatch(host):
+            raise refuse("the host is malformed")
+        if host.lower() != self.host:
+            raise refuse(f"host {host!r} is not this hub's GitHub host")
+        # Allow one trailing slash, like the unbound parser; anything more is
+        # a trailing path and refused below.
+        path = path.removesuffix("/")
+        segments = path.split("/")
+        if len(segments) != 4 or segments[2] != "pull" or not _NUMBER_RE.fullmatch(segments[3]):
+            raise refuse("the path must end at /pull/<n>")
+        if (
+            segments[0] in (".", "..")
+            or segments[1] in (".", "..")
+            or not _OWNER_RE.fullmatch(segments[0])
+            or not _REPO_RE.fullmatch(segments[1])
+        ):
+            raise refuse("the owner or repo name is malformed")
+        if [s.lower() for s in segments[:2]] != [self.owner.lower(), self.repo.lower()]:
+            raise refuse("it is not this hub's repository")
+        return PullRequestRef(
+            url=text.rstrip("/"),
+            host=self.host,
+            owner=self.owner,
+            repo=self.repo,
+            number=int(segments[3]),
+        )
+
+    def api(self, path: str) -> list[str]:
+        encoded_slug = f"{self.owner}/{self.repo}"
+        return ["api", f"--hostname={self.host}", f"repos/{encoded_slug}/{path}"]
+
+
+@dataclass(frozen=True, slots=True)
 class Check:
     name: str
     bucket: str
@@ -243,6 +391,7 @@ class MergeGate:
     poll_interval_s: float = POLL_INTERVAL_S
     clock: Callable[[], float] = monotonic
     sleep: Callable[[float], Awaitable[Any]] = field(default=asyncio.sleep)
+    project: GitHubProject | None = None
 
     async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
         """Report head, CI, base freshness and mergeability for a PR.
@@ -252,11 +401,17 @@ class MergeGate:
         `poll_interval_s` for up to `poll_timeout_s`. It returns at once when
         the answer cannot improve by waiting: the PR is no longer open, the
         head has moved, the base is behind, or the PR conflicts.
+
+        When bound to a `GitHubProject`, the URL must name that repository;
+        anything else is refused with `MergeGateError` before any `gh` call.
         """
 
         if not SHA_HEX_40_RE.fullmatch(expected_head_sha):
             raise ValueError("expected_head_sha must be a 40-character hex commit SHA")
-        ref = PullRequestRef.parse(pr_url)
+        if self.project is not None:
+            ref = self.project.parse_pr_url(pr_url)
+        else:
+            ref = PullRequestRef.parse(pr_url)
         expected = expected_head_sha.lower()
         start = self.clock()
         deadline = start + self.poll_timeout_s
@@ -391,6 +546,20 @@ def _failure(args: Sequence[str], result: GhResult) -> MergeGateError:
 
 GitHubGate = MergeGate
 
+
+@dataclass(frozen=True, slots=True)
+class UnboundGitHubGate:
+    """The gate of a GitHub hub whose origin names no supported repository.
+
+    The hub still serves; every gate call fails closed with the reason.
+    """
+
+    reason: str
+
+    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+        raise MergeGateError(f"the GitHub merge gate is unavailable: {self.reason}")
+
+
 __all__ = [
     "Check",
     "CiStatus",
@@ -399,6 +568,7 @@ __all__ = [
     "GhResult",
     "GhRunner",
     "GitHubGate",
+    "GitHubProject",
     "MergeGate",
     "MergeGateError",
     "Mergeable",
@@ -406,6 +576,7 @@ __all__ = [
     "POLL_TIMEOUT_S",
     "PrState",
     "PullRequestRef",
+    "UnboundGitHubGate",
     "classify_checks",
     "run_gh",
 ]

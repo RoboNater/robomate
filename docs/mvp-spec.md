@@ -895,21 +895,30 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   or known to `glab` → GitLab; otherwise `--forge`. Recorded in `hub.json`.
 - **Agents use the CLIs** (`gh`, `glab`) with their own authentication, as in the PoC.
 - **Merge gate** (`check_merge_gate`, read-only facts): a `ForgeGate` interface with
-  `GitHubGate` (the PoC implementation) and `GitLabGate`, chosen at hub start from the forge
-  `up` recorded in `hub.json` (`gitlab` → `GitLabGate`, anything else → GitHub; restarts choose
-  the same). It maps GitLab pipelines, `detailed_merge_status`, and diverged-commit counts to
-  the same report shape, following
+  `GitHubGate` (the PoC implementation, now bound) and `GitLabGate`, chosen at hub start from
+  the forge `up` recorded in `hub.json` (`gitlab` → `GitLabGate` bound to the origin project,
+  `github` → `GitHubGate` bound to the origin repository, anything else → unbound GitHub; a
+  hub without `hub_info` gets the unbound GitHub gate as today for tests and the `hub` entry
+  point; restarts choose the same). It maps GitLab pipelines, `detailed_merge_status`, and
+  diverged-commit counts to the same report shape, following
   [the GitLab feasibility study](feasibility-and-impact-of-supporting-gitlab-centric-workflows.md) §4.
-  - **Transport:** `glab api`, run with the environment of the operator who ran `robomate up`.
+  - **Transport:** `gh` (`pr view`, `pr checks`, `api --hostname`) and `glab api`, run with
+    the environment of the operator who ran `robomate up`.
     The hub holds no forge token and makes no HTTP calls to the forge.
-  - **Binding:** the gate reads only the hub's own project, whose host and path are parsed
-    once from `origin`; `--hostname` and every API path come from there, never from the MR
-    URL. A URL is accepted only as `https://<host>/<project>/-/merge_requests/<iid>`: no
-    userinfo, query, fragment, percent-encoding, or dot segment, and a port only if absent or
-    443; host and path segments compare case-insensitively. Anything else, including another
-    host or project, is refused with -32004 before any `glab` call. An origin served over
-    plain `http`, on another HTTPS port, or under a relative URL root is not supported; the
-    gate then fails closed on every call.
+  - **Binding:** the gate reads only the hub's own repository or project, whose host and path
+    are parsed once from `origin`; `--hostname` and every API path come from there, never from
+    the change-request URL. GitLab: a URL is accepted only as
+    `https://<host>/<project>/-/merge_requests/<iid>`: no userinfo, query, fragment,
+    percent-encoding, or dot segment, and a port only if absent or 443; host and path segments
+    compare case-insensitively. Anything else, including another host or project, is refused
+    with -32004 before any `glab` call. An origin served over plain `http`, on another HTTPS
+    port, or under a relative URL root is not supported; the gate then fails closed on every
+    call. GitHub: a URL is accepted only as `https://<host>/<owner>/<repo>/pull/<n>` (one
+    trailing slash allowed): no userinfo, query, fragment, percent-encoding, or backslash, and
+    a port only if absent or 443; host and `owner/repo` compare case-insensitively. Anything
+    else, including another host or repository, is refused with -32004 before any `gh` call.
+    An origin served over plain `http`, on another HTTPS port, or naming no `owner/repo` is
+    not supported; the gate then fails closed on every call.
   - **Pipelines:** every pipeline GitLab ran for the head SHA must pass, not only the MR's
     `head_pipeline`. The gate lists them with `pipelines?sha=<head>` (each pipeline's own
     status is a check) and reads `repository/commits/<head>/statuses` with `all` at its default,
