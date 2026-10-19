@@ -21,6 +21,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v24 is #281's forge-reported `gate_reading.merged_sha`.
 # v23 is #241's `work_submitted` event kind for `robomate submit`.
 # v22 is #240's run identity and sequential queue: `workflow.run_id`
 # (unique), `workflow.statement_sha256`, `queued` status, and the `statement`
@@ -44,7 +45,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 class DatabaseVersionError(RuntimeError):
@@ -235,6 +236,7 @@ CREATE TABLE IF NOT EXISTS gate_reading (
     elapsed_s REAL NOT NULL,
     checks_json TEXT NOT NULL DEFAULT '[]',
     error_code INTEGER,
+    merged_sha TEXT,
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
@@ -687,6 +689,9 @@ def _migrate_gate_reading(connection: sqlite3.Connection) -> None:
     Earlier readings were never stored by the hub, so the table starts empty.
     """
     connection.execute(_canonical_tables()["gate_reading"])
+    # v24 (#281): old readings cannot establish a merge commit retroactively.
+    if "merged_sha" not in _columns(connection, "gate_reading"):
+        connection.execute("ALTER TABLE gate_reading ADD COLUMN merged_sha TEXT")
 
 
 def _migrate_caller_attribution(connection: sqlite3.Connection) -> None:

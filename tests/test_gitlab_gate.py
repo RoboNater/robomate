@@ -834,3 +834,39 @@ async def test_paginate_rejects_non_list_element() -> None:
 
     with pytest.raises(GitLabGateError, match="printed invalid JSON"):
         await gate.check(MR_URL, HEAD_SHA)
+
+
+@pytest.mark.parametrize(
+    ("merge_sha", "squash_sha", "expected"),
+    [
+        (MAIN_SHA, None, MAIN_SHA),  # merge commit
+        (MAIN_SHA, BASE_SHA, MAIN_SHA),  # squash then merge commit
+        (None, BASE_SHA, BASE_SHA),  # fast-forward with squash
+        (None, None, HEAD_SHA),  # fast-forward (possibly after rebase)
+    ],
+)
+async def test_gitlab_merged_commit_by_method(
+    merge_sha: str | None, squash_sha: str | None, expected: str
+) -> None:
+    runner = routes(
+        mr(
+            pipeline(10, "success"),
+            state="merged",
+            merge_commit_sha=merge_sha,
+            squash_commit_sha=squash_sha,
+        ),
+        [pipeline(10, "success")],
+        [job("test", "success", 10)],
+    )
+    gate, _ = make_gate(runner)
+    assert (await gate.check(MR_URL, HEAD_SHA)).merged_sha == expected
+
+
+async def test_open_gitlab_mr_has_no_merge_commit() -> None:
+    runner = routes(
+        mr(pipeline(10, "success"), merge_commit_sha=MAIN_SHA, squash_commit_sha=BASE_SHA),
+        [pipeline(10, "success")],
+        [job("test", "success", 10)],
+    )
+    gate, _ = make_gate(runner)
+    assert (await gate.check(MR_URL, HEAD_SHA)).merged_sha is None

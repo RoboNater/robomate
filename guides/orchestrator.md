@@ -435,8 +435,8 @@ base_behind_main == false ∧ mergeable == clean ∧ policy permits
 Route every failed term rather than weakening the invariant:
 
 - `pr_state == merged`: do not merge again. Verify the PR's recorded head is
-  the approved head, read its merge commit, log the recovered outcome, and go
-  to WRAP-UP.
+  the approved head and `merged_sha` is present in this gate reading; log the
+  recovered outcome and go to WRAP-UP.
 - `pr_state == closed`: escalate.
 - `head_matches == false`: RE-REVIEW the reported `current_head_sha`, regardless
   of diff size. A forge head-match refusal is the same safe outcome.
@@ -450,9 +450,11 @@ Route every failed term rather than weakening the invariant:
   escalate.
 - `ci == no_workflows`: escalate immediately unless `allow_no_ci` is true.
 
-When the invariant holds, checkpoint the event/action, then merge and read the
-change request back using the orchestrator forge appendix. Confirm the merged
-state and approved head, and record the merge or squash commit separately.
+When the invariant holds, checkpoint the event/action, then merge using the
+orchestrator forge appendix. Read back with `check_merge_gate(pr_url,
+expected_head_sha=<approved head>)`; require `pr_state == merged`, `head_matches`
+and a non-null `merged_sha` before WRAP-UP. This records the forge's target
+commit (squash/merge commit or final fast-forward/rebased commit) in the hub.
 Log the reviewed SHA, any rebase head, merged SHA, review-comment URL, and every
 check name/bucket. Never merge from a stale or unreadable gate.
 
@@ -565,7 +567,8 @@ Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/
 <!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42.
      Unresolved supplied roadmap targets: #34. -->
 
-The forge merge creates no hub event. Source `CLOSE-OUT for <merged sha7>`
+The post-merge gate records `merged_sha` for the completed manifest and previous
+run summary; it creates no hub event. Source `CLOSE-OUT for <merged sha7>`
 from the `task_completed` event at the end of the task chain that reached
 MERGE for the verified approved PR head. Retain its stable `EventRecord.id`
 while checking CI and merging; do not substitute a gate reading, decision,

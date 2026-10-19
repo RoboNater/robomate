@@ -601,12 +601,24 @@ class RecordingCli:
         (
             {"hub_id": "h", "origin": "git@github.com:octo/sandbox.git", "forge": "github"},
             PR,
-            ["pr", "view", PR, "--json", "state,headRefOid,baseRefName,mergeable,mergeStateStatus"],
+            [
+                "pr",
+                "view",
+                PR,
+                "--json",
+                "state,headRefOid,baseRefName,mergeable,mergeStateStatus,mergeCommit",
+            ],
         ),
         (
             None,
             PR,
-            ["pr", "view", PR, "--json", "state,headRefOid,baseRefName,mergeable,mergeStateStatus"],
+            [
+                "pr",
+                "view",
+                PR,
+                "--json",
+                "state,headRefOid,baseRefName,mergeable,mergeStateStatus,mergeCommit",
+            ],
         ),
     ],
 )
@@ -1757,3 +1769,26 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
         assert stored is expected and calls == []
     # local origin + auto -> True without calls (no slug path here uses gitlab origin,
     # so local case is github path; covered by github local test in forge_preflight).
+
+
+@pytest.mark.parametrize("entry", ["initialize_workflow", "start_workflow"])
+async def test_new_run_refuses_stale_released_worker_until_check_in(
+    client: httpx.AsyncClient, hub_store: HubStore, entry: str
+) -> None:
+    await check_in(client, "bob")
+    await call(client, "set_workflow_status", status="done", summary="Done")
+    params: dict[str, Any] = (
+        {"goal": "Next"} if entry == "initialize_workflow" else {"statement": "Next"}
+    )
+    assert "result" in await call(client, entry, **params)
+    state = (await call(client, "get_state"))["result"]
+    assert next(a for a in state["agents"] if a["name"] == "bob")["status"] == "lost"
+    event = hub_store.lease_next_event()
+    assert event is not None
+    assign: dict[str, Any] = dict(
+        agent="bob", role="implementer", title="Build", instructions="Do work", event_id=event.id
+    )
+    code, message = error_of(await call(client, "assign_task", **assign))
+    assert code == CONFLICT and "must check in again before it can be given work" in message
+    await check_in(client, "bob")
+    assert "result" in await call(client, "assign_task", **assign)

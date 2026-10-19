@@ -1213,3 +1213,24 @@ def test_migration_from_v22_admits_work_submitted(tmp_path: Path) -> None:
         )
     store = HubStore(path)
     store.append_event(EventKind.WORK_SUBMITTED, {"workflow_id": "w2"})
+
+
+def test_migration_from_v23_preserves_readings_without_inventing_merge_sha(tmp_path: Path) -> None:
+    path = tmp_path / "v23.db"
+    _legacy_database(path, 23)
+    with database(path) as connection:
+        connection.execute(
+            "INSERT INTO gate_reading (ts, pr_url, expected_head_sha, pr_state, elapsed_s)"
+            " VALUES ('then', 'https://github.com/octo/sandbox/pull/7', ?, 'merged', 1.5)",
+            ("a" * 40,),
+        )
+    initialize_database(path)
+    initialize_database(path)
+    with database(path) as connection:
+        [row] = connection.execute("SELECT * FROM gate_reading").fetchall()
+        assert row["pr_state"] == "merged" and row["elapsed_s"] == 1.5
+        assert row["merged_sha"] is None
+        connection.execute("UPDATE gate_reading SET merged_sha = ?", ("b" * 40,))
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    with database(path) as connection:
+        assert connection.execute("SELECT merged_sha FROM gate_reading").fetchone()[0] == "b" * 40

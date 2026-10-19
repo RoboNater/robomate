@@ -413,7 +413,7 @@ async def test_gh_is_called_with_the_pr_url_and_a_bounded_compare() -> None:
         "view",
         PR,
         "--json",
-        "state,headRefOid,baseRefName,mergeable,mergeStateStatus",
+        "state,headRefOid,baseRefName,mergeable,mergeStateStatus,mergeCommit",
     ]
     assert gh.calls[1] == ["pr", "checks", PR, "--json", "name,bucket,link"]
     assert gh.calls[2][:3] == [
@@ -571,3 +571,83 @@ async def test_the_mcp_tool_reports_the_gate_as_plain_json(tmp_path: Path) -> No
     ]
     with pytest.raises(Exception, match="validation error"):
         await server.call_tool("check_merge_gate", {"pr_url": PR, "expected_head_sha": "abc"})
+
+
+@pytest.mark.parametrize("method", ["squash", "merge", "rebase"])
+async def test_merged_commit_comes_from_github_not_pr_head(method: str) -> None:
+    # GitHub exposes the target commit for each method through mergeCommit;
+    # a rebase merge reports the last rebased commit, not the old PR head.
+    body = json.loads(view(pr_state="MERGED").stdout)
+    body["mergeCommit"] = {"oid": PUSHED.upper()}
+    gh = FakeGh(view=GhResult(0, json.dumps(body), ""))
+    merge_gate, _ = gate(gh)
+    report = await merge_gate.check(PR, HEAD)
+    assert report.merged_sha == PUSHED != HEAD, method
+    assert "mergeCommit" in gh.calls[0][-1]
+
+
+async def test_open_github_pr_does_not_report_merge_commit() -> None:
+    body = json.loads(view().stdout)
+    body["mergeCommit"] = {"oid": PUSHED}
+    merge_gate, _ = gate(FakeGh(view=GhResult(0, json.dumps(body), "")))
+    assert (await merge_gate.check(PR, HEAD)).merged_sha is None
+
+
+@pytest.mark.parametrize("merged", [True, False])
+async def test_post_merge_gate_populates_completed_run_and_manifest(
+    store: HubStore, merged: bool
+) -> None:
+    from agent_hub_common import WorkflowStatus
+
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    store.submit_result(
+        task.id,
+        "bob",
+        {
+            "outcome": "completed",
+            "summary": "built",
+            "pr_url": PR,
+            "head_sha": HEAD,
+        },
+    )
+    store.check_in("charlie")
+    review = store.assign_task("charlie", "reviewer", "Review", "Review", pr_head_sha=HEAD)
+    store.submit_result(
+        review.id,
+        "charlie",
+        {
+            "verdict": "approved",
+            "summary": "approved",
+            "pr_url": PR,
+            "reviewed_head_sha": HEAD,
+            "review_url": PR + "#issuecomment-1",
+        },
+    )
+    run_id = store.get_state()["run_id"]
+    body = json.loads(view(pr_state="MERGED" if merged else "OPEN").stdout)
+    body["mergeCommit"] = {"oid": PUSHED} if merged else None
+    merge_gate, _ = gate(FakeGh(view=GhResult(0, json.dumps(body), "")))
+    ops = OrchestratorOps(store, merge_gate)
+    reading = await ops.check_merge_gate(PR, HEAD)
+    assert reading["merged_sha"] == (PUSHED if merged else None)
+    # Later failed readings and unrelated merged PRs must not erase or leak
+    # into the successful evidence for this run's reported PR.
+    store.record_gate_reading(PR, HEAD, error_code=-32004, elapsed_s=0)
+    other_body = dict(body, state="MERGED", mergeCommit={"oid": MAIN})
+    other_gate, _ = gate(FakeGh(view=GhResult(0, json.dumps(other_body), "")))
+    await OrchestratorOps(store, other_gate).check_merge_gate(PR.replace("/7", "/8"), HEAD)
+    store.set_workflow_status(WorkflowStatus.DONE, "Closed out", actor="alice", session=None)
+    # Restart, then advance to the next run: both durable summaries retain it.
+    store = HubStore(store.path)
+    store.start_workflow("Next run")
+    previous = store.get_state()["previous_run"]
+    assert previous["run_id"] == run_id and previous["approved_sha"] == HEAD
+    assert previous["merged_sha"] == (PUSHED if merged else None)
+    manifest = json.loads((store.path.parent / "runs" / run_id / "manifest.json").read_text())
+    assert manifest["merged_sha"] == previous["merged_sha"]
+    assert manifest["approved_sha"] == HEAD
+    # A subsequent run without a merge cannot inherit the previous commit.
+    store.set_workflow_status(WorkflowStatus.DONE, "No merge", actor="alice", session=None)
+    store.start_workflow("Third run")
+    assert store.get_state()["previous_run"]["merged_sha"] is None
