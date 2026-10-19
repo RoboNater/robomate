@@ -35,7 +35,7 @@ from .card import build_agent_card
 from .database import initialize_database
 from .gitlab_gate import GitLabGate, GitLabGateError, GitLabProject, UnboundGitLabGate
 from .guides import guide_response
-from .merge_gate import ForgeGate, MergeGate
+from .merge_gate import ForgeGate, GitHubProject, MergeGate, MergeGateError, UnboundGitHubGate
 from .orchestrator import OrchestratorOps
 from .protocol import A2AProtocol, parse_error_response
 from .rpc import RpcDispatcher
@@ -53,20 +53,31 @@ AGENT_HEADER = "X-Hub-Agent"
 def select_gate(hub_info: Mapping[str, Any] | None) -> ForgeGate:
     """Choose the merge gate from the forge `robomate up` detected (§8, §10).
 
-    `gitlab` gets a GitLabGate bound to the origin's project; anything else,
-    and a hub without hub_info, gets the GitHub gate. `up` detects the forge
+    `gitlab` gets a GitLabGate bound to the origin's project; `github` gets a
+    MergeGate bound to the origin's repository; anything else, and a hub
+    without hub_info, gets the unbound GitHub gate. `up` detects the forge
     again on every start, so a restart chooses the same gate.
     """
 
-    if hub_info is None or hub_info.get("forge") != "gitlab":
+    if hub_info is None:
         return MergeGate()
-    try:
-        project = GitLabProject.from_origin(str(hub_info.get("origin") or ""))
-    except GitLabGateError as exc:
-        logger.warning("check_merge_gate will fail closed: %s", exc)
-        return UnboundGitLabGate(str(exc))
-    logger.info("check_merge_gate reads GitLab project %s", project.web_url)
-    return GitLabGate(project)
+    if hub_info.get("forge") == "gitlab":
+        try:
+            project = GitLabProject.from_origin(str(hub_info.get("origin") or ""))
+        except GitLabGateError as exc:
+            logger.warning("check_merge_gate will fail closed: %s", exc)
+            return UnboundGitLabGate(str(exc))
+        logger.info("check_merge_gate reads GitLab project %s", project.web_url)
+        return GitLabGate(project)
+    if hub_info.get("forge") == "github":
+        try:
+            github_project = GitHubProject.from_origin(str(hub_info.get("origin") or ""))
+        except MergeGateError as exc:
+            logger.warning("check_merge_gate will fail closed: %s", exc)
+            return UnboundGitHubGate(str(exc))
+        logger.info("check_merge_gate reads GitHub repository %s", github_project.web_url)
+        return MergeGate(project=github_project)
+    return MergeGate()
 
 
 def create_app(

@@ -8,7 +8,7 @@ import pytest
 from agent_hub import create_app
 from agent_hub.database import database
 from agent_hub.gitlab_gate import GitLabGate, GitLabProject, UnboundGitLabGate
-from agent_hub.merge_gate import MergeGate
+from agent_hub.merge_gate import GitHubProject, MergeGate, UnboundGitHubGate
 from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.rpc_errors import OPERATOR_REQUIRED
 from agent_hub.store import HubStore
@@ -161,6 +161,17 @@ def test_a_gitlab_hub_binds_its_gate_to_the_origin_project_on_every_start(
     )
 
 
+def test_a_github_hub_binds_its_gate_to_the_origin_repository_on_every_start(
+    settings: HubSettings,
+) -> None:
+    info = {"hub_id": "h", "origin": "git@github.com:octo/sandbox.git", "forge": "github"}
+
+    first, restarted = (gate_of(create_app(settings, hub_info=info)) for _ in range(2))
+
+    assert isinstance(first, MergeGate) and isinstance(restarted, MergeGate)
+    assert first.project == restarted.project == GitHubProject("github.com", "octo", "sandbox")
+
+
 @pytest.mark.parametrize(
     "origin",
     [
@@ -176,3 +187,20 @@ def test_a_gitlab_hub_without_a_supported_origin_gets_a_gate_that_fails_closed(
     info = {"hub_id": "h", "origin": origin, "forge": "gitlab"}
 
     assert isinstance(gate_of(create_app(settings, hub_info=info)), UnboundGitLabGate)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://github.com/octo/sandbox.git",
+        "https://[::1/octo/sandbox.git",
+        "https://[github.com]/octo/sandbox.git",
+        "ssh://git@github.com:port/octo/sandbox.git",
+    ],
+)
+def test_a_github_hub_without_a_supported_origin_gets_a_gate_that_fails_closed(
+    settings: HubSettings, origin: str
+) -> None:
+    info = {"hub_id": "h", "origin": origin, "forge": "github"}
+
+    assert isinstance(gate_of(create_app(settings, hub_info=info)), UnboundGitHubGate)

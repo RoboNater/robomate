@@ -14,11 +14,13 @@ from agent_hub.merge_gate import (
     Check,
     CiStatus,
     GhResult,
+    GitHubProject,
     Mergeable,
     MergeGate,
     MergeGateError,
     PrState,
     PullRequestRef,
+    UnboundGitHubGate,
     classify_checks,
     run_gh,
 )
@@ -475,6 +477,170 @@ def test_a_pr_ref_names_its_repository() -> None:
     assert ref.number == 12
     assert PullRequestRef.parse("https://github.com/octo/.github/pull/1").repo == ".github"
     assert ref.url == "https://ghe.example.com/team/repo.name/pull/12"
+
+
+# -- GitHub origin binding (#77) ----------------------------------------------
+
+ORIGIN = "git@github.com:octo/sandbox.git"
+PROJECT = GitHubProject.from_origin(ORIGIN)
+
+
+def bound_gate(gh: FakeGh, project: GitHubProject = PROJECT) -> tuple[MergeGate, FakeClock]:
+    clock = FakeClock()
+    return MergeGate(runner=gh, clock=clock, sleep=clock.sleep, project=project), clock
+
+
+@pytest.mark.parametrize(
+    ("origin", "host", "owner", "repo"),
+    [
+        (ORIGIN, "github.com", "octo", "sandbox"),
+        ("github.com:octo/sandbox", "github.com", "octo", "sandbox"),
+        ("ssh://git@github.com:22/octo/sandbox.git", "github.com", "octo", "sandbox"),
+        ("https://GitHub.COM/octo/sandbox.git", "github.com", "octo", "sandbox"),
+        (
+            "https://oauth2:secret@github.com:443/octo/sandbox/",
+            "github.com",
+            "octo",
+            "sandbox",
+        ),
+        (
+            "git@ghe.example.com:team/repo.name.git",
+            "ghe.example.com",
+            "team",
+            "repo.name",
+        ),
+    ],
+)
+def test_github_origin_binds_host_and_repository(
+    origin: str, host: str, owner: str, repo: str
+) -> None:
+    project = GitHubProject.from_origin(origin)
+
+    assert (project.host, project.owner, project.repo) == (host, owner, repo)
+    assert project.web_url == f"https://{host}/{owner}/{repo}"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://github.com/octo/sandbox.git",
+        "https://github.com:8443/octo/sandbox.git",
+        "https://oauth2:secret@github.com:99999/octo/sandbox.git",
+        "git@github.com:sandbox.git",
+        "git@github.com:octo/../sandbox.git",
+        "git@github.com:/octo/sandbox.git",
+        "https://github.com/octo/sandbox.git?x=1",
+        "https://[::1]/octo/sandbox.git",
+        "https://[::1/octo/sandbox.git",
+        "ssh://git@[github.com]/octo/sandbox.git",
+        "ssh://git@github.com:port/octo/sandbox.git",
+        "/srv/git/sandbox.git",
+        "",
+    ],
+)
+def test_github_origin_without_a_supported_repository_is_refused(origin: str) -> None:
+    with pytest.raises(MergeGateError) as refused:
+        GitHubProject.from_origin(origin)
+
+    assert "secret" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com.other/octo/sandbox/pull/7",
+        "https://evil.github.com/octo/sandbox/pull/7",
+        "https://user@github.com/octo/sandbox/pull/7",
+        "https://user:pw@github.com/octo/sandbox/pull/7",
+        "https://github.com@evil.example/octo/sandbox/pull/7",
+        "https://[::1]/octo/sandbox/pull/7",
+        "https://github.com:0/octo/sandbox/pull/7",
+        "https://github.com:99999/octo/sandbox/pull/7",
+        "https://github.com:https/octo/sandbox/pull/7",
+        "https://github.com:8443/octo/sandbox/pull/7",
+        "https://github.com:0443/octo/sandbox/pull/7",
+        "https://github.com:/octo/sandbox/pull/7",
+        "http://github.com/octo/sandbox/pull/7",
+        "HTTPS://github.com/octo/sandbox/pull/7",
+        "//github.com/octo/sandbox/pull/7",
+        f"{PR}?view=parallel",
+        f"{PR}?",
+        f"{PR}#issuecomment-1",
+        "https://github.com/octo/x/../sandbox/pull/7",
+        "https://github.com/octo/./sandbox/pull/7",
+        "https://github.com/octo/sandbox/./pull/7",
+        "https://github.com/octo/sandbox/pull/../7",
+        "https://github.com/octo%2Fsandbox/pull/7",
+        "https://github.com/octo/sandbox%2F/pull/7",
+        "https://github.com/octo/sandbox/pull/%37",
+        "https://github.com/octo\\sandbox/pull/7",
+        "https://github.com/octo//sandbox/pull/7",
+        f"{PR}/diffs",
+        f"{PR}.json",
+        "https://github.com/octo/sandbox2/pull/7",
+        "https://github.com/octo/sand/pull/7",
+        "https://github.com/other/sandbox/pull/7",
+        "https://github.com/octo/sandbox/pull/0",
+        "https://github.com/octo/sandbox/pull/01",
+        "https://github.com/octo/sandbox/pull/1a",
+        "https://github.com/octo/sandbox/pull/",
+        "https://github.com/octo/sandbox/issues/7",
+        "https://github.com/octo/sandbox/pull/7\n--paginate",
+        "https://github.com/octo/sandbox /pull/7",
+        "",
+    ],
+)
+async def test_url_outside_the_bound_repository_is_refused_before_any_gh_call(
+    url: str,
+) -> None:
+    gh = FakeGh()
+    merge_gate, _ = bound_gate(gh)
+
+    with pytest.raises(MergeGateError, match="refusing pull request URL"):
+        await merge_gate.check(url, HEAD)
+
+    assert gh.calls == []
+
+
+@pytest.mark.parametrize(
+    ("origin", "url", "number"),
+    [
+        (ORIGIN, "https://GITHUB.COM/octo/sandbox/pull/7", 7),
+        (ORIGIN, "https://github.com:443/octo/sandbox/pull/7", 7),
+        (ORIGIN, "https://github.com/OCTO/SANDBOX/pull/7", 7),
+        (ORIGIN, f"  {PR}\n", 7),
+        (
+            "git@ghe.example.com:team/repo.name.git",
+            "https://ghe.example.com/team/repo.name/pull/12",
+            12,
+        ),
+    ],
+)
+async def test_accepted_urls_read_the_origin_repository_only(
+    origin: str, url: str, number: int
+) -> None:
+    project = GitHubProject.from_origin(origin)
+    gh = FakeGh()
+    merge_gate, _ = bound_gate(gh, project)
+
+    report = await merge_gate.check(url, HEAD)
+
+    canonical = f"{project.web_url}/pull/{number}"
+    assert report.ci == CiStatus.PASS
+    assert report.pr_url == canonical
+    for call in gh.calls:
+        if call[0] == "api":
+            assert call[1] == f"--hostname={project.host}"
+            assert f"repos/{project.owner}/{project.repo}/" in call[2]
+        elif call[:2] == ["pr", "view"] or call[:2] == ["pr", "checks"]:
+            assert call[2] == canonical
+
+
+async def test_unbound_github_gate_fails_closed() -> None:
+    gate = UnboundGitHubGate("the origin is not an SSH or HTTPS remote URL")
+
+    with pytest.raises(MergeGateError, match="unavailable: the origin is not"):
+        await gate.check(PR, HEAD)
 
 
 @pytest.mark.parametrize(

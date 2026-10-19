@@ -690,6 +690,58 @@ async def test_a_gitlab_hub_with_an_unsupported_origin_fails_the_gate_closed(
     assert text.startswith("the GitLab merge gate is unavailable: GitLab on HTTPS port 8443")
 
 
+GITHUB_ORIGIN = "git@github.com:octo/sandbox.git"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/octo/sandbox/pull/7",
+        "https://github.com/other/sandbox/pull/7",
+        "https://github.com/octo/other/pull/7",
+        "https://github.com/octo/sandbox2/pull/7",
+        "https://github.com/octo/sandbox/pull/7/files",
+        "https://user@github.com/octo/sandbox/pull/7",
+        "https://github.com/octo/sandbox/pull/7?x=1",
+        "https://github.com/octo/sandbox/pull/7#note",
+        "https://github.com:8443/octo/sandbox/pull/7",
+        "http://github.com/octo/sandbox/pull/7",
+    ],
+)
+async def test_a_github_hub_refuses_another_repositorys_url_without_calling_gh(
+    settings: HubSettings, url: str
+) -> None:
+    from agent_hub.merge_gate import MergeGate as BoundGate
+
+    app = create_app(settings, hub_info={"hub_id": "h", "origin": GITHUB_ORIGIN, "forge": "github"})
+    gate = cast(BoundGate, cast(OrchestratorOps, app.state.orchestrator).gate)
+    cli = RecordingCli()
+    gate.runner = cli.gh
+
+    async with serving(app) as client:
+        code, text = error_of(
+            await call(client, "check_merge_gate", pr_url=url, expected_head_sha=HEAD)
+        )
+
+    assert code == MERGE_GATE_UNAVAILABLE
+    assert text.startswith("refusing pull request URL")
+    assert cli.calls == []
+
+
+async def test_a_github_hub_with_an_unsupported_origin_fails_the_gate_closed(
+    settings: HubSettings,
+) -> None:
+    info = {"hub_id": "h", "origin": "https://github.com:8443/octo/sandbox.git", "forge": "github"}
+
+    async with serving(create_app(settings, hub_info=info)) as client:
+        code, text = error_of(
+            await call(client, "check_merge_gate", pr_url=PR, expected_head_sha=HEAD)
+        )
+
+    assert code == MERGE_GATE_UNAVAILABLE
+    assert text.startswith("the GitHub merge gate is unavailable: GitHub on HTTPS port 8443")
+
+
 async def test_wait_for_event_holds_the_request_until_an_event_arrives(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
