@@ -28,6 +28,21 @@ change request, or merge it.
    full `uv run --locked pytest -n auto` suite once, the issue's named acceptance
    commands, other repository validation, and every touched entry point. Re-read each edited function in final
    form. Record the exact commands and outcomes.
+
+<!-- Progress visibility: #170. -->
+
+Report progress with `report_progress` at checkable milestones — regression
+tests failing before the fix, fix committed, full validation started, change
+request opened — and before any wait expected to run longer than a few
+minutes. During a long validation or wait, report again at a cadence well
+inside the workflow policy's `stall_after_min` (default 20 minutes; about
+half is a good interval): the hub's `agent_stalled` diagnostic fires on
+silence, not on busyness, so a timely report keeps it from opening while you
+are actively validating or waiting. Keep `agent_stalled` diagnostic only.
+
+Do not wait for forge CI before `submit_result`: Alice's merge gate checks CI
+anyway, so submit once the work is ready. If you wait for CI anyway, report
+progress when the wait starts and keep the same cadence while waiting.
 6. Push the branch and create or update the change request. For a new change
    request, use your forge CLI's create command (see the forge appendix) and
    include the issue-closing reference requested by the assignment. Read the

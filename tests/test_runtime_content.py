@@ -51,6 +51,54 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
 
 
+def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
+    """Long validation stays visible to the hub instead of tripping a stall (#170)."""
+
+    worker = read("guides/worker.md")
+    implementer = read("guides/implementer.md")
+    reviewer = read("guides/reviewer.md")
+    skill = read("skills/worker/SKILL.md")
+    prompt = read("prompts/worker.md")
+
+    assert prompt.endswith(worker)
+    for text in (worker, skill, implementer):
+        assert_fragments(
+            text,
+            (
+                "regression tests failing before the fix",
+                "fix committed",
+                "full validation started",
+                "before any wait expected to run longer than a few minutes",
+                "stall_after_min",
+                "agent_stalled",
+            ),
+        )
+    assert_fragments(
+        reviewer,
+        (
+            "full validation started",
+            "before any wait expected to run longer than a few minutes",
+            "stall_after_min",
+            "agent_stalled",
+        ),
+    )
+    assert_fragments(
+        worker,
+        (
+            "about half is a good interval",
+            "Report progress when the detached suite starts",
+        ),
+    )
+    assert_fragments(
+        implementer,
+        (
+            "Do not wait for forge CI before `submit_result`",
+            "Alice's merge gate checks CI",
+            "report progress when the wait starts",
+        ),
+    )
+
+
 def test_role_guides_define_independent_typed_work() -> None:
     implementer = read("guides/implementer.md")
     reviewer = read("guides/reviewer.md")

@@ -29,7 +29,14 @@ owns orchestration; you own only the task currently assigned to you.
    need it (#9).
 4. Do the work only in your own configured workspace. Use `report_progress`
    for concise, useful milestones; heartbeats are sent by `worker-mcp`, not by
-   you.
+   you. Report at checkable milestones — regression tests failing before the
+   fix, fix committed, full validation started, change request opened — and
+   before any wait expected to run longer than a few minutes. During a long
+   validation or wait, report again at a cadence well inside the workflow
+   policy's `stall_after_min` (default 20 minutes; about half is a good
+   interval): the hub's `agent_stalled` diagnostic fires on silence, not on
+   busyness, so a timely report keeps it from opening while you are actively
+   validating or waiting. A stall changes nothing by itself (#144).
 5. Call `submit_result(task_id, result)` once the task is complete, blocked, or
    failed. Use the typed result for the assigned role. If validation rejects
    it, correct the payload and retry while the task remains open.
@@ -92,6 +99,13 @@ $D = '<dir>'; foreach ($i in 1..18) { if (Test-Path "$D/rc") { break }; Start-Sl
 
 The command has finished only once `rc` exists, and passed only if it holds
 `0`; read the log for any failures.
+
+<!-- Progress visibility: #170. -->
+
+Report progress when the detached suite starts, and on each poll that crosses
+about half of `stall_after_min`. Submit once the work is ready rather than
+holding the result for forge CI that Alice's merge gate checks anyway; if you
+wait for CI anyway, report progress when the wait starts.
 
 ## Questions and blockers
 
