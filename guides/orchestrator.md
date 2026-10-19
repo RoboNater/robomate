@@ -455,6 +455,8 @@ orchestrator forge appendix. Read back with `check_merge_gate(pr_url,
 expected_head_sha=<approved head>)`; require `pr_state == merged`, `head_matches`
 and a non-null `merged_sha` before WRAP-UP. This records the forge's target
 commit (squash/merge commit or final fast-forward/rebased commit) in the hub.
+If a merged reading has `merged_sha == null`, re-read once; if it remains null,
+escalate before WRAP-UP (also on the already-merged recovery path).
 Log the reviewed SHA, any rebase head, merged SHA, review-comment URL, and every
 check name/bucket. Never merge from a stale or unreadable gate.
 

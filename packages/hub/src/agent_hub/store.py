@@ -910,12 +910,23 @@ class HubStore:
         # Bind evidence to this run AND its reported PR, never another PR's
         # reading or a task's head SHA. Errors/open readings do not erase a
         # successful post-merge observation (#281).
-        merged = connection.execute(
-            "SELECT merged_sha FROM gate_reading WHERE workflow_id = ? AND pr_url = ?"
-            " AND pr_state = 'merged' AND merged_sha IS NOT NULL AND error_code IS NULL"
-            " ORDER BY id DESC LIMIT 1",
-            (workflow_id, pr_url),
-        ).fetchone()
+        reported_url = pr_url.strip().rstrip("/").casefold() if pr_url else None
+        merged = next(
+            (
+                row
+                for row in connection.execute(
+                    "SELECT pr_url, merged_sha FROM gate_reading WHERE workflow_id = ?"
+                    " AND pr_state = 'merged' AND merged_sha IS NOT NULL AND error_code IS NULL"
+                    " ORDER BY id DESC",
+                    (workflow_id,),
+                )
+                # Task results retain the supplied URL; gates trim whitespace
+                # and, on GitHub, a trailing slash. Both forges route project
+                # names case-insensitively. Compare equivalent spellings.
+                if row["pr_url"].strip().rstrip("/").casefold() == reported_url
+            ),
+            None,
+        )
         return {
             "pr_url": pr_url,
             "approved_sha": approved_sha,
