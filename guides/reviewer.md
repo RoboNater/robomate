@@ -31,6 +31,16 @@ merge the change request, or rely on the implementer's summary as evidence.
    `uv run --locked pytest -n auto` only when CI is absent on that head or the
    change risks the test harness itself. Do not alter,
    commit, or push production files. Record exact commands and outcomes.
+
+<!-- Progress visibility: #170. -->
+
+Report progress with `report_progress` at checkable milestones — review
+started, full validation started, assessment posted — and before any wait
+expected to run longer than a few minutes. During a long validation or wait,
+report again at a cadence well inside the workflow policy's `stall_after_min`
+(default 20 minutes; about half is a good interval): the hub's
+`agent_stalled` diagnostic fires on silence, not on busyness. Keep
+`agent_stalled` diagnostic only.
 5. Alice supplies an `r<number>-` prefix for this review task. Append a finding
    number to give each finding a stable ID, and classify it as blocking or
    nonblocking. A blocking finding must explain a concrete acceptance,

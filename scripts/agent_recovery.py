@@ -172,6 +172,76 @@ def pin(rows: list[dict[str, Any]], key: str, supplied: str | None) -> str:
     return str(value)
 
 
+# Tolerance for a wall clock that steps backward (#209, #223).
+# Hub creation times and session-log timestamps come from different clocks,
+# and WSL can step backward between subprocesses. A workflow created within
+# this window outside the strict conversation window is still accepted when
+# hub-side evidence names this agent, and the prompt notes the tolerance.
+HUB_WORKFLOW_TIME_TOLERANCE_S = 300
+
+
+def _parse_hub_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _conversation_window(
+    selected: list[dict[str, Any]],
+) -> tuple[datetime | None, datetime | None]:
+    """First start and last exit/stop in the selected rows (#223 condition 3)."""
+
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for row in selected:
+        stamp = _parse_hub_time(row.get("timestamp"))
+        if stamp is None:
+            continue
+        if row.get("event") in ("start", "resume", "manual_resume"):
+            starts.append(stamp)
+        if row.get("event") in ("exit", "stop"):
+            ends.append(stamp)
+    first = min(starts) if starts else None
+    last = max(ends) if ends else None
+    return first, last
+
+
+def _hub_evidence(agent: str, status: dict[str, Any], snapshot: dict[str, Any]) -> tuple[bool, str]:
+    """Hub-side evidence that this conversation belonged to the workflow (#223 condition 4)."""
+
+    if agent == "alice":
+        orchestrator = status.get("orchestrator") or snapshot.get("orchestrator")
+        if isinstance(orchestrator, dict) and orchestrator.get("session"):
+            return True, "orchestrator session on the hub workflow"
+        activity = status.get("orchestrator_activity")
+        if isinstance(activity, dict) and activity.get("holding") is not None:
+            return True, "orchestrator holding on the hub workflow"
+        return False, "no orchestrator session on the hub workflow"
+    agents = status.get("agents")
+    agent_row = None
+    if isinstance(agents, list):
+        matches = [a for a in agents if isinstance(a, dict) and a.get("name") == agent]
+        agent_row = matches[0] if len(matches) == 1 else None
+    tasks: list[dict[str, Any]] = []
+    for source in (status.get("tasks"), snapshot.get("tasks")):
+        if isinstance(source, list):
+            tasks.extend([t for t in source if isinstance(t, dict)])
+    assigned = any(t.get("assignee") == agent for t in tasks)
+    if agent_row is not None and assigned:
+        return True, f"agent row and task assigned to {agent} on the hub workflow"
+    if agent_row is not None:
+        return True, f"agent row for {agent} on the hub workflow"
+    if assigned:
+        return True, f"task assigned to {agent} on the hub workflow"
+    return False, f"no agent row or task for {agent} on the hub workflow"
+
+
 def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[str, str]:
     """Return exact conversation and generated prompt, after all prerequisites pass."""
     config = getattr(args, "recovery_config", None)
@@ -255,7 +325,6 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
         )
     selected = [r for r in rows if r.get("conversation_id") in (None, conversation)]
     hub_id = pin(selected, "hub_id", args.hub_id)
-    workflow_id = pin(selected, "workflow_id", args.workflow_id)
     # Old logs did not have an exit PID. Pair by event ordering, never use a
     # stop/budget log timestamp as the harness exit time.
     launches = [
@@ -294,27 +363,143 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
             else None
         )
     )
-    info = reader.call("hub.info")
-    status = reader.call("hub.status")
-    snapshot = reader.call("hub.snapshot")
-    questions = reader.call("hub.questions").get("questions")
-    workflow = snapshot.get("workflow")
-    live_workflow = status.get("workflow")
-    if (
-        info.get("hub_id") != hub_id
-        or snapshot.get("hub_id") != hub_id
-        or (
-            not isinstance(workflow, dict)
-            or workflow.get("id") != workflow_id
-            or not isinstance(live_workflow, dict)
-            or live_workflow.get("id") != workflow_id
-        )
+    saved_workflows = {
+        r["workflow_id"]
+        for r in selected
+        if isinstance(r.get("workflow_id"), str) and r["workflow_id"]
+    }
+    if len(saved_workflows) > 1 or (
+        args.workflow_id is not None and saved_workflows and args.workflow_id not in saved_workflows
     ):
         refuse(
             "identity",
-            "The reachable hub/workflow differs from the saved run or has disappeared. "
-            "Restore the original hub address/state and retry; do not reprepare this run.",
+            "Conflicting saved workflow_id. Inspect the run/session log and restore the "
+            "matching metadata; --force cannot bypass identity checks.",
         )
+    workflow_from_hub = False
+    workflow_note = ""
+    if args.workflow_id is not None or saved_workflows:
+        workflow_id = args.workflow_id or next(iter(saved_workflows))
+        info = reader.call("hub.info")
+        status = reader.call("hub.status")
+        snapshot = reader.call("hub.snapshot")
+        questions = reader.call("hub.questions").get("questions")
+        workflow = snapshot.get("workflow")
+        live_workflow = status.get("workflow")
+        if (
+            info.get("hub_id") != hub_id
+            or snapshot.get("hub_id") != hub_id
+            or (
+                not isinstance(workflow, dict)
+                or workflow.get("id") != workflow_id
+                or not isinstance(live_workflow, dict)
+                or live_workflow.get("id") != workflow_id
+            )
+        ):
+            refuse(
+                "identity",
+                "The reachable hub/workflow differs from the saved run or has disappeared. "
+                "Restore the original hub address/state and retry; do not reprepare this run.",
+            )
+    else:
+        # No saved workflow ID and none supplied (#223): take it from the run
+        # hub only with evidence it is this conversation's workflow. All four
+        # conditions are required; --force never bypasses them.
+        first_start, last_end = _conversation_window(selected)
+        if first_start is None:
+            refuse(
+                "identity",
+                "No saved workflow_id and no recorded start to verify the hub workflow "
+                "against (condition 3: time window). Supply --workflow-id explicitly after "
+                "independent verification; do not use a newly initialized workflow.",
+            )
+        info = reader.call("hub.info")
+        status = reader.call("hub.status")
+        snapshot = reader.call("hub.snapshot")
+        questions = reader.call("hub.questions").get("questions")
+        if info.get("hub_id") != hub_id or snapshot.get("hub_id") != hub_id:
+            refuse(
+                "identity",
+                "Hub ID differs from the saved run (condition 1: same hub). Restore the "
+                "original hub address/state and retry; do not reprepare this run.",
+            )
+        workflow = snapshot.get("workflow")
+        live_workflow = status.get("workflow")
+        if (
+            not isinstance(workflow, dict)
+            or not isinstance(live_workflow, dict)
+            or not isinstance(workflow.get("id"), str)
+        ):
+            refuse(
+                "identity",
+                "The hub has no workflow to take (condition 2: one workflow, missing "
+                "workflow). Restore the original hub state or supply --workflow-id explicitly.",
+            )
+        if workflow.get("id") != live_workflow.get("id"):
+            refuse(
+                "identity",
+                "Hub status and snapshot disagree on the workflow (condition 2: exactly one "
+                "candidate). Retry after it settles; do not guess.",
+            )
+        status_run = live_workflow.get("run_id")
+        snap_run = workflow.get("run_id")
+        if isinstance(status_run, str) and isinstance(snap_run, str) and status_run != snap_run:
+            refuse(
+                "identity",
+                "Hub status and snapshot disagree on run_id (condition 2: matched by run_id). "
+                "Retry after it settles; an earlier done/queued workflow must not be picked.",
+            )
+        queue = status.get("queue")
+        queue_len = status.get("queue_length")
+        if (isinstance(queue, list) and len(queue) > 0) or (
+            isinstance(queue_len, int) and queue_len > 0
+        ):
+            refuse(
+                "identity",
+                "The hub has more than one candidate workflow (condition 2: exactly one "
+                "candidate, earlier done/queued must not be picked). Supply --workflow-id "
+                "explicitly after independent verification.",
+            )
+        created = _parse_hub_time(workflow.get("created") or live_workflow.get("created"))
+        if created is None:
+            refuse(
+                "identity",
+                "The hub workflow has no creation time (condition 3: time window needs "
+                "workflow created). Restore a compatible hub that exposes created and retry.",
+            )
+        from datetime import timedelta as _timedelta
+
+        tol = _timedelta(seconds=HUB_WORKFLOW_TIME_TOLERANCE_S)
+        strict_ok = created >= first_start and (last_end is None or created <= last_end)
+        tolerant_ok = created >= first_start - tol and (
+            last_end is None or created <= last_end + tol
+        )
+        evidence_present, evidence_detail = _hub_evidence(agent, status, snapshot)
+        if not strict_ok and not (tolerant_ok and evidence_present):
+            refuse(
+                "identity",
+                "Hub workflow was not created while this conversation ran (condition 3: "
+                f"workflow created {created.isoformat()} outside "
+                f"{first_start.isoformat()}..{(last_end.isoformat() if last_end else 'open')}). "
+                "Supply --workflow-id explicitly after independent verification.",
+            )
+        workflow_id = str(workflow["id"])
+        workflow_from_hub = True
+        tolerance_note = (
+            ""
+            if strict_ok
+            else f" (timestamps needed {HUB_WORKFLOW_TIME_TOLERANCE_S}s backward-clock tolerance)"
+        )
+        if evidence_present:
+            workflow_note = (
+                f"taken from hub with {evidence_detail}{tolerance_note}; "
+                "a relaunched launcher pins it"
+            )
+        else:
+            workflow_note = (
+                f"taken from hub on timing alone, {evidence_detail}{tolerance_note}; "
+                "a relaunched launcher pins it"
+            )
     if workflow.get("status") not in ("active", "escalated", "paused", "done") or (
         live_workflow.get("status") != workflow["status"]
     ):
@@ -416,7 +601,10 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
     prompt += f"- Snapshot time: {captured_at}\n"
     prompt += f"- Old process stop time: {stop_time or 'unknown (not recorded)'} ({source})\n"
     prompt += f"- Exact conversation: {conversation}\n- Hub ID: {hub_id}\n"
-    prompt += f"- Workflow: {workflow_id} ({workflow['status']})\n"
+    if workflow_from_hub:
+        prompt += f"- Workflow: {workflow_id} ({workflow['status']}) ({workflow_note})\n"
+    else:
+        prompt += f"- Workflow: {workflow_id} ({workflow['status']})\n"
     prompt += (
         "Re-read durable state before action. --force is advisory only: preserve pause/escalation, "
         "never answer a question or change workflow status on its strength. "
@@ -440,10 +628,17 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
         stopped_at=stop_time,
         advisory_override=args.force,
     )
-    say(
-        f"Recovery prepared for {agent}: conversation {conversation}; snapshot {captured_at}; "
-        f"old process stop {stop_time or 'unknown'}. Prompt: {args.resume_prompt}"
-    )
+    if workflow_from_hub:
+        say(
+            f"Recovery prepared for {agent}: conversation {conversation}; workflow {workflow_id} "
+            f"({workflow_note}); snapshot {captured_at}; "
+            f"old process stop {stop_time or 'unknown'}. Prompt: {args.resume_prompt}"
+        )
+    else:
+        say(
+            f"Recovery prepared for {agent}: conversation {conversation}; snapshot {captured_at}; "
+            f"old process stop {stop_time or 'unknown'}. Prompt: {args.resume_prompt}"
+        )
     return conversation, prompt
 
 

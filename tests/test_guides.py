@@ -348,6 +348,31 @@ async def test_two_instances_serve_identical_bytes(settings: HubSettings, guides
     assert bodies[0] == bodies[1]
 
 
+def test_served_guides_name_progress_milestones_and_stall_cadence() -> None:
+    """Workers stay visible during long validation instead of tripping a stall (#170)."""
+
+    def normalized(text: str) -> str:
+        return " ".join(text.split())
+
+    for role in ("implementer", "reviewer", "worker"):
+        for forge in ("github", "gitlab"):
+            served = bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode(
+                "utf-8"
+            )
+            flat = normalized(served)
+            assert "stall_after_min" in flat
+            assert "agent_stalled" in flat
+            assert "before any wait expected to run longer than a few minutes" in flat
+    worker = normalized(
+        bytes(guide_response(CHECKED_IN_GUIDES, "worker", forge="github").body).decode("utf-8")
+    )
+    assert "regression tests failing before the fix" in worker
+    implementer = normalized(
+        bytes(guide_response(CHECKED_IN_GUIDES, "implementer", forge="github").body).decode("utf-8")
+    )
+    assert "Do not wait for forge CI before `submit_result`" in implementer
+
+
 def test_no_served_worker_guide_contains_a_merge_command() -> None:
     """Appendices are worker-only: no served role guide merges, on either forge."""
 

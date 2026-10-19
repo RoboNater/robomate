@@ -307,6 +307,25 @@ class Launcher:
             f"resume-{self.agent} and conversation {self.conversation or '(unknown)'}.",
         )
 
+    def refresh_workflow_id_best_effort(self) -> None:
+        """Pin a workflow that appeared while the child ran (#223).
+
+        Best-effort only for the exit row, and only when no workflow is pinned
+        yet, so steady-state runs add no extra hub reads: a dead hub leaves
+        previous IDs for resumable(). Never adopts another hub's workflow.
+        """
+
+        if self.workflow_id is not None:
+            return
+        try:
+            fresh_hub, fresh = self.reader.read()
+        except (OSError, ValueError, urllib.error.URLError):
+            return
+        if fresh is not None and (self.hub_id is None or fresh_hub == self.hub_id):
+            if self.hub_id is None:
+                self.hub_id = fresh_hub
+            self.workflow_id = fresh["id"]
+
     def sleep(self, seconds: float) -> None:
         deadline = time.monotonic() + seconds
         while not self.interrupted and time.monotonic() < deadline:
@@ -526,6 +545,9 @@ class Launcher:
             run_start = time.monotonic()
             exit_code = self.run_child(launch, action, resumes)
             run_duration = time.monotonic() - run_start
+            # Cheap #223 narrowing: pin a workflow created while the child ran
+            # on the exit row when readable; resumable() still enforces pins.
+            self.refresh_workflow_id_best_effort()
             self.log("exit", resumes=resumes, exit_code=exit_code, exited_at=self.child_exit_at)
             if self.interrupted:
                 raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")

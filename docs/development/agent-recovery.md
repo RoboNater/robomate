@@ -383,13 +383,29 @@ shared recovery helper (the same options work after a PowerShell script path):
 Essential checks cannot be overridden. A missing, ambiguous, invalid, or
 conflicting conversation ID requires inspection of the harness's session list
 in the original home/configuration, and an exact explicit ID. Known IDs may
-only be selected from this run's log. A missing hub/workflow pin requires
+only be selected from this run's log. When no workflow ID is saved and none
+is supplied, recovery takes it from the run hub (#223) only when all of these
+hold: (1) the same hub ID, (2) exactly one candidate workflow matched by
+run_id where available (an earlier done or queued workflow is never picked),
+(3) the workflow's `created` time falls after the conversation's first start
+and before its last exit/stop (open when no exit was recorded), and (4)
+hub-side evidence where available (a worker's agent row or assigned task, or
+Alice's orchestrator session; timing alone still accepts but says so). The
+prompt and output name the ID and say it came from the hub, and the relaunched
+launcher pins it in later rows. Any failed condition keeps the refusal and
+names the condition. Otherwise a missing hub/workflow pin still requires
 independent verification and `--hub-id HUB_ID --workflow-id WORKFLOW_ID`.
 Explicit pins must agree with saved pins and the live snapshot. A changed or
 unreachable hub, absent workflow, missing configuration, changed workspace,
 completed workflow, or released worker refuses launch. Restore the original
 files/address/state, or ask Alice/operator whether separate fresh work is
 needed. Never initialize another workflow to make recovery pass.
+
+Timestamps tolerate a backward wall clock (#209): creation within 300 seconds
+outside the strict conversation window still accepts when hub-side evidence
+names the agent, and the prompt notes the tolerance. Launchers also pin a
+workflow that appears while the child runs onto the exit row when the hub is
+readable, narrowing the window that needs the hub path.
 
 Start and resume launchers share an OS lock for the lifetime of the process.
 An existing launcher, a recorded predecessor PID still present without an
