@@ -543,3 +543,209 @@ def test_ask_backup_blocks_recovery_before_hub_reads(
 def test_devin_session_ids_are_names_never_flags(value: str, exact: bool) -> None:
     """#224: documented IDs are short names or hex prefixes; never ``-c``."""
     assert RECOVERY.exact_id("devin", value) is exact
+
+
+def _null_row(event: str, **changes: Any) -> dict[str, Any]:
+    base = row(event, **changes)
+    base["workflow_id"] = None
+    return base
+
+
+def _hub_with_created(
+    reader: RecoveryReader, created: str, run_id: str = "run-1"
+) -> RecoveryReader:
+    for method in ("hub.status", "hub.snapshot"):
+        workflow = reader.state[method]["workflow"]
+        assert isinstance(workflow, dict)
+        workflow["created"] = created
+        workflow["run_id"] = run_id
+    reader.state["hub.status"]["queue"] = []
+    reader.state["hub.status"]["queue_length"] = 0
+    reader.state["hub.status"]["tasks"] = []
+    return reader
+
+
+def test_null_workflow_log_recovers_from_hub_and_pins_later_rows(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#223: a never-relaunched worker takes its workflow ID from the hub."""
+
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+        ],
+    )
+    reader = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    conversation, text = RECOVERY.prepare(recovery_args, reader, "bob")
+    assert conversation == CODEX_ID
+    assert "wf-1" in text and "taken from hub" in text
+    logged = [json.loads(line) for line in recovery_args.sessions.read_text().splitlines()]
+    assert logged[-1]["event"] == "recovery" and logged[-1]["workflow_id"] == "wf-1"
+    # A relaunched launcher now pins the derived ID from the log alone.
+    second_reader = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    again, second_text = RECOVERY.prepare(recovery_args, second_reader, "bob")
+    assert again == CODEX_ID
+    assert "taken from hub" not in second_text
+
+
+def test_null_log_refuses_when_created_outside_conversation_window(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#223 condition 3: earlier done or later workflows must not be picked."""
+
+    for created, reason in [
+        ("2026-10-08T10:50:00Z", "before start"),
+        ("2026-10-08T11:15:00Z", "after last exit"),
+    ]:
+        save_rows(
+            recovery_args,
+            [
+                _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+                _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+            ],
+        )
+        reader = _hub_with_created(RecoveryReader(), created)
+        recovery_args.force = True
+        with pytest.raises(LAUNCHER.Stop, match="condition 3"):
+            RECOVERY.prepare(recovery_args, reader, "bob")
+        assert reason in ("before start", "after last exit")
+
+
+def test_null_log_refuses_on_hub_mismatch_and_missing_workflow(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#223 conditions 1-2: same hub, one workflow; explicit mismatch refused."""
+
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+        ],
+    )
+    other_hub = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    other_hub.state["hub.info"]["hub_id"] = "other"
+    with pytest.raises(LAUNCHER.Stop, match="condition 1"):
+        RECOVERY.prepare(recovery_args, other_hub, "bob")
+    no_workflow = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    no_workflow.state["hub.status"]["workflow"] = None
+    no_workflow.state["hub.snapshot"]["workflow"] = None
+    with pytest.raises(LAUNCHER.Stop, match="condition 2"):
+        RECOVERY.prepare(recovery_args, no_workflow, "bob")
+    queued = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    queued.state["hub.status"]["queue"] = [{"workflow_id": "wf-2", "run_id": "run-2"}]
+    queued.state["hub.status"]["queue_length"] = 1
+    with pytest.raises(LAUNCHER.Stop, match="exactly one"):
+        RECOVERY.prepare(recovery_args, queued, "bob")
+    recovery_args.workflow_id = "other"
+    with pytest.raises(LAUNCHER.Stop, match="Conflicting|differs"):
+        RECOVERY.prepare(
+            recovery_args, _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z"), "bob"
+        )
+
+
+def test_alice_log_with_late_workflow_id_uses_saved_pin(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#223: Alice's first saved ID at a later stop row needs no hub fallback."""
+
+    save_rows(
+        recovery_args,
+        [
+            row("start", agent="alice", workflow_id=None, timestamp="2026-10-08T11:00:00Z"),
+            row("exit", agent="alice", workflow_id=None, timestamp="2026-10-08T11:05:00Z"),
+            row("stop", agent="alice", timestamp="2026-10-08T11:06:00Z"),
+        ],
+    )
+    _, text = RECOVERY.prepare(recovery_args, RecoveryReader(), "alice")
+    assert "taken from hub" not in text
+
+
+def test_backward_clock_tolerated_only_with_hub_evidence(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#223/#209: prefer hub-side evidence over a tight timestamp comparison."""
+
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+        ],
+    )
+    skewed = _hub_with_created(RecoveryReader(), "2026-10-08T10:58:00Z")
+    _, text = RECOVERY.prepare(recovery_args, skewed, "bob")
+    assert "backward-clock tolerance" in text and "taken from hub" in text
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+        ],
+    )
+    lonely = _hub_with_created(RecoveryReader(), "2026-10-08T10:58:00Z")
+    lonely.state["hub.status"]["agents"] = []
+    lonely.state["hub.snapshot"]["tasks"] = []
+    with pytest.raises(LAUNCHER.Stop, match="condition 3"):
+        RECOVERY.prepare(recovery_args, lonely, "bob")
+
+
+def test_interrupted_stop_without_exit_recovers_with_confirm(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#223: Ctrl-C stop/interrupted without exit still takes the hub ID with --confirm-stopped."""
+
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("stop", timestamp="2026-10-08T11:04:00Z", reason="interrupted"),
+        ],
+    )
+    with pytest.raises(LAUNCHER.Stop, match="--confirm-stopped"):
+        RECOVERY.prepare(
+            recovery_args, _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z"), "bob"
+        )
+    recovery_args.confirm_stopped = True
+    _, text = RECOVERY.prepare(
+        recovery_args, _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z"), "bob"
+    )
+    assert "taken from hub" in text
+
+
+def test_hub_status_and_snapshot_expose_created_without_version_bumps(
+    hub_store: HubStore,
+) -> None:
+    """#223: additive created field; DB stays v23 and wire stays 1."""
+
+    from agent_hub.database import SCHEMA_VERSION as DB_VERSION
+    from agent_hub_common import SCHEMA_VERSION as WIRE_VERSION
+
+    assert DB_VERSION == 23
+    assert WIRE_VERSION == 1
+    status = hub_store.status_summary()
+    snapshot = hub_store.snapshot()
+    assert status["workflow"] is not None and snapshot["workflow"] is not None
+    assert isinstance(status["workflow"]["created"], str)
+    assert isinstance(snapshot["workflow"]["created"], str)
+    assert status["workflow"]["created"] == snapshot["workflow"]["created"]
+
+
+def test_launcher_exit_row_pins_workflow_seen_during_run(tmp_path: Path) -> None:
+    """#223 cheap launcher improvement: exit records a workflow seen mid-run."""
+
+    class MidRunReader:
+        def read(self) -> tuple[str, dict[str, Any] | None]:
+            return "hub-1", {"id": "wf-1", "status": "active"}
+
+    args = argparse.Namespace(read_retries=1, read_retry_delay_s=0.0)
+    launcher = LAUNCHER.Launcher.__new__(LAUNCHER.Launcher)
+    launcher.args = args
+    launcher.reader = MidRunReader()
+    launcher.hub_id = "hub-1"
+    launcher.workflow_id = None
+    launcher.interrupted = False
+    launcher.refresh_workflow_id_best_effort()
+    assert launcher.workflow_id == "wf-1"

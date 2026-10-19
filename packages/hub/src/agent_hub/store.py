@@ -1255,6 +1255,10 @@ class HubStore:
                 "id": workflow["id"],
                 "run_id": workflow["run_id"],
                 "status": workflow["status"],
+                # Additive for #223 hand recovery: creation time lets a
+                # relaunched agent verify this workflow existed while its
+                # conversation ran. Wire `hub.schema_version` stays 1.
+                "created": str(workflow["created"]),
                 "headline": next(
                     (line.strip() for line in workflow["goal"].splitlines() if line.strip()),
                     "",
@@ -1326,6 +1330,9 @@ class HubStore:
                 "id": workflow["id"],
                 "run_id": workflow["run_id"],
                 "status": workflow["status"],
+                # Additive for #223 hand recovery (see status_summary):
+                # wire `hub.schema_version` stays 1.
+                "created": str(workflow["created"]),
             },
             "tasks": tasks,
             "deliveries": deliveries,
