@@ -917,8 +917,11 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
     trailing slash allowed): no userinfo, query, fragment, percent-encoding, or backslash, and
     a port only if absent or 443; host and `owner/repo` compare case-insensitively. Anything
     else, including another host or repository, is refused with -32004 before any `gh` call.
-    An origin served over plain `http`, on another HTTPS port, or naming no `owner/repo` is
-    not supported; the gate then fails closed on every call.
+    `pr view`, `pr checks` and every `api` call then use the canonical URL and `--hostname`
+    built from the origin, never the caller's spelling. An origin served over plain `http`,
+    on another HTTPS port, or naming no `owner/repo` is not supported; the gate then fails
+    closed on every call. An origin that uses an SSH host alias binds to the alias host and
+    refuses the real host's PR URLs; that failure is safe (fail closed).
   - **Pipelines:** every pipeline GitLab ran for the head SHA must pass, not only the MR's
     `head_pipeline`. The gate lists them with `pipelines?sha=<head>` (each pipeline's own
     status is a check) and reads `repository/commits/<head>/statuses` with `all` at its default,

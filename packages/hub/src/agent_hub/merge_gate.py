@@ -36,7 +36,9 @@ GH_TIMEOUT_S = 30.0
 _STDERR_LIMIT = 500
 
 # Each part lands in a `gh api` path, so none may be a dot segment or open
-# with a hyphen.
+# with a hyphen. The optional `:443` is accepted for parity with the bound
+# parser (r1-3): `gh` handles an explicit default port, and the unbound path
+# (no hub_info: tests, `hub` entry point) is otherwise unchanged.
 PR_URL_RE = re.compile(
     r"https://(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)(?::443)?"
     r"/(?P<owner>[A-Za-z0-9][A-Za-z0-9-]*)"
@@ -237,8 +239,10 @@ class GitHubProject:
         port other than 443, query, fragment, percent-encoding or dot segment.
         Surrounding whitespace is trimmed, as `PullRequestRef.parse` does; any
         left inside is refused. The host and owner/repo compare
-        case-insensitively, as GitHub routes them; the API calls use this
-        project's own spelling.
+        case-insensitively, as GitHub routes them. The returned ref carries the
+        canonical URL built from this project's own spelling, so `gh pr view`,
+        `gh pr checks` and every `gh api --hostname` call use the origin, never
+        the caller's spelling (r1-4).
         """
 
         text = url.strip()
@@ -283,17 +287,14 @@ class GitHubProject:
             raise refuse("the owner or repo name is malformed")
         if [s.lower() for s in segments[:2]] != [self.owner.lower(), self.repo.lower()]:
             raise refuse("it is not this hub's repository")
+        number = int(segments[3])
         return PullRequestRef(
-            url=text.rstrip("/"),
+            url=f"{self.web_url}/pull/{number}",
             host=self.host,
             owner=self.owner,
             repo=self.repo,
-            number=int(segments[3]),
+            number=number,
         )
-
-    def api(self, path: str) -> list[str]:
-        encoded_slug = f"{self.owner}/{self.repo}"
-        return ["api", f"--hostname={self.host}", f"repos/{encoded_slug}/{path}"]
 
 
 @dataclass(frozen=True, slots=True)

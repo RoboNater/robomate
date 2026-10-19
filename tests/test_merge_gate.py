@@ -601,31 +601,37 @@ async def test_url_outside_the_bound_repository_is_refused_before_any_gh_call(
 
 
 @pytest.mark.parametrize(
-    ("origin", "url"),
+    ("origin", "url", "number"),
     [
-        (ORIGIN, "https://GITHUB.COM/octo/sandbox/pull/7"),
-        (ORIGIN, "https://github.com:443/octo/sandbox/pull/7"),
-        (ORIGIN, "https://github.com/OCTO/SANDBOX/pull/7"),
-        (ORIGIN, f"  {PR}\n"),
+        (ORIGIN, "https://GITHUB.COM/octo/sandbox/pull/7", 7),
+        (ORIGIN, "https://github.com:443/octo/sandbox/pull/7", 7),
+        (ORIGIN, "https://github.com/OCTO/SANDBOX/pull/7", 7),
+        (ORIGIN, f"  {PR}\n", 7),
         (
             "git@ghe.example.com:team/repo.name.git",
             "https://ghe.example.com/team/repo.name/pull/12",
+            12,
         ),
     ],
 )
-async def test_accepted_urls_read_the_origin_repository_only(origin: str, url: str) -> None:
+async def test_accepted_urls_read_the_origin_repository_only(
+    origin: str, url: str, number: int
+) -> None:
     project = GitHubProject.from_origin(origin)
     gh = FakeGh()
     merge_gate, _ = bound_gate(gh, project)
 
     report = await merge_gate.check(url, HEAD)
 
+    canonical = f"{project.web_url}/pull/{number}"
     assert report.ci == CiStatus.PASS
-    assert report.pr_url == url.strip().rstrip("/")
+    assert report.pr_url == canonical
     for call in gh.calls:
         if call[0] == "api":
             assert call[1] == f"--hostname={project.host}"
             assert f"repos/{project.owner}/{project.repo}/" in call[2]
+        elif call[:2] == ["pr", "view"] or call[:2] == ["pr", "checks"]:
+            assert call[2] == canonical
 
 
 async def test_unbound_github_gate_fails_closed() -> None:
