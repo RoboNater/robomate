@@ -74,7 +74,7 @@ from .activity import (
     ActivityTracker,
 )
 from .database import database
-from .merge_gate import GateReport
+from .merge_gate import GateReport, PrState
 from .signals import EVENT_KEY, Signals, context_key, task_key
 
 logger = logging.getLogger(__name__)
@@ -668,14 +668,15 @@ class HubStore:
         `released` when a run ends. `_readmitted` keeps that sticky across
         `check_in`, so without clearing, the next run's returning workers would
         get `release: true` from their first `await_assignment`. A new live run
-        clears it: released non-orchestrators become idle again, with their
-        instance slot freed so a fresh bridge can check in without takeover.
+        clears it to `lost` (unavailable) without a loss event or task failure.
+        Only a fresh check-in makes the worker idle again. Free the instance
+        slot so a returning bridge can check in without takeover (#279).
         """
 
         connection.execute(
             "UPDATE agent SET status = ?, worker_instance_id = ''"
             " WHERE status = ? AND standing_role != 'orchestrator'",
-            (AgentStatus.IDLE.value, AgentStatus.RELEASED.value),
+            (AgentStatus.LOST.value, AgentStatus.RELEASED.value),
         )
 
     def initialize_workflow(
@@ -889,14 +890,10 @@ class HubStore:
     def _workflow_pr_summary(
         self, connection: Connection, workflow_id: str
     ) -> dict[str, Any | None]:
-        """Best-effort PR/MR facts for a run, from its typed task results."""
+        """PR/MR facts from typed task results and forge-backed gate evidence."""
 
         pr_url: str | None = None
         approved_sha: str | None = None
-        # The hub never records the merge commit itself (r1-2): the squash
-        # merge the orchestrator performs always differs from the PR head, so
-        # reporting the head as merged would mislabel evidence M4 builds on.
-        merged_sha: str | None = None
         for row in connection.execute(
             "SELECT result_json FROM task WHERE workflow_id = ?"
             " AND result_json IS NOT NULL ORDER BY created",
@@ -910,7 +907,31 @@ class HubStore:
                 result.get("reviewed_head_sha"), str
             ):
                 approved_sha = result["reviewed_head_sha"]
-        return {"pr_url": pr_url, "approved_sha": approved_sha, "merged_sha": merged_sha}
+        # Bind evidence to this run AND its reported PR, never another PR's
+        # reading or a task's head SHA. Errors/open readings do not erase a
+        # successful post-merge observation (#281).
+        reported_url = pr_url.strip().rstrip("/").casefold() if pr_url else None
+        merged = next(
+            (
+                row
+                for row in connection.execute(
+                    "SELECT pr_url, merged_sha FROM gate_reading WHERE workflow_id = ?"
+                    " AND pr_state = 'merged' AND merged_sha IS NOT NULL AND error_code IS NULL"
+                    " ORDER BY id DESC",
+                    (workflow_id,),
+                )
+                # Task results retain the supplied URL; gates trim whitespace
+                # and, on GitHub, a trailing slash. Both forges route project
+                # names case-insensitively. Compare equivalent spellings.
+                if row["pr_url"].strip().rstrip("/").casefold() == reported_url
+            ),
+            None,
+        )
+        return {
+            "pr_url": pr_url,
+            "approved_sha": approved_sha,
+            "merged_sha": str(merged["merged_sha"]) if merged else None,
+        }
 
     def _previous_run_summary(
         self, connection: Connection, exclude_id: str | None = None
@@ -1762,7 +1783,8 @@ class HubStore:
                 "INSERT INTO gate_reading (ts, workflow_id, pr_url, expected_head_sha,"
                 " current_head_sha, pr_state, head_matches, ci, mergeable, merge_state_status,"
                 " base_ref, base_sha, main_sha, base_behind_main, elapsed_s, checks_json,"
-                " error_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " error_code, merged_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                " ?, ?)",
                 (
                     self._now_iso(),
                     workflow["id"] if workflow else None,
@@ -1781,6 +1803,7 @@ class HubStore:
                     elapsed_s,
                     json.dumps(checks),
                     error_code,
+                    report.merged_sha if report and report.pr_state is PrState.MERGED else None,
                 ),
             )
             return int(cursor.lastrowid or 0)

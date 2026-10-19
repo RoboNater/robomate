@@ -33,6 +33,7 @@ from .merge_gate import (
     Mergeable,
     MergeGateError,
     PrState,
+    _merged_sha,
     _settled,
     classify_checks,
 )
@@ -442,9 +443,19 @@ class GitLabGate:
                 has_ci = await self._has_ci_config(ref, head)
                 ci = CiStatus.NO_CHECKS if has_ci else CiStatus.NO_WORKFLOWS
 
+        # GitLab may create BOTH a squash and a merge commit: the latter
+        # completes the merge on the target. With fast-forward+squash only
+        # squash_commit_sha is set; plain fast-forward has neither, and the
+        # merged MR's forge-reported sha is the commit that landed (#281).
+        merged_sha = None
+        if pr_state is PrState.MERGED:
+            merged_sha = _merged_sha(
+                mr_data.get("merge_commit_sha") or mr_data.get("squash_commit_sha") or head
+            )
         return GateReport(
             pr_url=ref.url,
             pr_state=pr_state,
+            merged_sha=merged_sha,
             expected_head_sha=expected,
             current_head_sha=head,
             head_matches=head == expected,

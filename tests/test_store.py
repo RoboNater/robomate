@@ -1714,3 +1714,77 @@ def test_chat_path_rejects_unresolved_allow_no_ci_auto(tmp_path: Path) -> None:
     # Explicit bools still store.
     wid = store.start_workflow("statement text", {"allow_no_ci": True})
     assert wid
+
+
+@pytest.mark.parametrize("entry", ["initialize", "start", "promote"])
+def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, entry: str) -> None:
+    clock = FakeClock()
+    store = HubStore(tmp_path / "release.db", clock=clock)
+    initialize_database(store.path)
+    store.initialize_workflow("First", {"on_done": "release"})
+    store.check_in("bob", worker_instance_id="old")
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    if entry == "initialize":
+        store.initialize_workflow("Second")
+    elif entry == "start":
+        store.start_workflow("Second")
+    else:
+        # The old released worker remains absent while other workers run.
+        store.start_workflow("Intervening")
+        # Exercise a released row at the promotion itself, as when Alice
+        # releases an absent worker while the intervening run is active.
+        store.release_agent("bob")
+        store.check_in("charlie")
+        store.start_workflow("Second")
+        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+        charlie = store.agent_by_name("charlie")
+        assert charlie is not None and charlie.status is AgentStatus.IDLE
+        store.assign_task("charlie", "implementer", "Build", "Do work")
+    bob = next(a for a in store.get_state()["agents"] if a["name"] == "bob")
+    assert bob["status"] == "lost"
+    bob_status = next(a for a in store.status_summary()["agents"] if a["name"] == "bob")
+    assert bob_status["status"] == "lost" and not bob_status["alive"]
+    with pytest.raises(ConflictError, match="must check in again before it can be given work"):
+        store.assign_task("bob", "implementer", "Build", "Do work")
+    clock.advance(seconds=61)
+    if entry == "promote":
+        charlie = store.agent_by_name("charlie")
+        assert charlie is not None
+        store.heartbeat("charlie", charlie.worker_instance_id, None)
+    store.sweep(lost_after_s=60)
+    with database(store.path) as connection:
+        assert (
+            connection.execute("SELECT count(*) FROM event WHERE kind = 'agent_lost'").fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute("SELECT count(*) FROM task WHERE state = 'failed'").fetchone()[0]
+            == 0
+        )
+    store.check_in("bob", worker_instance_id="new")
+    bob = store.agent_by_name("bob")
+    assert bob is not None and bob.status is AgentStatus.IDLE
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    claimed = store._claim_assignment("bob")
+    assert claimed is not None and not isinstance(claimed, Released)
+    assert claimed.id == task.id
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_joined_workers_remain_assignable_between_runs(tmp_path: Path, queued: bool) -> None:
+    path = tmp_path / "joined.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("First", {"on_done": "release" if queued else "standby"})
+    store.check_in("bob", worker_instance_id="same")
+    if queued:
+        store.start_workflow("Second")
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    if not queued:
+        store.start_workflow("Second")
+    bob = store.agent_by_name("bob")
+    assert bob is not None and bob.status is AgentStatus.IDLE
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    claimed = store._claim_assignment("bob")
+    assert claimed is not None and not isinstance(claimed, Released)
+    assert claimed.id == task.id

@@ -175,6 +175,19 @@ class GateReport:
     mergeable: Mergeable
     merge_state_status: str
     elapsed_s: float = 0.0
+    # Forge-reported commit that completed the merge on the base branch.
+    # GitHub mergeCommit is the squash/merge commit or final rebased commit.
+    merged_sha: str | None = None
+
+
+def _merged_sha(value: Any) -> str | None:
+    """Validate optional merge evidence; never substitute an unmerged head."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str) or not SHA_HEX_40_RE.fullmatch(value):
+        raise MergeGateError("forge reported a merge commit that is not a commit SHA")
+    return value.lower()
 
 
 def classify_checks(checks: Sequence[Check]) -> CiStatus | None:
@@ -274,7 +287,7 @@ class MergeGate:
                 "view",
                 ref.url,
                 "--json",
-                "state,headRefOid,baseRefName,mergeable,mergeStateStatus",
+                "state,headRefOid,baseRefName,mergeable,mergeStateStatus,mergeCommit",
             ]
         )
         head = _string(view, "headRefOid").lower()
@@ -300,9 +313,17 @@ class MergeGate:
         behind_by = compare.get("behind_by")
         if not isinstance(behind_by, int) or isinstance(behind_by, bool):
             raise MergeGateError("gh api compare did not report behind_by")
+        pr_state = _pr_state(_string(view, "state"))
+        merge_commit = view.get("mergeCommit")
+        merged_sha = (
+            _merged_sha(merge_commit.get("oid"))
+            if pr_state is PrState.MERGED and isinstance(merge_commit, dict)
+            else None
+        )
         return GateReport(
             pr_url=ref.url,
-            pr_state=_pr_state(_string(view, "state")),
+            pr_state=pr_state,
+            merged_sha=merged_sha,
             expected_head_sha=expected,
             current_head_sha=head,
             head_matches=head == expected,
