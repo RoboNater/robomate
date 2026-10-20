@@ -343,8 +343,10 @@ def check_hub_workflow(
         return
     try:
         with contextlib.closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+            # Durable insertion order (#209): wall-clock `created` can step
+            # backwards, so live/queue order is `rowid`, matching the hub.
             rows = db.execute(
-                "SELECT goal, status, policy_json FROM workflow ORDER BY created"
+                "SELECT goal, status, policy_json FROM workflow ORDER BY rowid"
             ).fetchall()
     except sqlite3.Error as exc:
         raise ValueError(f"cannot read workflow from {path}: {exc}") from exc

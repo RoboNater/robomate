@@ -566,30 +566,35 @@ class HubStore:
     def _live_row(self, connection: Connection) -> Row | None:
         """The single live workflow, if any (M2 Step 3, #240)."""
 
+        # Durable insertion order (#209): wall-clock `created` can step
+        # backwards on WSL2, so run order is `rowid`, never a timestamp.
         row: Row | None = connection.execute(
             f"SELECT * FROM workflow WHERE status IN ({_live_placeholders()})"
-            " ORDER BY created LIMIT 1",
+            " ORDER BY rowid LIMIT 1",
             tuple(status.value for status in LIVE_STATUSES),
         ).fetchone()
         return row
 
     def _queued_rows(self, connection: Connection) -> list[Row]:
+        # Durable insertion order (#209): see _live_row.
         return list(
             connection.execute(
-                "SELECT * FROM workflow WHERE status = ? ORDER BY created",
+                "SELECT * FROM workflow WHERE status = ? ORDER BY rowid",
                 (WorkflowStatus.QUEUED.value,),
             ).fetchall()
         )
 
     def _most_recent_row(self, connection: Connection) -> Row | None:
+        # Durable insertion order (#209): see _live_row.
         row: Row | None = connection.execute(
-            "SELECT * FROM workflow ORDER BY created DESC LIMIT 1"
+            "SELECT * FROM workflow ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
         return row
 
     def _most_recent_done_row(self, connection: Connection) -> Row | None:
+        # Durable insertion order (#209): see _live_row.
         row: Row | None = connection.execute(
-            "SELECT * FROM workflow WHERE status = ? ORDER BY created DESC LIMIT 1",
+            "SELECT * FROM workflow WHERE status = ? ORDER BY rowid DESC LIMIT 1",
             (WorkflowStatus.DONE.value,),
         ).fetchone()
         return row
@@ -904,9 +909,10 @@ class HubStore:
 
         pr_url: str | None = None
         approved_sha: str | None = None
+        # Durable insertion order (#209): wall-clock `created` can step backwards.
         for row in connection.execute(
             "SELECT result_json FROM task WHERE workflow_id = ?"
-            " AND result_json IS NOT NULL ORDER BY created",
+            " AND result_json IS NOT NULL ORDER BY rowid",
             (workflow_id,),
         ).fetchall():
             result = _json_object(row["result_json"]) or {}
@@ -951,8 +957,9 @@ class HubStore:
         if exclude_id is None:
             row = self._most_recent_done_row(connection)
         else:
+            # Durable insertion order (#209): wall-clock `created` can step backwards.
             row = connection.execute(
-                "SELECT * FROM workflow WHERE status = ? AND id != ? ORDER BY created DESC LIMIT 1",
+                "SELECT * FROM workflow WHERE status = ? AND id != ? ORDER BY rowid DESC LIMIT 1",
                 (WorkflowStatus.DONE.value, exclude_id),
             ).fetchone()
         if row is None:
@@ -1106,7 +1113,8 @@ class HubStore:
                 for row in connection.execute(
                     "SELECT task.*, workflow.run_id, workflow.statement_sha256"
                     " FROM task JOIN workflow ON task.workflow_id = workflow.id"
-                    " WHERE task.workflow_id = ? ORDER BY task.created",
+                    # Durable insertion order (#209): `created` can step backwards.
+                    " WHERE task.workflow_id = ? ORDER BY task.rowid",
                     (str(live["id"]),),
                 ).fetchall():
                     summary = asdict(_task(row))
@@ -1136,7 +1144,8 @@ class HubStore:
                     for row in connection.execute(
                         "SELECT task.*, workflow.run_id, workflow.statement_sha256"
                         " FROM task JOIN workflow ON task.workflow_id = workflow.id"
-                        " WHERE task.workflow_id = ? ORDER BY task.created",
+                        # Durable insertion order (#209): `created` can step backwards.
+                        " WHERE task.workflow_id = ? ORDER BY task.rowid",
                         (str(recent["id"]),),
                     ).fetchall():
                         summary = asdict(_task(row))
@@ -1227,15 +1236,17 @@ class HubStore:
                 for row in connection.execute(
                     "SELECT id, role, assignee, state, pr_head_sha FROM task"
                     " WHERE state IN ('submitted', 'working', 'input-required')"
-                    " ORDER BY created"
+                    # Durable insertion order (#209): `created` can step backwards.
+                    " ORDER BY rowid"
                 )
             ]
             # Bind a review or rebase to the PR whose reported head matches
             # its assigned head. A workflow may have reported several PRs.
+            # Durable insertion order (#209): `created` can step backwards.
             if tasks and workflow is not None:
                 results = connection.execute(
                     "SELECT result_json FROM task WHERE workflow_id = ?"
-                    " AND result_json IS NOT NULL ORDER BY created DESC",
+                    " AND result_json IS NOT NULL ORDER BY rowid DESC",
                     (workflow["id"],),
                 )
                 pr_by_head: dict[str, str] = {}
@@ -1310,7 +1321,8 @@ class HubStore:
                 }
                 for row in connection.execute(
                     f"SELECT * FROM task WHERE state IN ({_placeholders(OPEN_STATES)})"
-                    " ORDER BY created",
+                    # Durable insertion order (#209): `created` can step backwards.
+                    " ORDER BY rowid",
                     tuple(state.value for state in OPEN_STATES),
                 )
             ]
@@ -2365,7 +2377,8 @@ class HubStore:
             rows = connection.execute(
                 "SELECT task.*, workflow.run_id, workflow.statement_sha256"
                 " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
-                " ORDER BY task.created"
+                # Durable insertion order (#209): `created` can step backwards.
+                " ORDER BY task.rowid"
             ).fetchall()
         return [_task(row) for row in rows]
 
@@ -3073,8 +3086,9 @@ class HubStore:
             agent = self._require_agent(connection, name)
             if agent.status is AgentStatus.RELEASED:
                 return Released(agent=name)
+            # Durable insertion order (#209): `created` can step backwards.
             row = connection.execute(
-                "SELECT * FROM task WHERE assignee = ? AND state = ? ORDER BY created LIMIT 1",
+                "SELECT * FROM task WHERE assignee = ? AND state = ? ORDER BY rowid LIMIT 1",
                 (name, TaskState.SUBMITTED.value),
             ).fetchone()
             if row is None:

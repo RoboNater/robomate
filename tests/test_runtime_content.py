@@ -657,3 +657,94 @@ def test_orchestrator_skill_is_a_join_pointer_and_guide_is_forge_neutral() -> No
     guide = read("guides/orchestrator.md")
     assert "gh pr " not in guide and "glab " not in guide
     assert "takeover=true" in guide and "guide_sha256" in guide
+
+
+def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> None:
+    """Implementers and reviewers work from the statement (#297)."""
+
+    worker = read("guides/worker.md")
+    prompt = read("prompts/worker.md")
+    implementer = read("guides/implementer.md")
+    reviewer = read("guides/reviewer.md")
+    skill = read("skills/worker/SKILL.md")
+    orchestrator = read("guides/orchestrator.md")
+
+    assert prompt.endswith(worker)
+    # 1. On every assignment carrying statement_sha256, read the statement;
+    # the assignment text points but does not replace it.
+    for text in (worker, prompt, implementer, reviewer):
+        assert_fragments(
+            text,
+            (
+                "On every assignment carrying `statement_sha256`",
+                "read the statement verbatim with `get_statement(sha)`",
+                "points to the requirements but does not replace them",
+            ),
+        )
+    assert_fragments(
+        skill,
+        (
+            "On every assignment carrying `statement_sha256`",
+            "read the statement with `get_statement`",
+            "points to the requirements but does not replace them",
+        ),
+    )
+    assert_fragments(
+        orchestrator,
+        (
+            "on every assignment carrying `statement_sha256`",
+            "points to the requirements but does not replace them",
+        ),
+    )
+    # 2. Review comment lists statement and issue acceptance items.
+    assert_fragments(
+        reviewer,
+        (
+            "statement's and the issue's acceptance items",
+            "each marked met",
+            "unmet",
+            "(blocking)",
+            "deferred naming who agreed",
+            "Alice's `log_decision`",
+            "operator answer",
+            "blocking even when the behaviour is safe",
+            "update the checklist rather than rewriting",
+        ),
+    )
+    # 3. At the final head, the PR description covers the statement.
+    assert_fragments(
+        implementer,
+        (
+            "At the final head, the PR description covers whatever",
+            "the statement says the PR must describe",
+        ),
+    )
+    # 4. Cheap nonblocking findings are fixed by default; declines reasoned.
+    for text in (implementer, orchestrator):
+        assert_fragments(
+            text,
+            (
+                "small change to files the PR already touches",
+                "reason for each",
+                "Alice may overrule",
+            ),
+        )
+    for text in (reviewer, orchestrator):
+        assert_fragments(
+            text,
+            (
+                "optional, no follow-up",
+                "stays in the review comment and is never filed",
+            ),
+        )
+    assert_fragments(
+        reviewer,
+        ("in its typed `text`",),
+    )
+    assert_fragments(
+        orchestrator,
+        (
+            "with a new NONBLOCKING task naming the finding",
+            "neither marked `optional, no follow-up` nor overruled",
+        ),
+    )
