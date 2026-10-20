@@ -4313,3 +4313,48 @@ def test_placeholder_goal_refused_before_queuing(
     if db_path.exists():
         assert HubStore(db_path).get_state()["queue"] == []
     assert not (tmp_path / "run" / "run.json").exists()
+
+
+def test_work_file_containing_marker_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r2-1: an explicit work file may document the placeholder pattern literally."""
+
+    marker_text = (
+        "Render the template with literal <issue-owner>/<issue-repository>#<issue> "
+        "as an example, then implement the change.\n"
+    )
+    work_file = tmp_path / "template-guide.md"
+    work_file.write_text(marker_text)
+    run_dir, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file)
+    assert "<issue-owner>" in manifest["work"]["goal"]
+    db_path = tmp_path / "target" / ".robomate" / "hub.db"
+    stored = HubStore(db_path).get_statement(manifest["work"]["goal_sha256"])
+    assert stored["statement"] == manifest["work"]["goal"]
+
+
+def test_late_staging_failure_queues_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-2: alice.prompt failure after staging leaves no queue and no run.json."""
+
+    from unittest.mock import patch
+
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    real_write = Path.write_text
+
+    def failing_write(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == "alice.prompt.md":
+            raise PermissionError("denied alice.prompt.md")
+        return real_write(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch.object(Path, "write_text", failing_write),
+        pytest.raises(PermissionError, match="denied alice.prompt.md"),
+    ):
+        PREPARE_RUN.prepare(str(source), tmp_path / "run", issue=42, hub_repo=target)
+    db_path = target / ".robomate" / "hub.db"
+    if db_path.exists():
+        assert HubStore(db_path).get_state()["queue"] == []
+    assert not (tmp_path / "run" / "run.json").exists()

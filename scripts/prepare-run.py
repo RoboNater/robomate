@@ -515,19 +515,22 @@ def check_goal_size(goal: str) -> None:
         )
 
 
-def check_concrete_goal(goal: str) -> None:
-    """Require concrete work before queuing; placeholders cannot be finalized (r1-3).
+def check_concrete_inputs(issue: int | None, work_text: str | None) -> None:
+    """Require concrete work before queuing; placeholders cannot be finalized (r1-3, r2-1).
 
     When both `--issue` and `--work-file` are absent, `render_goal` emits
-    `<issue-owner>/<issue-repository>#<issue>` placeholders and preparation
-    prints `Fill any remaining <issue>/<account> placeholders before launching`.
-    Queuing that template would store an immutable placeholder statement:
-    editing the prompt later cannot update it, `initialize_workflow(edited)`
-    is refused with the placeholder SHA, and `start_workflow()` would start
-    the placeholder goal. Refuse with an actionable message instead.
+    `<issue-owner>/<issue-repository>#<issue>` placeholders. Queuing that
+    template would store an immutable placeholder statement: editing the prompt
+    later cannot update it, `initialize_workflow(edited)` is rejected with the
+    placeholder statement's SHA, and `start_workflow()` would start the
+    placeholder goal. Refuse with an actionable message instead.
+
+    Validates the missing inputs themselves, not the rendered text, so an
+    explicit `--work-file` that legitimately documents the placeholder pattern
+    (e.g. a template-rendering guide containing the literal marker) is allowed.
     """
 
-    if "<issue-owner>" in goal or "<issue-repository>" in goal:
+    if issue is None and work_text is None:
         raise ValueError(
             "no concrete work to submit: pass --issue N or --work-file PATH "
             "before queuing (placeholder goals with <issue-owner> cannot be "
@@ -551,10 +554,14 @@ def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict
     needing a live waiter wakeup. No waiter exists yet when prepare-run queues
     (r1-4); the #268 successor (`robomate submit` via RPC) preserves the
     serving hub's wakeup path.
+
+    Concrete-work validation lives in `prepare()` (`check_concrete_inputs`
+    on `--issue`/`--work-file`), not here: scanning the rendered text would
+    refuse an explicit work file that legitimately documents the placeholder
+    pattern (r2-1).
     """
 
     check_goal_size(goal)
-    check_concrete_goal(goal)
     db_path = hub_state_dir(hub_repo) / "hub.db"
     initialize_database(db_path)
     store = HubStore(db_path)
@@ -2821,6 +2828,13 @@ def prepare(
         "stall_after_min": stall_after_min,
     }
     check_hub_workflow(hub_repo, run_dir, goal, policy)
+    # r1-3/r2-1: require concrete work after early validation (hub, auth,
+    # preflight) but before staging, so placeholder failures don't mask those
+    # errors yet leave no partial staging behind. Text scanning would refuse
+    # legitimate work files containing markers; check inputs instead.
+    check_concrete_inputs(issue, work_text)
+    # Computed sha for rendering; the late queue below verifies the stored sha matches.
+    goal_sha = goal_sha256(goal)
 
     run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     manifest_path = run_dir / "run.json"
@@ -2968,12 +2982,6 @@ def prepare(
             encoding="utf-8",
         )
 
-    # r1-2: queue only after validation and staging succeed, so a bootstrap,
-    # token, config or prompt failure leaves no queued workflow without run.json.
-    # The early check_hub_workflow above still fails fast on a busy hub.
-    queued = queue_goal_in_hub(hub_repo, goal, policy)
-    queued_sha = queued["statement_sha256"]
-
     alice_host = (
         gl_project.host
         if forge == "gitlab" and gl_project is not None
@@ -2988,18 +2996,19 @@ def prepare(
             forge=forge,
             host=alice_host,
             project=alice_project,
-            goal_sha256=queued_sha,
+            goal_sha256=goal_sha,
         )
         + prompt_sections("alice", alice_harness, run_dir),
         encoding="utf-8",
     )
     # The goal text is what Alice starts; goal_sha256 ties the hub's queued
     # statement to run.json, while sha256 stays the work-file hash (#296).
+    # Rendered with the computed sha; the late queue below verifies the stored sha matches.
     work = {
         "goal": goal,
         "path": statement["path"] if statement is not None else None,
         "sha256": statement["sha256"] if statement is not None else None,
-        "goal_sha256": queued_sha,
+        "goal_sha256": goal_sha,
         "roadmap": resolve_roadmap(roadmap, slug, repository),
     }
 
@@ -3207,6 +3216,17 @@ def prepare(
             denise_settings,
             original_config=source_config,
         )
+    # r1-2: queue only after all output staging succeeds (prompts, scripts,
+    # Denise artifacts), so a late staging failure leaves no queued workflow
+    # without run.json. The early check_hub_workflow above still fails fast on
+    # a busy hub. Verified against the computed sha for rendering.
+    queued = queue_goal_in_hub(hub_repo, goal, policy)
+    if queued["statement_sha256"] != goal_sha:
+        raise ValueError(
+            f"queued statement sha {queued['statement_sha256']} does not match "
+            f"rendered goal sha {goal_sha}; retry preparation"
+        )
+    manifest["work"]["goal_sha256"] = queued["statement_sha256"]
     save(manifest_path, manifest)
 
     codex_auth: dict[str, str] = {}
