@@ -702,11 +702,16 @@ class HubStore:
             if live is not None:
                 stored_policy = _json_object(live["policy_json"]) or {}
                 if live["goal"] != goal or stored_policy != requested_policy:
+                    expected_sha = live["statement_sha256"] or _statement_sha256(
+                        str(live["goal"]).encode("utf-8")
+                    )
                     raise ConflictError(
                         "workflow is already initialized with "
                         f"status={live['status']!r}, goal={live['goal']!r}, and a different goal "
                         "or policy; use get_state to resume it, or queue a different run with "
-                        "start_workflow(statement) and start it after this one is done"
+                        "start_workflow(statement) and start it after this one is done. "
+                        f"Expected statement_sha256={expected_sha} "
+                        "(run.json work.goal_sha256; read it with get_statement)"
                     )
                 return str(live["id"])
             queued = self._queued_rows(connection)
@@ -721,10 +726,15 @@ class HubStore:
                     self._clear_stale_releases(connection)
                     workflow_id = str(oldest["id"])
                 else:
+                    expected_sha = oldest["statement_sha256"] or _statement_sha256(
+                        str(oldest["goal"]).encode("utf-8")
+                    )
                     raise ConflictError(
                         f"workflow {oldest['run_id']} is queued with goal={oldest['goal']!r}; "
                         "call start_workflow() with no statement to start it, or "
-                        "initialize_workflow with its exact goal and policy to confirm it"
+                        "initialize_workflow with its exact goal and policy to confirm it. "
+                        f"Expected statement_sha256={expected_sha} "
+                        "(run.json work.goal_sha256; read it with get_statement)"
                     )
             else:
                 workflow_id = uuid4().hex

@@ -575,6 +575,25 @@ def test_state_paths_become_read_only_uris_on_windows_and_posix(tmp_path: Path) 
     assert report["workflow"]["id"] == "f" * 32
 
 
+def test_workflow_figures_include_statement_sha256(tmp_path: Path) -> None:
+    """#296 item 5: hub-report shows the workflow statement sha for run.json comparison."""
+
+    import hashlib
+
+    state = tmp_path / "hub-state"
+    initialize_database(state / "hub.db")
+    store = HubStore(state / "hub.db", clock=lambda: T0)
+    goal = "Address example/repo#1 for #296"
+    expected = hashlib.sha256(goal.encode()).hexdigest()
+    store.start_workflow(goal, source="prepare-run", force_queued=True)
+    store.start_workflow()
+    built = REPORT.build_report(state, telemetry_paths=[], now=T0 + timedelta(seconds=1))
+    assert built["workflow"]["statement_sha256"] == expected
+    text = REPORT.render_text(built)
+    assert f"statement: {expected}" in text
+    assert "run.json work.goal_sha256" in text
+
+
 class SteppedClock:
     def __init__(self) -> None:
         self.now = T0

@@ -67,11 +67,14 @@ from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from agent_hub.database import initialize_database
 from agent_hub.forge_preflight import (
     gitlab_policy_checks_sync,
     gitlab_preflight_sync,
 )
 from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, GlabResult
+from agent_hub.store import HubStore
+from agent_hub_common import MAX_STATEMENT_BYTES
 from agent_hub_common.discovery import read_hub_json, token_file
 from agent_hub_common.discovery import state_dir as hub_state_dir
 from agent_hub_common.registry import HEALTHZ_LIVE_PID_TIMEOUT_S, hub_healthy, process_alive
@@ -352,6 +355,12 @@ def check_hub_workflow(
     # The live run is the oldest non-done workflow; queued runs wait behind it.
     live = next((row for row in rows if row[1] != "done"), rows[0])
     row = live
+    # #296: a hub with a queued/live workflow for the same goal+policy is the
+    # same work, even from a different run directory (e.g. tests preparing two
+    # run dirs with the same placeholder goal). Reuse it; queue_goal_in_hub
+    # below does the same idempotent check before writing.
+    if row[0] == goal and (policy is None or json.loads(row[2]) == policy):
+        return
     manifest_path = run_dir / "run.json"
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -484,6 +493,124 @@ def render_goal(
     return f"Address issue `{target}`, merge its {change_term}, and {THROWAWAY_CLOSE_OUT}."
 
 
+def goal_sha256(goal: str) -> str:
+    """SHA-256 of the rendered goal bytes, as stored in the hub (#296)."""
+
+    return hashlib.sha256(goal.encode("utf-8")).hexdigest()
+
+
+def check_goal_size(goal: str) -> None:
+    """Refuse an oversized goal with the same message `robomate submit` uses (#296).
+
+    The goal must fit in one 16 KiB message part via `get_statement`, so the
+    cap is `MAX_STATEMENT_BYTES` (12 KiB). Large work belongs in an issue.
+    """
+
+    data = goal.encode("utf-8")
+    if len(data) > MAX_STATEMENT_BYTES:
+        raise ValueError(
+            f"statement is {len(data)} bytes; maximum is {MAX_STATEMENT_BYTES} bytes "
+            "so it fits in one 16 KiB message part with its envelope. Shorten the "
+            "statement, or put the detail in an issue and submit that instead."
+        )
+
+
+def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict[str, str]:
+    """Queue the rendered goal in the hub before Alice starts (#296).
+
+    Uses the same storage as `robomate submit`: a queued workflow with the goal
+    stored verbatim (`statement` table) and `force_queued=True`, so Alice starts
+    it with `start_workflow()` and never retypes it. Idempotent for reruns with
+    the same goal and policy: an existing live or queued workflow with the same
+    goal is reused. No DB or wire schema change: reuses v22 `run_id` /
+    `statement_sha256` / `queued` and wire `hub.schema_version` 1 (v25 reserved
+    on #2 but unneeded).
+    """
+
+    check_goal_size(goal)
+    db_path = hub_state_dir(hub_repo) / "hub.db"
+    initialize_database(db_path)
+    store = HubStore(db_path)
+    state = store.get_state()
+    live = state.get("workflow")
+    queue = state.get("queue") or []
+    # Reuse an existing live or queued workflow with the same goal+policy.
+    candidates: list[dict[str, Any]] = []
+    if live is not None:
+        candidates.append(
+            {
+                "goal": live.get("goal"),
+                "policy": live.get("policy"),
+                "run_id": live.get("run_id"),
+                "statement_sha256": live.get("statement_sha256"),
+                "workflow_id": live.get("id"),
+            }
+        )
+    for entry in queue:
+        candidates.append(
+            {
+                "goal": entry.get("goal"),
+                "policy": None,
+                "run_id": entry.get("run_id"),
+                "statement_sha256": entry.get("statement_sha256"),
+                "workflow_id": entry.get("workflow_id"),
+            }
+        )
+    for candidate in candidates:
+        if candidate["goal"] == goal and (
+            candidate["policy"] is None or candidate["policy"] == policy
+        ):
+            # Queued entries carry no policy in get_state summaries; confirm via DB.
+            if candidate["policy"] is None:
+                with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
+                    db.row_factory = sqlite3.Row
+                    row = db.execute(
+                        "SELECT policy_json FROM workflow WHERE id = ?",
+                        (candidate["workflow_id"],),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    try:
+                        stored_policy = json.loads(row["policy_json"])
+                    except ValueError:
+                        continue
+                    if stored_policy != policy:
+                        continue
+            sha = candidate["statement_sha256"] or goal_sha256(goal)
+            return {
+                "run_id": str(candidate["run_id"]),
+                "statement_sha256": str(sha),
+                "workflow_id": str(candidate["workflow_id"]),
+            }
+    workflow_id = store.start_workflow(
+        goal,
+        policy=policy,
+        source="prepare-run",
+        force_queued=True,
+        emit_work_submitted=True,
+    )
+    fresh = HubStore(db_path).get_state()
+    for entry in fresh.get("queue") or []:
+        if entry.get("workflow_id") == workflow_id:
+            return {
+                "run_id": str(entry.get("run_id")),
+                "statement_sha256": str(entry.get("statement_sha256")),
+                "workflow_id": str(workflow_id),
+            }
+    live_fresh = fresh.get("workflow")
+    if live_fresh is not None and live_fresh.get("id") == workflow_id:
+        return {
+            "run_id": str(live_fresh.get("run_id")),
+            "statement_sha256": str(live_fresh.get("statement_sha256")),
+            "workflow_id": str(workflow_id),
+        }
+    return {
+        "run_id": "",
+        "statement_sha256": goal_sha256(goal),
+        "workflow_id": str(workflow_id),
+    }
+
+
 def render_alice_prompt(
     goal: str,
     account: str | None,
@@ -491,11 +618,22 @@ def render_alice_prompt(
     forge: str = "github",
     host: str | None = None,
     project: str | None = None,
+    goal_sha256: str | None = None,
 ) -> str:
     prompt = (ROOT / "prompts/alice.md").read_text(encoding="utf-8")
     begin = prompt.index("Goal:")
     end = prompt.index("Forge comment identity account:")
-    prompt = prompt[:begin] + "Goal: " + goal + "\n\n" + prompt[end:]
+    sha = goal_sha256 or hashlib.sha256(goal.encode("utf-8")).hexdigest()
+    prompt = (
+        prompt[:begin]
+        + "Goal: "
+        + goal
+        + "\n\nExpected goal SHA-256: "
+        + sha
+        + " (run.json work.goal_sha256; call start_workflow() with no statement, "
+        + "then verify with get_state)\n\n"
+        + prompt[end:]
+    )
     prompt = prompt.replace("<account>", account if account else "<account>")
     prompt = prompt.replace("<forge>", forge)
     prompt = prompt.replace("<host>", host if host else "<host>")
@@ -590,7 +728,9 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
         sections.append(
             "After you release bob and charlie, please write your summary/closeout report "
             f"to `{report_path}`. Also add any outstanding items which weren't "
-            "addressed, and any lessons learned worth mentioning to the closeout report."
+            "addressed, and any lessons learned worth mentioning to the closeout report. "
+            "Include the workflow statement_sha256 beside run.json work.goal_sha256 "
+            "so a mismatch is visible afterwards (#296)."
         )
     else:
         sections.append(
@@ -2509,6 +2649,7 @@ def prepare(
         clone_from = clone_source(repository, slug)
 
     goal = render_goal(slug, repository, issue, work_text, roadmap, forge=forge)
+    check_goal_size(goal)
     check_hub_workflow(hub_repo, run_dir, goal)
 
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
@@ -2650,6 +2791,8 @@ def prepare(
         "stall_after_min": stall_after_min,
     }
     check_hub_workflow(hub_repo, run_dir, goal, policy)
+    queued = queue_goal_in_hub(hub_repo, goal, policy)
+    queued_sha = queued["statement_sha256"]
 
     run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     manifest_path = run_dir / "run.json"
@@ -2805,16 +2948,24 @@ def prepare(
     alice_project = gl_project.path if forge == "gitlab" and gl_project is not None else slug
     (run_dir / "alice.prompt.md").write_text(
         render_alice_prompt(
-            goal, account, policy, forge=forge, host=alice_host, project=alice_project
+            goal,
+            account,
+            policy,
+            forge=forge,
+            host=alice_host,
+            project=alice_project,
+            goal_sha256=queued_sha,
         )
         + prompt_sections("alice", alice_harness, run_dir),
         encoding="utf-8",
     )
-    # The goal text is what Alice initializes with; path and hash tie it to the file.
+    # The goal text is what Alice starts; goal_sha256 ties the hub's queued
+    # statement to run.json, while sha256 stays the work-file hash (#296).
     work = {
         "goal": goal,
         "path": statement["path"] if statement is not None else None,
         "sha256": statement["sha256"] if statement is not None else None,
+        "goal_sha256": queued_sha,
         "roadmap": resolve_roadmap(roadmap, slug, repository),
     }
 

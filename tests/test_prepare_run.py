@@ -1005,6 +1005,7 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
         "goal": goal,
         "path": str(work_file.resolve()),
         "sha256": hashlib.sha256(statement.encode()).hexdigest(),
+        "goal_sha256": hashlib.sha256(goal.encode()).hexdigest(),
         "roadmap": None,
     }
     assert json.loads((run_dir / "run.json").read_text())["work"] == manifest["work"]
@@ -1201,6 +1202,7 @@ def test_default_rendering_matches_the_golden_files(
         manifest["denise"]["tooling_commit"]: "$TOOLING_COMMIT",
         manifest["workspaces"]["bob"]["workspace_id"]: "$BOB_ID",
         manifest["workspaces"]["charlie"]["workspace_id"]: "$CHARLIE_ID",
+        manifest["work"]["goal_sha256"]: "$GOAL_SHA",
     }
     rendered = {name: (run_dir / path).read_text() for name, path in GOLDEN_FILES.items()}
     rendered["stdout.txt"] = capsys.readouterr().out
@@ -2552,6 +2554,9 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert manifest6["forge"] == "gitlab"
 
     # 6b. CI presence - network/5xx error refuses instead of failing open
+    # #296: run6 queued its goal in the hub; reset to a fresh hub so run6b
+    # reaches CI preflight instead of the hub-busy guard.
+    (target / ".robomate" / "hub.db").unlink(missing_ok=True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "run_output",
@@ -2565,6 +2570,7 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run6b", hub_repo=target)
 
     # 7. Happy path with CI present -> allow_no_ci=False
+    (target / ".robomate" / "hub.db").unlink(missing_ok=True)
     calls.clear()
     monkeypatch.setattr(PREPARE_RUN, "run_output", make_runner(ci_found=True))
     run_dir7 = tmp_path / "run7"
@@ -4162,6 +4168,61 @@ def test_pytest_worker_budget_reaches_remote_git_bash_scripts(
         pytest_workers=2,
     )
     assert "--pytest-workers 2" in command
+
+
+def test_queued_goal_matches_manifest_and_hub_statement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#296 item 1+2: prepare-run queues the rendered goal verbatim via the submit path."""
+
+    from agent_hub_common import MAX_STATEMENT_BYTES
+
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    goal = manifest["work"]["goal"]
+    goal_sha = manifest["work"]["goal_sha256"]
+    assert goal_sha == hashlib.sha256(goal.encode()).hexdigest()
+    assert len(goal.encode()) <= MAX_STATEMENT_BYTES
+    # run.json records the goal sha beside the file sha.
+    assert json.loads((run_dir / "run.json").read_text())["work"]["goal_sha256"] == goal_sha
+    # The hub stores the queued statement byte-for-byte.
+    db_path = tmp_path / "target" / ".robomate" / "hub.db"
+    stored = HubStore(db_path).get_statement(goal_sha)
+    assert stored["statement"] == goal
+    assert stored["size"] == len(goal.encode())
+    # The queued workflow's statement sha matches run.json.
+    state = HubStore(db_path).get_state()
+    assert state["queue"] and state["queue"][0]["statement_sha256"] == goal_sha
+    # Starting the queued run yields the same sha.
+    HubStore(db_path).start_workflow()
+    live = HubStore(db_path).get_state()["workflow"]
+    assert live is not None and live["statement_sha256"] == goal_sha
+
+
+def test_alice_prompt_calls_start_workflow_and_names_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#296 item 3: the rendered Alice prompt starts the queued run and names its sha."""
+
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
+    assert "start_workflow()" in prompt
+    assert manifest["work"]["goal_sha256"] in prompt
+    assert "Expected goal SHA-256" in prompt
+
+
+def test_oversized_goal_refused_with_submit_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#296: prepare-run refuses an oversized goal with the submit cap message."""
+
+    from agent_hub_common import MAX_STATEMENT_BYTES
+
+    big = "x" * (MAX_STATEMENT_BYTES + 1)
+    work_file = tmp_path / "big.md"
+    work_file.write_text(big + "\n")
+    with pytest.raises(ValueError, match=f"maximum is {MAX_STATEMENT_BYTES} bytes"):
+        prepare(tmp_path, monkeypatch, issue=None, work_file=work_file)
+    assert not (tmp_path / "run").exists()
 
 
 def test_negative_pytest_worker_count_fails_before_preparation(tmp_path: Path) -> None:

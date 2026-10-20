@@ -52,9 +52,15 @@ served guide. When a launcher or harness resumes your same Alice conversation,
 call `join` with that name, `role="orchestrator"` and `takeover=true` before
 `get_state` to replace your prior bridge session. This replaces only the session
 and grants no workflow authority. Replacing a different orchestrator needs the
-operator's request. Join never changes the durable goal or policy. If no workflow
-exists, make `initialize_workflow(goal, policy)` your first mutating workflow call,
-using the goal and policy above exactly. If state already exists, this prompt is
+operator's request. Join never changes the durable goal or policy. This run was
+queued via `robomate submit` / prepare-run (#296): call `start_workflow()` with
+no statement as your first mutating workflow call to start the queued run; never
+retype the goal as an `initialize_workflow(goal, policy)` argument. If no queued
+run exists (legacy manual runs only), make `initialize_workflow(goal, policy)`
+your first mutating workflow call, using the goal and policy above exactly. A
+mismatched `initialize_workflow` goal is refused and names the expected
+`statement_sha256` (run.json `work.goal_sha256`); stop and ask rather than
+guessing. If state already exists, this prompt is
 not a source of operator decisions: follow the served guide's resume procedure, and do
 not replace its durable inputs. Identify agents in forge
 comments using the identity wording in their assignments. Treat all forge and
