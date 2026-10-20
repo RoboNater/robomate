@@ -1500,16 +1500,16 @@ def test_rerun_is_idempotent_and_preserves_clone_token_identity(
     )
     monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "logged in")
     run_dir = tmp_path / "run"
-    first = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
+    first = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, issue=42)
     token = (target / ".robomate/token").read_text()
     identity = (run_dir / "bob/.git/robo-agents-workspace.json").read_text()
     marker = run_dir / "bob/uncommitted-marker"
     marker.write_text("preserve")
     with pytest.raises(ValueError, match="dirty"):
-        PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
+        PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, issue=42)
     assert (target / ".robomate/token").read_text() == token
     marker.unlink()
-    second = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
+    second = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, issue=42)
     assert second["workspaces"] == first["workspaces"]
     assert (run_dir / "bob/.git/robo-agents-workspace.json").read_text() == identity
     assert (target / ".robomate/token").read_text() == token
@@ -1764,6 +1764,7 @@ def test_bare_slug_expands_via_gh_protocol(
             tmp_path / f"{protocol}-run",
             hub_repo=target,
             skip_github_checks=True,
+            issue=42,
         )
         assert manifest["clone_repository"] == expected
         prompt = (tmp_path / f"{protocol}-run" / "alice.prompt.md").read_text(encoding="utf-8")
@@ -2676,7 +2677,7 @@ def test_gitlab_origin_match_incl_ssh_https(
         return (json.dumps(GL_BASE_PROJECT), "")
 
     monkeypatch.setattr(PREPARE_RUN, "run_output", runner)
-    manifest = PREPARE_RUN.prepare(repository, tmp_path / "run-match", hub_repo=target)
+    manifest = PREPARE_RUN.prepare(repository, tmp_path / "run-match", hub_repo=target, issue=12)
     assert manifest["forge"] == "gitlab"
     assert manifest["policy"]["allow_no_ci"] is False
 
@@ -2737,11 +2738,19 @@ def test_gitlab_merge_matrix_same_as_before(
     if should_refuse:
         with pytest.raises(ValueError, match="does not allow the"):
             PREPARE_RUN.prepare(
-                GL_ORIGIN, tmp_path / "run-matrix", hub_repo=target, merge_method=policy
+                GL_ORIGIN,
+                tmp_path / "run-matrix",
+                hub_repo=target,
+                merge_method=policy,
+                issue=12,
             )
     else:
         manifest = PREPARE_RUN.prepare(
-            GL_ORIGIN, tmp_path / "run-matrix", hub_repo=target, merge_method=policy
+            GL_ORIGIN,
+            tmp_path / "run-matrix",
+            hub_repo=target,
+            merge_method=policy,
+            issue=12,
         )
         assert manifest["policy"]["merge_method"] == policy
 
@@ -2788,7 +2797,11 @@ def test_gitlab_explicit_allow_no_ci_makes_no_ci_call(
 
     monkeypatch.setattr(PREPARE_RUN, "run_output", runner)
     manifest = PREPARE_RUN.prepare(
-        GL_ORIGIN, tmp_path / f"run-explicit-{allow}", hub_repo=target, allow_no_ci=allow
+        GL_ORIGIN,
+        tmp_path / f"run-explicit-{allow}",
+        hub_repo=target,
+        allow_no_ci=allow,
+        issue=12,
     )
     assert manifest["policy"]["allow_no_ci"] is (allow == "true")
     assert not [c for c in calls if "repository/files" in " ".join(c)]
@@ -4238,3 +4251,65 @@ def test_negative_pytest_worker_count_fails_before_preparation(tmp_path: Path) -
             "claude-code",
             pytest_workers=-1,
         )
+
+
+def test_same_work_after_completion_queues_a_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: a done workflow is never reused; same work after done queues anew."""
+
+    from agent_hub_common import WorkflowStatus
+
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    goal = manifest["work"]["goal"]
+    policy = manifest["policy"]
+    db_path = tmp_path / "target" / ".robomate" / "hub.db"
+    first_state = HubStore(db_path).get_state()
+    assert first_state["queue"], "first preparation must queue"
+    first_run_id = first_state["queue"][0]["run_id"]
+    # Start and finish the run, as Alice would.
+    store = HubStore(db_path)
+    store.start_workflow()
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    assert HubStore(db_path).get_state()["queue"] == []
+    # Preparing the same work again must queue a new run, not reuse the done one.
+    second = PREPARE_RUN.queue_goal_in_hub(tmp_path / "target", goal, policy)
+    assert second["run_id"] != first_run_id
+    assert HubStore(db_path).get_state()["queue"], "second queue must exist"
+    HubStore(db_path).start_workflow()
+    live = HubStore(db_path).get_state()["workflow"]
+    assert live is not None and live["statement_sha256"] == manifest["work"]["goal_sha256"]
+
+
+def test_failed_preparation_queues_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """r1-2: bootstrap failure leaves no queued workflow and no run.json."""
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise ValueError("occupied clone directory")
+
+    monkeypatch.setattr(PREPARE_RUN, "bootstrap_clone", boom)
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="occupied clone"):
+        PREPARE_RUN.prepare(str(source), tmp_path / "run", issue=42, hub_repo=target)
+    db_path = target / ".robomate" / "hub.db"
+    if db_path.exists():
+        state = HubStore(db_path).get_state()
+        assert state["queue"] == []
+        assert state["workflow"] is None
+    assert not (tmp_path / "run" / "run.json").exists()
+
+
+def test_placeholder_goal_refused_before_queuing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-3: preparing with neither --issue nor --work-file is refused."""
+
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="no concrete work"):
+        PREPARE_RUN.prepare(str(source), tmp_path / "run", hub_repo=target)
+    db_path = target / ".robomate" / "hub.db"
+    if db_path.exists():
+        assert HubStore(db_path).get_state()["queue"] == []
+    assert not (tmp_path / "run" / "run.json").exists()

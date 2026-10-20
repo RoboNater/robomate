@@ -515,6 +515,26 @@ def check_goal_size(goal: str) -> None:
         )
 
 
+def check_concrete_goal(goal: str) -> None:
+    """Require concrete work before queuing; placeholders cannot be finalized (r1-3).
+
+    When both `--issue` and `--work-file` are absent, `render_goal` emits
+    `<issue-owner>/<issue-repository>#<issue>` placeholders and preparation
+    prints `Fill any remaining <issue>/<account> placeholders before launching`.
+    Queuing that template would store an immutable placeholder statement:
+    editing the prompt later cannot update it, `initialize_workflow(edited)`
+    is refused with the placeholder SHA, and `start_workflow()` would start
+    the placeholder goal. Refuse with an actionable message instead.
+    """
+
+    if "<issue-owner>" in goal or "<issue-repository>" in goal:
+        raise ValueError(
+            "no concrete work to submit: pass --issue N or --work-file PATH "
+            "before queuing (placeholder goals with <issue-owner> cannot be "
+            "finalized after submission)"
+        )
+
+
 def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict[str, str]:
     """Queue the rendered goal in the hub before Alice starts (#296).
 
@@ -525,9 +545,16 @@ def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict
     goal is reused. No DB or wire schema change: reuses v22 `run_id` /
     `statement_sha256` / `queued` and wire `hub.schema_version` 1 (v25 reserved
     on #2 but unneeded).
+
+    Direct DB write (not RPC): the `work_submitted` row is durable, so Alice's
+    first `wait_for_event`/`start_workflow()` after launch sees it without
+    needing a live waiter wakeup. No waiter exists yet when prepare-run queues
+    (r1-4); the #268 successor (`robomate submit` via RPC) preserves the
+    serving hub's wakeup path.
     """
 
     check_goal_size(goal)
+    check_concrete_goal(goal)
     db_path = hub_state_dir(hub_repo) / "hub.db"
     initialize_database(db_path)
     store = HubStore(db_path)
@@ -535,8 +562,11 @@ def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict
     live = state.get("workflow")
     queue = state.get("queue") or []
     # Reuse an existing live or queued workflow with the same goal+policy.
+    # A done workflow is never reused: get_state returns the most recent done
+    # run when nothing is live or queued, and reusing it would leave the queue
+    # empty so start_workflow() has nothing to start (r1-1).
     candidates: list[dict[str, Any]] = []
-    if live is not None:
+    if live is not None and live.get("status") != "done":
         candidates.append(
             {
                 "goal": live.get("goal"),
@@ -2791,8 +2821,6 @@ def prepare(
         "stall_after_min": stall_after_min,
     }
     check_hub_workflow(hub_repo, run_dir, goal, policy)
-    queued = queue_goal_in_hub(hub_repo, goal, policy)
-    queued_sha = queued["statement_sha256"]
 
     run_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     manifest_path = run_dir / "run.json"
@@ -2939,6 +2967,12 @@ def prepare(
             render_worker_prompt(name) + prompt_sections(name, harnesses[name], run_dir),
             encoding="utf-8",
         )
+
+    # r1-2: queue only after validation and staging succeed, so a bootstrap,
+    # token, config or prompt failure leaves no queued workflow without run.json.
+    # The early check_hub_workflow above still fails fast on a busy hub.
+    queued = queue_goal_in_hub(hub_repo, goal, policy)
+    queued_sha = queued["statement_sha256"]
 
     alice_host = (
         gl_project.host
