@@ -394,8 +394,12 @@ Apply `max_review_rounds` (default 3) exactly:
   disagreement across two rounds, escalate even before the cap.
 
 An approval with only nonblocking findings gives the implementer a choice in
-a NONBLOCKING task: handle them now and trigger RE-REVIEW if the head changes, or
-decline them. After a decline, give the reviewer a same-head task to file and
+a NONBLOCKING task: fix a finding that is a small change to files the PR
+already touches by default; a decline gives a reason for each finding and
+Alice may overrule it (#297). A finding the reviewer marks
+`optional, no follow-up` stays in the review comment and is never filed.
+Handle findings now and trigger RE-REVIEW if the head changes, or decline
+them. After a decline, give the reviewer a same-head task to file and
 reference a follow-up issue. If the implementer reports the same head with no
 changes, the existing approval remains bound to that head.
 

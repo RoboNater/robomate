@@ -12,7 +12,10 @@ loop until released:
 
 1. Call `await_assignment`. A timeout is normal; call it again.
 2. On assignment, call `get_role_guide(role)` and follow that guide together
-   with the assignment. Fetch it again for every task; do not cache it.
+   with the assignment. Fetch it again for every task; do not cache it. On
+   every assignment carrying `statement_sha256`, read the statement with
+   `get_statement` (#9, #297); the assignment text points to the requirements
+   but does not replace them.
 3. Do the work, using `report_progress` for checkable milestones (regression
    tests failing before the fix, fix committed, full validation started,
    change request opened), before any wait expected to run longer than a few
