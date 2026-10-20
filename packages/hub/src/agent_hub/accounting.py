@@ -52,13 +52,14 @@ class CallAccounting:
             with database(self.database_path) as connection:
                 # Sequential workflows (M2 Step 3): attribute to the live run,
                 # else the most recent one; calls before any run have none.
+                # Durable insertion order (#209): `created` can step backwards.
                 row = connection.execute(
                     "SELECT id FROM workflow WHERE status IN ('active', 'paused', 'escalated')"
-                    " ORDER BY created LIMIT 1"
+                    " ORDER BY rowid LIMIT 1"
                 ).fetchone()
                 if row is None:
                     row = connection.execute(
-                        "SELECT id FROM workflow ORDER BY created DESC LIMIT 1"
+                        "SELECT id FROM workflow ORDER BY rowid DESC LIMIT 1"
                     ).fetchone()
                 fields["workflow_id"] = None if row is None else row["id"]
                 columns = ", ".join(fields)

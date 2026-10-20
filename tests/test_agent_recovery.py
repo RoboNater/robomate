@@ -261,6 +261,34 @@ def test_invalid_stop_time_never_launches(recovery_args: argparse.Namespace, val
         RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
 
 
+def test_recorded_exit_allows_small_future_but_operator_stopped_at_stays_strict(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#209: a backward step makes the launcher's own exit look 1-2s future."""
+
+    from datetime import UTC, datetime, timedelta
+
+    # Compute `now` fresh per case (r1-3): a single captured time goes stale
+    # across `prepare()` calls on a loaded runner and the 1s case stops
+    # being future-dated.
+    for ahead_s in (1, 2):
+        future = (datetime.now(UTC) + timedelta(seconds=ahead_s)).isoformat()
+        save_rows(recovery_args, [row("start"), row("exit", exited_at=future)])
+        _, text = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+        assert "recorded harness exit" in text
+        assert "clamped from future" in text
+    # A large future recorded exit is still refused, naming its source.
+    far_future = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
+    save_rows(recovery_args, [row("start"), row("exit", exited_at=far_future)])
+    with pytest.raises(LAUNCHER.Stop, match="Recorded harness exit"):
+        RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+    # Even a small future operator-supplied --stopped-at is refused.
+    recovery_args.stopped_at = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
+    save_rows(recovery_args, [row("start"), row("exit")])
+    with pytest.raises(LAUNCHER.Stop, match="Operator-supplied"):
+        RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+
+
 @pytest.mark.parametrize("agent", ["alice", "bob", "charlie"])
 @pytest.mark.parametrize("advisory", ["paused", "question"])
 def test_advisories_preserve_state_and_alice_can_handle_pending_questions(
