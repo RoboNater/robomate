@@ -1626,6 +1626,25 @@ def test_initialize_workflow_confirms_active_and_starts_new_after_done(
     assert store.get_state()["workflow"]["run_id"] != first_run_id
 
 
+def test_initialize_workflow_mismatch_names_expected_sha(tmp_path: Path) -> None:
+    """#296 item 4: a mismatched initialize_workflow names the expected sha."""
+
+    import hashlib
+
+    path = tmp_path / "guard.db"
+    initialize_database(path)
+    store = HubStore(path)
+    goal = "Queued goal for #296"
+    expected_sha = hashlib.sha256(goal.encode()).hexdigest()
+    store.start_workflow(goal, source="prepare-run", force_queued=True)
+    with pytest.raises(ConflictError, match=f"Expected statement_sha256={expected_sha}"):
+        store.initialize_workflow("A different goal")
+    # Starting the queued run yields the matching sha.
+    store.start_workflow()
+    live = store.get_state()["workflow"]
+    assert live is not None and live["statement_sha256"] == expected_sha
+
+
 def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None:
     """Manifest is written at start and completed at done; restart keeps valid JSON."""
 

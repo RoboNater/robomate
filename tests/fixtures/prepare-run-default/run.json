@@ -122,6 +122,7 @@
   },
   "work": {
     "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.",
+    "goal_sha256": "$GOAL_SHA",
     "path": null,
     "roadmap": null,
     "sha256": null

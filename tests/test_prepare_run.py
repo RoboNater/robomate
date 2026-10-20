@@ -1033,6 +1033,7 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
         "goal": goal,
         "path": str(work_file.resolve()),
         "sha256": hashlib.sha256(statement.encode()).hexdigest(),
+        "goal_sha256": hashlib.sha256(goal.encode()).hexdigest(),
         "roadmap": None,
     }
     assert json.loads((run_dir / "run.json").read_text())["work"] == manifest["work"]
@@ -1229,6 +1230,7 @@ def test_default_rendering_matches_the_golden_files(
         manifest["denise"]["tooling_commit"]: "$TOOLING_COMMIT",
         manifest["workspaces"]["bob"]["workspace_id"]: "$BOB_ID",
         manifest["workspaces"]["charlie"]["workspace_id"]: "$CHARLIE_ID",
+        manifest["work"]["goal_sha256"]: "$GOAL_SHA",
     }
     rendered = {name: (run_dir / path).read_text() for name, path in GOLDEN_FILES.items()}
     rendered["stdout.txt"] = capsys.readouterr().out
@@ -1526,16 +1528,16 @@ def test_rerun_is_idempotent_and_preserves_clone_token_identity(
     )
     monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "logged in")
     run_dir = tmp_path / "run"
-    first = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
+    first = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, issue=42)
     token = (target / ".robomate/token").read_text()
     identity = (run_dir / "bob/.git/robo-agents-workspace.json").read_text()
     marker = run_dir / "bob/uncommitted-marker"
     marker.write_text("preserve")
     with pytest.raises(ValueError, match="dirty"):
-        PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
+        PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, issue=42)
     assert (target / ".robomate/token").read_text() == token
     marker.unlink()
-    second = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target)
+    second = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, issue=42)
     assert second["workspaces"] == first["workspaces"]
     assert (run_dir / "bob/.git/robo-agents-workspace.json").read_text() == identity
     assert (target / ".robomate/token").read_text() == token
@@ -1790,6 +1792,7 @@ def test_bare_slug_expands_via_gh_protocol(
             tmp_path / f"{protocol}-run",
             hub_repo=target,
             skip_github_checks=True,
+            issue=42,
         )
         assert manifest["clone_repository"] == expected
         prompt = (tmp_path / f"{protocol}-run" / "alice.prompt.md").read_text(encoding="utf-8")
@@ -2580,6 +2583,9 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert manifest6["forge"] == "gitlab"
 
     # 6b. CI presence - network/5xx error refuses instead of failing open
+    # #296: run6 queued its goal in the hub; reset to a fresh hub so run6b
+    # reaches CI preflight instead of the hub-busy guard.
+    (target / ".robomate" / "hub.db").unlink(missing_ok=True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "run_output",
@@ -2593,6 +2599,7 @@ def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         PREPARE_RUN.prepare(GL_ORIGIN, tmp_path / "run6b", hub_repo=target)
 
     # 7. Happy path with CI present -> allow_no_ci=False
+    (target / ".robomate" / "hub.db").unlink(missing_ok=True)
     calls.clear()
     monkeypatch.setattr(PREPARE_RUN, "run_output", make_runner(ci_found=True))
     run_dir7 = tmp_path / "run7"
@@ -2698,7 +2705,7 @@ def test_gitlab_origin_match_incl_ssh_https(
         return (json.dumps(GL_BASE_PROJECT), "")
 
     monkeypatch.setattr(PREPARE_RUN, "run_output", runner)
-    manifest = PREPARE_RUN.prepare(repository, tmp_path / "run-match", hub_repo=target)
+    manifest = PREPARE_RUN.prepare(repository, tmp_path / "run-match", hub_repo=target, issue=12)
     assert manifest["forge"] == "gitlab"
     assert manifest["policy"]["allow_no_ci"] is False
 
@@ -2759,11 +2766,19 @@ def test_gitlab_merge_matrix_same_as_before(
     if should_refuse:
         with pytest.raises(ValueError, match="does not allow the"):
             PREPARE_RUN.prepare(
-                GL_ORIGIN, tmp_path / "run-matrix", hub_repo=target, merge_method=policy
+                GL_ORIGIN,
+                tmp_path / "run-matrix",
+                hub_repo=target,
+                merge_method=policy,
+                issue=12,
             )
     else:
         manifest = PREPARE_RUN.prepare(
-            GL_ORIGIN, tmp_path / "run-matrix", hub_repo=target, merge_method=policy
+            GL_ORIGIN,
+            tmp_path / "run-matrix",
+            hub_repo=target,
+            merge_method=policy,
+            issue=12,
         )
         assert manifest["policy"]["merge_method"] == policy
 
@@ -2810,7 +2825,11 @@ def test_gitlab_explicit_allow_no_ci_makes_no_ci_call(
 
     monkeypatch.setattr(PREPARE_RUN, "run_output", runner)
     manifest = PREPARE_RUN.prepare(
-        GL_ORIGIN, tmp_path / f"run-explicit-{allow}", hub_repo=target, allow_no_ci=allow
+        GL_ORIGIN,
+        tmp_path / f"run-explicit-{allow}",
+        hub_repo=target,
+        allow_no_ci=allow,
+        issue=12,
     )
     assert manifest["policy"]["allow_no_ci"] is (allow == "true")
     assert not [c for c in calls if "repository/files" in " ".join(c)]
@@ -4185,6 +4204,61 @@ def test_pytest_worker_budget_reaches_remote_git_bash_scripts(
     assert "--pytest-workers 2" in command
 
 
+def test_queued_goal_matches_manifest_and_hub_statement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#296 item 1+2: prepare-run queues the rendered goal verbatim via the submit path."""
+
+    from agent_hub_common import MAX_STATEMENT_BYTES
+
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    goal = manifest["work"]["goal"]
+    goal_sha = manifest["work"]["goal_sha256"]
+    assert goal_sha == hashlib.sha256(goal.encode()).hexdigest()
+    assert len(goal.encode()) <= MAX_STATEMENT_BYTES
+    # run.json records the goal sha beside the file sha.
+    assert json.loads((run_dir / "run.json").read_text())["work"]["goal_sha256"] == goal_sha
+    # The hub stores the queued statement byte-for-byte.
+    db_path = tmp_path / "target" / ".robomate" / "hub.db"
+    stored = HubStore(db_path).get_statement(goal_sha)
+    assert stored["statement"] == goal
+    assert stored["size"] == len(goal.encode())
+    # The queued workflow's statement sha matches run.json.
+    state = HubStore(db_path).get_state()
+    assert state["queue"] and state["queue"][0]["statement_sha256"] == goal_sha
+    # Starting the queued run yields the same sha.
+    HubStore(db_path).start_workflow()
+    live = HubStore(db_path).get_state()["workflow"]
+    assert live is not None and live["statement_sha256"] == goal_sha
+
+
+def test_alice_prompt_calls_start_workflow_and_names_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#296 item 3: the rendered Alice prompt starts the queued run and names its sha."""
+
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    prompt = (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
+    assert "start_workflow()" in prompt
+    assert manifest["work"]["goal_sha256"] in prompt
+    assert "Expected goal SHA-256" in prompt
+
+
+def test_oversized_goal_refused_with_submit_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#296: prepare-run refuses an oversized goal with the submit cap message."""
+
+    from agent_hub_common import MAX_STATEMENT_BYTES
+
+    big = "x" * (MAX_STATEMENT_BYTES + 1)
+    work_file = tmp_path / "big.md"
+    work_file.write_text(big + "\n")
+    with pytest.raises(ValueError, match=f"maximum is {MAX_STATEMENT_BYTES} bytes"):
+        prepare(tmp_path, monkeypatch, issue=None, work_file=work_file)
+    assert not (tmp_path / "run").exists()
+
+
 def test_negative_pytest_worker_count_fails_before_preparation(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="pytest-workers"):
         PREPARE_RUN.prepare("o/r", tmp_path, pytest_workers=-1)
@@ -4198,3 +4272,110 @@ def test_negative_pytest_worker_count_fails_before_preparation(tmp_path: Path) -
             "claude-code",
             pytest_workers=-1,
         )
+
+
+def test_same_work_after_completion_queues_a_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-1: a done workflow is never reused; same work after done queues anew."""
+
+    from agent_hub_common import WorkflowStatus
+
+    run_dir, manifest = prepare(tmp_path, monkeypatch)
+    goal = manifest["work"]["goal"]
+    policy = manifest["policy"]
+    db_path = tmp_path / "target" / ".robomate" / "hub.db"
+    first_state = HubStore(db_path).get_state()
+    assert first_state["queue"], "first preparation must queue"
+    first_run_id = first_state["queue"][0]["run_id"]
+    # Start and finish the run, as Alice would.
+    store = HubStore(db_path)
+    store.start_workflow()
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    assert HubStore(db_path).get_state()["queue"] == []
+    # Preparing the same work again must queue a new run, not reuse the done one.
+    second = PREPARE_RUN.queue_goal_in_hub(tmp_path / "target", goal, policy)
+    assert second["run_id"] != first_run_id
+    assert HubStore(db_path).get_state()["queue"], "second queue must exist"
+    HubStore(db_path).start_workflow()
+    live = HubStore(db_path).get_state()["workflow"]
+    assert live is not None and live["statement_sha256"] == manifest["work"]["goal_sha256"]
+
+
+def test_failed_preparation_queues_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """r1-2: bootstrap failure leaves no queued workflow and no run.json."""
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise ValueError("occupied clone directory")
+
+    monkeypatch.setattr(PREPARE_RUN, "bootstrap_clone", boom)
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="occupied clone"):
+        PREPARE_RUN.prepare(str(source), tmp_path / "run", issue=42, hub_repo=target)
+    db_path = target / ".robomate" / "hub.db"
+    if db_path.exists():
+        state = HubStore(db_path).get_state()
+        assert state["queue"] == []
+        assert state["workflow"] is None
+    assert not (tmp_path / "run" / "run.json").exists()
+
+
+def test_placeholder_goal_refused_before_queuing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-3: preparing with neither --issue nor --work-file is refused."""
+
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="no concrete work"):
+        PREPARE_RUN.prepare(str(source), tmp_path / "run", hub_repo=target)
+    db_path = target / ".robomate" / "hub.db"
+    if db_path.exists():
+        assert HubStore(db_path).get_state()["queue"] == []
+    assert not (tmp_path / "run" / "run.json").exists()
+
+
+def test_work_file_containing_marker_is_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r2-1: an explicit work file may document the placeholder pattern literally."""
+
+    marker_text = (
+        "Render the template with literal <issue-owner>/<issue-repository>#<issue> "
+        "as an example, then implement the change.\n"
+    )
+    work_file = tmp_path / "template-guide.md"
+    work_file.write_text(marker_text)
+    run_dir, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file)
+    assert "<issue-owner>" in manifest["work"]["goal"]
+    db_path = tmp_path / "target" / ".robomate" / "hub.db"
+    stored = HubStore(db_path).get_statement(manifest["work"]["goal_sha256"])
+    assert stored["statement"] == manifest["work"]["goal"]
+
+
+def test_late_staging_failure_queues_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-2: alice.prompt failure after staging leaves no queue and no run.json."""
+
+    from unittest.mock import patch
+
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    real_write = Path.write_text
+
+    def failing_write(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == "alice.prompt.md":
+            raise PermissionError("denied alice.prompt.md")
+        return real_write(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch.object(Path, "write_text", failing_write),
+        pytest.raises(PermissionError, match="denied alice.prompt.md"),
+    ):
+        PREPARE_RUN.prepare(str(source), tmp_path / "run", issue=42, hub_repo=target)
+    db_path = target / ".robomate" / "hub.db"
+    if db_path.exists():
+        assert HubStore(db_path).get_state()["queue"] == []
+    assert not (tmp_path / "run" / "run.json").exists()

@@ -704,6 +704,7 @@ def workflow_figures(
         "id": row["id"],
         "goal": label(row["goal"], 200),
         "goal_bytes": len(row["goal"].encode("utf-8")),
+        "statement_sha256": row.get("statement_sha256"),
         "status": closed(row["status"]),
         "created": row["created"],
         "policy": policy,
@@ -1079,6 +1080,8 @@ def workflow_lines(workflow: Mapping[str, Any] | None) -> list[str]:
         f"id: {workflow['id']}   status: {show(workflow['status'])}   "
         f"created: {workflow['created']}",
         f"goal: {show(workflow['goal'])} ({workflow['goal_bytes']} bytes)",
+        f"statement: {show(workflow.get('statement_sha256'))} "
+        "(compare with run.json work.goal_sha256)",
         "policy: "
         + json.dumps(workflow["policy"], sort_keys=True)
         + (

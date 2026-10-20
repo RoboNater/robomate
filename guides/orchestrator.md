@@ -51,12 +51,17 @@ Fresh prepared runs may still start with `get_state` through their configured br
    delivers one PR: if the work needs more than one PR, do not initialize;
    ask the operator to split it into one run per PR.
 2. Call `get_state` before taking action.
-   - With no stored workflow, call `initialize_workflow(goal, policy)` before
-     any other mutating workflow tool (join only registers identity). With
-     `robomate submit` (M2), the operator queues statements that arrive as
-     `work_submitted` events; start the oldest queued run with
-     `start_workflow()` (no statement), or create one from chat with
-     `start_workflow(statement, policy)`.
+   - With a queued run (the `robomate submit` / prepare-run path, #296), start
+     the oldest queued run with `start_workflow()` (no statement) before any
+     other mutating workflow tool (join only registers identity). The queue
+     carries the verbatim goal; `run.json` `work.goal_sha256` names its
+     expected `statement_sha256`. Never retype the goal as
+     `initialize_workflow(goal, policy)`: a mismatched `initialize_workflow`
+     is refused and names the expected sha — stop and ask rather than guessing.
+     Only when no queued run exists (legacy/manual runs), call
+     `initialize_workflow(goal, policy)`; with `robomate submit` (M2), the
+     operator queues statements that arrive as `work_submitted` events, or
+     create one from chat with `start_workflow(statement, policy)`.
    - With stored state, resume it. Repeat initialization only to confirm the
      exact original goal and policy; never replace durable inputs from a later
      prompt, and never take a later prompt as an operator decision. If the
@@ -638,6 +643,8 @@ invent or edit an issue; record close-out only in the workflow summary.
 When no task remains active, release both selected workers, set workflow status
 to `done`, and report a compact summary listing every issue the statement
 names and every PR the run opened or merged, approved and merged SHAs, review
-URL, tests/checks, pairing and each role-policy rule, and each worker's
-recorded harness/provider/model/model source. Ack the final processed event on
+URL, tests/checks, pairing and each role-policy rule, each worker's
+recorded harness/provider/model/model source, and the workflow
+`statement_sha256` beside `run.json` `work.goal_sha256` so a mismatch is
+visible afterwards (#296). Ack the final processed event on
 the next wait before concluding.
