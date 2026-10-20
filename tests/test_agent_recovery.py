@@ -268,21 +268,22 @@ def test_recorded_exit_allows_small_future_but_operator_stopped_at_stays_strict(
 
     from datetime import UTC, datetime, timedelta
 
-    now = datetime.now(UTC)
-    # 1-2s future recorded exit is accepted (clamped to now, noted in prompt).
+    # Compute `now` fresh per case (r1-3): a single captured time goes stale
+    # across `prepare()` calls on a loaded runner and the 1s case stops
+    # being future-dated.
     for ahead_s in (1, 2):
-        future = (now + timedelta(seconds=ahead_s)).isoformat()
+        future = (datetime.now(UTC) + timedelta(seconds=ahead_s)).isoformat()
         save_rows(recovery_args, [row("start"), row("exit", exited_at=future)])
         _, text = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
         assert "recorded harness exit" in text
         assert "clamped from future" in text
     # A large future recorded exit is still refused, naming its source.
-    far_future = (now + timedelta(seconds=60)).isoformat()
+    far_future = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
     save_rows(recovery_args, [row("start"), row("exit", exited_at=far_future)])
     with pytest.raises(LAUNCHER.Stop, match="Recorded harness exit"):
         RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
     # Even a small future operator-supplied --stopped-at is refused.
-    recovery_args.stopped_at = (now + timedelta(seconds=2)).isoformat()
+    recovery_args.stopped_at = (datetime.now(UTC) + timedelta(seconds=2)).isoformat()
     save_rows(recovery_args, [row("start"), row("exit")])
     with pytest.raises(LAUNCHER.Stop, match="Operator-supplied"):
         RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")

@@ -1586,6 +1586,29 @@ def test_backward_clock_task_order_uses_insertion_order(tmp_path: Path) -> None:
     assert [task["id"] for task in state["tasks"]] == [first.id, second.id]
 
 
+def test_backward_clock_live_queued_order_uses_insertion_order(tmp_path: Path) -> None:
+    """#209 (r1-4): live stays live when a queued run has an earlier timestamp."""
+
+    path = tmp_path / "backward-clock-queue.db"
+    initialize_database(path)
+    clock = FakeClock()
+    store = HubStore(path, clock=clock)
+    first = store.start_workflow("Live run")
+    assert store.get_state()["workflow"]["id"] == first
+    # Backward step: the queued run is created with an earlier wall-clock time.
+    clock.now -= timedelta(seconds=1)
+    second = store.start_workflow("Queued run")
+    state = store.get_state()
+    assert state["workflow"] is not None and state["workflow"]["id"] == first
+    assert len(state["queue"]) == 1 and state["queue"][0]["workflow_id"] == second
+    # Completing the live run activates the queued one by insertion order.
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    after = store.get_state()
+    assert after["workflow"] is not None and after["workflow"]["id"] == second
+    assert after["previous_run"] is not None
+    assert after["previous_run"]["workflow_id"] == first
+
+
 def test_initialize_workflow_confirms_active_and_starts_new_after_done(
     tmp_path: Path,
 ) -> None:

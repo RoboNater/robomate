@@ -839,10 +839,17 @@ def _rebuild_table(connection: sqlite3.Connection, table: str, create_sql: str) 
     connection.execute(create_sql)
 
     # Only columns both shapes agree on; by this point the ALTER steps above
-    # have added every column the canonical shape names.
+    # have added every column the canonical shape names. Preserve `rowid`
+    # explicitly in insertion order (#209): `workflow` and `task` have TEXT
+    # primary keys, so their durable run/task order lives in `rowid`, which a
+    # plain column copy would renumber. For INTEGER PRIMARY KEY tables
+    # `rowid` aliases `id`, so copying it carries the same value.
     shared = _columns(connection, scratch) & _columns(connection, table)
     columns = ", ".join(sorted(shared))
-    connection.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM {scratch}")
+    connection.execute(
+        f"INSERT INTO {table} (rowid, {columns})"
+        f" SELECT rowid, {columns} FROM {scratch} ORDER BY rowid"
+    )
     connection.execute(f"DROP TABLE {scratch}")
     _restore_sequence(connection, table, high_water)
 
