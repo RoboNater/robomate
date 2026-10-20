@@ -69,8 +69,8 @@ Fresh prepared runs may still start with `get_state` through their configured br
       instructions instead of copying the statement text. Workers read it with
       `get_statement(sha)` on every assignment carrying `statement_sha256`
       (#297); the assignment text points to the requirements but does not
-      replace them. `get_statement` returns bytes
-      verbatim. Nothing paraphrases the operator's text on its way to a worker.
+      replace them. `get_statement` returns bytes verbatim. Nothing paraphrases
+      the operator's text on its way to a worker.
 3. Read every issue the statement names directly using the orchestrator forge appendix, and, when
    the goal names a repository-qualified roadmap target, the roadmap too. A
    supplied roadmap target that is not repository-qualified is carried
