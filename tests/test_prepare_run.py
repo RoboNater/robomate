@@ -510,6 +510,34 @@ def test_hub_with_all_done_workflows_accepts_a_new_run(
     assert second["work"]["goal"] != first["work"]["goal"]
 
 
+def test_backward_clock_check_hub_workflow_names_live_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#209 (r2-1): `check_hub_workflow` uses insertion order on a backward step."""
+
+    from datetime import UTC, datetime, timedelta
+
+    target = running_hub(tmp_path, monkeypatch)
+    database_path = target / ".robomate/hub.db"
+    initialize_database(database_path)
+    base = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
+    times = [base]
+
+    def clock() -> datetime:
+        return times[0]
+
+    store = HubStore(database_path, clock=clock)
+    store.start_workflow("Live goal")
+    # Backward step: the queued run carries an earlier wall-clock `created`.
+    times[0] = base - timedelta(seconds=1)
+    store.start_workflow("Queued goal")
+    with pytest.raises(ValueError) as error:
+        PREPARE_RUN.check_hub_workflow(target, tmp_path / "other-run", "Other goal", None)
+    # Insertion order names the live run; wall-clock order would name the queued one.
+    assert "Live goal" in str(error.value)
+
+
 def test_worker_only_uses_token_file_not_bearer_value(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
