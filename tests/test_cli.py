@@ -79,6 +79,48 @@ def _run_cli(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]
         ) from exc
 
 
+def _inproc_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cwd: Path,
+    env: dict[str, str],
+    *args: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the CLI in-process via cli.main(), returning a CompletedProcess-like.
+
+    #265: read-only status/inbox/ls/answer/snapshot against a running hub cost
+    ~2-4 s per subprocess on native Windows (Python import). In-process
+    exercises the same cli.main() arg parsing plus _status/_inbox/_answer/_ls/
+    _snapshot and find_hub/_rpc paths against the live hub, without the process
+    boundary.     Lifecycle (up/down/forget/port reuse/stop-restart/hubs.json)
+    stays subprocess per #145. Each call sets cwd/env via monkeypatch (per-test,
+    xdist-safe: no hub is shared between workers).
+    """
+
+    # A prior call may have set an override (e.g. ROBOMATE_OPERATOR_TOKEN_FILE
+    # for one answer call) that this call's env does not carry: a subprocess
+    # would not see it, so remove any ROBOMATE_* not in this env first.
+    for key in [k for k in os.environ if k.startswith("ROBOMATE_") and k not in env]:
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(sys, "argv", ["robomate", *args])
+    capsys.readouterr()
+    try:
+        cli.main()
+        code = 0
+    except SystemExit as exc:
+        if exc.code is None:
+            code = 0
+        elif isinstance(exc.code, int):
+            code = exc.code
+        else:
+            code = 1
+    out, err = capsys.readouterr()
+    return subprocess.CompletedProcess(["robomate", *args], code, out, err)
+
+
 def init_checkout(root: Path) -> None:
     root.mkdir(parents=True)
     subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
@@ -483,7 +525,10 @@ def _cli(cwd: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProc
 
 
 def test_two_hubs_in_one_repository(
-    repository: tuple[Path, dict[str, str]], tmp_path: Path
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#147 Tests 1, 2, 3 and 5: worktree hubs side by side, selected, never attached."""
 
@@ -509,7 +554,9 @@ def test_two_hubs_in_one_repository(
         assert f"Hub state: {wt_a / '.robomate'}" in printed
         assert "`git worktree remove` deletes it" in printed
 
-        listing = _cli(root, env, "ls")
+        # #265: read-only ls/status run in-process against the live hubs;
+        # up/down lifecycle and the rename refusal stay subprocess per #145.
+        listing = _inproc_cli(monkeypatch, capsys, root, env, "ls")
         assert listing.returncode == 0, listing.stderr
         for checkout, info in ((wt_a, a), (wt_b, b)):
             line = next(x for x in listing.stdout.splitlines() if x.startswith(f"{info['name']} "))
@@ -518,18 +565,18 @@ def test_two_hubs_in_one_repository(
 
         # The main checkout owns no hub: both commands refuse and list both.
         for command in (["down"], ["status"]):
-            refused = _cli(root, env, *command)
+            refused = _inproc_cli(monkeypatch, capsys, root, env, *command)
             assert refused.returncode == 1
             assert "wt-a" in refused.stderr and "wt-b" in refused.stderr
         assert hub_a.poll() is None and hub_b.poll() is None
-        selected = _cli(root, env, "status", "--hub", "wt-b")
+        selected = _inproc_cli(monkeypatch, capsys, root, env, "status", "--hub", "wt-b")
         assert selected.returncode == 0, selected.stderr
         assert f"Checkout: {wt_b}" in selected.stdout
 
         stop(wt_a, env, hub_a)
-        running = _cli(wt_b, env, "status")
+        running = _inproc_cli(monkeypatch, capsys, wt_b, env, "status")
         assert running.returncode == 0 and f"Hub: wt-b  {b['url']}" in running.stdout
-        listing = _cli(root, env, "ls", "--json")
+        listing = _inproc_cli(monkeypatch, capsys, root, env, "ls", "--json")
         rows = {row["name"]: row for row in json.loads(listing.stdout)}
         assert (rows["wt-a"]["live"], rows["wt-b"]["live"]) == (False, True)
         assert rows["wt-a"]["state_dir"] == str(wt_a / ".robomate")
@@ -615,6 +662,8 @@ def test_bare_repository_hub_runs_in_a_linked_worktree(
 
 def test_legacy_hub_keeps_its_state_and_gets_a_name(
     repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#147 Test 6: hub.json and a registry entry as written before checkout scope."""
 
@@ -636,7 +685,8 @@ def test_legacy_hub_keeps_its_state_and_gets_a_name(
     (root / ".robomate" / "token").write_text("legacy-token\n")
     (root / ".robomate" / "token").chmod(0o600)
     register({k: legacy[k] for k in ("repo_root", "url", "hub_id")} | {"pid": 999999}, env)
-    status = _cli(root, env, "status", "--json")
+    # #265: stopped-hub status is read-only; run it in-process.
+    status = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
     assert status.returncode == 1 and json.loads(status.stdout)["repo_root"] == str(root)
     process = start(root, env)
     try:
@@ -1178,20 +1228,18 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
                 process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
-def test_down_reports_auth_failure(repository: tuple[Path, dict[str, str]]) -> None:
+def test_down_reports_auth_failure(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     root, env = repository
     process = start(root, env)
     try:
         info = await_hub(root, process)
         wrong = {**env, "ROBOMATE_HUB_URL": str(info["url"]), "ROBOMATE_TOKEN": "wrong"}
-        response = _run_cli(
-            [CLI, "down"],
-            cwd=root,
-            env=wrong,
-            capture_output=True,
-            text=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        # #265: auth-failure reporting is read-only; run it in-process.
+        response = _inproc_cli(monkeypatch, capsys, root, wrong, "down")
         assert response.returncode == 1
         assert "HTTP 401" in response.stderr
         assert "unreachable" not in response.stderr
@@ -1225,7 +1273,10 @@ def test_down_tells_a_slow_hub_from_an_unreachable_one(
 
 
 def test_status_from_nested_directory_and_worktree(
-    repository: tuple[Path, dict[str, str]], tmp_path: Path
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     root, env = repository
     nested = root / "nested"
@@ -1258,14 +1309,8 @@ def test_status_from_nested_directory_and_worktree(
         info = await_hub(root, process)
         # The linked worktree owns no hub, so it reaches the main checkout's
         # hub only when selected (#147).
-        refused = _run_cli(
-            [CLI, "status"],
-            cwd=worktree,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        # #265: all status reads are read-only; run them in-process.
+        refused = _inproc_cli(monkeypatch, capsys, worktree, env, "status")
         assert refused.returncode == 1
         assert f"no hub is recorded for checkout {worktree}" in refused.stderr
         assert "--hub" in refused.stderr and str(info["url"]) in refused.stderr
@@ -1274,40 +1319,19 @@ def test_status_from_nested_directory_and_worktree(
             (worktree, ["--hub", "repo"]),
             (tmp_path, ["--hub", str(root)]),
         ):
-            result = _run_cli(
-                [CLI, "status", *selector],
-                cwd=cwd,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            )
+            result = _inproc_cli(monkeypatch, capsys, cwd, env, "status", *selector)
             assert result.returncode == 0, result.stderr
             assert "Hub: repo  " in result.stdout and str(info["url"]) in result.stdout
             assert f"Checkout: {root}" in result.stdout
             assert f"Repository: {root}" in result.stdout
             assert f"State: {root / '.robomate'}" in result.stdout
             assert "Workflow: none" in result.stdout
-            result = _run_cli(
-                [CLI, "status", "--json", *selector],
-                cwd=cwd,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            )
+            result = _inproc_cli(monkeypatch, capsys, cwd, env, "status", "--json", *selector)
             status = json.loads(result.stdout)
             assert (status["repo_root"], status["checkout"]) == (str(root), str(root))
             assert (status["name"], status["git_common_dir"]) == ("repo", str(root / ".git"))
         stop(root, env, process)
-        stopped = _run_cli(
-            [CLI, "status"],
-            cwd=nested,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        stopped = _inproc_cli(monkeypatch, capsys, nested, env, "status")
         assert stopped.returncode != 0
         assert f"Hub repo ({root}): not running" in stopped.stdout
         assert str(info["url"]) in stopped.stdout
@@ -1318,7 +1342,11 @@ def test_status_from_nested_directory_and_worktree(
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
-def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[str, str]]) -> None:
+def test_status_renders_seeded_workflow_and_agents(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     root, env = repository
     directory = root / ".robomate"
     directory.mkdir()
@@ -1347,14 +1375,8 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
         )
         with urllib.request.urlopen(request, timeout=10) as response:
             assert json.load(response)["result"] == {"ok": True}
-        result = _run_cli(
-            [CLI, "status"],
-            cwd=root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        # #265: seeded-workflow rendering is read-only; run it in-process.
+        result = _inproc_cli(monkeypatch, capsys, root, env, "status")
         assert result.returncode == 0, result.stderr
         assert "Workflow: active — Build issue #43" in result.stdout
         # A heartbeat alone is bridge liveness, never activity (#95).
@@ -1375,6 +1397,8 @@ def test_status_renders_seeded_workflow_and_agents(repository: tuple[Path, dict[
 
 def test_status_shows_run_id_and_queue_length(
     repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """M2 Step 3: `robomate status` shows the run ID and queue length."""
 
@@ -1390,25 +1414,12 @@ def test_status_shows_run_id_and_queue_length(
     process = start(root, env)
     try:
         await_hub(root, process)
-        result = _run_cli(
-            [CLI, "status"],
-            cwd=root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        # #265: run-ID/queue rendering is read-only; run it in-process.
+        result = _inproc_cli(monkeypatch, capsys, root, env, "status")
         assert result.returncode == 0, result.stderr
         assert f"Run ID: {first_run_id}" in result.stdout
         assert "Queue length: 1" in result.stdout
-        as_json = _run_cli(
-            [CLI, "status", "--json"],
-            cwd=root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        as_json = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
         assert as_json.returncode == 0, as_json.stderr
         payload = json.loads(as_json.stdout)
         assert payload["run_id"] == first_run_id
@@ -1435,6 +1446,8 @@ def _rpc_as_alice(url: str, token: str, method: str) -> dict[str, Any]:
 
 def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_call(
     repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#95: a done run's idle Alice reads finished, not freshly seen, across a restart."""
 
@@ -1462,14 +1475,8 @@ def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_cal
         token = (directory / "token").read_text().strip()
 
         def status_text() -> str:
-            result = _run_cli(
-                [CLI, "status"],
-                cwd=root,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            )
+            # #265: restart rendering is read-only; run it in-process.
+            result = _inproc_cli(monkeypatch, capsys, root, env, "status")
             assert result.returncode == 0, result.stderr
             return result.stdout
 
@@ -1492,16 +1499,7 @@ def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_cal
             out,
         ), out
         assert "last seen" not in out and "STALLED" not in out
-        status = json.loads(
-            _run_cli(
-                [CLI, "status", "--json"],
-                cwd=root,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            ).stdout
-        )
+        status = json.loads(_inproc_cli(monkeypatch, capsys, root, env, "status", "--json").stdout)
         # Additive: the legacy session block is still there.
         assert status["orchestrator"]["last_seen"]
         alice = status["orchestrator_activity"]
@@ -1606,7 +1604,11 @@ def test_no_orchestrator_at_all_reads_none() -> None:
     assert cli._orchestrator_lines(status) == ["Orchestrator: none"]
 
 
-def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[str, str]]) -> None:
+def test_status_shows_stalled_agents_with_evidence(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """#144: a fresh bridge heartbeat with no hub call reads STALLED, with its evidence."""
 
     root, env = repository
@@ -1629,14 +1631,8 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
         token = (directory / "token").read_text().strip()
         assert _rpc_as_alice(str(info["url"]), token, "hub.heartbeat")["result"] == {"ok": True}
         time.sleep(0.2)
-        result = _run_cli(
-            [CLI, "status"],
-            cwd=root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        # #265: stall rendering is read-only; run it in-process.
+        result = _inproc_cli(monkeypatch, capsys, root, env, "status")
         assert result.returncode == 0, result.stderr
         out = result.stdout
         assert re.search(
@@ -1655,16 +1651,7 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
         assert cli.STALL_NOTE in out
         assert "secret instructions" not in out
 
-        status = json.loads(
-            _run_cli(
-                [CLI, "status", "--json"],
-                cwd=root,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            ).stdout
-        )
+        status = json.loads(_inproc_cli(monkeypatch, capsys, root, env, "status", "--json").stdout)
         (bob,) = status["agents"]
         assert bob["stalled"] is True and bob["status"] == "busy" and bob["alive"] is True
         assert bob["activity"]["reasons"] == ["no_hub_call", "no_task_progress"]
@@ -1685,6 +1672,8 @@ def test_status_shows_stalled_agents_with_evidence(repository: tuple[Path, dict[
 
 def test_status_snapshot_matches_get_state_and_changes_nothing(
     repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#146: the before-snapshot, from bearer-only reads, without superseding Alice."""
 
@@ -1706,15 +1695,9 @@ def test_status_snapshot_matches_get_state_and_changes_nothing(
         token = (directory / "token").read_text().strip()
         state = _rpc_as_alice(url, token, "get_state")["result"]
 
+        # #265: snapshot reads are read-only; run them in-process.
         def robomate(*args: str) -> subprocess.CompletedProcess[str]:
-            return _run_cli(
-                [CLI, *args],
-                cwd=root,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            )
+            return _inproc_cli(monkeypatch, capsys, root, env, *args)
 
         result = robomate(
             "status", "--snapshot", "--json", "--stopped-at", "2026-10-08T14:00:00+02:00"
@@ -1796,7 +1779,10 @@ def _taken_at(text: str) -> str:
 
 
 def test_inbox_answer_and_status_serve_the_operator(
-    repository: tuple[Path, dict[str, str]], tmp_path: Path
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#130: the operator lists open questions, answers them once, and status counts them."""
 
@@ -1810,15 +1796,9 @@ def test_inbox_answer_and_status_serve_the_operator(
     hub_store.ask_user("Merge or wait?\x1b[2J", ["merge", "wait"], actor="alice", session=None)
     hub_store.ask_user("Which follow-up label?", None, actor="alice", session=None)
 
+    # #265: inbox/status/answer are read-only operator reads; run them in-process.
     def robomate(*args: str, environ: dict[str, str] = env) -> subprocess.CompletedProcess[str]:
-        return _run_cli(
-            [CLI, *args],
-            cwd=root,
-            env=environ,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        return _inproc_cli(monkeypatch, capsys, root, environ, *args)
 
     process = start(root, env)
     try:
@@ -1904,6 +1884,8 @@ def test_inbox_answer_and_status_serve_the_operator(
 
 def test_status_reports_auth_failure_without_calling_hub_stopped(
     repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     root, env = repository
     process = start(root, env)
@@ -1913,14 +1895,8 @@ def test_status_reports_auth_failure_without_calling_hub_stopped(
         original = token_file.read_text()
         try:
             token_file.write_text("incorrect-token")
-            result = _run_cli(
-                [CLI, "status"],
-                cwd=root,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            )
+            # #265: auth-failure reporting is read-only; run it in-process.
+            result = _inproc_cli(monkeypatch, capsys, root, env, "status")
             assert result.returncode == 1
             assert "HTTP 401" in result.stderr
             assert "not running" not in result.stdout
@@ -1931,7 +1907,10 @@ def test_status_reports_auth_failure_without_calling_hub_stopped(
 
 
 def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
-    repository: tuple[Path, dict[str, str]], tmp_path: Path
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     root, env = repository
     other = tmp_path / "worker-clone"
@@ -1940,15 +1919,10 @@ def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
     process = start(root, env)
     try:
         info = await_hub(root, process)
+        # #265: discovery refusals and the explicit-URL read are read-only;
+        # run them in-process against the live hub.
         for command in (["status"], ["status", "--snapshot"], ["inbox"], ["down"]):
-            refused = _run_cli(
-                [CLI, *command],
-                cwd=other,
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=CLI_COMMAND_TIMEOUT_S,
-            )
+            refused = _inproc_cli(monkeypatch, capsys, other, env, *command)
             assert refused.returncode == 1, command
             assert "no hub is recorded" in refused.stderr and str(root) in refused.stderr
         assert process.poll() is None
@@ -1957,14 +1931,7 @@ def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
             "ROBOMATE_HUB_URL": str(info["url"]),
             "ROBOMATE_TOKEN_FILE": str(root / ".robomate/token"),
         }
-        explicit = _run_cli(
-            [CLI, "status"],
-            cwd=tmp_path,
-            env=explicit_env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        explicit = _inproc_cli(monkeypatch, capsys, tmp_path, explicit_env, "status")
         assert explicit.returncode == 0, explicit.stderr
         assert str(root) in explicit.stdout and str(info["url"]) in explicit.stdout
     finally:
@@ -2120,7 +2087,10 @@ def test_up_refuses_to_start_over_a_live_hub_too_busy_to_answer(
 
 
 def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
-    repository: tuple[Path, dict[str, str]], tmp_path: Path
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     root, env = repository
     other = tmp_path / "other"
@@ -2145,14 +2115,8 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
             {"repo_root": "/stale", "url": "http://127.0.0.1:1", "hub_id": "stale", "pid": 999999},
             env,
         )
-        result = _run_cli(
-            [CLI, "ls"],
-            cwd=root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        # #265: ls against two live hubs is read-only; run it in-process.
+        result = _inproc_cli(monkeypatch, capsys, root, env, "ls")
         assert result.returncode == 0, result.stderr
         lines = result.stdout.splitlines()
         assert len(lines) == 2
@@ -2161,14 +2125,7 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
         assert all("agents 0" in line and "workflow none" in line for line in lines)
         entries = await_registry(env, lambda found: all(e["hub_id"] != "stale" for e in found))
         assert "stale" not in [e["hub_id"] for e in entries]
-        result = _run_cli(
-            [CLI, "ls", "--json"],
-            cwd=root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=CLI_COMMAND_TIMEOUT_S,
-        )
+        result = _inproc_cli(monkeypatch, capsys, root, env, "ls", "--json")
         assert len(json.loads(result.stdout)) == 2
     finally:
         for repo, process in ((root, first), (other, second)):
