@@ -64,11 +64,13 @@ Fresh prepared runs may still start with `get_state` through their configured br
      `ask_user` whether to resume the current hub or start a new hub, with
      its own state, in a fresh checkout of the target repository (a clone or
      a linked worktree).
-   - Reference scope, do not restate it (#9): assignments carry
-     `statement_sha256` and `run_id`; name the statement SHA and issue URLs in
-     instructions instead of copying the statement text. Workers read it with
-     `get_statement(sha)` when they need it; `get_statement` returns bytes
-     verbatim. Nothing paraphrases the operator's text on its way to a worker.
+    - Reference scope, do not restate it (#9): assignments carry
+      `statement_sha256` and `run_id`; name the statement SHA and issue URLs in
+      instructions instead of copying the statement text. Workers read it with
+      `get_statement(sha)` on every assignment carrying `statement_sha256`
+      (#297); the assignment text points to the requirements but does not
+      replace them. `get_statement` returns bytes
+      verbatim. Nothing paraphrases the operator's text on its way to a worker.
 3. Read every issue the statement names directly using the orchestrator forge appendix, and, when
    the goal names a repository-qualified roadmap target, the roadmap too. A
    supplied roadmap target that is not repository-qualified is carried
@@ -396,12 +398,14 @@ Apply `max_review_rounds` (default 3) exactly:
 An approval with only nonblocking findings gives the implementer a choice in
 a NONBLOCKING task: fix a finding that is a small change to files the PR
 already touches by default; a decline gives a reason for each finding and
-Alice may overrule it (#297). A finding the reviewer marks
-`optional, no follow-up` stays in the review comment and is never filed.
-Handle findings now and trigger RE-REVIEW if the head changes, or decline
-them. After a decline, give the reviewer a same-head task to file and
-reference a follow-up issue. If the implementer reports the same head with no
-changes, the existing approval remains bound to that head.
+Alice may overrule it with a new NONBLOCKING task naming the finding (#297).
+A finding the reviewer marks `optional, no follow-up` stays in the review
+comment and is never filed. Handle findings now and trigger RE-REVIEW if the
+head changes, or decline them. After a decline, give the reviewer a same-head
+task to file and reference a follow-up issue for each declined finding that
+is neither marked `optional, no follow-up` nor overruled. If the implementer
+reports the same head with no changes, the existing approval remains bound to
+that head.
 
 ## REBASE
 

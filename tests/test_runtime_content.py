@@ -689,6 +689,13 @@ def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> N
             "points to the requirements but does not replace them",
         ),
     )
+    assert_fragments(
+        orchestrator,
+        (
+            "on every assignment carrying `statement_sha256`",
+            "points to the requirements but does not replace them",
+        ),
+    )
     # 2. Review comment lists statement and issue acceptance items.
     assert_fragments(
         reviewer,
@@ -730,3 +737,14 @@ def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> N
                 "stays in the review comment and is never filed",
             ),
         )
+    assert_fragments(
+        reviewer,
+        ("in its typed `text`",),
+    )
+    assert_fragments(
+        orchestrator,
+        (
+            "with a new NONBLOCKING task naming the finding",
+            "neither marked `optional, no follow-up` nor overruled",
+        ),
+    )
