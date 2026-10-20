@@ -106,15 +106,40 @@ def refuse(reason: str, message: str) -> None:
     raise Stop(EXIT_CANNOT_RESUME, reason, message)
 
 
-def timestamp(value: str) -> str:
+# Tolerance for a launcher exit record that lands slightly in the future
+# when the wall clock steps backwards between exit and resume (#209). Mirrors
+# the hub's CLOCK_JUMP_TOLERANCE_S = 5.0 idea. Operator-supplied --stopped-at
+# stays strict: that guard's original case refuses any future value.
+RECORDED_EXIT_FUTURE_TOLERANCE_S = 5.0
+
+
+def timestamp(value: str, *, source: str = "operator-supplied") -> str:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             raise ValueError("timezone missing")
     except ValueError as exc:
         refuse("stop_time", f"Invalid stop time {value!r}: {exc}. Supply ISO 8601 with a timezone.")
-    if parsed > datetime.now(UTC):
-        refuse("stop_time", "Stop time is in the future. Correct --stopped-at and retry.")
+    now = datetime.now(UTC)
+    if parsed > now:
+        ahead_s = (parsed - now).total_seconds()
+        if source == "recorded harness exit" and ahead_s <= RECORDED_EXIT_FUTURE_TOLERANCE_S:
+            # Backward step between the launcher exit and this resume: clamp to
+            # now so no future stamp propagates; the prompt names the source
+            # and the clamping is visible as the recorded value differing.
+            return now.isoformat()
+        if source == "recorded harness exit":
+            refuse(
+                "stop_time",
+                f"Recorded harness exit time {value!r} is {ahead_s:.0f}s in the future. "
+                "The wall clock may have stepped backwards; retry once it catches up, "
+                "or supply --stopped-at explicitly.",
+            )
+        refuse(
+            "stop_time",
+            f"Operator-supplied stop time {value!r} is in the future. "
+            "Correct --stopped-at and retry.",
+        )
     return parsed.astimezone(UTC).isoformat()
 
 
@@ -354,15 +379,35 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
                 "--workflow-id and --confirm-stopped. Neither --force nor "
                 "--confirm-stopped bypasses this PID guard.",
             )
+    recorded_raw: str | None = (
+        (known_exit.get("exited_at") or known_exit["timestamp"])
+        if (not args.stopped_at and known_exit)
+        else None
+    )
     stop_time = (
-        timestamp(args.stopped_at)
+        timestamp(args.stopped_at, source="operator-supplied")
         if args.stopped_at
         else (
-            timestamp(known_exit.get("exited_at") or known_exit["timestamp"])
-            if known_exit
+            timestamp(
+                recorded_raw,
+                source="recorded harness exit",
+            )
+            if recorded_raw is not None
             else None
         )
     )
+    # Note a backward-step clamp (#209): the recorded value was slightly in the
+    # future, so `timestamp()` clamped it to now. The prompt says so.
+    clamped_note = ""
+    if recorded_raw is not None and stop_time is not None:
+        recorded_parsed = _parse_hub_time(recorded_raw)
+        stop_parsed = _parse_hub_time(stop_time)
+        if (
+            recorded_parsed is not None
+            and stop_parsed is not None
+            and recorded_parsed > stop_parsed
+        ):
+            clamped_note = f", clamped from future {recorded_parsed.isoformat()}"
     saved_workflows = {
         r["workflow_id"]
         for r in selected
@@ -599,7 +644,10 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
         else "unknown"
     )
     prompt += f"- Snapshot time: {captured_at}\n"
-    prompt += f"- Old process stop time: {stop_time or 'unknown (not recorded)'} ({source})\n"
+    prompt += (
+        f"- Old process stop time: {stop_time or 'unknown (not recorded)'}"
+        f" ({source}{clamped_note})\n"
+    )
     prompt += f"- Exact conversation: {conversation}\n- Hub ID: {hub_id}\n"
     if workflow_from_hub:
         prompt += f"- Workflow: {workflow_id} ({workflow['status']}) ({workflow_note})\n"

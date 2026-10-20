@@ -3140,16 +3140,9 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
         run_script(run_dir / f"start-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         started = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         (base / "argv.jsonl").unlink()
-        # #264 / #120: this tests shell/launcher recovery, not the wall clock.
-        # WSL can step backwards between subprocesses and make a just-written
-        # exit look future-dated. Keep the recorded-exit path, using historical
-        # fixture data; test_agent_recovery covers refusing real future times.
-        sessions = run_dir / f"{agent}-sessions.jsonl"
-        records = [json.loads(line) for line in sessions.read_text().splitlines()]
-        for record in records:
-            if record["event"] == "exit":
-                record["exited_at"] = "2000-01-01T00:00:00+00:00"
-        sessions.write_text("".join(json.dumps(record) + "\n" for record in records))
+        # #209: exercises a real, just-written exit record. A backward wall-clock
+        # step that makes it look 1-2s future-dated is tolerated by
+        # agent_recovery.timestamp() for the recorded harness exit.
         run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         resumed = [json.loads(line) for line in (base / "argv.jsonl").read_text().splitlines()]
         # Bearer-only reads: the launcher never presents an orchestrator session.

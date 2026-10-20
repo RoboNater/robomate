@@ -1524,6 +1524,68 @@ def test_sequential_queue_second_starts_after_first_done(tmp_path: Path) -> None
     assert after["previous_run"]["run_id"] != after["workflow"]["run_id"]
 
 
+def test_backward_clock_previous_run_uses_insertion_order(tmp_path: Path) -> None:
+    """#209: run ordering is durable insertion order, not wall-clock `created`.
+
+    Deterministic reproduction from the issue: First at T, Second at T-1s
+    (backward step), Third at T+1s. `previous_run` must be Second, and that
+    order survives a hub restart (rowid is durable).
+    """
+
+    path = tmp_path / "backward-clock.db"
+    initialize_database(path)
+    clock = FakeClock()
+    store = HubStore(path, clock=clock)
+    store.start_workflow("First")
+    first_run_id = store.get_state()["run_id"]
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    # Backward step: Second is created with an earlier wall-clock time.
+    clock.now -= timedelta(seconds=1)
+    store.start_workflow("Second")
+    second_run_id = store.get_state()["run_id"]
+    assert second_run_id != first_run_id
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    # The most recent done run is Second by insertion, not First by timestamp.
+    state = store.get_state()
+    assert state["workflow"] is not None and state["workflow"]["run_id"] == second_run_id
+    assert state["previous_run"] is not None
+    assert state["previous_run"]["run_id"] == first_run_id
+    assert state["previous_run"]["goal"] == "First"
+    clock.advance(seconds=2)
+    store.start_workflow("Third")
+    live = store.get_state()
+    assert live["workflow"] is not None and live["workflow"]["goal"] == "Third"
+    assert live["previous_run"] is not None
+    assert live["previous_run"]["run_id"] == second_run_id
+    assert live["previous_run"]["goal"] == "Second"
+    # Restart preserves insertion order: still Second, not First.
+    restarted = HubStore(path, clock=clock)
+    after = restarted.get_state()
+    assert after["workflow"] is not None and after["workflow"]["goal"] == "Third"
+    assert after["previous_run"] is not None
+    assert after["previous_run"]["run_id"] == second_run_id
+    assert after["previous_run"]["goal"] == "Second"
+
+
+def test_backward_clock_task_order_uses_insertion_order(tmp_path: Path) -> None:
+    """#209: task orderings use insertion order when `created` steps backwards."""
+
+    path = tmp_path / "backward-clock-tasks.db"
+    initialize_database(path)
+    clock = FakeClock()
+    store = HubStore(path, clock=clock)
+    store.initialize_workflow("Task order run")
+    store.check_in("bob")
+    store.check_in("charlie")
+    first = store.assign_task("bob", "implementer", "First task", "Do first")
+    clock.now -= timedelta(seconds=1)
+    second = store.assign_task("charlie", "implementer", "Second task", "Do second")
+    tasks = store.tasks()
+    assert [task.id for task in tasks] == [first.id, second.id]
+    state = store.get_state()
+    assert [task["id"] for task in state["tasks"]] == [first.id, second.id]
+
+
 def test_initialize_workflow_confirms_active_and_starts_new_after_done(
     tmp_path: Path,
 ) -> None:
