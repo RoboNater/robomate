@@ -444,7 +444,10 @@ def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 0.4)
     silent = silent_url()
     write_hub_json(repository, {"url": silent, "hub_id": "expected-hub", "name": "repo"})
-    with pytest.raises(DiscoveryError, match=r"at .* did not answer /healthz within 0.2 s$"):
+    with pytest.raises(
+        DiscoveryError,
+        match=r"at .* did not answer /healthz within 0.2 s; stale state remains in",
+    ):
         discover(repository, {})
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 4321)
     write_hub_json(repository, {"url": silent, "hub_id": "expected-hub", "pid": 4321})

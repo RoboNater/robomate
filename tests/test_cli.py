@@ -2281,6 +2281,93 @@ def test_up_malformed_origin_warns_and_serves(
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
+def test_up_no_origin_fails_fast_with_cause(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#301: a smoke checkout with no origin fails fast instead of hanging."""
+
+    _, env = repository
+    root = tmp_path / "no-origin"
+    root.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+    result = _run_cli(
+        [CLI, "up"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.returncode == 1
+    assert "origin" in result.stderr.lower()
+    assert "smoke" in result.stderr.lower() or "guides/worker.md" in result.stderr
+    assert not (root / ".robomate" / "hub.json").exists()
+
+
+def test_up_unset_origin_head_fails_fast_with_cause(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#301: a checkout with origin but no origin/HEAD fails fast, naming the fix."""
+
+    _, env = repository
+    root = tmp_path / "no-head"
+    root.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
+        cwd=root,
+        check=True,
+    )
+    result = _run_cli(
+        [CLI, "up"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.returncode == 1
+    assert "origin/HEAD is unset" in result.stderr
+    assert "smoke" in result.stderr.lower() or "set-head" in result.stderr
+
+
+def test_down_reports_stale_state_left_by_failed_up(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#301: down names the stale hub.json a hung or killed up left behind."""
+
+    root, env = repository
+    port = reserve_port_block(1)
+    write_hub_json(
+        root,
+        {
+            "hub_id": "stale-id",
+            "name": "repo",
+            "checkout": str(root),
+            "repo_root": str(root),
+            "git_common_dir": str(root / ".git"),
+            "origin": "git@github.com:example/repo.git",
+            "forge": "github",
+            "default_branch": "main",
+            "url": f"http://127.0.0.1:{port}",
+            "port": port,
+            "pid": 999999,
+            "started_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
+    result = _run_cli(
+        [CLI, "down"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.returncode == 1
+    assert "stale state remains in" in result.stderr
+    assert "hub.json" in result.stderr
+
+
 def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str]]) -> None:
     root, env = repository
     subprocess.run(

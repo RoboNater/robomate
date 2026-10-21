@@ -5,6 +5,7 @@ import logging
 import signal
 import socket
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -16,6 +17,12 @@ from agent_hub_common import HubSettings
 from agent_hub_common.stdio import escape_unencodable_output
 
 from .app import create_app
+
+# How long `robomate up` waits for the child hub to bind and run startup
+# before it fails fast instead of hanging (#301). The parent already holds
+# the checkout lock and has written hub.json, so a silent child would leave
+# stale state that `down` must then report.
+_START_TIMEOUT_S = 30.0
 
 
 async def serve_http(
@@ -46,10 +53,19 @@ async def serve_http(
     )
     serving = asyncio.create_task(server.serve(sockets=sockets))
     try:
+        deadline = time.monotonic() + _START_TIMEOUT_S
         while not server.started:
             if serving.done():
                 await serving
                 raise RuntimeError("HTTP server stopped before startup")
+            if time.monotonic() >= deadline:
+                server.should_exit = True
+                await asyncio.gather(serving, return_exceptions=True)
+                raise RuntimeError(
+                    f"hub did not start serving within {_START_TIMEOUT_S:g} s; "
+                    "check stderr, hub.json, the database, the guides directory, "
+                    "and whether the port is already bound (#301)"
+                )
             await asyncio.sleep(0.01)
         on_started()
         await serving

@@ -43,20 +43,41 @@ class HubEndpoint:
     token: str
 
 
+# `git` should answer at once: it only reads local config and refs here, never
+# the network. A hung child (a credential helper waiting on input, a stale
+# index lock) must fail fast with the command named (#301), not hang `up`.
+_GIT_TIMEOUT_S = 10.0
+
+
 def _git(cwd: Path, *args: str) -> str:
     # stdin=DEVNULL: `robomate mcp` reaches this with stdin owned by MCP. A
     # child inheriting that pipe on Windows blocks until the next message (#65).
     # Git prints paths as UTF-8 whatever the locale, which is CP1252 on Windows
     # without Python's UTF-8 mode (#166). Only stdout is decoded.
     try:
-        return (
-            subprocess.check_output(
-                ["git", *args], cwd=cwd, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE
-            )
-            .decode("utf-8")
-            .strip()
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_S,
         )
-    except (OSError, UnicodeDecodeError, subprocess.CalledProcessError) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise DiscoveryError(
+            f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S:g} s; "
+            "check the repository and try again (#301)"
+        ) from exc
+    except OSError as exc:
+        raise DiscoveryError(f"cannot resolve repository with git {' '.join(args)}: {exc}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise DiscoveryError(
+            f"cannot resolve repository with git {' '.join(args)}: "
+            f"{detail or f'exit {proc.returncode}'}"
+        )
+    try:
+        return proc.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
         raise DiscoveryError(f"cannot resolve repository with git {' '.join(args)}: {exc}") from exc
 
 
@@ -129,10 +150,29 @@ def _default_branch(root: Path, common: Path) -> str:
 
 def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     root, common = resolve_checkout(cwd)
-    origin = _git(root, "remote", "get-url", "origin")
+    try:
+        origin = _git(root, "remote", "get-url", "origin")
+    except DiscoveryError as exc:
+        # Name the cause for a smoke checkout with no origin (#301): `up`
+        # fails fast here instead of hanging.
+        raise DiscoveryError(
+            f"{exc}; the checkout needs an origin remote "
+            "(a GitHub origin for smoke runs; see guides/worker.md)"
+        ) from exc
     if not origin:
-        raise DiscoveryError("origin remote is empty")
-    default_branch = _default_branch(root, common)
+        raise DiscoveryError(
+            "origin remote is empty; the checkout needs an origin remote "
+            "(a GitHub origin for smoke runs; see guides/worker.md)"
+        )
+    try:
+        default_branch = _default_branch(root, common)
+    except DiscoveryError as exc:
+        if "origin/HEAD is unset" in str(exc):
+            raise DiscoveryError(
+                f"{exc}; the smoke checkout needs origin/HEAD set "
+                "(clone with an origin, or run git remote set-head origin --auto)"
+            ) from exc
+        raise
     forge = detect_forge(origin, root, probe_cli=probe_cli, git_common_dir=common)
     return Repository(root, common, origin, default_branch, forge)
 
@@ -215,14 +255,25 @@ def derive_hub_name(checkout: Path) -> str:
 
 def extract_origin_host(origin: str) -> str | None:
     """Extract the remote host from an origin URL or scp-style address."""
+    text = origin.strip()
+    # Local paths never name a forge host (#301): Windows drive-letter
+    # (`C:\\`, `C:/`), UNC (`\\\\server\\share`), `file://` URLs, and any
+    # path with a backslash. Without this, `C:\\...` parses as host `c`
+    # and `file:///...` as host `file`, triggering bogus `gh`/`glab` probes.
+    if text.startswith("file://"):
+        return None
+    if re.match(r"^[a-zA-Z]:([\\/]|$)", text):
+        return None
+    if "\\" in text:
+        return None
     try:
-        parsed = urlparse(origin)
+        parsed = urlparse(text)
         host = parsed.hostname
     except ValueError:
         return None
     if host:
         return host.lower()
-    match = re.match(r"^(?:[^@]+@)?([^:/]+):", origin)
+    match = re.match(r"^(?:[^@]+@)?([^:/]+):", text)
     if match:
         return match.group(1).lower()
     return None
@@ -461,11 +512,18 @@ def verify_local_hub(hub: LocalHub) -> None:
             "its address. Stop that process, then run robomate up in that checkout"
         )
     failure = health.describe() if health is not None else "is unreachable"
+    # Name the stale state `up` left behind (#301): hub.json still records
+    # the stopped hub, so `down` and `status` can point at it instead of
+    # only saying "not running".
+    stale = (
+        f"stale state remains in {state_dir(hub.checkout) / 'hub.json'} "
+        f"(hub_id {hub.hub_id}, pid {pid or '-'}, port {hub.info.get('port') or '-'})"
+    )
     if alive:
-        raise DiscoveryError(f"{where} {failure}; recorded pid {pid} is visible")
+        raise DiscoveryError(f"{where} {failure}; recorded pid {pid} is visible; {stale}")
     if health is not None and health.timed_out:
-        raise DiscoveryError(f"{where} {failure}")
-    raise DiscoveryError(f"{where} is not running; run robomate up in that checkout")
+        raise DiscoveryError(f"{where} {failure}; {stale}")
+    raise DiscoveryError(f"{where} is not running; {stale}; run robomate up in that checkout")
 
 
 def local_hub(checkout: Path) -> LocalHub | None:
