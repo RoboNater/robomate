@@ -2,8 +2,10 @@
 
 A hub belongs to the checkout where `robomate up` runs (spec §4): the main
 checkout or a linked worktree. Every consumer finds a hub's state through
-`state_dir()` and `token_file()`, so moving the state out of the checkout
-(M2) is a change in this module only.
+`state_dir()` and `token_file()`, which take the checkout's binding or the
+machine registry's entry, so where state lives is a decision made in this
+module only: beside the hub's agent worktrees for a new hub, in the owning
+checkout for a legacy hub that has not been relocated.
 """
 
 from __future__ import annotations
@@ -14,10 +16,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from .sharing import SHARING_RETRY_DELAYS_S, retry_sharing_violation
@@ -137,20 +140,94 @@ def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     return Repository(root, common, origin, default_branch, forge)
 
 
-def state_dir(checkout: Path) -> Path:
-    """The one resolver from a hub's owning checkout to its state directory (spec §4).
+# The only places that spell these names (a test fails if any other module does).
+# A legacy hub keeps its state in the owning checkout's `.robomate/`; a hub
+# relocated by Step 6 of M2 keeps it in `<worktree_root>/<hub>/state/`, and a
+# worktree root is `<parent>/<repo>` plus the same suffix (spec §4).
+_LEGACY_STATE_DIRNAME = ".robomate"
+WORKTREE_ROOT_SUFFIX = ".robomate"
+BINDING_FILENAME = "robomate-binding.json"
+ROOT_RECORD_FILENAME = "robomate-root.json"
+BINDING_VERSION = 1
 
-    Until M2 moves state beside the hub's agent worktrees, it is the owning
-    checkout's `.robomate/`, excluded through the git common directory.
+
+@dataclass(frozen=True)
+class Binding:
+    """What a checkout's `robomate-binding.json` records (spec §4 "Binding").
+
+    The checkout is bound to one hub as its `owner` or as an `agent` by that
+    name. The record names where the hub's state and token file are and holds
+    no token. `checkout` is the hub's owning checkout, which an agent's
+    worktree is not.
     """
 
-    return checkout / ".robomate"
+    role: Literal["owner", "agent"]
+    hub_id: str
+    name: str | None
+    checkout: Path
+    state_dir: Path
+    token_file: Path
+    agent: str | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "version": BINDING_VERSION,
+            "role": self.role,
+            "hub_id": self.hub_id,
+            "name": self.name,
+            "checkout": str(self.checkout),
+            "state_dir": str(self.state_dir),
+            "token_file": str(self.token_file),
+        }
+        if self.agent is not None:
+            value["agent"] = self.agent
+        return value
 
 
-def token_file(checkout: Path) -> Path:
-    """The hub's bearer token file, found through the same resolver."""
+def legacy_state_dir(checkout: Path) -> Path:
+    """Where a hub created before Step 6 keeps its state: the owning checkout's directory."""
 
-    return state_dir(checkout) / "token"
+    return checkout / _LEGACY_STATE_DIRNAME
+
+
+def is_legacy_state_dir(path: Path) -> bool:
+    """Whether a state directory is a checkout's legacy one rather than a hub namespace's."""
+
+    return path.name == _LEGACY_STATE_DIRNAME
+
+
+def _location_field(source: Binding | Mapping[str, Any], key: str) -> object:
+    return getattr(source, key, None) if isinstance(source, Binding) else source.get(key)
+
+
+def state_dir(source: Binding | Mapping[str, Any]) -> Path:
+    """The one resolver from a hub's binding or registry entry to its state directory (spec §4).
+
+    A new hub's state is in `<worktree_root>/<hub>/state/` and the record
+    names it. A record that names none, written before Step 6, is a legacy
+    hub run in place: its owning checkout's legacy directory.
+    """
+
+    recorded = _location_field(source, "state_dir")
+    if recorded:
+        return Path(str(recorded))
+    checkout = source.checkout if isinstance(source, Binding) else hub_checkout(source)
+    if checkout is None:
+        raise DiscoveryError("the hub's record names neither a state location nor a checkout")
+    return legacy_state_dir(checkout)
+
+
+def token_file(source: Binding | Mapping[str, Any]) -> Path:
+    """The hub's bearer token file, found through the same resolver (spec §12).
+
+    A relocated hub keeps it in its own `token/` directory; a legacy hub, in
+    its state directory.
+    """
+
+    recorded = _location_field(source, "token_file")
+    if recorded:
+        return Path(str(recorded))
+    return state_dir(source) / "token"
 
 
 def hub_checkout(info: Mapping[str, Any]) -> Path | None:
@@ -162,6 +239,135 @@ def hub_checkout(info: Mapping[str, Any]) -> Path | None:
 
     value = info.get("checkout") or info.get("repo_root")
     return Path(str(value)) if value else None
+
+
+def checkout_git_dir(checkout: Path) -> Path:
+    """The checkout's own git directory, found through git, never constructed.
+
+    `.git` in a main checkout, `<common>/worktrees/<id>` in a linked worktree
+    (spec §4 "Binding").
+    """
+
+    return _absolute_git_path(checkout, "--git-dir")
+
+
+# On Windows, opening hub.json while write_hub_json's os.replace still holds
+# it, or while another process (antivirus, a concurrent reader) has it open
+# without FILE_SHARE_DELETE, fails with a transient sharing violation that the
+# C runtime reports as EACCES (#103). Retry briefly; a file that stays
+# unreadable still raises DiscoveryError. The binding and the root record are
+# read and written the same way.
+_READ_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
+# os.replace cannot replace a destination that another process holds open
+# without FILE_SHARE_DELETE, and Python's open() never passes that flag, so a
+# concurrent reader (robomate status/down/discover) can cause a transient
+# PermissionError (winerror 5) (#114). Retry briefly, with the same delays.
+_WRITE_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
+
+
+def _read_json_object(path: Path, what: str) -> dict[str, Any] | None:
+    try:
+        text = retry_sharing_violation(
+            lambda: path.read_text(encoding="utf-8"), _READ_RETRY_DELAYS_S
+        )
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise DiscoveryError(f"cannot read {path}: {exc}") from exc
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise DiscoveryError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise DiscoveryError(f"invalid {what} in {path}")
+    return value
+
+
+def _write_json_atomically(directory: Path, filename: str, value: Mapping[str, Any]) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=".robomate-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        retry_sharing_violation(
+            lambda: os.replace(temporary, directory / filename), _WRITE_RETRY_DELAYS_S
+        )
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def read_binding(git_dir: Path) -> Binding | None:
+    """The binding in a checkout's git directory, or None when it is not bound (spec §4)."""
+
+    path = git_dir / BINDING_FILENAME
+    value = _read_json_object(path, "binding")
+    if value is None:
+        return None
+    version = value.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        raise DiscoveryError(f"invalid binding in {path}: no version")
+    if version > BINDING_VERSION:
+        raise DiscoveryError(
+            f"{path} is version {version}, written by a newer robomate than this one understands"
+        )
+    role, hub_id, agent = value.get("role"), value.get("hub_id"), value.get("agent")
+    if role not in ("owner", "agent") or not isinstance(hub_id, str) or not hub_id:
+        raise DiscoveryError(f"invalid binding in {path}: it needs a role and a hub_id")
+    if (role == "agent") != (isinstance(agent, str) and bool(agent)):
+        raise DiscoveryError(f"invalid binding in {path}: only an agent binding names an agent")
+    paths: dict[str, Path] = {}
+    for key in ("checkout", "state_dir", "token_file"):
+        raw = value.get(key)
+        if not isinstance(raw, str) or not Path(raw).is_absolute():
+            raise DiscoveryError(f"invalid binding in {path}: {key} must be an absolute path")
+        paths[key] = Path(raw)
+    name = value.get("name")
+    return Binding(
+        role,
+        hub_id,
+        name if isinstance(name, str) and name else None,
+        paths["checkout"],
+        paths["state_dir"],
+        paths["token_file"],
+        agent if role == "agent" else None,
+    )
+
+
+def write_binding(git_dir: Path, binding: Binding) -> None:
+    """Record a checkout's binding in its git directory. The record holds no token."""
+
+    _write_json_atomically(git_dir, BINDING_FILENAME, binding.to_json())
+
+
+def _git_worktrees(common: Path) -> list[Path]:
+    """Every checkout of a repository that still exists: the main one and the linked ones."""
+
+    listing = _git(common, f"--git-dir={common}", "worktree", "list", "--porcelain")
+    paths: list[Path] = []
+    for line in listing.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line.removeprefix("worktree "))
+            if path.is_dir():
+                paths.append(path)
+    return paths
+
+
+def hub_bindings(common: Path, hub_id: str) -> list[tuple[Path, Binding]]:
+    """Each (git directory, binding) of the checkouts of one repository bound to a hub."""
+
+    found = []
+    for path in _git_worktrees(common):
+        try:
+            git_dir = checkout_git_dir(path)
+        except DiscoveryError:
+            continue
+        binding = read_binding(git_dir)
+        if binding is not None and binding.hub_id == hub_id:
+            found.append((git_dir, binding))
+    return found
 
 
 # Hub names (spec §4 "Hub name"): one path component on Windows and Linux,
@@ -259,7 +465,7 @@ def detect_forge(
     if host == "gitlab.com":
         return "gitlab"
 
-    # 1. Check configuration layers (repository, user, and legacy .robomate/config.toml)
+    # 1. Check configuration layers (repository, user, and a legacy hub's config.toml)
     common = git_common_dir
     if common is None and root is not None:
         if (root / ".git").is_file() or (root / ".git" / "HEAD").is_file():
@@ -269,7 +475,10 @@ def detect_forge(
                 common = root / ".git"
         else:
             common = root / ".git"
-    hub_cfg = state_dir(root) / "config.toml" if root is not None else None
+    # Only a legacy hub's own config may still hold [forge] (spec §4); a hub
+    # relocated by Step 6 of M2 has no such layer, and the forge is the
+    # repository's and the user's to set.
+    hub_cfg = legacy_state_dir(root) / "config.toml" if root is not None else None
     layered = load_config_layers(
         hub_config=hub_cfg,
         git_common_dir=common,
@@ -340,76 +549,238 @@ def detect_forge(
     return "unknown"
 
 
-# On Windows, opening hub.json while write_hub_json's os.replace still holds
-# it, or while another process (antivirus, a concurrent reader) has it open
-# without FILE_SHARE_DELETE, fails with a transient sharing violation that the
-# C runtime reports as EACCES (#103). Retry briefly; a file that stays
-# unreadable still raises DiscoveryError.
-_READ_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
+def read_hub_json(state: Path) -> dict[str, Any] | None:
+    """The identity and last address a hub recorded in its state directory, if any."""
+
+    return _read_json_object(state / "hub.json", "hub metadata")
 
 
-def read_hub_json(root: Path) -> dict[str, Any] | None:
-    path = state_dir(root) / "hub.json"
-    try:
-        text = retry_sharing_violation(
-            lambda: path.read_text(encoding="utf-8"), _READ_RETRY_DELAYS_S
-        )
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError) as exc:
-        raise DiscoveryError(f"cannot read {path}: {exc}") from exc
-    try:
-        value = json.loads(text)
-    except ValueError as exc:
-        raise DiscoveryError(f"cannot read {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise DiscoveryError(f"invalid hub metadata in {path}")
-    return value
-
-
-# On Windows, os.replace cannot replace a destination that another process
-# holds open without FILE_SHARE_DELETE, and Python's open() never passes that
-# flag, so a concurrent reader (robomate status/down/discover) can cause a
-# transient PermissionError (winerror 5) (#114). Retry briefly, with the same
-# delays as reads.
-_WRITE_RETRY_DELAYS_S = SHARING_RETRY_DELAYS_S
-
-
-def write_hub_json(root: Path, value: Mapping[str, Any]) -> None:
-    directory = state_dir(root)
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".hub-", dir=directory)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        retry_sharing_violation(
-            lambda: os.replace(temporary, directory / "hub.json"), _WRITE_RETRY_DELAYS_S
-        )
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+def write_hub_json(state: Path, value: Mapping[str, Any]) -> None:
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _write_json_atomically(state, "hub.json", value)
 
 
 def ensure_excluded(common: Path) -> None:
+    """Keep a legacy hub's state directory out of `git status` through `info/exclude`."""
+
     path = common / "info" / "exclude"
     path.parent.mkdir(parents=True, exist_ok=True)
+    line = f"/{_LEGACY_STATE_DIRNAME}/"
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    if "/.robomate/" not in existing.splitlines():
+    if line not in existing.splitlines():
         with path.open("a", encoding="utf-8") as stream:
             if existing and not existing.endswith("\n"):
                 stream.write("\n")
-            stream.write("/.robomate/\n")
+            stream.write(f"{line}\n")
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def read_root_record(root: Path) -> dict[str, Any] | None:
+    """The ownership record of a worktree root, if it has one (spec §4)."""
+
+    path = root / ROOT_RECORD_FILENAME
+    for delay in (0.05, 0.1, None):
+        try:
+            return _read_json_object(path, "worktree root record")
+        except DiscoveryError:
+            # A sibling hub's first `up` may be between creating the record and
+            # writing it: an empty file is read again shortly.
+            if delay is None or path.stat().st_size:
+                raise
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def check_worktree_root(root: Path, common: Path) -> bool:
+    """Whether `root` is this repository's worktree root; refuse it when it is another's.
+
+    A root records, when its first hub creates it, the git common directory
+    it belongs to, and a hub of any other repository refuses it and asks for a
+    repository-level `worktree_root` (spec §4). Returns False for a root that
+    does not exist yet or is empty, which `claim_worktree_root` then creates.
+    A directory that holds other things but no record is not robomate's to
+    adopt: two repositories of one name could otherwise share it unnoticed.
+    """
+
+    from .config_layers import repository_config_path
+
+    advice = (
+        f"set a repository-level worktree_root in {repository_config_path(common)} "
+        "(spec §4 Configuration layers)"
+    )
+    if not root.exists():
+        return False
+    if not root.is_dir():
+        raise DiscoveryError(f"the worktree root {root} is not a directory; {advice}")
+    record = read_root_record(root)
+    if record is None:
+        if any(root.iterdir()):
+            raise DiscoveryError(
+                f"the worktree root {root} holds files but no {ROOT_RECORD_FILENAME}, "
+                f"so it is not known to belong to {repository_dir(common)}; {advice}, "
+                "or move what it holds away"
+            )
+        return False
+    recorded = record.get("git_common_dir")
+    if not isinstance(recorded, str) or not _same_path(Path(recorded), common):
+        raise DiscoveryError(
+            f"the worktree root {root} belongs to the repository {recorded}, not {common}; {advice}"
+        )
+    return True
+
+
+def claim_worktree_root(root: Path, common: Path) -> None:
+    """Create a worktree root with its ownership record, or confirm it is this repository's."""
+
+    if check_worktree_root(root, common):
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        with (root / ROOT_RECORD_FILENAME).open("x", encoding="utf-8") as stream:
+            json.dump({"git_common_dir": str(common)}, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+    except FileExistsError:
+        # A sibling hub of another repository created it first; compare.
+        check_worktree_root(root, common)
+
+
+def hub_paths(worktree_root: Path, name: str) -> tuple[Path, Path]:
+    """A hub's state directory and token file under a worktree root (spec §4, §12).
+
+    The token has a directory of its own, so a harness that sandboxes its MCP
+    servers' reads can be granted the token alone, never `hub.db` or `runs/`.
+    """
+
+    namespace = worktree_root / name
+    return namespace / "state", namespace / "token" / "token"
+
+
+def namespace_free(namespace: Path) -> bool:
+    """Whether a hub namespace directory can be created: absent, or only an abandoned skeleton.
+
+    A start that failed after creating its directories leaves empty `state/`
+    and `token/` directories and the held `up.lock`; those do not make the
+    name taken.
+    """
+
+    if not namespace.exists():
+        return True
+    if not namespace.is_dir():
+        return False
+    return all(
+        path.is_dir() or (path.name == "up.lock" and path.parent.name == "state")
+        for path in namespace.rglob("*")
+    )
+
+
+@dataclass(frozen=True)
+class HubPlacement:
+    """Where `robomate up` keeps a checkout's hub, and whether it has to create it."""
+
+    state_dir: Path
+    token_file: Path
+    new: bool
+    """The hub does not exist yet, and `create_hub_dirs` makes its directories."""
+    name: str | None = None
+    """A new hub's name. An existing hub's name is in its hub.json."""
+    worktree_root: Path | None = None
+    git_common_dir: Path | None = None
+
+    @property
+    def legacy(self) -> bool:
+        return is_legacy_state_dir(self.state_dir)
+
+
+def plan_hub_placement(
+    repo: Repository, requested_name: str | None, environ: Mapping[str, str] | None = None
+) -> HubPlacement:
+    """Where the hub of `repo.root` lives, for `up` (spec §4 "State location", "Migration").
+
+    1. The checkout's binding: an owner binding names the hub's state and
+       token wherever they are; a checkout bound as an agent is refused, since
+       `up` runs only in a hub's owning checkout.
+    2. State a hub left in the checkout before Step 6 (a hub.json, hub.db or
+       config.toml of its own): it keeps running in place.
+    3. Otherwise a new hub, in `<worktree_root>/<hub>/state/` with its token in
+       `<worktree_root>/<hub>/token/token`. Its name must not be taken as a
+       directory under the root, and the root must be this repository's.
+    """
+
+    from .config_layers import load_config_layers
+
+    git_dir = checkout_git_dir(repo.root)
+
+    def bound() -> HubPlacement | None:
+        binding = read_binding(git_dir)
+        if binding is None:
+            return None
+        named = binding.name or binding.hub_id
+        if binding.role == "agent":
+            raise DiscoveryError(
+                f"{repo.root} is bound to hub {named} as agent {binding.agent!r}; "
+                f"robomate up runs in a hub's owning checkout, {binding.checkout}, "
+                "never in an agent's worktree"
+            )
+        if not binding.state_dir.is_dir():
+            raise DiscoveryError(
+                f"{repo.root} is bound to hub {named} (hub_id {binding.hub_id}), "
+                f"whose state {binding.state_dir} is missing; restore it, or remove "
+                f"{git_dir / BINDING_FILENAME} to start a new hub here"
+            )
+        return HubPlacement(binding.state_dir, binding.token_file, False, binding.name)
+
+    placement = bound()
+    if placement is not None:
+        return placement
+    legacy = legacy_state_dir(repo.root)
+    if any((legacy / name).is_file() for name in ("hub.json", "hub.db", "config.toml")):
+        return HubPlacement(legacy, legacy / "token", False)
+    name = (
+        validate_hub_name(requested_name)
+        if requested_name is not None
+        else derive_hub_name(repo.root)
+    )
+    layered = load_config_layers(git_common_dir=repo.git_common_dir, environ=environ)
+    root = layered.worktree_root
+    assert root is not None  # a git common directory always yields a default root
+    check_worktree_root(root, repo.git_common_dir)
+    namespace = root / name
+    if not namespace_free(namespace):
+        # A sibling `up` of this checkout may have bound the hub since the
+        # first look: that is the hub already starting, not a taken name.
+        placement = bound()
+        if placement is not None:
+            return placement
+        raise DiscoveryError(
+            f"hub name {name!r} is taken: {namespace} exists under the worktree root. "
+            "Choose another with robomate up --name"
+        )
+    state, token = hub_paths(root, name)
+    return HubPlacement(state, token, True, name, root, repo.git_common_dir)
+
+
+def create_hub_dirs(placement: HubPlacement) -> None:
+    """Create a hub's directories: `state/` and `token/` apart, both owner-only (spec §4, §12)."""
+
+    if placement.new:
+        assert placement.worktree_root is not None and placement.git_common_dir is not None
+        claim_worktree_root(placement.worktree_root, placement.git_common_dir)
+    for directory in {placement.state_dir, placement.token_file.parent}:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
 
 
 @dataclass(frozen=True)
 class LocalHub:
-    """A hub on this machine, found through its owning checkout's state."""
+    """A hub on this machine, found through its binding or the registry's entry."""
 
     checkout: Path
     info: dict[str, Any]
+    state_dir: Path
+    token_file: Path
 
     @property
     def url(self) -> str:
@@ -430,7 +801,7 @@ class LocalHub:
         return f"hub {self.name}" if self.name else f"hub for {self.checkout}"
 
     def endpoint(self) -> HubEndpoint:
-        token = token_file(self.checkout).read_text(encoding="utf-8").strip()
+        token = self.token_file.read_text(encoding="utf-8").strip()
         return HubEndpoint(self.url.rstrip("/"), token)
 
 
@@ -468,13 +839,51 @@ def verify_local_hub(hub: LocalHub) -> None:
     raise DiscoveryError(f"{where} is not running; run robomate up in that checkout")
 
 
-def local_hub(checkout: Path) -> LocalHub | None:
-    """The hub a checkout owns, if `up` has ever recorded one there."""
+def bound_hub(binding: Binding) -> LocalHub:
+    """The hub a binding names. A hub whose state is gone is an error naming it (spec §4)."""
 
-    info = read_hub_json(checkout)
+    info = read_hub_json(binding.state_dir)
+    if info is None or str(info.get("hub_id") or "") != binding.hub_id:
+        raise DiscoveryError(
+            f"this checkout is bound to hub {binding.name or binding.hub_id} "
+            f"(hub_id {binding.hub_id}), owned by checkout {binding.checkout}, "
+            f"but the hub's state at {binding.state_dir} is missing or belongs to "
+            "another hub"
+        )
+    return LocalHub(binding.checkout, info, binding.state_dir, binding.token_file)
+
+
+def entry_hub(entry: Mapping[str, Any]) -> LocalHub:
+    """The hub a machine-registry entry names, read from the state location it records."""
+
+    state = state_dir(entry)
+    info = read_hub_json(state)
+    checkout = hub_checkout(entry)
+    if info is None or checkout is None or info.get("hub_id") != entry.get("hub_id"):
+        raise DiscoveryError(
+            f"hub {entry.get('hub_id')} is registered with state at {state}, "
+            "which no longer holds it"
+        )
+    return LocalHub(checkout, info, state, token_file(entry))
+
+
+def local_hub(checkout: Path) -> LocalHub | None:
+    """The hub a checkout is bound to or owns (spec §4 discovery rule 2).
+
+    The checkout's binding, owner or agent, names the hub and where its state
+    is. Without one, a hub that `up` recorded in the checkout's own legacy
+    state before Step 6 is its hub. A binding to a hub whose state is gone is
+    an error naming that hub, never a fall-through to anything else.
+    """
+
+    binding = read_binding(checkout_git_dir(checkout))
+    if binding is not None:
+        return bound_hub(binding)
+    state = legacy_state_dir(checkout)
+    info = read_hub_json(state)
     if info is None or not info.get("url"):
         return None
-    return LocalHub(checkout, info)
+    return LocalHub(checkout, info, state, state / "token")
 
 
 def _explicit(env: Mapping[str, str]) -> HubEndpoint | None:
@@ -542,15 +951,10 @@ def select_hub(selector: str, environ: Mapping[str, str] | None = None) -> Local
             f"--hub {selector}: the name matches hubs of several repositories; "
             f"choose one by hub_id or checkout path:\n{describe_hubs(matches)}"
         )
-    entry = matches[0]
-    registered = hub_checkout(entry)
-    hub = local_hub(registered) if registered is not None else None
-    if hub is None or hub.hub_id != entry.get("hub_id"):
-        raise DiscoveryError(
-            f"--hub {selector}: hub {entry.get('hub_id')} is registered for checkout "
-            f"{registered}, which no longer holds it"
-        )
-    return hub
+    try:
+        return entry_hub(matches[0])
+    except DiscoveryError as exc:
+        raise DiscoveryError(f"--hub {selector}: {exc}") from None
 
 
 def find_hub(
@@ -559,7 +963,7 @@ def find_hub(
     """Find the hub to act on, in the spec §4 discovery order. There is no silent attach.
 
     1. An explicit `--hub` selector, else `ROBOMATE_HUB_URL` with a token.
-    2. The hub the checkout containing `cwd` owns.
+    2. The hub the checkout containing `cwd` is bound to, or owns.
     3. Otherwise an error listing the live hubs and how to choose one. A
        checkout never reaches a hub it was not given, even the only one.
     """

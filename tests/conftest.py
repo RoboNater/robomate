@@ -23,7 +23,7 @@ from agent_hub import create_app
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
-from agent_hub_common.discovery import token_file, write_hub_json
+from agent_hub_common.discovery import legacy_state_dir, write_hub_json
 from fastapi import FastAPI
 
 TOKEN = "test-token"
@@ -471,6 +471,7 @@ def record_local_hub(checkout: Path, url: str, hub_id: str) -> Path:
 
     checkout.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
-    write_hub_json(checkout, {"url": url, "hub_id": hub_id, "name": checkout.name, "pid": None})
-    token_file(checkout).write_text("local-token\n", encoding="utf-8")
+    state = legacy_state_dir(checkout)
+    write_hub_json(state, {"url": url, "hub_id": hub_id, "name": checkout.name, "pid": None})
+    (state / "token").write_text("local-token\n", encoding="utf-8")
     return checkout

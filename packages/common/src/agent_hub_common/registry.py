@@ -48,9 +48,9 @@ OPERATOR_TOKEN_FILE_ENV = "ROBOMATE_OPERATOR_TOKEN_FILE"
 def operator_token_path(environ: Mapping[str, str] | None = None) -> Path:
     """Where the operator credential lives: beside `hubs.json`, never in a repository.
 
-    Agents work inside repositories and read `.robomate/` through discovery, so
-    the one credential they must not hold is kept in the machine's registry
-    directory instead (#128).
+    Agents work inside repositories and read a hub's state through discovery,
+    so the one credential they must not hold is kept in the machine's
+    registry directory instead (#128).
     """
 
     env = os.environ if environ is None else environ
@@ -332,13 +332,15 @@ def hub_healthy(url: str, hub_id: str, timeout_s: float = HEALTHZ_TIMEOUT_S) -> 
 def _stale(entry: Mapping[str, Any]) -> bool:
     """Whether an entry's state is gone, or now belongs to another hub."""
 
-    from .discovery import DiscoveryError, hub_checkout, read_hub_json
+    from .discovery import DiscoveryError, hub_checkout, read_hub_json, state_dir
 
-    checkout = hub_checkout(entry)
-    if checkout is None:
+    # The state location the entry records, not the owning checkout: a hub
+    # relocated out of its checkout outlives it (spec §4), so a removed
+    # worktree does not make its hub stale.
+    if not entry.get("state_dir") and hub_checkout(entry) is None:
         return True
     try:
-        info = read_hub_json(checkout)
+        info = read_hub_json(state_dir(entry))
     except DiscoveryError:
         return False
     return info is None or info.get("hub_id") != entry.get("hub_id")
@@ -386,6 +388,14 @@ def hub_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]
             if len(kept) != len(current):
                 _write(path, kept)
     return [item | {"live": live} for item, live in checked if item not in gone]
+
+
+def recorded_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    """Every entry as recorded, without probing liveness or pruning (a quick lookup by hub_id)."""
+
+    path = registry_path(environ)
+    with _locked(path):
+        return _read(path)
 
 
 def live_entries(environ: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
@@ -437,6 +447,33 @@ def mark_stopped(
         ]
         if updated != entries:
             _write(path, updated)
+
+
+def update_location(
+    hub_id: str,
+    state_dir: Path,
+    token_file: Path,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Point one hub's entry at the state and token it was relocated to.
+
+    Returns False when the hub has no entry, as after `robomate forget`; it
+    is registered with its new location at its next `up`.
+    """
+
+    path = registry_path(environ)
+    with _locked(path):
+        entries = _read(path)
+        updated = [
+            item | {"state_dir": str(state_dir), "token_file": str(token_file)}
+            if item.get("hub_id") == hub_id
+            else item
+            for item in entries
+        ]
+        if updated == entries:
+            return any(item.get("hub_id") == hub_id for item in entries)
+        _write(path, updated)
+        return True
 
 
 def forget(hub_id: str, environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:

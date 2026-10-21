@@ -19,12 +19,11 @@ from agent_hub_common.discovery import (
     ensure_excluded,
     find_hub,
     is_linked_worktree,
+    legacy_state_dir,
     read_hub_json,
     repository_dir,
     resolve_checkout,
     resolve_repository,
-    state_dir,
-    token_file,
     validate_hub_name,
     write_hub_json,
 )
@@ -66,7 +65,7 @@ def test_each_checkout_owns_its_hub_and_shares_the_common_dir(
         assert (info.root, info.default_branch, info.forge) == (owner, "main", "github")
     assert not is_linked_worktree(repository, common)
     assert is_linked_worktree(worktree, common)
-    assert state_dir(worktree) != state_dir(repository)
+    assert legacy_state_dir(worktree) != legacy_state_dir(repository)
 
 
 def test_checkout_under_a_non_ascii_path_resolves_to_its_actual_path(tmp_path: Path) -> None:
@@ -156,15 +155,15 @@ def test_exclude_once_and_atomic_hub_json(
     ensure_excluded(common)
     ensure_excluded(common)
     assert (common / "info/exclude").read_text().splitlines().count("/.robomate/") == 1
-    write_hub_json(repository, {"port": 8420})
-    assert read_hub_json(repository) == {"port": 8420}
+    write_hub_json(legacy_state_dir(repository), {"port": 8420})
+    assert read_hub_json(legacy_state_dir(repository)) == {"port": 8420}
 
     def fail_replace(*args: object) -> None:
         raise OSError("injected replace failure")
 
     monkeypatch.setattr("agent_hub_common.discovery.os.replace", fail_replace)
     with pytest.raises(OSError, match="injected"):
-        write_hub_json(repository, {"port": 8421})
+        write_hub_json(legacy_state_dir(repository), {"port": 8421})
     assert json.loads((repository / ".robomate/hub.json").read_text()) == {"port": 8420}
     assert sorted(p.name for p in (repository / ".robomate").iterdir()) == ["hub.json"]
 
@@ -173,7 +172,7 @@ def test_discovery_prefers_explicit_then_repo(
     repository: Path, healthz: Callable[[str], str]
 ) -> None:
     url = healthz("repo-id")
-    write_hub_json(repository, {"url": url, "hub_id": "repo-id"})
+    write_hub_json(legacy_state_dir(repository), {"url": url, "hub_id": "repo-id"})
     (repository / ".robomate/token").write_text("repo-token\n")
     assert discover(repository, {}) == HubEndpoint(url, "repo-token")
     assert discover(
@@ -187,25 +186,32 @@ def test_discover_checks_the_local_hub_identity_before_use(
 ) -> None:
     """#147 r1-1: a local hub is used only when /healthz reports its recorded hub_id."""
 
-    (repository / ".robomate").mkdir()
-    token_file(repository).write_text("repo-token\n")
+    legacy_state_dir(repository).mkdir()
+    (legacy_state_dir(repository) / "token").write_text("repo-token\n")
     matching = healthz("expected-hub")
-    write_hub_json(repository, {"url": matching, "hub_id": "expected-hub", "name": "repo"})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": matching, "hub_id": "expected-hub", "name": "repo"}
+    )
     assert discover(repository, {}) == HubEndpoint(matching, "repo-token")
 
     other = healthz("different-hub")
-    write_hub_json(repository, {"url": other, "hub_id": "expected-hub", "name": "repo"})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": other, "hub_id": "expected-hub", "name": "repo"}
+    )
     with pytest.raises(DiscoveryError, match="answers as hub different-hub, not expected-hub"):
         discover(repository, {})
 
     stopped = closed_port_url()
     write_hub_json(
-        repository, {"url": stopped, "hub_id": "expected-hub", "name": "repo", "pid": None}
+        legacy_state_dir(repository),
+        {"url": stopped, "hub_id": "expected-hub", "name": "repo", "pid": None},
     )
     with pytest.raises(DiscoveryError, match=r"hub repo \(checkout .*\) at .* is not running"):
         discover(repository, {})
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 4321)
-    write_hub_json(repository, {"url": stopped, "hub_id": "expected-hub", "pid": 4321})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": stopped, "hub_id": "expected-hub", "pid": 4321}
+    )
     with pytest.raises(DiscoveryError, match="unreachable; recorded pid 4321 is visible"):
         discover(repository, {})
     # An explicit URL is taken as given: it may name a remote hub.
@@ -215,8 +221,10 @@ def test_discover_checks_the_local_hub_identity_before_use(
 
 def _record_hub(checkout: Path, hub_id: str, name: str, env: dict[str, str]) -> None:
     common = resolve_checkout(checkout)[1]
-    write_hub_json(checkout, {"url": f"http://{name}:8420", "hub_id": hub_id, "name": name})
-    token_file(checkout).write_text(f"{name}-token\n")
+    write_hub_json(
+        legacy_state_dir(checkout), {"url": f"http://{name}:8420", "hub_id": hub_id, "name": name}
+    )
+    (legacy_state_dir(checkout) / "token").write_text(f"{name}-token\n")
     register(
         {
             "hub_id": hub_id,
@@ -297,7 +305,7 @@ def test_hub_json_read_retries_transient_permission_error(
     repository: Path, monkeypatch: pytest.MonkeyPatch, denials: int
 ) -> None:
     # Two retries are allowed: two denials recover, a third is reported (#103).
-    write_hub_json(repository, {"port": 8420})
+    write_hub_json(legacy_state_dir(repository), {"port": 8420})
     monkeypatch.setattr("agent_hub_common.discovery._READ_RETRY_DELAYS_S", (0.0, 0.0))
     real_read_text = Path.read_text
     attempts = 0
@@ -311,25 +319,25 @@ def test_hub_json_read_retries_transient_permission_error(
 
     monkeypatch.setattr(Path, "read_text", flaky_read_text)
     if denials < 3:
-        assert read_hub_json(repository) == {"port": 8420}
+        assert read_hub_json(legacy_state_dir(repository)) == {"port": 8420}
     else:
         with pytest.raises(DiscoveryError, match="Permission denied"):
-            read_hub_json(repository)
+            read_hub_json(legacy_state_dir(repository))
     assert attempts == min(denials + 1, 3)
 
 
 def test_hub_json_invalid_content_is_not_retried(
     repository: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (repository / ".robomate").mkdir()
+    legacy_state_dir(repository).mkdir()
     (repository / ".robomate/hub.json").write_text("[1]")
     with pytest.raises(DiscoveryError, match="invalid hub metadata"):
-        read_hub_json(repository)
+        read_hub_json(legacy_state_dir(repository))
     monkeypatch.setattr("agent_hub_common.sharing.time.sleep", pytest.fail)
     for content in (b"{not json", b"\xff"):
         (repository / ".robomate/hub.json").write_bytes(content)
         with pytest.raises(DiscoveryError, match="cannot read"):
-            read_hub_json(repository)
+            read_hub_json(legacy_state_dir(repository))
 
 
 def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> None:
@@ -355,7 +363,7 @@ def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> N
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     delete, share_all, open_existing = 0x00010000, 0x7, 3
 
-    write_hub_json(repository, {"port": 8420})
+    write_hub_json(legacy_state_dir(repository), {"port": 8420})
     path = repository / ".robomate/hub.json"
     handle = kernel32.CreateFileW(str(path), delete, share_all, None, open_existing, 0, None)
     assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
@@ -368,7 +376,7 @@ def test_hub_json_read_survives_windows_sharing_violation(repository: Path) -> N
     timer = threading.Timer(0.05, kernel32.CloseHandle, (handle,))
     timer.start()
     try:
-        assert read_hub_json(repository) == {"port": 8420}
+        assert read_hub_json(legacy_state_dir(repository)) == {"port": 8420}
     finally:
         timer.join()
 
@@ -378,7 +386,7 @@ def test_hub_json_write_retries_transient_permission_error(
     repository: Path, monkeypatch: pytest.MonkeyPatch, denials: int
 ) -> None:
     # Two retries are allowed: two denials recover, a third is reported (#114).
-    write_hub_json(repository, {"port": 8420})
+    write_hub_json(legacy_state_dir(repository), {"port": 8420})
     monkeypatch.setattr("agent_hub_common.discovery._WRITE_RETRY_DELAYS_S", (0.0, 0.0))
     real_replace = os.replace
     attempts = 0
@@ -392,12 +400,12 @@ def test_hub_json_write_retries_transient_permission_error(
 
     monkeypatch.setattr("agent_hub_common.discovery.os.replace", flaky_replace)
     if denials < 3:
-        write_hub_json(repository, {"port": 8421})
-        assert read_hub_json(repository) == {"port": 8421}
+        write_hub_json(legacy_state_dir(repository), {"port": 8421})
+        assert read_hub_json(legacy_state_dir(repository)) == {"port": 8421}
     else:
         with pytest.raises(PermissionError, match="Permission denied"):
-            write_hub_json(repository, {"port": 8421})
-        assert read_hub_json(repository) == {"port": 8420}
+            write_hub_json(legacy_state_dir(repository), {"port": 8421})
+        assert read_hub_json(legacy_state_dir(repository)) == {"port": 8420}
     assert attempts == min(denials + 1, 3)
 
 
@@ -407,14 +415,14 @@ def test_hub_json_write_survives_windows_sharing_violation(repository: Path) -> 
     # sharing violation until that handle closes.
     if sys.platform != "win32":  # in the body, so mypy skips the rest off Windows
         pytest.skip("Windows share-mode semantics")
-    write_hub_json(repository, {"port": 8420})
+    write_hub_json(legacy_state_dir(repository), {"port": 8420})
     path = repository / ".robomate/hub.json"
     holder = path.open(encoding="utf-8")
     try:
         timer = threading.Timer(0.05, holder.close)
         timer.start()
         try:
-            write_hub_json(repository, {"port": 8421})
+            write_hub_json(legacy_state_dir(repository), {"port": 8421})
         finally:
             timer.join()
             if not holder.closed:
@@ -423,7 +431,7 @@ def test_hub_json_write_survives_windows_sharing_violation(repository: Path) -> 
         if not holder.closed:
             holder.close()
         raise
-    assert read_hub_json(repository) == {"port": 8421}
+    assert read_hub_json(legacy_state_dir(repository)) == {"port": 8421}
 
 
 def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
@@ -434,27 +442,35 @@ def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
 ) -> None:
     """#230: a hub slower than the old 0.5 s check is used; a silent one is named as such."""
 
-    (repository / ".robomate").mkdir()
-    token_file(repository).write_text("repo-token\n")
+    legacy_state_dir(repository).mkdir()
+    (legacy_state_dir(repository) / "token").write_text("repo-token\n")
     slow = healthz("expected-hub", 1.0)
-    write_hub_json(repository, {"url": slow, "hub_id": "expected-hub", "name": "repo"})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": slow, "hub_id": "expected-hub", "name": "repo"}
+    )
     assert discover(repository, {}) == HubEndpoint(slow, "repo-token")
 
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_TIMEOUT_S", 0.2)
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 0.4)
     silent = silent_url()
-    write_hub_json(repository, {"url": silent, "hub_id": "expected-hub", "name": "repo"})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": silent, "hub_id": "expected-hub", "name": "repo"}
+    )
     with pytest.raises(DiscoveryError, match=r"at .* did not answer /healthz within 0.2 s$"):
         discover(repository, {})
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 4321)
-    write_hub_json(repository, {"url": silent, "hub_id": "expected-hub", "pid": 4321})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": silent, "hub_id": "expected-hub", "pid": 4321}
+    )
     with pytest.raises(
         DiscoveryError, match="did not answer /healthz within 0.4 s; recorded pid 4321 is visible"
     ):
         discover(repository, {})
     # A slow answer from the wrong hub is still refused.
     other = healthz("different-hub", 1.0)
-    write_hub_json(repository, {"url": other, "hub_id": "expected-hub", "pid": 4321})
+    write_hub_json(
+        legacy_state_dir(repository), {"url": other, "hub_id": "expected-hub", "pid": 4321}
+    )
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 10.0)
     with pytest.raises(DiscoveryError, match="answers as hub different-hub, not expected-hub"):
         discover(repository, {})

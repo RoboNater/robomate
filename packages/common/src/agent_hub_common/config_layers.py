@@ -23,7 +23,9 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from .discovery import (
+    WORKTREE_ROOT_SUFFIX,
     DiscoveryError,
+    is_legacy_state_dir,
     repository_dir,
     validate_agent_name,
 )
@@ -190,7 +192,7 @@ def default_worktree_root(git_common_dir: Path) -> Path:
     """Return the default `<parent>/<repo>.robomate` worktree root (mvp-spec §4)."""
     repo_dir = repository_dir(git_common_dir)
     name = repository_name(git_common_dir)
-    return repo_dir.parent / f"{name}.robomate"
+    return repo_dir.parent / f"{name}{WORKTREE_ROOT_SUFFIX}"
 
 
 def repository_config_path(git_common_dir: Path) -> Path:
@@ -505,7 +507,7 @@ def load_config_layers(
     )
 
     legacy_forge_ok = (
-        (hub_path is not None and hub_path.parent.name == ".robomate")
+        (hub_path is not None and is_legacy_state_dir(hub_path.parent))
         if allow_legacy_forge is None
         else allow_legacy_forge
     )
@@ -548,7 +550,8 @@ def load_config_layers(
                 else "<git-common-dir>/robomate/config.toml"
             )
             msg = (
-                f"{item.path}: [forge] in .robomate/config.toml is deprecated; move it to {target}"
+                f"{item.path}: [forge] in a legacy hub's config.toml is deprecated; "
+                f"move it to {target}"
             )
             warnings_list.append(msg)
 
@@ -563,7 +566,7 @@ def load_config_layers(
             else:
                 # User-level worktree_root is a parent directory (§4).
                 if common is not None:
-                    worktree_root = raw / f"{repository_name(common)}.robomate"
+                    worktree_root = raw / f"{repository_name(common)}{WORKTREE_ROOT_SUFFIX}"
                 else:
                     worktree_root = raw
             worktree_root_layer = item.layer
@@ -571,7 +574,7 @@ def load_config_layers(
     if worktree_root is None and common is not None:
         worktree_root = default_worktree_root(common)
 
-    # 2. Resolve forge.* (repository > user > legacy hub .robomate/config.toml)
+    # 2. Resolve forge.* (repository > user > a legacy hub's config.toml)
     forge_order = [
         *(item for item in layers if item.layer == "repository"),
         *(item for item in layers if item.layer == "user"),

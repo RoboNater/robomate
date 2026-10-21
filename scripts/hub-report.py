@@ -4,9 +4,15 @@
 Reads a run's hub state and the worker telemetry beside it, and prints
 per-agent, per-task and per-workflow figures:
 
+    uv run --locked python scripts/hub-report.py                # this checkout's hub
+    uv run --locked python scripts/hub-report.py --hub NAME     # a hub `robomate ls` lists
     uv run --locked python scripts/hub-report.py --state-dir /path/to/my-run/hub-state
-    uv run --locked python scripts/hub-report.py --state-dir ... --format json
-    uv run --locked python scripts/hub-report.py --state-dir ... --format md
+    uv run --locked python scripts/hub-report.py --format json
+    uv run --locked python scripts/hub-report.py --format md
+
+Without `--state-dir` the hub's state directory comes from `robomate status
+--json`, which says where the hub keeps it, running or stopped (mvp-spec §4).
+`--state-dir` reads a state directory directly, such as an earlier run's.
 
 The database is opened read-only through a SQLite URI, inside one read
 transaction, so the report is safe to run while the hub is still serving the
@@ -35,6 +41,7 @@ import contextlib
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 import unicodedata
 from collections import defaultdict
@@ -1175,9 +1182,47 @@ def render_text(report: Mapping[str, Any], markdown: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
+def status_state_dir(hub: str | None) -> Path:
+    """The state directory `robomate status --json` reports for a hub (mvp-spec §4).
+
+    A stopped hub exits 1 with the same location, so the exit status is not
+    read: the report is, and a hub with no state location is an error.
+    """
+
+    command = [sys.executable, "-m", "robomate", "status", "--json"]
+    if hub:
+        command += ["--hub", hub]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        timeout=120,
+    )
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        report = None
+    state = report.get("state_dir") if isinstance(report, dict) else None
+    if not state:
+        detail = result.stderr.strip() or f"robomate status exited {result.returncode}"
+        raise ValueError(f"cannot find the hub's state directory: {detail}")
+    return Path(state)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--state-dir", required=True, type=Path, help="the run's HUB_STATE_DIR")
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        help="a hub state directory to read; default: the one `robomate status --json` reports",
+    )
+    parser.add_argument(
+        "--hub",
+        metavar="NAME|HUB_ID|CHECKOUT",
+        help="with no --state-dir, report this hub instead of this checkout's",
+    )
     parser.add_argument("--format", choices=("text", "json", "md"), default="text")
     parser.add_argument(
         "--telemetry",
@@ -1194,7 +1239,17 @@ def main(argv: list[str] | None = None) -> int:
     # A Windows console may not encode every character a label can hold.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="backslashreplace")
-    state_dir = args.state_dir.expanduser()
+    if args.state_dir is not None and args.hub:
+        log("give either --state-dir or --hub, not both")
+        return 2
+    if args.state_dir is not None:
+        state_dir = args.state_dir.expanduser()
+    else:
+        try:
+            state_dir = status_state_dir(args.hub)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            log(str(exc))
+            return 2
     if not (state_dir / "hub.db").is_file():
         log(f"no hub.db in {state_dir}")
         return 2

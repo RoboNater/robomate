@@ -41,7 +41,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_hub_common.discovery import state_dir, token_file
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -231,9 +230,21 @@ async def replay(
                 if time.monotonic() > deadline or hub_process.returncode is not None:
                     raise RuntimeError("robomate up did not start") from exc
                 await asyncio.sleep(0.1)
+        # Where the hub keeps its state and token is the resolver's to say (spec §4).
+        located = json.loads(
+            subprocess.run(
+                [command, "status", "--json"],
+                cwd=repo,
+                env=hub_env,
+                capture_output=True,
+                check=True,
+                encoding="utf-8",
+            ).stdout
+        )
+        state, token = Path(located["state_dir"]), Path(located["token_file"])
         bridge_env = hub_env | {
             "ROBOMATE_HUB_URL": f"http://127.0.0.1:{port}",
-            "ROBOMATE_TOKEN_FILE": str(token_file(repo)),
+            "ROBOMATE_TOKEN_FILE": str(token),
         }
         async with AsyncExitStack() as stack:
             alice_params = StdioServerParameters(
@@ -273,7 +284,7 @@ async def replay(
         subprocess.run([command, "down"], cwd=repo, env=hub_env, capture_output=True)
         await asyncio.wait_for(hub_process.wait(), timeout=10)
     return {
-        "database": state_dir(repo) / "hub.db",
+        "database": state / "hub.db",
         "skipped": dict(skipped),
         "wall_s": round(time.monotonic() - started, 1),
         "worker_hold_s": hold_s,

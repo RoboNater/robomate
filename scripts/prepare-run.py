@@ -75,9 +75,6 @@ from agent_hub.forge_preflight import (
 from agent_hub.gitlab_gate import GitLabGateError, GitLabProject, GlabResult
 from agent_hub.store import HubStore
 from agent_hub_common import MAX_STATEMENT_BYTES
-from agent_hub_common.discovery import read_hub_json, token_file
-from agent_hub_common.discovery import state_dir as hub_state_dir
-from agent_hub_common.registry import HEALTHZ_LIVE_PID_TIMEOUT_S, hub_healthy, process_alive
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from denise import render as render_denise  # noqa: E402
@@ -329,8 +326,41 @@ def check_manifest(manifest_path: Path, run_dir: Path, repository: str) -> None:
             )
 
 
+def hub_status(hub_repo: Path) -> dict[str, Any]:
+    """The hub of ``hub_repo`` as ``robomate status --json`` reports it (spec §4).
+
+    Where the hub's state and token are is the resolver's to say, whatever the
+    layout: a new hub's are beside its agent worktrees, a legacy hub's in the
+    checkout. A running hub's report carries its URL, forge, origin and
+    ``hub_id``; a stopped one exits 1 with ``running: false`` and a reason.
+    ``--hub`` takes the checkout, so a ``ROBOMATE_HUB_URL`` in the environment
+    cannot redirect it to another hub.
+    """
+
+    result = subprocess.run(
+        [sys.executable, "-m", "robomate", "status", "--json", "--hub", str(hub_repo)],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        timeout=120,
+    )
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        report = None
+    if not isinstance(report, dict):
+        detail = result.stderr.strip() or f"robomate status exited {result.returncode}"
+        raise ValueError(f"no running robomate hub in {hub_repo}: {detail}; run robomate up first")
+    return report
+
+
 def check_hub_workflow(
-    hub_repo: Path, run_dir: Path, goal: str, policy: dict[str, Any] | None = None
+    hub_repo: Path,
+    state: Path,
+    run_dir: Path,
+    goal: str,
+    policy: dict[str, Any] | None = None,
 ) -> None:
     """Refuse a different run on a hub with a live workflow; all-`done` hubs are free.
 
@@ -338,7 +368,7 @@ def check_hub_workflow(
     accepts a new run, while a hub with a live (`active`, `paused`,
     `escalated`) or `queued` workflow still requires the same run and goal.
     """
-    path = hub_state_dir(hub_repo) / "hub.db"
+    path = state / "hub.db"
     if not path.exists():
         return
     try:
@@ -540,7 +570,7 @@ def check_concrete_inputs(issue: int | None, work_text: str | None) -> None:
         )
 
 
-def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict[str, str]:
+def queue_goal_in_hub(state: Path, goal: str, policy: dict[str, Any]) -> dict[str, str]:
     """Queue the rendered goal in the hub before Alice starts (#296).
 
     Uses the same storage as `robomate submit`: a queued workflow with the goal
@@ -564,12 +594,12 @@ def queue_goal_in_hub(hub_repo: Path, goal: str, policy: dict[str, Any]) -> dict
     """
 
     check_goal_size(goal)
-    db_path = hub_state_dir(hub_repo) / "hub.db"
+    db_path = state / "hub.db"
     initialize_database(db_path)
     store = HubStore(db_path)
-    state = store.get_state()
-    live = state.get("workflow")
-    queue = state.get("queue") or []
+    hub_state = store.get_state()
+    live = hub_state.get("workflow")
+    queue = hub_state.get("queue") or []
     # Reuse an existing live or queued workflow with the same goal+policy.
     # A done workflow is never reused: get_state returns the most recent done
     # run when nothing is live or queued, and reusing it would leave the queue
@@ -2605,16 +2635,17 @@ def prepare(
         )
     if not hub_repo.is_absolute() or hub_repo != hub_repo.resolve():
         raise ValueError("--hub-repo must be absolute and canonical")
-    hub_info = read_hub_json(hub_repo)
-    if hub_info is None or not hub_info.get("pid"):
+    hub_info = hub_status(hub_repo)
+    if hub_info.get("running") is False:
+        reason = hub_info.get("reason") or "not running"
+        raise ValueError(f"hub in {hub_repo} is not responding ({reason}); run robomate up first")
+    if not hub_info.get("url") or not hub_info.get("state_dir") or not hub_info.get("token_file"):
         raise ValueError(f"no running robomate hub in {hub_repo}; run robomate up first")
     forge = str(hub_info.get("forge") or "github")
     live_url = str(hub_info["url"])
-    live_port = int(hub_info["port"])
-    if not process_alive(int(hub_info["pid"])) or not hub_healthy(
-        live_url, str(hub_info["hub_id"]), HEALTHZ_LIVE_PID_TIMEOUT_S
-    ):
-        raise ValueError(f"hub in {hub_repo} is not responding; run robomate up first")
+    live_port = url_port(live_url, "the hub's URL")
+    hub_state = Path(hub_info["state_dir"])
+    hub_token = Path(hub_info["token_file"])
     if hub_url is not None and hub_url.rstrip("/") != live_url:
         raise ValueError("--hub-url differs from the running hub; configure robomate up")
     if public_url is not None and public_url.rstrip("/") != live_url:
@@ -2654,7 +2685,7 @@ def prepare(
     for path in (hub_repo, *(bob_path if name == "bob" else charlie_path for name in local)):
         if run_dir.is_relative_to(path):
             raise ValueError("RUN_DIR must be outside the hub checkout and worker clones")
-    resolved_state = hub_state_dir(hub_repo)
+    resolved_state = hub_state
     if state_dir is not None and state_dir != resolved_state:
         raise ValueError("--state-dir is set by --hub-repo and cannot differ")
     gl_project: GitLabProject | None = None
@@ -2689,7 +2720,7 @@ def prepare(
 
     goal = render_goal(slug, repository, issue, work_text, roadmap, forge=forge)
     check_goal_size(goal)
-    check_hub_workflow(hub_repo, run_dir, goal)
+    check_hub_workflow(hub_repo, hub_state, run_dir, goal)
 
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
     # Harness versions come from the CLIs themselves, never placeholders; a
@@ -2829,7 +2860,7 @@ def prepare(
         # Activity silence before the hub reports a stall (#144); a warning only.
         "stall_after_min": stall_after_min,
     }
-    check_hub_workflow(hub_repo, run_dir, goal, policy)
+    check_hub_workflow(hub_repo, hub_state, run_dir, goal, policy)
     # r1-3/r2-1: require concrete work after early validation (hub, auth,
     # preflight) but before staging, so placeholder failures don't mask those
     # errors yet leave no partial staging behind. Text scanning would refuse
@@ -2845,7 +2876,7 @@ def prepare(
     # Bootstrap before minting the token so a failed clone leaves no state behind.
     paths = {"bob": bob_path, "charlie": charlie_path}
     workspaces = {name: bootstrap_clone(name, paths[name], clone_from) for name in local}
-    read_hub_token(token_file(hub_repo))
+    read_hub_token(hub_token)
     if len(local) == 2 and (
         workspaces["bob"]["workspace_id"] == workspaces["charlie"]["workspace_id"]
     ):
@@ -2883,7 +2914,7 @@ def prepare(
             models[name],
             capabilities[name],
             workspace,
-            str(token_file(hub_repo)),
+            str(hub_token),
             telemetry,
             network["hub_url"],
         )
@@ -2903,7 +2934,7 @@ def prepare(
 
     hub_env = {
         "ROBOMATE_HUB_URL": live_url,
-        "ROBOMATE_TOKEN_FILE": str(token_file(hub_repo)),
+        "ROBOMATE_TOKEN_FILE": str(hub_token),
         "PYTHONUTF8": "1",
     }
     hub_args = [
@@ -3068,7 +3099,7 @@ def prepare(
             # conversation until the workflow is done (#146).
             alice_lines = {
                 "hub_url": live_url,
-                "token_file": token_file(hub_repo),
+                "token_file": hub_token,
                 "model": model,
                 "effort": effort,
                 "tmp_dir": run_dir / "tmp" / name,
@@ -3102,7 +3133,7 @@ def prepare(
                 tmp_dir=run_dir / "tmp" / name,
                 worker=None if name == "alice" else name,
                 hub_url=live_url,
-                token_file=token_file(hub_repo),
+                token_file=hub_token,
                 title=title,
                 max_resumes=max_resumes,
                 resume_delay_s=resume_delay_s,
@@ -3123,7 +3154,7 @@ def prepare(
                 tmp_dir=run_dir / "tmp" / name,
                 title=title,
                 hub_url=live_url,
-                token_file=token_file(hub_repo),
+                token_file=hub_token,
                 max_resumes=max_resumes,
                 resume_delay_s=resume_delay_s,
                 resume_max_delay_s=resume_max_delay_s,
@@ -3222,7 +3253,7 @@ def prepare(
     # Denise artifacts), so a late staging failure leaves no queued workflow
     # without run.json. The early check_hub_workflow above still fails fast on
     # a busy hub. Verified against the computed sha for rendering.
-    queued = queue_goal_in_hub(hub_repo, goal, policy)
+    queued = queue_goal_in_hub(hub_state, goal, policy)
     if queued["statement_sha256"] != goal_sha:
         raise ValueError(
             f"queued statement sha {queued['statement_sha256']} does not match "
@@ -3322,7 +3353,7 @@ def prepare(
                 remote_worker,
                 repository,
                 network["hub_url"],
-                token_file(hub_repo),
+                hub_token,
                 harnesses[remote_worker],
                 models[remote_worker],
                 bob_provider if remote_worker == "bob" else charlie_provider,
