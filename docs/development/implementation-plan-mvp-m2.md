@@ -143,10 +143,10 @@ and `followup_label` handling, and `robomate log --timeline` (M4); `call_log` re
 
 ### Size and order of M2
 
-M2 stays one milestone named M2, delivered in twelve steps. The order puts a usable
+M2 stays one milestone named M2, delivered in fifteen steps. The order puts a usable
 increment first: `join` lands on today's `.robomate/` layout (Steps 1–2), and
 sequential runs with `robomate submit` (Steps 3–4) work with or without it. Only then does
-state move (Step 6) and the worktree manager start creating agent workspaces (Step 7).
+state move (Step 6) and the worktree manager start creating agent workspaces (Steps 7a–7d).
 `prepare-run.py` keeps working until Step 11 retires it, so robomate is built with itself
 throughout.
 
@@ -158,7 +158,10 @@ throughout.
 | `robomate submit`, `get_statement` (#8, #9) | 4 |
 | Configuration layers (§4) | 5 |
 | State and token in `<worktree_root>/<hub>/`, bindings (§4, §12) | 6 |
-| Worktree manager, `robomate workspace`, branches, locks; §12 agent boundaries | 7 |
+| Worktree manager at join: worktrees, bindings, locks, reuse | 7a |
+| Worktree creation before join: `robomate workspace`, `up --agents`, `setup`/pins | 7b |
+| Branches: `robomate/<hub>/<agent>/<label>`, reuse, workflow record; named-branch guide lines | 7c |
+| §12 agent boundaries, §6 hygiene, scratch; Linux grants for two harnesses | 7d |
 | `robomate clean`; branch deletion after merge (§15) | 8 |
 | Clone fallback for remote agents | 9 |
 | Headless agents without generated configs (optional launcher) | 10 |
@@ -198,9 +201,9 @@ takeover and reattach, and the join response (§5). The plan adds what the code 
   otherwise moves it to M3 with the harness profiles.
 - **`ask_alice` becomes `ask_orchestrator`** (§8), with `ask_alice` kept as an alias until
   Step 11. The A2A message is unchanged.
-- **Workspace before Step 7.** Until the worktree manager exists, the join response's
+- **Workspace before Step 7a.** Until the worktree manager exists, the join response's
   `workspace_path` is the bridge's working directory as today (a prepared clone with its
-  identity file), and `workspace_id` comes from that identity. Step 7 changes the source,
+  identity file), and `workspace_id` comes from that identity. Step 7a changes the source,
   not the field.
 
 `whoami` returns the joined identity and the identify-the-hub fields (§4), and works
@@ -294,7 +297,7 @@ adds:
   rewritten for the operator.
 - Policy defaults and agent defaults (model and effort pins) come from the layers, and so
   does `setup`. `submit` applies the policy defaults (Step 4); the join response returns
-  `setup` and applies the agent pins once worktrees exist (Step 7, §6). `nits_issue`,
+  `setup` and applies the agent pins once worktrees exist (Step 7b, §6). `nits_issue`,
   `followup_label` and `closeout_steps` are parsed and validated but have no reader until
   M4.
 - The isolated smoke hub adds `XDG_CONFIG_HOME` (Windows `APPDATA`) to the variables it
@@ -323,34 +326,40 @@ directory. The plan adds:
   warning about `git worktree remove` is dropped for relocated hubs and kept for legacy
   ones.
 
-### The worktree manager (Step 7)
+### The worktree manager (Steps 7a-7d)
 
 The spec settles the location, creation command, reuse per `(hub, agent)`, locking, branch
 names, detached reviewers and the orchestrator, new-task hygiene and setup (§6). The plan
-adds:
+adds (each bullet names the sub-step that implements it):
 
-- **The hub creates worktrees.** The hub knows the git common directory from `hub_info`,
+- **The hub creates worktrees (Step 7a).** The hub knows the git common directory from `hub_info`,
   so at join it runs `git worktree add --detach <root>/<hub>/<agent>/ origin/<default>`,
   writes the agent binding, and locks the worktree with
-  `git worktree lock --reason "robomate hub <name>"`. `robomate workspace <name>` and
-  `robomate up --agents a,b,c` do the same ahead of the join through an operator-only
-  `hub.workspace` method (§12) and print each path. A join that finds its worktree already
-  there reuses it.
-- **Workspace identity.** The full-clone check (fact 3) gains a worktree form: the
+  `git worktree lock --reason "robomate hub <name>"`. A join that finds its worktree already
+  there reuses it. `robomate workspace <name>` and `robomate up --agents a,b,c` do the
+  same ahead of the join through an operator-only `hub.workspace` method (Step 7b) and
+  print each path.
+- **Workspace identity for worktrees (Step 7a; clones keep the identity file, Step 9).** The full-clone check (fact 3) gains a worktree form: the
   identity lives in the agent binding in the worktree's own git directory, and
-  `workspace_id` is the binding's. Clones keep the identity file (Step 9).
-- **Branches.** The hub names the branch in a run's first implementer assignment,
+  `workspace_id` is the binding's. Prepared runs keep their clones: a join with an
+  explicit `HUB_WORKSPACE` creates no worktree and keeps its full-clone check. An
+  explicitly configured workspace with no matching identity is refused; the lenient
+  path stays only for the bridge-cwd fallback (r2-2 on #244).
+- **Branches (Step 7c).** The hub names the branch in a run's first implementer assignment,
   `robomate/<hub>/<agent>/<label>`, with `<label>` derived from the statement (issue number
   or a slug) and validated like a name. It is refused if the ref exists locally or on
-  origin, and later tasks of the run reuse it (§6). The workflow row records it.
-- **Agent boundaries (§12)** go into the served guides in this step: never read the hub's
+  origin, and later tasks of the run reuse it (§6). The workflow row records it. The
+  guide lines for the named branch are part of Step 7c.
+- **Agent boundaries (§12) (Step 7d)** go into the served guides in this step: never read the hub's
   state or token directory, start every task from fresh `origin/<default>` or the
   assigned SHA, report `blocked` on uncommitted changes, retry a `cannot lock ref` after a
   short wait and never delete a `.lock` file, never change git config. The bridge's
   `whoami` names the token file it reads; the guide says that the bridge, not the agent,
-  reads it.
-- **Sandbox grants for M2's two harnesses.** Grants name the worktree and the git common
-  directory, never `<checkout>/.git` or the hub's namespace (§6, §12). Step 7 records,
+  reads it. Scratch stays outside the worktree: validation scratch, temporary checkouts
+  and validation TEMP belong in the harness's own temporary directory, never in the
+  worktree or `closeout/`.
+- **Sandbox grants for M2's two harnesses (Step 7d).** Grants name the worktree and the git common
+  directory, never `<checkout>/.git` or the hub's namespace (§6, §12). Step 7d records,
   on Linux, what Claude Code and Codex need to commit and push from a generated worktree.
   Because worktrees are reused and the root is stable, these grants are static per
   repository, written once into the harness's user configuration, not per run. The other
@@ -401,15 +410,15 @@ or retired:
 |---|---|---|
 | Per-agent rendered MCP configs with URL, token file, name, workspace, profile | One static entry per harness, `robomate mcp --harness <h>` (§9.1), written once by hand in M2 and by `robomate install` in M3; identity at `join`; token found through the binding | 1, 6, 11 |
 | Pasted prompt files (`alice.prompt.md`, `bob.prompt.md`) | The one-line join; guides in the join response; the statement from `get_statement` | 1, 2, 4 |
-| Bootstrapped full clones per worker | Generated worktrees per `(hub, agent)` | 7 |
+| Bootstrapped full clones per worker | Generated worktrees per `(hub, agent)` | 7a |
 | Headless agents under the Alice and worker launchers, restart and backoff | **Kept, optional, outside the core**: the launcher starts a harness in the agent's worktree with the join line as its prompt, and keeps #158 backoff | 10 |
 | Generated guarded recovery (`resume-<agent>`) | `join(takeover=true)` reattaches the task in the hub; the launcher's `resume <agent>` resumes the saved conversation with today's guards, taking the run from the hub (#223) | 1, 10 |
 | Generated `ask-<agent>` scripts (#221) | The launcher's `ask <agent>`, reading the same session log | 10 |
 | Remote worker-only bundles | Clone fallback: `robomate workspace <name> --clone` on the remote host, with an explicit URL and token file (§4, §6) | 9 |
 | Isolated team harness homes, credential links and copies (#179, #184) | **Retired for the joined team.** They existed because a rendered config carried per-run identity and URL. A static entry holds neither, so the team harness uses the operator's own home and login. Denise's isolated no-MCP profile is preserved separately below | 11 |
-| Per-harness sandbox grants rendered per run (Codex `writable_roots`, `--add-dir`; #11) | Static per-repository grants on the worktree and git common directory, recorded for Claude Code and Codex in M2 and for every harness in M3; the launcher passes the same grants as flags | 7, 10 |
+| Per-harness sandbox grants rendered per run (Codex `writable_roots`, `--add-dir`; #11) | Static per-repository grants on the worktree and git common directory, recorded for Claude Code and Codex in M2 and for every harness in M3; the launcher passes the same grants as flags | 7d, 10 |
 | `RUN_DIR/closeout/<agent>.md` report paths (#97) | **Retired** with the run directory. Hub collection (#215, M4) replaces it; until then an operator who needs the files keeps using prepared runs, which work until Step 11 | 11 |
-| `RUN_DIR/tmp/<agent>` (#81, #232) | The harness's own temporary directory, outside the worktree | 7 |
+| `RUN_DIR/tmp/<agent>` (#81, #232) | The harness's own temporary directory, outside the worktree | 7d |
 | `run.json` | `runs/<run_id>/manifest.json` in hub state | 3 |
 | GitHub and GitLab preflight in `prepare-run.py` | Policy-independent checks at `up` (M5 Step 2); policy-dependent checks at `submit` | 4 |
 | Team Bash and PowerShell wrappers | Not needed: `robomate` and the launcher are Python and run the same on Windows; Denise's optional replacement must be demonstrated before retiring her wrappers | 10, 11 |
@@ -474,7 +483,7 @@ live validation stays in #235.
 | #189 credential copies | **Close when Step 11 lands** | Isolated homes and copies are retired |
 | #190 Codex `auth.json` refresh | **Close when Step 11 lands**, unless M3 isolates harness homes again | The core no longer links logins |
 | #224 Devin CLI in `prepare-run.py` | Done (PR #234); adapter moves in Step 10; live checks stay in #235 (M3) | |
-| #232 validation scratch and per-agent TEMP | Track 1 while prepared runs continue; under M2 the guides keep scratch out of the worktree (Step 7); Codex Windows TEMP is M3 | |
+| #232 validation scratch and per-agent TEMP | Track 1 while prepared runs continue; under M2 the guides keep scratch out of the worktree (Step 7d); Codex Windows TEMP is M3 | |
 | #87 model alias mismatch | **Carry into Step 1** (see [join](#join-and-whoami-5)) | |
 | #8 short kickoff prompts | **Closes with Step 2** (join line plus served guides; worker half in Step 1) | |
 | #9 statement verbatim | **Closes with Step 4** | |
@@ -561,8 +570,9 @@ it. This PR changes no spec text.
 | Legacy `[forge]` in `.robomate/config.toml` (§4) | Honoured with a warning until relocation | 5 |
 | Relocation command (§4 Migration) | `robomate relocate`, stopped hub, operator credential | 6 |
 | Worktree root ownership record (§4) | `robomate-root.json` with the git common directory | 6 |
-| Worktree creation path (§6, §12) | The hub at join; `hub.workspace` is operator-only | 7 |
-| Branch label (§6) | Derived from the statement, validated like a name, recorded on the workflow | 7 |
+| Worktree creation path (§6, §12) | The hub at join (Step 7a); `hub.workspace` is operator-only (Step 7b) | 7a, 7b |
+| Workspace identity, prepared clones, r2-2 refusal (§6) | Worktree binding identity; explicit `HUB_WORKSPACE` creates no worktree; explicit mismatch refused | 7a |
+| Branch label (§6) | Derived from the statement, validated like a name, recorded on the workflow | 7c |
 | Merge vs local branch (§15 → §6, §14) | Remote-only delete; no `--delete-branch`; `clean` prunes local branches | 8 |
 | Launcher and supervision (§9.4, Appendix B) | Optional `scripts/agent-launcher.py`; supervisor command decided in M3 | 10 |
 | `uv tool install` (§2, §13) | Moves to M3 with `robomate install` | 11 |
@@ -570,7 +580,7 @@ it. This PR changes no spec text.
 
 ## Reservations
 
-The plan claims **no schema version number**. Three steps each need one new DB version,
+The plan claims **no schema version number**. Four steps each need one new DB version,
 and each takes it the way M5 and AGENTS.md require: when the step issue is picked up, it
 reserves the then-next value on #2's Reservations block and only then writes the number
 into code or text. The steps below say "the step's reserved DB version" for that reason.
@@ -579,15 +589,17 @@ into code or text. The steps below say "the step's reserved DB version" for that
 |---|---|---|
 | DB schema, one new version | 1 | `agent.standing_role` (`orchestrator`, `implementer`, `reviewer`, `worker`) and the join profile sources. Step 2 records the orchestrator's joined name and role with these columns |
 | DB schema, one new version | 3 | `workflow.run_id` (unique), `workflow.statement_sha256`, `queued` in the status check, a `statement` table (SHA-256 key, bytes, size, source, created) |
-| DB schema, one new version | 7 | Agent workspace path and kind (`worktree` or `clone`) and the run's branch on the workflow |
+| DB schema, one new version | 7a | Agent workspace path and kind (`worktree` or `clone`) |
+| DB schema, one new version | 7c | The run's branch on the workflow |
 | Wire `hub.schema_version` | — | No change: `join` is a new operation, check-in and assignment responses gain fields additively, and no typed result changes shape (§3, §7.3) |
 
-Steps 2, 4–6 and 8–11 expect no DB change. A step that finds it needs one reserves the
+Steps 2, 4–6, 7b, 7d and 8–11 expect no DB change. A step that finds it needs one reserves the
 then-next value on #2 before editing (AGENTS.md). #215 (M4) does the same.
 
 **Landing order.** Migrations are linear, so DB steps merge in the order of their
-reserved values. Step 7 merges after Steps 1 and 3 anyway (see [Steps](#steps)); only
-Steps 1 and 3 can be ready in either order. If the step with the higher value is ready to
+reserved values. Steps 7a and 7c merge after Steps 1 and 3 anyway (see [Steps](#steps)); only
+Steps 1 and 3 can be ready in either order. Steps 7a and 7c each reserve their own
+version on #2 at pickup, in that order: 7a first, then 7c. If the step with the higher value is ready to
 merge first, the two swap their values on #2, and rename them in their branches, before
 either merges.
 
@@ -605,9 +617,11 @@ Next             [2] orchestrator join + guide ◀── 1
                  [4] submit + get_statement    ◀── 3, 5
                  [6] state + bindings          ◀── 5
                    │
-Then             [7] worktrees                 ◀── 1, 3, 6
+Then             [7a] worktrees at join         ◀── 1, 3, 6
                    │
-In parallel      [8] clean + merge ◀── 7    [9] clone fallback ◀── 7    [10] launcher ◀── 7
+Next             [7b] create before join ◀── 7a    [7c] branches ◀── 7a    [7d] boundaries + grants ◀── 7a
+                   │
+In parallel      [8] clean + merge ◀── 7a, 7c    [9] clone fallback ◀── 7a    [10] launcher ◀── 7a, 7b
                    │
 Then             [11] retire prepare-run       ◀── 2, 4, 8, 9, 10
                    │
@@ -623,24 +637,30 @@ reason for each edge.
 | 2 | 1 | The orchestrator joins with Step 1's bridge and columns |
 | 4 | 3, 5 | Statements and the queue (3); `submit` applies the layers' policy defaults and its test checks that (5) |
 | 6 | 5 | `worktree_root` comes from the layers |
-| 7 | 1, 3, 6 | Worktrees are made at `join` (1); the branch label comes from the stored statement, and its migration follows Step 3's (3); worktrees live in the hub namespace (6) |
-| 8, 9, 10 | 7 | They clean, clone beside, or start agents in generated workspaces; Step 10 also logs `run_id` (3, through 7) |
+| 7a | 1, 3, 6 | Worktrees are made at `join` (1); workspace identity follows the stored statement path, and its migration follows Step 3's (3); worktrees live in the hub namespace (6) |
+| 7b, 7c | 7a | They create ahead of the join, or name branches in, generated workspaces |
+| 7d | 7a | Boundaries and grants apply to generated workspaces |
+| 8 | 7a, 7c | It cleans worktrees (7a) and prunes merged `robomate/<hub>/…` branches (7c) |
+| 9 | 7a | It clones beside generated workspaces; clones keep the identity file that 7a defines |
+| 10 | 7a, 7b | It starts agents in generated workspaces (7a) created ahead of the join (7b); Step 10 also logs `run_id` (3, through 7a) |
 | 11 | 2, 4, 8, 9, 10; completed M7 and its launcher handoff | Every replacement, including optional Denise, exists and is verified before the old path goes |
 | 12 | all | |
 
 Parallel: Steps 1, 3 and 5 can start and land in any order, except that Steps 1 and 3
-merge in the order of their reserved DB versions ([Reservations](#reservations)). Step 2
-can run alongside Steps 3–6, Step 4 alongside Steps 6–7, and Steps 8, 9 and 10 alongside
-each other. A step whose prerequisite is still open may be prepared in parallel, but it
+merge in the order of their reserved DB versions ([Reservations](#reservations)), and Steps 7a
+and 7c merge in the order of theirs. Step 2
+can run alongside Steps 3–6, Step 4 alongside Steps 6–7a, and Steps 8, 9 and 10 alongside
+each other. Steps 7b, 7c and 7d can be prepared in parallel once 7a lands, but each
+merges only after its prerequisites. A step whose prerequisite is still open may be prepared in parallel, but it
 merges only after the prerequisite. Its tests need the prerequisite's code.
 
 Step 11 also waits for completed M7 and its proven doctor replacement, as the table
 specifies; this is the only M2 implementation step gated on M7 completion.
 
 **Single-lane order.** Track 2 runs in one lane (#2), which takes the steps in this order:
-**1, 2, 3, 5, 4, 6, 7, 8, 9, 10, 11, 12.** Number order is not a valid sequence, because
+**1, 2, 3, 5, 4, 6, 7a, 7b, 7c, 7d, 8, 9, 10, 11, 12.** Number order is not a valid sequence, because
 Step 4 needs Step 5; this order satisfies every prerequisite in the table and reserves the
-DB versions of Steps 1, 3 and 7 in that order. The order does not lift the M7 gate: the
+DB versions of Steps 1, 3, 7a and 7c in that order. The order does not lift the M7 gate: the
 lane holds at Step 11 until M7 is complete, Step 11 proves the doctor handoff before it
 removes anything, and Step 12 follows Step 11.
 
@@ -865,7 +885,7 @@ Issue: [#242](https://github.com/RoboNater/robomate/issues/242).
 - `forge.*` from the repository and user layers; the legacy `[forge]` table honoured with a
   warning. The resolved policy defaults, agent defaults and `setup` are returned by the
   reader; their consumers come later: `submit` applies the policy defaults (Step 4), and
-  the join response carries `setup` and applies the agent pins (Step 7). The M4 keys are
+  the join response carries `setup` and applies the agent pins (Step 7b). The M4 keys are
   parsed and validated only.
 - The isolated smoke hub sets `XDG_CONFIG_HOME`/`APPDATA` (§4); `guides/worker.md` and
   AGENTS.md follow.
@@ -896,7 +916,7 @@ Issue: [#243](https://github.com/RoboNater/robomate/issues/243).
 - Owner bindings at `up`; legacy hubs run in place with a binding. Discovery rule 2
   follows the binding; a missing or stopped bound hub is an error naming it (§4).
 - `robomate relocate`; `up` refused in an agent-bound checkout. Step 6 defines the binding
-  format for both roles and writes owner bindings; Step 7 writes agent bindings, so Step 6's
+  format for both roles and writes owner bindings; Step 7a writes agent bindings, so Step 6's
   tests write an agent binding by hand.
 - Every reader of `.robomate/` (fact 4) on the resolver; `prepare-run.py`'s `hub.db` read
   and `scripts/hub-report.py` take the state location from `robomate status --json`.
@@ -922,46 +942,119 @@ ls -ld "$T/repo.robomate"/*/token   # drwx------ (0700)
 
 **Size:** medium to large.
 
-### Step 7 — Worktree manager and `robomate workspace`
+### Step 7a — Worktrees at join
 
 Issue: [#244](https://github.com/RoboNater/robomate/issues/244).
 
 **Scope.**
-- Worktree creation at join and through `robomate workspace <name>` and
-  `robomate up --agents …` (operator-only `hub.workspace`); agent bindings; locks; reuse
-  per `(hub, agent)`; the orchestrator gets one too (§1 principle 5).
-- The join response returns `setup` and applies the agent pins from the layers (Step 5).
+- Worktree creation at join: the hub runs `git worktree add --detach <root>/<hub>/<agent>/`
+  at join, writes the agent binding, locks with the hub's reason, and reuses per
+  `(hub, agent)`; the orchestrator gets one too (§1 principle 5).
 - Workspace identity for worktrees (fact 3); the step's reserved DB version records the
-  workspace and the run's
-  branch. The hub names `robomate/<hub>/<agent>/<label>` in the first implementer
-  assignment and refuses an existing ref.
-- §12 agent boundaries and §6 hygiene in the served guides; scratch outside the worktree.
-- The Linux grants Claude Code and Codex need to commit and push from a worktree,
-  recorded in `docs/user-guide.md`.
-- §6, §12 deltas.
+  workspace path and kind (`worktree` or `clone`).
+- `up` refused in an agent worktree naming the hub; `state` and `token` refused as agent
+  names.
+- Prepared runs keep their clones: a join with an explicit `HUB_WORKSPACE` creates no
+  worktree and keeps its full-clone check.
+- Decide r2-2 on #244: refuse a join whose explicitly configured workspace has no matching
+  identity, keeping the lenient path only for the bridge-cwd fallback.
+- §6, §12 deltas for worktree creation at join.
 
-**Tests** (`tests/test_worktrees.py`, new; `tests/test_workspace.py`, `tests/test_cli.py`,
-`tests/test_rpc.py`, `tests/test_guides.py`).
+**Tests** (`tests/test_worktrees.py`, new; `tests/test_cli.py`,
+`tests/test_rpc.py`).
 - Join creates `<root>/<hub>/<agent>/` detached at `origin/<default>`, locked with the
   hub's reason, with an agent binding; a second join reuses it.
 - `up` in that worktree is refused naming the hub; `git worktree remove` of it is refused
   while locked.
 - Names `state` and `token` are refused as agent names.
-- The first implementer assignment names the branch; an existing local or remote ref is
-  refused; a later task in the run reuses it.
-- Two hubs of one repository create worktrees and branches without collision.
-- `robomate workspace bob` without the operator credential is refused.
+- Two hubs of one repository create worktrees without collision.
+- A join with an explicit `HUB_WORKSPACE` creates no worktree and keeps its full-clone
+  check.
+- A join with an explicitly configured workspace and no matching identity is refused;
+  the bridge-cwd fallback stays lenient.
 
 ```sh
-uv run --locked pytest tests/test_worktrees.py tests/test_workspace.py tests/test_cli.py \
-    tests/test_rpc.py tests/test_guides.py
+uv run --locked pytest tests/test_worktrees.py tests/test_cli.py tests/test_rpc.py
 # inside the isolated smoke recipe:
-rb workspace bob                # prints $T/repo.robomate/<hub>/bob
 git worktree list --porcelain   # bob's worktree, locked with the hub's reason
 ```
 
-**Size:** large. Split 7a (worktrees, bindings, locks, `workspace`) and 7b (branches,
-guides, grants) if review needs it.
+**Size:** medium.
+
+### Step 7b — Creating worktrees before join
+
+Issue: [#314](https://github.com/RoboNater/robomate/issues/314).
+
+**Scope.**
+- Worktree creation before join through `robomate workspace <name>` and
+  `robomate up --agents …` (operator-only `hub.workspace`); each prints its path.
+- The join response returns `setup` and applies the agent pins from the layers (Step 5).
+- §6, §12 deltas for creation before join.
+
+**Tests** (`tests/test_workspace.py`, `tests/test_cli.py`, `tests/test_rpc.py`).
+- `robomate workspace bob` without the operator credential is refused.
+- `robomate workspace bob` and `robomate up --agents …` create the worktree ahead of the
+  join with an agent binding and lock; a later join reuses it.
+
+```sh
+uv run --locked pytest tests/test_workspace.py tests/test_cli.py tests/test_rpc.py
+# inside the isolated smoke recipe:
+rb workspace bob                # prints $T/repo.robomate/<hub>/bob
+```
+
+**Size:** small to medium.
+
+### Step 7c — Branches
+
+Issue: [#315](https://github.com/RoboNater/robomate/issues/315).
+
+**Scope.**
+- The hub names the branch in a run's first implementer assignment,
+  `robomate/<hub>/<agent>/<label>`, with `<label>` derived from the statement (issue number
+  or a slug) and validated like a name. It is refused if the ref exists locally or on
+  origin, and later tasks of the run reuse it; the workflow row records it (the step's
+  reserved DB version).
+- The guide lines for the named branch.
+- §6 deltas for branch naming.
+
+**Tests** (`tests/test_worktrees.py`, `tests/test_rpc.py`, `tests/test_store.py`).
+- The first implementer assignment names the branch; an existing local or remote ref is
+  refused; a later task in the run reuses it.
+- Two hubs of one repository name branches without collision.
+- The workflow row records the run's branch.
+
+```sh
+uv run --locked pytest tests/test_worktrees.py tests/test_rpc.py tests/test_store.py
+```
+
+**Size:** small to medium.
+
+### Step 7d — Agent boundaries and grants
+
+Issue: [#316](https://github.com/RoboNater/robomate/issues/316).
+
+**Scope.**
+- §12 agent boundaries and §6 hygiene in the served guides: never read the hub's state or
+  token directory, start every task from fresh `origin/<default>` or the assigned SHA,
+  report `blocked` on uncommitted changes, retry a `cannot lock ref` after a short wait and
+  never delete a `.lock` file, never change git config. The bridge's `whoami` names the
+  token file it reads; the guide says that the bridge, not the agent, reads it. Scratch
+  stays outside the worktree.
+- The Linux grants Claude Code and Codex need to commit and push from a worktree,
+  recorded in `docs/user-guide.md`. Measured in the harnesses' real sandboxes, so this
+  step needs the operator.
+- §6, §12 deltas for boundaries, hygiene and grants.
+
+**Tests** (`tests/test_guides.py`).
+- The served worker guide states the boundaries and scratch rule; the bridge's `whoami`
+  names the token file.
+- `docs/user-guide.md` records the Linux grants for Claude Code and Codex.
+
+```sh
+uv run --locked pytest tests/test_guides.py
+```
+
+**Size:** small to medium.
 
 ### Step 8 — `robomate clean` and branch deletion after merge
 
@@ -1078,7 +1171,7 @@ Issue: [#248](https://github.com/RoboNater/robomate/issues/248).
 - Rewrite `docs/user-guide.md` around `robomate up`, the static MCP entries for Claude Code
   and Codex, `robomate workspace`, join lines, `submit`, `status`, `clean`, remote agents
   and the launcher (Appendix B: "M2, M3"). The §12 operator-only steps, now with
-  `workspace` and `clean`, go into the served worker and orchestrator guides.
+  Step 7b `workspace` and `clean` plus the Step 7d grants, go into the served worker and orchestrator guides.
 - Close #189, #190, #219, #220 and #222 if not closed earlier, with a pointer to the PR.
 - §2, §13, Appendix B deltas.
 
@@ -1102,7 +1195,7 @@ Issue: [#249](https://github.com/RoboNater/robomate/issues/249).
 
 **Operator prerequisites.**
 - Claude Code and Codex installed and logged in on the hub host (WSL or Linux), each with
-  the static robomate entry from the user guide, written once, and the Step 7 grants.
+  the static robomate entry from the user guide, written once, and the Step 7d grants.
 - `gh` authenticated with the shared account; two unrelated robomate issues small enough
   for one PR each (for example items from #4), one per hub.
 - A robomate checkout at the commit under test, and a linked worktree of it for the second
@@ -1153,7 +1246,7 @@ run exposed. Fixes of more than a few lines get their own issue.
 | A step breaks prepared runs, which robomate is built with until Step 11 | Aliases and `--role` kept through Step 10; each step's tests include the prepared-run path; Step 11 is the only removal |
 | Two DB steps in flight at once take migration numbers out of order | Reservations by step; swap on #2 before merging (Reservations) |
 | An IDE starts MCP servers outside the open folder, so discovery finds no binding | `join(hub=)`, and the join response says where the bridge runs; one IDE join recorded in Step 12 |
-| Codex's sandbox blocks writes to the git common directory from a worktree (#11 shape) | Step 7 records the Linux grants for Claude Code and Codex; static per repository; Windows Codex and other harnesses in M3 |
+| Codex's sandbox blocks writes to the git common directory from a worktree (#11 shape) | Step 7d records the Linux grants for Claude Code and Codex; static per repository; Windows Codex and other harnesses in M3 |
 | `gh pr merge --delete-branch` reports failure after a successful merge | Remote-only delete (Step 8), verified live |
 | The orchestrator guide in the join response costs tokens | Once per session with a hash; bytes reported in Step 2; trimming is M6 |
 | A crashed hub leaves locked worktrees | The lock reason names the hub; `clean` and `git worktree list --porcelain` report them; `unlock` stays an operator action |
@@ -1172,7 +1265,7 @@ run exposed. Fixes of more than a few lines get their own issue.
   Step 4; #90 into Step 9. The "Inherit from M5" line is met by Steps 1, 2 and 4. The
   "Inherit from #181" line moves to M3 with `robomate install` (above). #93 and #96 are
   added under M2 with Step 4.
-- **Reservations:** none made by this plan. Steps 1, 3 and 7 each reserve one DB version
+- **Reservations:** none made by this plan. Steps 1, 3, 7a and 7c each reserve one DB version
   on #2 when they are picked up ([Reservations](#reservations)). Wire `hub.schema_version`
   stays 1.
 - The interim issues outside the M2 section (#188, #189, #190, #219, #220, #222, #223,
