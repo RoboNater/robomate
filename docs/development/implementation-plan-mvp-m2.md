@@ -637,8 +637,9 @@ reason for each edge.
 | 2 | 1 | The orchestrator joins with Step 1's bridge and columns |
 | 4 | 3, 5 | Statements and the queue (3); `submit` applies the layers' policy defaults and its test checks that (5) |
 | 6 | 5 | `worktree_root` comes from the layers |
-| 7a | 1, 3, 6 | Worktrees are made at `join` (1); workspace identity follows the stored statement path, and its migration follows Step 3's (3); worktrees live in the hub namespace (6) |
-| 7b, 7c | 7a | They create ahead of the join, or name branches in, generated workspaces |
+| 7a | 1, 3, 6 | Worktrees are made at `join` (1); its migration follows Step 3's (3); worktrees live in the hub namespace (6) |
+| 7b | 7a | It creates workspaces ahead of the join in generated workspaces |
+| 7c | 7a | The branch label comes from the stored statement (3, through 7a), and its migration follows 7a's |
 | 7d | 7a | Boundaries and grants apply to generated workspaces |
 | 8 | 7a, 7c | It cleans worktrees (7a) and prunes merged `robomate/<hub>/…` branches (7c) |
 | 9 | 7a | It clones beside generated workspaces; clones keep the identity file that 7a defines |
@@ -993,8 +994,6 @@ Issue: [#314](https://github.com/RoboNater/robomate/issues/314).
 
 **Tests** (`tests/test_workspace.py`, `tests/test_cli.py`, `tests/test_rpc.py`).
 - `robomate workspace bob` without the operator credential is refused.
-- `robomate workspace bob` and `robomate up --agents …` create the worktree ahead of the
-  join with an agent binding and lock; a later join reuses it.
 
 ```sh
 uv run --locked pytest tests/test_workspace.py tests/test_cli.py tests/test_rpc.py
@@ -1017,14 +1016,13 @@ Issue: [#315](https://github.com/RoboNater/robomate/issues/315).
 - The guide lines for the named branch.
 - §6 deltas for branch naming.
 
-**Tests** (`tests/test_worktrees.py`, `tests/test_rpc.py`, `tests/test_store.py`).
+**Tests** (`tests/test_worktrees.py`, `tests/test_rpc.py`).
 - The first implementer assignment names the branch; an existing local or remote ref is
   refused; a later task in the run reuses it.
 - Two hubs of one repository name branches without collision.
-- The workflow row records the run's branch.
 
 ```sh
-uv run --locked pytest tests/test_worktrees.py tests/test_rpc.py tests/test_store.py
+uv run --locked pytest tests/test_worktrees.py tests/test_rpc.py
 ```
 
 **Size:** small to medium.
@@ -1171,7 +1169,7 @@ Issue: [#248](https://github.com/RoboNater/robomate/issues/248).
 - Rewrite `docs/user-guide.md` around `robomate up`, the static MCP entries for Claude Code
   and Codex, `robomate workspace`, join lines, `submit`, `status`, `clean`, remote agents
   and the launcher (Appendix B: "M2, M3"). The §12 operator-only steps, now with
-  Step 7b `workspace` and `clean` plus the Step 7d grants, go into the served worker and orchestrator guides.
+  Step 7b `workspace` and `clean`, go into the served worker and orchestrator guides.
 - Close #189, #190, #219, #220 and #222 if not closed earlier, with a pointer to the PR.
 - §2, §13, Appendix B deltas.
 
