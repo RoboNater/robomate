@@ -59,7 +59,7 @@ async def serve_http(
                 await serving
                 raise RuntimeError("HTTP server stopped before startup")
             if time.monotonic() >= deadline:
-                server.should_exit = True
+                serving.cancel()
                 await asyncio.gather(serving, return_exceptions=True)
                 raise RuntimeError(
                     f"hub did not start serving within {_START_TIMEOUT_S:g} s; "
