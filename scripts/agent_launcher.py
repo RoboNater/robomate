@@ -230,7 +230,7 @@ class HubReader:
         if (
             not isinstance(workflow, dict)
             or not isinstance(workflow.get("id"), str)
-            or workflow.get("status") not in ("active", "paused", "escalated", "done")
+            or workflow.get("status") not in ("active", "paused", "escalated", "done", "queued")
         ):
             raise ValueError("hub.status has a malformed workflow")
         return hub_id, {"id": workflow["id"], "status": workflow["status"]}

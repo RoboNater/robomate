@@ -343,3 +343,44 @@ def test_worker_recovers_a_hub_restart_longer_than_five_reads(
         == 0
     )
     assert reader.reads == 11 and len(launches(run_dir)) == 1
+
+
+# -- queued workflow (#310) --------------------------------------------------------
+
+
+def test_worker_reader_accepts_queued_workflow(
+    run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#310: the worker reader accepts the queued state a fresh run reports."""
+    agent: dict[str, Any] = {
+        "name": "bob",
+        "status": "busy",
+        "alive": True,
+        "activity": {"instance": None},
+    }
+
+    def call(self: Any, method: str) -> dict[str, Any]:
+        if method == "hub.info":
+            return {"hub_id": "hub-1"}
+        return {"workflow": {"id": "wf-1", "status": "queued"}, "agents": [agent]}
+
+    monkeypatch.setattr(WORKER.common.HubReader, "call", call)
+    reader = WORKER.WorkerReader("http://stub", run_dir / "token", "bob")
+    hub, workflow = reader.read()
+    assert hub == "hub-1"
+    assert workflow is not None and workflow["status"] == "queued"
+
+
+def test_queued_workflow_launches_worker_instead_of_stopping_unreadable(
+    run_dir: Path, fake: Path
+) -> None:
+    """#310: a queued workflow lets the worker proceed to await_assignment."""
+    reader = ScriptedReader(wf(status="queued"), wf(status="queued"), wf(status="done"))
+    assert (
+        WORKER.main(
+            worker_args(run_dir, fake, "claude-code", "--prompt", str(run_dir / "alice.prompt.md")),
+            reader,
+        )
+        == 0
+    )
+    assert len(launches(run_dir)) == 1

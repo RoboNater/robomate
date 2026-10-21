@@ -550,6 +550,54 @@ def test_hub_reads_are_bearer_only_and_never_open_a_session(run_dir: Path) -> No
         assert not any(key.startswith("x-robomate") for key in headers)
 
 
+# -- queued workflow (#310) --------------------------------------------------------
+
+
+def test_hub_reader_accepts_queued_workflow(run_dir: Path) -> None:
+    """#310: a freshly prepared run reports its workflow as queued until Alice starts it."""
+    with hub_server() as (url, seen):
+        _Hub.status = "queued"
+        reader = LAUNCHER.HubReader(url, run_dir / "token")
+        assert reader.read() == (HUB, {"id": WORKFLOW, "status": "queued"})
+    assert [call["method"] for call in seen] == ["hub.info", "hub.status"]
+    for call in seen:
+        headers = {key.lower(): value for key, value in call["headers"].items()}
+        assert headers["authorization"] == "Bearer secret-token-value"
+
+
+def test_hub_reader_still_rejects_unknown_status(run_dir: Path) -> None:
+    with hub_server() as (url, _):
+        _Hub.status = "bogus"
+        reader = LAUNCHER.HubReader(url, run_dir / "token")
+        with pytest.raises(ValueError, match="malformed workflow"):
+            reader.read()
+
+
+def test_fresh_start_with_queued_workflow_pins_id_and_accepts_activation(
+    run_dir: Path, fake: Path
+) -> None:
+    """#310: a fresh start pins the queued ID; the same ID as active stays valid."""
+    reader = ScriptedReader(wf("queued"), wf("queued"), wf("active"), wf("done"))
+    assert LAUNCHER.main(start_args(run_dir, fake, "claude-code"), reader) == 0
+    assert len(launches(run_dir)) == 2
+    log = sessions(run_dir)
+    assert log[0]["workflow_id"] == WORKFLOW
+    assert {record["workflow_id"] for record in log[1:]} == {WORKFLOW}
+    assert log[-1]["reason"] == "done"
+
+
+def test_exit_while_still_queued_resumes_same_conversation(run_dir: Path, fake: Path) -> None:
+    """#310: an exit before start_workflow() activates the workflow still resumes it."""
+    reader = ScriptedReader(wf("queued"), wf("queued"), wf("queued"), wf("done"))
+    assert LAUNCHER.main(start_args(run_dir, fake, "claude-code"), reader) == 0
+    assert len(launches(run_dir)) == 2
+    log = sessions(run_dir)
+    assert log[-1]["reason"] == "done"
+    assert {record["workflow_id"] for record in log if record.get("workflow_id")} == {WORKFLOW}
+    conversations = {record["conversation_id"] for record in log if record.get("conversation_id")}
+    assert len(conversations) == 1
+
+
 # -- review r1 -------------------------------------------------------------------------
 
 
