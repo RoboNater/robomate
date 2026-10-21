@@ -413,7 +413,7 @@ changed generator/helper and emitted wrapper
 at least once, including loop bodies and non-default branches, per `AGENTS.md`.
 
 Extend the existing Linux/native Windows CI with fake-harness script execution and isolated
-test hubs. CI must not use the operator's registry, credential, run `.robomate/`, agents or
+test hubs. CI must not use the operator's registry, credential, run hub state, agents or
 real process cleanup. Missing identity/credentials, wrong hub, inherited environment,
 unavailable HTTP, paths with spaces, read-only roots, failed launch, duplicate consultation
 and report preservation all get deterministic coverage where introduced. Automated evidence

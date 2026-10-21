@@ -370,12 +370,6 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
                 "GitLab preflight refused startup; disable the named unsupported "
                 "settings or correct the origin before running up again"
             )
-    # Record the identity, then claim the name among the repository's hubs
-    # before anything starts. The registry prunes an entry without hub.json,
-    # so the file comes first, and is restored if the name is refused.
-    # `released_port` was read above from the forget marker in hub.json: while
-    # it is set the startup entry claims no port, so the released port is
-    # reusable by a sibling hub at once.
     # The owner binding (spec §4) is this checkout's own record of the hub it
     # owns and where its state and token are; it holds no token. It is written
     # with the identity, before hub.json, so a sibling `up` of this checkout
@@ -386,6 +380,13 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
     binding = Binding("owner", hub_id, name, repo.root, directory, placement.token_file)
     if previous_binding != binding:
         write_binding(git_dir, binding)
+    # Record the identity, then claim the name among the repository's hubs
+    # before anything starts. The registry prunes an entry without hub.json,
+    # so the file comes first, and is restored if the name is refused (the
+    # binding with it).
+    # `released_port` was read above from the forget marker in hub.json: while
+    # it is set the startup entry claims no port, so the released port is
+    # reusable by a sibling hub at once.
     write_hub_json(directory, old | identity)
     try:
         register(
@@ -1376,13 +1377,9 @@ def _relocate(selector: str | None) -> None:
             "robomate relocate moves a hub on this machine; select it with --hub, "
             "not with ROBOMATE_HUB_URL"
         )
+    # A hub from before checkout scope (#147) does not record its repository.
     common_raw = hub.info.get("git_common_dir")
-    if not common_raw:
-        raise DiscoveryError(
-            f"{hub.label()} records no git common directory; run robomate up in "
-            f"{hub.checkout} once, then relocate"
-        )
-    common = Path(str(common_raw))
+    common = Path(str(common_raw)) if common_raw else resolve_checkout(hub.checkout)[1]
     root = load_config_layers(git_common_dir=common).worktree_root
     assert root is not None
     name, _, _ = relocation_targets(hub, root)

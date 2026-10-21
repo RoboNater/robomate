@@ -65,7 +65,7 @@ from agent_hub_common import (
     ReviewerVerdict,
     TestResult,
 )
-from agent_hub_common.discovery import HubEndpoint, discover
+from agent_hub_common.discovery import HubEndpoint, LocalHub, discover, find_hub
 from agent_hub_common.registry import operator_token_path, registry_path
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
@@ -284,11 +284,13 @@ class IsolatedHub:
                 key, sep, value = line.partition("=")
                 if sep and key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN_FILE"):
                     printed[key] = value.strip()
-        # The hub's own output names its state: the token file sits in it.
-        self.facts.state_dir = str(Path(printed["ROBOMATE_TOKEN_FILE"]).parent)
-        # Discovery in the clone, never a path the script builds (#54 moves
+        # Discovery in the clone, never a path the script builds (#54 moved
         # hub state out of the checkout). The environment has no explicit URL.
         discovery_env = {k: v for k, v in self.env.items() if k not in DISCOVERY_OVERRIDES}
+        located = find_hub(self.clone, discovery_env)
+        if not isinstance(located, LocalHub):
+            raise DriverError("discovery in the clone did not find the hub it started")
+        self.facts.state_dir = str(located.state_dir)
         endpoint = discover(self.clone, discovery_env)
         if endpoint.url != printed["ROBOMATE_HUB_URL"].rstrip("/"):
             raise DriverError(f"discovered {endpoint.url}, but the hub printed another URL")

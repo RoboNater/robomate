@@ -96,8 +96,9 @@ helper excludes `auth.json`, `antigravity-oauth-token`, `jetski_state.pbtxt`,
 `.git-credentials`, and only the AntiGravity
 `.gemini/antigravity-cli/settings.json` path (Claude settings remain). It also
 excludes files named `token` or `operator-token`, and all symlinks. It includes
-the hub database (`.robomate/hub.db` with its `-wal`/`-shm` files and
-`hub.json`). These exclusions apply equally to copies
+the hub database (`hub.db` in the hub's `state/` directory, which sits beside the
+checkout in `hub-target.robomate/<hub>/` and, for a legacy hub, in `.robomate/`, with its
+`-wal`/`-shm` files and `hub.json`). These exclusions apply equally to copies
 and hard links, including older runs. Credentials remain in the stopped run;
 after checking the archive, remove the retired run directory using your usual
 operator procedure. Logs and task data may still be sensitive: this local
@@ -119,15 +120,20 @@ uv run --project /absolute/path/to/robomate robomate up
 ```
 
 A linked worktree (`git worktree add`) works too and gets a hub of its own,
-beside any hub of the main checkout. Its state is in the worktree's own
-`.robomate/` until M2 moves hub state out of the checkout, so
-`git worktree remove` deletes it, with the run's history and report; `up` warns
-about this. A bare repository works through a linked worktree; `up` in the bare
-directory itself is refused. If you created a checkout using `git init` and
+beside any hub of the main checkout. A new hub keeps its state outside every
+checkout, so `git worktree remove` does not delete it: `robomate ls` still lists
+the hub and `robomate status --hub <name>` reaches its state. A hub created
+before this layout (a legacy hub) keeps its state in the checkout's own
+`.robomate/`, where `git worktree remove` would delete it with the run's
+history and report; `up` warns about that, and `robomate relocate` moves it out
+(below). A bare repository works through a linked worktree; `up` in the bare
+directory itself is refused. `up` is refused in a checkout that is bound to a
+hub as an agent (an agent's generated worktree); it runs in the hub's owning
+checkout. If you created a checkout using `git init` and
 `git remote add origin` instead of `git clone`, run `git fetch origin` and
 `git remote set-head origin --auto` in it before `robomate up`.
 
-The command creates `<target>/.robomate/hub.json`, `hub.db`, and an owner-only token file. It prints the hub's name, its state directory, its URL, and bridge environment settings. Keep this terminal open. A second `up` in the same checkout reports the running hub. The first `up` takes the first free port from 8420, skipping ports that are in use or that the host forbids this process to bind (on Windows, WinError 10013: an excluded port range or an exclusive listener). A later `up` reuses the recorded name and port, and a recorded port that another process has taken meanwhile, or that the host now forbids, fails startup rather than moving the hub, as a `--port` does. The name comes from the checkout's directory name; give another with `up --name <name>` at the first `up`. It is then fixed, and unique among the repository's hubs: `up` refuses a name a sibling hub holds rather than pick another. `.robomate/` is excluded from git by the repository's local exclude file.
+The command creates the hub's state and token under the worktree root, `<parent>/<repo>.robomate/` by default (a `worktree_root` in the repository or user configuration moves it): `<root>/<hub>/state/` holds `hub.json` and `hub.db`, and `<root>/<hub>/token/token` is the owner-only token file in a directory of its own, so a sandbox can be granted the token without the state. The root records the repository it belongs to in `robomate-root.json`; a hub of another repository refuses a root of the same name and asks for a repository-level `worktree_root`. A binding, `robomate-binding.json` in the checkout's git directory, names the hub, its state and its token file (it holds no token) and is how the checkout finds the hub from any directory inside it. `up` prints the hub's name, its state directory, its URL, and bridge environment settings. Keep this terminal open. A second `up` in the same checkout reports the running hub. The first `up` takes the first free port from 8420, skipping ports that are in use or that the host forbids this process to bind (on Windows, WinError 10013: an excluded port range or an exclusive listener). A later `up` reuses the recorded name and port, and a recorded port that another process has taken meanwhile, or that the host now forbids, fails startup rather than moving the hub, as a `--port` does. The name comes from the checkout's directory name; give another with `up --name <name>` at the first `up`. It is then fixed, and unique among the repository's hubs: `up` refuses a name a sibling hub holds, or a directory of that name under the worktree root, rather than pick another. A legacy hub (state already in the checkout's `.robomate/`) keeps running there, with the same `hub_id`, port and token, and gets an owner binding that names `.robomate/`; that directory is excluded from git by the repository's local exclude file. `robomate relocate` moves a stopped legacy hub into the worktree root when you choose (it needs the operator credential): it moves state and token together, rewrites the bindings and the registry entry, and leaves a one-line pointer file in `.robomate/`. A hub's own `config.toml` may not hold a `[forge]` table at the new location, so move it to the repository-level configuration first.
 
 In the robomate checkout, prepare agent configs and start scripts:
 
@@ -267,7 +273,7 @@ uv run --project /absolute/path/to/robomate robomate up \
 
 `--bind` controls the listener; `--public-url` controls the agent card and bridge URL. Use `--port N` when the hub should bind a different port. Configure firewalls and forwarding so the public URL reaches that listener. `prepare-run.py` reads the running hub's URL; any `--hub-url`, `--public-url`, or `--hub-port` passed to it must agree with `hub.json`. A remote worker cannot use a loopback URL.
 
-Pass `--remote-worker bob` when preparing on the hub host. The printed `--worker-only bob` command is run from the robomate checkout on Bob's host, with `--hub-url` set to the public URL and `--token-file` set to the readable path to the hub's `.robomate/token`. The worker host reads that file; the generated config records the path, not the token value. `--worker-only` bootstraps the clone using that host's git and probes that host's harness version. Keep the token file available to the bridge at runtime.
+Pass `--remote-worker bob` when preparing on the hub host. The printed `--worker-only bob` command is run from the robomate checkout on Bob's host, with `--hub-url` set to the public URL and `--token-file` set to the readable path to the hub's token file (`robomate status --json` reports it as `token_file`). The worker host reads that file; the generated config records the path, not the token value. `--worker-only` bootstraps the clone using that host's git and probes that host's harness version. Keep the token file available to the bridge at runtime.
 
 ## Manual MCP configuration
 
@@ -281,7 +287,7 @@ A Claude Code Alice can use a config like this (replace all absolute paths):
       "args": ["run", "--locked", "--project", "/path/to/robomate", "robomate", "mcp", "--role", "orchestrator"],
       "env": {
         "ROBOMATE_HUB_URL": "http://127.0.0.1:8420",
-        "ROBOMATE_TOKEN_FILE": "/path/to/target/.robomate/token"
+        "ROBOMATE_TOKEN_FILE": "/path/to/target.robomate/target/token/token"
       }
     }
   }
@@ -382,16 +388,21 @@ This stops each live hub with the operator credential and reports what it stoppe
 state and reports are kept. Removing hub state stays a separate, explicit operator
 action.
 
-On Linux or macOS, `ss -ltnp 'sport = :8420'` shows the listener for the default port. On Windows, `Get-NetTCPConnection -LocalPort 8420` shows its owning PID. Compare it with the PID in the hub checkout's `.robomate/hub.json` before stopping a process manually. A merged PR closes its issue when its body contains `Closes owner/repo#N`.
+On Linux or macOS, `ss -ltnp 'sport = :8420'` shows the listener for the default port. On Windows, `Get-NetTCPConnection -LocalPort 8420` shows its owning PID. Compare it with the PID in the hub's `hub.json` (in the `state_dir` that `robomate status --json` reports) before stopping a process manually. A merged PR closes its issue when its body contains `Closes owner/repo#N`.
 
-Keep the run's `hub-target/.robomate/` for its report, including after shutdown.
+Keep the run's hub state (`hub-target.robomate/` beside the checkout, or a legacy hub's `hub-target/.robomate/`) for its report, including after shutdown.
 For the next run, use a fresh target checkout and start a new hub there. The run
 report reads that run's hub state, the directory `robomate status` shows. Alice's MCP rows have `boundary=mcp`, `actor=alice`, and nonzero `content_bytes` after calls with text results. Worker HTTP rows have `boundary=a2a`.
 
 ```sh
-uv run --locked python scripts/hub-report.py \
-  --state-dir /absolute/path/to/my-run/hub-target/.robomate
+uv run --locked python scripts/hub-report.py --hub /absolute/path/to/my-run/hub-target
 ```
+
+`--hub` takes a hub name, `hub_id` or checkout path like `robomate status --hub`, and without
+it the report is of the hub the current directory's checkout is bound to or owns.
+`hub-report.py` asks `robomate status --json` where that hub keeps its state, running or stopped.
+For the state directory of an earlier run (a legacy hub's `hub-target/.robomate`), pass it with
+`--state-dir`.
 
 The report reads SQLite without changing it. `--format json` and `--format md` are available. Call accounting stores byte counts and labels, never payload text. `scripts/measure-call-bytes.py /absolute/empty-run-dir` starts a scratch `robomate up` hub and bridges to replay a published call sequence; `scripts/mock-alice.py --mcp --hub <name | hub_id | checkout path>` connects through an orchestrator bridge to the already running hub it names and a worker.
 
@@ -705,7 +716,7 @@ If you prefer running both Bob and Charlie with Claude Code:
 
 | Symptom | Cause | Solution |
 |---|---|---|
-| Worker `check_in` returns `401 Unauthorized` | Token mismatch | Ensure `ROBOMATE_TOKEN_FILE` points to the running hub's readable `.robomate/token`. |
+| Worker `check_in` returns `401 Unauthorized` | Token mismatch | Ensure `ROBOMATE_TOKEN_FILE` points to the running hub's readable token file (`token_file` in `robomate status --json`). |
 | Worker `check_in` returns `409 Conflict` | Agent name or workspace collision | Another active process holds that `AGENT_NAME` or `workspace_id`. Terminate stale worker processes and check `get_state()`. |
 | Worker startup fails with `ConfigurationError: HUB_WORKSPACE...` | Workspace path not canonical or missing identity | Ensure `HUB_WORKSPACE` is an absolute path to a full clone bootstrapped with `scripts/bootstrap-workspace.py`. Do not point to a worktree. |
 | Rerunning bootstrap fails with "existing clone is dirty" | Config files placed inside clone | Remove `.mcp.json`, `.claude`, or other untracked files from the clone. Keep configurations in a directory outside the clone. |
@@ -728,7 +739,7 @@ with `robomate up --bind 0.0.0.0 --public-url http://<WSL-IP>:8420` in the
 target repository. Use `--remote-worker bob` when preparing on the hub host.
 Run the printed `--worker-only bob` command from the same robomate commit on
 the worker host. Its `--token-file` may point through
-`\\wsl.localhost\<distro>\...\target\.robomate\token`; the bridge reads it in
+`\\wsl.localhost\<distro>\...\target.robomate\target\token\token`; the bridge reads it in
 place and never copies the bearer value into the config.
 
 Before starting the worker, check the listener from Windows PowerShell:

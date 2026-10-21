@@ -328,7 +328,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
 
 
 async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -> None:
-    from test_cli import await_hub, start, stop
+    from test_cli import await_hub, hub_state, hub_token, start, stop
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -362,7 +362,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         bridge_env = {
             **env,
             "ROBOMATE_HUB_URL": str(info["url"]),
-            "ROBOMATE_TOKEN_FILE": str(repo / ".robomate/token"),
+            "ROBOMATE_TOKEN_FILE": str(hub_token(repo)),
         }
         orchestrator = StdioServerParameters(
             command=command,
@@ -471,7 +471,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         assert joined_cli.returncode == 0, joined_cli.stderr
         assert "'guide_sha256':" in joined_cli.stdout
         assert "'role': 'orchestrator'" in joined_cli.stdout
-        with sqlite3.connect(repo / ".robomate/hub.db") as connection:
+        with sqlite3.connect(hub_state(repo) / "hub.db") as connection:
             rows = connection.execute(
                 "SELECT tool, content_bytes FROM call_log "
                 "WHERE boundary = 'mcp' AND actor = 'alice'"

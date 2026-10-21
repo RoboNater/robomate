@@ -184,6 +184,23 @@ def prepare(
     return run_dir, manifest
 
 
+def test_hub_status_asks_robomate_where_the_hubs_state_is(tmp_path: Path) -> None:
+    """The real `hub_status` runs `robomate status --json --hub <checkout>` (spec §4)."""
+
+    target = hub_repo(tmp_path)
+    subprocess.run(["git", "init", "-b", "main", str(target)], check=True, capture_output=True)
+    report = REAL_HUB_STATUS(target)
+    # Nothing answers on the recorded URL, so the hub is reported stopped, with the
+    # state and token the resolver finds for it.
+    assert report["running"] is False
+    assert report["state_dir"] == str(state_dir(target))
+    assert report["token_file"] == str(token_file(target))
+    plain = tmp_path / "not-a-checkout"
+    plain.mkdir()
+    with pytest.raises(ValueError, match=r"no running robomate hub in .*not inside a git"):
+        REAL_HUB_STATUS(plain)
+
+
 def test_a_linked_worktree_hub_repo_uses_that_worktrees_hub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

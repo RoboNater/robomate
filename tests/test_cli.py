@@ -28,11 +28,15 @@ from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
 from agent_hub_common.discovery import (
+    Binding,
     HubEndpoint,
     HubPlacement,
+    checkout_git_dir,
     legacy_state_dir,
     local_hub,
+    read_binding,
     resolve_repository,
+    write_binding,
     write_hub_json,
 )
 from agent_hub_common.registry import (
@@ -3230,3 +3234,289 @@ def test_submit_file_and_issue_are_mutually_exclusive(tmp_path: Path) -> None:
     sow.write_text("Do work\n", encoding="utf-8")
     with pytest.raises(ValueError, match="mutually exclusive"):
         cli_mod._submit(str(sow), 42, [], None)
+
+
+# -- M2 Step 6: state and token beside the agent worktrees, bindings, relocate ---
+
+
+def _seed_legacy_hub(
+    root: Path, env: dict[str, str], port: int, name: str | None = None
+) -> dict[str, Any]:
+    """The state a hub left in the checkout before Step 6, with its token and registry entry."""
+
+    legacy: dict[str, Any] = {
+        "repo_root": str(root),
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "default_branch": "main",
+        "url": f"http://127.0.0.1:{port}",
+        "port": port,
+        "pid": None,
+        "started_at": None,
+        "robomate_version": "0.1.0",
+        "hub_id": "legacy-id",
+    }
+    if name is not None:
+        legacy["name"] = name
+    write_hub_json(legacy_state_dir(root), legacy)
+    token = legacy_state_dir(root) / "token"
+    token.write_text("legacy-token\n")
+    token.chmod(0o600)
+    register({k: legacy[k] for k in ("repo_root", "url", "hub_id")} | {"pid": 999999}, env)
+    return legacy
+
+
+def test_a_new_hub_from_a_linked_worktree_survives_the_worktree(
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Spec §4: state outside every checkout outlives `git worktree remove`."""
+
+    root, env = repository
+    wt_a = tmp_path / "wt-a"
+    _commit_and_add_worktrees(root, wt_a)
+    process = start(wt_a, env)
+    try:
+        info = await_hub(wt_a, process)
+        state, token = hub_state(wt_a), hub_token(wt_a)
+        namespace = tmp_path / "repo.robomate" / "wt-a"
+        assert (state, token) == (namespace / "state", namespace / "token" / "token")
+        assert not (wt_a / ".robomate").exists()
+        stop(wt_a, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+    # The binding is the worktree's own, so removing the worktree removes it.
+    owner = read_binding(checkout_git_dir(wt_a))
+    assert owner is not None and (owner.role, owner.state_dir, owner.token_file) == (
+        "owner",
+        state,
+        token,
+    )
+    subprocess.run(
+        ["git", "worktree", "remove", str(wt_a)], cwd=root, check=True, capture_output=True
+    )
+    assert not wt_a.exists()
+    assert (state / "hub.db").is_file() and (state / "hub.json").is_file() and token.is_file()
+    assert not (state / "token").exists()  # state/ holds no token
+
+    listing = _inproc_cli(monkeypatch, capsys, root, env, "ls", "--json")
+    row = next(row for row in json.loads(listing.stdout) if row["name"] == "wt-a")
+    assert (row["live"], row["hub_id"], row["state_dir"]) == (False, info["hub_id"], str(state))
+    selected = _inproc_cli(monkeypatch, capsys, root, env, "status", "--hub", "wt-a", "--json")
+    assert selected.returncode == 1  # stopped, but its state is reached
+    report = json.loads(selected.stdout)
+    assert (report["running"], report["state_dir"]) == (False, str(state))
+    assert report["token_file"] == str(token)
+    # The main checkout owns no hub: it does not attach to the survivor.
+    refused = _inproc_cli(monkeypatch, capsys, root, env, "status")
+    assert refused.returncode == 1 and "no hub is recorded for checkout" in refused.stderr
+    assert "wt-a" not in refused.stdout
+    # A new worktree of the same name finds the name taken, not the old hub.
+    again = tmp_path / "again" / "wt-a"
+    again.parent.mkdir()
+    subprocess.run(
+        ["git", "worktree", "add", "-b", "wt-a-again", str(again)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    taken = _cli(again, env, "up")
+    assert taken.returncode == 1 and "'wt-a' is taken" in taken.stderr
+    assert read_binding(checkout_git_dir(again)) is None
+
+
+def test_a_legacy_hub_starts_in_place_and_relocate_moves_it(
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, env = repository
+    port = reserve_port_block(1)
+    _seed_legacy_hub(root, env, port)
+    (legacy_state_dir(root) / "extra-report.md").write_text("kept\n")
+    _commit_and_add_worktrees(root, tmp_path / "wt-bob")
+    wt_bob = tmp_path / "wt-bob"
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        assert (info["hub_id"], info["port"], info["name"]) == ("legacy-id", port, "repo")
+        # Run in place: same state, same token, and a binding that says so.
+        legacy = legacy_state_dir(root)
+        assert hub_state(root) == legacy and hub_token(root) == legacy / "token"
+        assert (legacy / "token").read_text() == "legacy-token\n"
+        owner = read_binding(checkout_git_dir(root))
+        assert owner is not None
+        assert (owner.role, owner.hub_id, owner.name) == ("owner", "legacy-id", "repo")
+        assert (owner.state_dir, owner.token_file) == (legacy, legacy / "token")
+        assert not (tmp_path / "repo.robomate").exists()
+        # Step 7 writes agent bindings; this test writes one by hand.
+        write_binding(
+            checkout_git_dir(wt_bob),
+            Binding("agent", "legacy-id", "repo", root, legacy, legacy / "token", agent="bob"),
+        )
+        # Relocation is for a stopped hub.
+        refused = _cli(root, env, "relocate")
+        assert refused.returncode == 1 and "is running" in refused.stderr
+        assert (legacy / "hub.db").is_file()
+        stop(root, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+    relocated = _cli(root, env, "relocate")
+    assert relocated.returncode == 0, relocated.stderr
+    namespace = tmp_path / "repo.robomate" / "repo"
+    state, token = namespace / "state", namespace / "token" / "token"
+    assert f"State: {state}" in relocated.stdout and f"Token: {token}" in relocated.stdout
+    assert "Bindings rewritten: 2" in relocated.stdout
+    # The old location keeps a pointer in place of the files; the old token is gone.
+    assert [path.name for path in legacy_state_dir(root).iterdir()] == ["relocated"]
+    assert str(state) in (legacy_state_dir(root) / "relocated").read_text()
+    assert not (legacy_state_dir(root) / "token").exists()
+    assert token.read_text() == "legacy-token\n"
+    assert (state / "extra-report.md").read_text() == "kept\n"
+    assert not (state / "token").exists() and not (state / "up.lock").exists()
+    if sys.platform != "win32":
+        assert token.stat().st_mode & 0o777 == 0o600
+        assert token.parent.stat().st_mode & 0o777 == 0o700
+        assert state.stat().st_mode & 0o777 == 0o700
+    assert json.loads((state / "hub.json").read_text())["hub_id"] == "legacy-id"
+    # Both bindings and the registry entry point there.
+    for checkout, role in ((root, "owner"), (wt_bob, "agent")):
+        binding = read_binding(checkout_git_dir(checkout))
+        assert binding is not None and binding.role == role
+        assert (binding.state_dir, binding.token_file) == (state, token)
+    assert (read_binding(checkout_git_dir(wt_bob)) or owner).agent == "bob"
+    entry = next(
+        e for e in json.loads(registry_path(env).read_text()) if e["hub_id"] == "legacy-id"
+    )
+    assert (entry["state_dir"], entry["token_file"]) == (str(state), str(token))
+    again = _cli(root, env, "relocate")
+    assert again.returncode == 1 and "already keeps its state" in again.stderr
+
+    # The same hub serves from the new location, with the same port and token.
+    process = start(root, env)
+    try:
+        restarted = await_hub(root, process)
+        assert (restarted["hub_id"], restarted["port"]) == ("legacy-id", port)
+        assert hub_state(root) == state
+        status = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+        assert status.returncode == 0, status.stderr
+        assert json.loads(status.stdout)["state_dir"] == str(state)
+        # The agent's worktree follows its binding to the relocated hub.
+        agent = _inproc_cli(monkeypatch, capsys, wt_bob, env, "status")
+        assert agent.returncode == 0, agent.stderr
+        assert f"Checkout: {root}" in agent.stdout and f"State: {state}" in agent.stdout
+        stop(root, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+
+def test_relocate_refuses_what_it_cannot_move_and_leaves_the_hub_where_it_is(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    root, env = repository
+    _seed_legacy_hub(root, env, reserve_port_block(1))
+    # relocate needs the operator credential, which only `up` has created so far.
+    missing = _cli(root, env, "relocate")
+    assert missing.returncode == 1 and "operator token" in missing.stderr
+    operator = registry_path(env).with_name("operator-token")
+    operator.parent.mkdir(parents=True, exist_ok=True)
+    operator.write_text("operator-token\n")
+    operator.chmod(0o600)
+
+    # A hub that has never run under checkout scope has no name to place it by;
+    # the first `up` records one.
+    unnamed = _cli(root, env, "relocate")
+    assert unnamed.returncode == 1 and "has no name yet" in unnamed.stderr
+    named = json.loads((legacy_state_dir(root) / "hub.json").read_text()) | {"name": "repo"}
+    write_hub_json(legacy_state_dir(root), named)
+
+    # A hub's own config may not hold [forge] (spec §4); nothing is rewritten for the operator.
+    config = legacy_state_dir(root) / "config.toml"
+    config.write_text('[forge]\ngitlab_hosts = ["gl.example"]\n', encoding="utf-8")
+    refused = _cli(root, env, "relocate")
+    assert refused.returncode == 1
+    assert "[forge]" in refused.stderr and str(root / ".git" / "robomate" / "config.toml") in (
+        refused.stderr
+    )
+    config.unlink()
+
+    # The hub's name must be free as a directory under the worktree root.
+    worktree_root = root.parent / "repo.robomate"
+    (worktree_root / "repo").mkdir(parents=True)
+    (worktree_root / "repo" / "hub.db").write_text("someone else's")
+    (worktree_root / "robomate-root.json").write_text(
+        json.dumps({"git_common_dir": str(root / ".git")}), encoding="utf-8"
+    )
+    taken = _cli(root, env, "relocate")
+    assert taken.returncode == 1 and "already exists under the worktree root" in taken.stderr
+    # A root that belongs to another repository is not this hub's to use either.
+    (worktree_root / "robomate-root.json").write_text(
+        json.dumps({"git_common_dir": str(root.parent / "elsewhere" / ".git")}), encoding="utf-8"
+    )
+    foreign = _cli(root, env, "relocate")
+    assert foreign.returncode == 1 and "belongs to the repository" in foreign.stderr
+
+    # Nothing was moved by any refusal.
+    assert (legacy_state_dir(root) / "token").read_text() == "legacy-token\n"
+    assert not any(worktree_root.glob("*/token"))
+    assert read_binding(checkout_git_dir(root)) is None
+
+
+def test_up_is_refused_in_a_checkout_bound_as_an_agent(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    root, env = repository
+    wt_bob = tmp_path / "wt-bob"
+    _commit_and_add_worktrees(root, wt_bob)
+    write_binding(
+        checkout_git_dir(wt_bob),
+        Binding("agent", "hid", "team", root, tmp_path / "s", tmp_path / "t", agent="bob"),
+    )
+    refused = _cli(wt_bob, env, "up")
+    assert refused.returncode == 1
+    assert "bound to hub team as agent 'bob'" in refused.stderr and str(root) in refused.stderr
+    assert not (tmp_path / "repo.robomate").exists() and not (wt_bob / ".robomate").exists()
+    assert read_binding(checkout_git_dir(wt_bob)) is not None  # left as it was
+
+
+def test_a_worktree_root_of_another_repository_is_refused_by_up(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """Two repositories named `repo` share one `<repo>.robomate` under a user-level root."""
+
+    root_a, env = repository
+    shared = tmp_path / "shared"
+    config = Path(env["APPDATA"] if sys.platform == "win32" else env["XDG_CONFIG_HOME"])
+    (config / "robomate").mkdir(parents=True)
+    (config / "robomate" / "config.toml").write_text(
+        f"worktree_root = {json.dumps(str(shared))}\n", encoding="utf-8"
+    )
+    root_b = tmp_path / "other" / "repo"
+    root_b.parent.mkdir()
+    init_checkout(root_b)
+    process = start(root_a, env)
+    try:
+        await_hub(root_a, process)
+        assert hub_state(root_a) == shared / "repo.robomate" / "repo" / "state"
+        refused = _cli(root_b, env, "up", "--name", "second")
+        assert refused.returncode == 1
+        assert f"belongs to the repository {root_a / '.git'}" in refused.stderr
+        assert str(root_b / ".git" / "robomate" / "config.toml") in refused.stderr
+        assert read_binding(checkout_git_dir(root_b)) is None
+        assert not (shared / "repo.robomate" / "second").exists()
+        stop(root_a, env, process)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)

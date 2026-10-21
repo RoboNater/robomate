@@ -825,7 +825,7 @@ def verify_local_hub(hub: LocalHub) -> None:
     health = check_healthz(hub.url, timeout_s) if hub.url else None
     if health is not None and health.hub_id == hub.hub_id:
         return
-    where = f"{hub.label()} (checkout {hub.checkout}) at {hub.url}"
+    where = f"{hub.label()} (checkout {hub.checkout})" + (f" at {hub.url}" if hub.url else "")
     if health is not None and health.hub_id is not None:
         raise DiscoveryError(
             f"{where} answers as hub {health.hub_id}, not {hub.hub_id}: another process holds "
@@ -840,9 +840,16 @@ def verify_local_hub(hub: LocalHub) -> None:
 
 
 def bound_hub(binding: Binding) -> LocalHub:
-    """The hub a binding names. A hub whose state is gone is an error naming it (spec §4)."""
+    """The hub a binding names. A hub whose state is gone is an error naming it (spec §4).
+
+    A bound hub whose state directory exists but holds no `hub.json` yet is one
+    that `up` bound and is still starting, or whose `hub.json` was removed. It
+    is found with no address, and `verify_local_hub` reports it not running.
+    """
 
     info = read_hub_json(binding.state_dir)
+    if info is None and binding.state_dir.is_dir():
+        info = {"hub_id": binding.hub_id, "name": binding.name}
     if info is None or str(info.get("hub_id") or "") != binding.hub_id:
         raise DiscoveryError(
             f"this checkout is bound to hub {binding.name or binding.hub_id} "

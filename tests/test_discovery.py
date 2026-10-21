@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -11,20 +13,33 @@ from typing import Any
 
 import pytest
 from agent_hub_common.discovery import (
+    BINDING_FILENAME,
+    ROOT_RECORD_FILENAME,
+    Binding,
     DiscoveryError,
     HubEndpoint,
     LocalHub,
+    checkout_git_dir,
+    create_hub_dirs,
     derive_hub_name,
     discover,
     ensure_excluded,
     find_hub,
+    hub_bindings,
+    is_legacy_state_dir,
     is_linked_worktree,
     legacy_state_dir,
+    plan_hub_placement,
+    read_binding,
     read_hub_json,
     repository_dir,
     resolve_checkout,
     resolve_repository,
+    state_dir,
+    token_file,
     validate_hub_name,
+    verify_local_hub,
+    write_binding,
     write_hub_json,
 )
 from agent_hub_common.registry import register
@@ -474,3 +489,405 @@ def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 10.0)
     with pytest.raises(DiscoveryError, match="answers as hub different-hub, not expected-hub"):
         discover(repository, {})
+
+
+# -- Step 6 of M2: where state and token live, bindings, the worktree root ------
+
+
+@pytest.fixture
+def layers(tmp_path: Path) -> dict[str, str]:
+    """An environment whose user configuration is empty and private to the test."""
+
+    return {
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
+        "APPDATA": str(tmp_path / "appdata"),
+        "XDG_STATE_HOME": str(tmp_path / "xdg-state"),
+        "LOCALAPPDATA": str(tmp_path / "local"),
+    }
+
+
+def _write_user_config(env: dict[str, str], text: str) -> Path:
+    base = Path(env["APPDATA"] if sys.platform == "win32" else env["XDG_CONFIG_HOME"])
+    path = base / "robomate" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_resolver_takes_a_binding_or_a_registry_entry(tmp_path: Path) -> None:
+    state, token = tmp_path / "ns" / "state", tmp_path / "ns" / "token" / "token"
+    binding = Binding("owner", "hid", "ns", tmp_path / "co", state, token)
+    assert (state_dir(binding), token_file(binding)) == (state, token)
+    entry = {"hub_id": "hid", "checkout": str(tmp_path / "co"), "state_dir": str(state)}
+    # An entry written before the token had a directory of its own names none.
+    assert (state_dir(entry), token_file(entry)) == (state, state / "token")
+    assert token_file(entry | {"token_file": str(token)}) == token
+    # A record that names no location is a legacy hub, run in place in its checkout.
+    for legacy in ({"checkout": str(tmp_path / "co")}, {"repo_root": str(tmp_path / "co")}):
+        assert state_dir(legacy) == legacy_state_dir(tmp_path / "co")
+        assert is_legacy_state_dir(state_dir(legacy))
+        assert token_file(legacy) == legacy_state_dir(tmp_path / "co") / "token"
+    assert not is_legacy_state_dir(state)
+    with pytest.raises(DiscoveryError, match="neither a state location nor a checkout"):
+        state_dir({"hub_id": "hid"})
+
+
+def test_binding_is_recorded_in_the_checkouts_own_git_directory_without_a_token(
+    repository: Path, tmp_path: Path
+) -> None:
+    worktree = tmp_path / "linked"
+    git(repository, "worktree", "add", "-b", "linked", str(worktree))
+    main_git, linked_git = checkout_git_dir(repository), checkout_git_dir(worktree)
+    assert main_git == repository / ".git"
+    assert linked_git.parent == repository / ".git" / "worktrees"
+    state, token = tmp_path / "ns" / "state", tmp_path / "ns" / "token" / "token"
+    owner = Binding("owner", "hid", "repo", repository, state, token)
+    agent = Binding("agent", "hid", "repo", repository, state, token, agent="bob")
+    assert read_binding(main_git) is None
+    write_binding(main_git, owner)
+    write_binding(linked_git, agent)
+    assert read_binding(main_git) == owner and read_binding(linked_git) == agent
+    token.parent.mkdir(parents=True)
+    token.write_text("secret-token\n")
+    for git_dir in (main_git, linked_git):
+        text = (git_dir / BINDING_FILENAME).read_text(encoding="utf-8")
+        assert "secret-token" not in text
+        assert json.loads(text)["token_file"] == str(token)
+    # A binding lives and dies with its worktree (spec §4).
+    git(repository, "worktree", "remove", "--force", str(worktree))
+    assert not linked_git.exists()
+    assert read_binding(main_git) == owner
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"role": "boss"}, "needs a role and a hub_id"),
+        ({"hub_id": ""}, "needs a role and a hub_id"),
+        ({"agent": "bob"}, "only an agent binding names an agent"),
+        ({"state_dir": "relative/state"}, "state_dir must be an absolute path"),
+        ({"version": 99}, "newer robomate"),
+        ({"version": None}, "no version"),
+    ],
+)
+def test_malformed_binding_is_refused_naming_the_file(
+    repository: Path, tmp_path: Path, change: dict[str, Any], message: str
+) -> None:
+    git_dir = checkout_git_dir(repository)
+    write_binding(
+        git_dir,
+        Binding("owner", "hid", "repo", repository, tmp_path / "s", tmp_path / "t"),
+    )
+    value = json.loads((git_dir / BINDING_FILENAME).read_text(encoding="utf-8")) | change
+    (git_dir / BINDING_FILENAME).write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(DiscoveryError, match=message):
+        read_binding(git_dir)
+    (git_dir / BINDING_FILENAME).write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(DiscoveryError, match="invalid binding"):
+        read_binding(git_dir)
+
+
+def test_a_new_hub_is_placed_beside_its_agent_worktrees(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    repo = resolve_repository(repository)
+    root = tmp_path / "repo.robomate"
+    placement = plan_hub_placement(repo, None, layers)
+    assert placement.new and not placement.legacy and placement.name == "repo"
+    assert placement.state_dir == root / "repo" / "state"
+    assert placement.token_file == root / "repo" / "token" / "token"
+    assert not root.exists()  # planning creates nothing
+    assert plan_hub_placement(repo, "feature", layers).state_dir == root / "feature" / "state"
+    with pytest.raises(DiscoveryError, match="invalid hub name"):
+        plan_hub_placement(repo, "Not.Valid", layers)
+    with pytest.raises(DiscoveryError, match="invalid hub name"):
+        plan_hub_placement(repo, "state", layers)
+
+    create_hub_dirs(placement)
+    record = json.loads((root / ROOT_RECORD_FILENAME).read_text(encoding="utf-8"))
+    assert record == {"git_common_dir": str(repository / ".git")}
+    assert placement.state_dir.is_dir() and placement.token_file.parent.is_dir()
+    if sys.platform != "win32":
+        # The token has a directory of its own, and state holds none (spec §12).
+        assert placement.state_dir.stat().st_mode & 0o777 == 0o700
+        assert placement.token_file.parent.stat().st_mode & 0o777 == 0o700
+    assert not (placement.state_dir / "token").exists()
+    assert placement.token_file.parent != placement.state_dir
+
+
+def test_a_configured_worktree_root_places_the_hub(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    _write_user_config(layers, f"worktree_root = {json.dumps(str(elsewhere))}\n")
+    placement = plan_hub_placement(resolve_repository(repository), None, layers)
+    assert placement.state_dir == elsewhere / "repo.robomate" / "repo" / "state"
+
+
+def test_a_root_created_by_one_repository_is_refused_for_another_of_the_same_name(
+    tmp_path: Path, layers: dict[str, str]
+) -> None:
+    """Two repositories called `repo` derive one `<repo>.robomate` under a shared parent."""
+
+    shared = tmp_path / "shared"
+    _write_user_config(layers, f"worktree_root = {json.dumps(str(shared))}\n")
+    repo_a = init_repository(tmp_path / "a" / "repo")
+    repo_b = init_repository(tmp_path / "b" / "repo")
+    first = plan_hub_placement(resolve_repository(repo_a), None, layers)
+    create_hub_dirs(first)
+    assert first.state_dir == shared / "repo.robomate" / "repo" / "state"
+    with pytest.raises(DiscoveryError) as refused:
+        plan_hub_placement(resolve_repository(repo_b), "other", layers)
+    message = str(refused.value)
+    assert f"belongs to the repository {repo_a / '.git'}" in message
+    assert f"not {repo_b / '.git'}" in message
+    assert str(repo_b / ".git" / "robomate" / "config.toml") in message
+    # A repository-level worktree_root is the way out (spec §4).
+    (repo_b / ".git" / "robomate").mkdir()
+    (repo_b / ".git" / "robomate" / "config.toml").write_text(
+        f"worktree_root = {json.dumps(str(tmp_path / 'b-root'))}\n", encoding="utf-8"
+    )
+    chosen = plan_hub_placement(resolve_repository(repo_b), None, layers)
+    assert chosen.state_dir == tmp_path / "b-root" / "repo" / "state"
+    # The same repository may add a hub of its own beside the first.
+    sibling = tmp_path / "a" / "sibling"
+    git(repo_a, "worktree", "add", "-b", "sibling", str(sibling))
+    assert plan_hub_placement(resolve_repository(sibling), None, layers).new
+
+
+def test_a_directory_that_holds_other_things_is_not_adopted_as_a_worktree_root(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    root = tmp_path / "repo.robomate"
+    root.mkdir()
+    (root / "notes.txt").write_text("not robomate's\n")
+    with pytest.raises(DiscoveryError, match=f"holds files but no {ROOT_RECORD_FILENAME}"):
+        plan_hub_placement(resolve_repository(repository), None, layers)
+    (root / "notes.txt").unlink()  # an empty directory is
+    assert plan_hub_placement(resolve_repository(repository), None, layers).new
+
+
+def test_a_taken_name_is_refused_but_an_abandoned_start_is_not(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    repo = resolve_repository(repository)
+    placement = plan_hub_placement(repo, None, layers)
+    create_hub_dirs(placement)
+    (placement.state_dir / "up.lock").write_text("0")  # a start that stopped before hub.json
+    assert plan_hub_placement(repo, None, layers).new
+    write_hub_json(placement.state_dir, {"hub_id": "other", "name": "repo"})
+    with pytest.raises(DiscoveryError, match=r"hub name 'repo' is taken: .*--name"):
+        plan_hub_placement(repo, None, layers)
+
+
+def test_up_follows_the_owner_binding_wherever_state_is(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    state, token = tmp_path / "ns" / "state", tmp_path / "ns" / "token" / "token"
+    state.mkdir(parents=True)
+    write_binding(
+        checkout_git_dir(repository),
+        Binding("owner", "hid", "chosen", repository, state, token),
+    )
+    placement = plan_hub_placement(resolve_repository(repository), "ignored", layers)
+    assert (placement.state_dir, placement.token_file, placement.new) == (state, token, False)
+    # A binding to state that is gone is not a licence to start another hub.
+    state.rmdir()
+    with pytest.raises(DiscoveryError, match=r"bound to hub chosen \(hub_id hid\).*is missing"):
+        plan_hub_placement(resolve_repository(repository), None, layers)
+
+
+def test_a_legacy_hub_is_placed_in_its_own_checkout(
+    repository: Path, layers: dict[str, str]
+) -> None:
+    repo = resolve_repository(repository)
+    for filename in ("hub.json", "hub.db", "config.toml"):
+        legacy_state_dir(repository).mkdir(exist_ok=True)
+        (legacy_state_dir(repository) / filename).write_text("{}")
+        placement = plan_hub_placement(repo, None, layers)
+        assert placement.legacy and not placement.new
+        assert placement.token_file == legacy_state_dir(repository) / "token"
+        (legacy_state_dir(repository) / filename).unlink()
+    assert plan_hub_placement(repo, None, layers).new
+
+
+def test_up_is_refused_in_a_checkout_bound_as_an_agent(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    worktree = tmp_path / "agent-bob"
+    git(repository, "worktree", "add", "-b", "agent-bob", str(worktree))
+    write_binding(
+        checkout_git_dir(worktree),
+        Binding("agent", "hid", "team", repository, tmp_path / "s", tmp_path / "t", agent="bob"),
+    )
+    with pytest.raises(DiscoveryError) as refused:
+        plan_hub_placement(resolve_repository(worktree), None, layers)
+    message = str(refused.value)
+    assert "bound to hub team as agent 'bob'" in message and str(repository) in message
+
+
+def _bound_hub(tmp_path: Path, owner: Path) -> tuple[Path, Path]:
+    state, token = tmp_path / "ns" / "state", tmp_path / "ns" / "token" / "token"
+    write_hub_json(state, {"hub_id": "hid", "name": "team", "url": "http://team:8420"})
+    token.parent.mkdir(parents=True)
+    token.write_text("team-token\n")
+    return state, token
+
+
+def test_discovery_follows_an_agent_binding_to_the_hub_and_its_token(
+    repository: Path, tmp_path: Path
+) -> None:
+    """Rule 2: a worktree bound as an agent reaches the owner's hub, and nothing else."""
+
+    worktree = tmp_path / "agent-bob"
+    git(repository, "worktree", "add", "-b", "agent-bob", str(worktree))
+    stranger = tmp_path / "stranger"
+    git(repository, "worktree", "add", "-b", "stranger", str(stranger))
+    state, token = _bound_hub(tmp_path, repository)
+    write_binding(
+        checkout_git_dir(worktree),
+        Binding("agent", "hid", "team", repository, state, token, agent="bob"),
+    )
+    nested = worktree / "src"
+    nested.mkdir()
+    for cwd in (worktree, nested):
+        hub = find_hub(cwd, {})
+        assert isinstance(hub, LocalHub)
+        assert (hub.checkout, hub.state_dir, hub.token_file) == (repository, state, token)
+        assert hub.endpoint() == HubEndpoint("http://team:8420", "team-token")
+    # A worktree with no binding reaches nothing, however many bound ones are beside it.
+    with pytest.raises(DiscoveryError, match="no hub is recorded for checkout"):
+        find_hub(stranger, {})
+
+
+def test_a_binding_to_a_missing_hub_names_it_and_never_falls_through(
+    repository: Path, tmp_path: Path
+) -> None:
+    state, token = _bound_hub(tmp_path, repository)
+    write_binding(
+        checkout_git_dir(repository),
+        Binding("owner", "hid", "team", repository, state, token),
+    )
+    # The checkout also holds legacy state of another hub: the binding still wins.
+    write_hub_json(legacy_state_dir(repository), {"hub_id": "legacy", "url": "http://legacy:1"})
+    bound = find_hub(repository, {})
+    assert isinstance(bound, LocalHub) and bound.url == "http://team:8420"
+    # Bound, but its hub.json is not there (a start in progress): found, and not running.
+    (state / "hub.json").unlink()
+    starting = find_hub(repository, {})
+    assert isinstance(starting, LocalHub) and (starting.hub_id, starting.url) == ("hid", "")
+    with pytest.raises(DiscoveryError, match=r"hub team \(checkout [^)]*\) is not running"):
+        verify_local_hub(starting)
+    shutil.rmtree(state)
+    with pytest.raises(DiscoveryError) as missing:
+        find_hub(repository, {})
+    message = str(missing.value)
+    assert "hub team (hub_id hid)" in message and f"owned by checkout {repository}" in message
+    assert str(state) in message
+    # Another hub's state at that location is not the bound hub either.
+    write_hub_json(state, {"hub_id": "other", "url": "http://other:1"})
+    with pytest.raises(DiscoveryError, match="belongs to another hub"):
+        find_hub(repository, {})
+
+
+def test_a_stopped_bound_hub_is_an_error_naming_it_and_its_checkout(
+    repository: Path, tmp_path: Path
+) -> None:
+    state, token = _bound_hub(tmp_path, repository)
+    write_hub_json(state, {"hub_id": "hid", "name": "team", "url": closed_port_url()})
+    worktree = tmp_path / "agent-bob"
+    git(repository, "worktree", "add", "-b", "agent-bob", str(worktree))
+    write_binding(
+        checkout_git_dir(worktree),
+        Binding("agent", "hid", "team", repository, state, token, agent="bob"),
+    )
+    hub = find_hub(worktree, {})
+    assert isinstance(hub, LocalHub)
+    with pytest.raises(
+        DiscoveryError, match=rf"hub team \(checkout {re.escape(str(repository))}\)"
+    ):
+        verify_local_hub(hub)
+
+
+def test_a_relocated_hub_is_selected_by_name_after_its_checkout_is_gone(
+    repository: Path, tmp_path: Path, layers: dict[str, str]
+) -> None:
+    worktree = tmp_path / "wt"
+    git(repository, "worktree", "add", "-b", "wt", str(worktree))
+    state, token = _bound_hub(tmp_path, worktree)
+    register(
+        {
+            "hub_id": "hid",
+            "name": "team",
+            "checkout": str(worktree),
+            "git_common_dir": str(repository / ".git"),
+            "state_dir": str(state),
+            "token_file": str(token),
+            "url": "http://team:8420",
+            "pid": None,
+        },
+        layers,
+    )
+    git(repository, "worktree", "remove", "--force", str(worktree))
+    hub = find_hub(repository, layers, selector="team")
+    assert isinstance(hub, LocalHub)
+    assert (hub.checkout, hub.state_dir, hub.hub_id) == (worktree, state, "hid")
+    # The main checkout owns no hub and does not attach to it.
+    with pytest.raises(DiscoveryError, match="no hub is recorded for checkout"):
+        find_hub(repository, layers)
+    # Once its state is gone the entry is pruned (spec §4), and nothing is followed.
+    (state / "hub.json").unlink()
+    with pytest.raises(DiscoveryError, match="no registered hub has that name or hub_id"):
+        find_hub(repository, layers, selector="hid")
+
+
+def test_hub_bindings_finds_the_checkouts_bound_to_one_hub(
+    repository: Path, tmp_path: Path
+) -> None:
+    state, token = tmp_path / "s", tmp_path / "t"
+    bound, other, unbound = (tmp_path / name for name in ("bound", "other", "unbound"))
+    for path in (bound, other, unbound):
+        git(repository, "worktree", "add", "-b", path.name, str(path))
+    write_binding(
+        checkout_git_dir(repository), Binding("owner", "hid", "team", repository, state, token)
+    )
+    write_binding(
+        checkout_git_dir(bound), Binding("agent", "hid", "team", repository, state, token, "bob")
+    )
+    write_binding(
+        checkout_git_dir(other), Binding("agent", "elsewhere", "x", repository, state, token, "al")
+    )
+    found = hub_bindings(repository / ".git", "hid")
+    assert sorted(binding.role for _, binding in found) == ["agent", "owner"]
+    assert {git_dir for git_dir, _ in found} == {
+        checkout_git_dir(repository),
+        checkout_git_dir(bound),
+    }
+
+
+def test_no_module_outside_discovery_names_the_legacy_state_directory() -> None:
+    """Every reader goes through the resolver, so only discovery.py spells `.robomate`.
+
+    The name of a path component, not the `<repo>.robomate` worktree-root suffix
+    or an identifier such as `mcp_servers.robomate`.
+    """
+
+    root = Path(__file__).resolve().parents[1]
+    modules = [
+        *root.glob("packages/*/src/**/*.py"),
+        *(
+            path
+            for path in root.glob("scripts/**/*.py")
+            if "poc" not in path.relative_to(root).parts
+        ),
+    ]
+    assert len(modules) > 30
+    named = re.compile(r"(?<![\w}>])\.robomate\b")
+    offenders = [
+        f"{path.relative_to(root)}:{number}"
+        for path in modules
+        if path.name != "discovery.py"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if named.search(line)
+    ]
+    assert offenders == []
