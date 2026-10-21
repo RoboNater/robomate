@@ -621,7 +621,7 @@ Then             [7a] worktrees at join         ◀── 1, 3, 6
                    │
 Next             [7b] create before join ◀── 7a    [7c] branches ◀── 7a    [7d] boundaries + grants ◀── 7a
                    │
-In parallel      [8] clean + merge ◀── 7a, 7c    [9] clone fallback ◀── 7a    [10] launcher ◀── 7a, 7b
+In parallel      [8] clean + merge ◀── 7a, 7c    [9] clone fallback ◀── 7a, 7b    [10] launcher ◀── 7a, 7b
                    │
 Then             [11] retire prepare-run       ◀── 2, 4, 8, 9, 10
                    │
@@ -642,7 +642,7 @@ reason for each edge.
 | 7c | 7a | The branch label comes from the stored statement (3, through 7a), and its migration follows 7a's |
 | 7d | 7a | Boundaries and grants apply to generated workspaces |
 | 8 | 7a, 7c | It cleans worktrees (7a) and prunes merged `robomate/<hub>/…` branches (7c) |
-| 9 | 7a | It clones beside generated workspaces; clones keep the identity file that 7a defines |
+| 9 | 7a, 7b | It clones beside generated workspaces; clones keep the identity file that 7a defines; `workspace --clone` extends 7b's `robomate workspace` |
 | 10 | 7a, 7b | It starts agents in generated workspaces (7a) created ahead of the join (7b); Step 10 also logs `run_id` (3, through 7a) |
 | 11 | 2, 4, 8, 9, 10; completed M7 and its launcher handoff | Every replacement, including optional Denise, exists and is verified before the old path goes |
 | 12 | all | |
@@ -969,6 +969,7 @@ Issue: [#244](https://github.com/RoboNater/robomate/issues/244).
   while locked.
 - Names `state` and `token` are refused as agent names.
 - Two hubs of one repository create worktrees without collision.
+- The orchestrator's join creates its own worktree the same way.
 - A join with an explicit `HUB_WORKSPACE` creates no worktree and keeps its full-clone
   check.
 - A join with an explicitly configured workspace and no matching identity is refused;
@@ -990,10 +991,15 @@ Issue: [#314](https://github.com/RoboNater/robomate/issues/314).
 - Worktree creation before join through `robomate workspace <name>` and
   `robomate up --agents …` (operator-only `hub.workspace`); each prints its path.
 - The join response returns `setup` and applies the agent pins from the layers (Step 5).
+  They sit here, not in 7a, to keep 7a small: until 7b lands, worktrees created at join
+  get no `setup`, which is harmless while prepared runs remain the working path,
+  through Step 10.
 - §6, §12 deltas for creation before join.
 
 **Tests** (`tests/test_workspace.py`, `tests/test_cli.py`, `tests/test_rpc.py`).
 - `robomate workspace bob` without the operator credential is refused.
+- `robomate workspace bob` and `robomate up --agents …` create the worktree ahead of the
+  join, with an agent binding and the hub's lock; a later join reuses it.
 
 ```sh
 uv run --locked pytest tests/test_workspace.py tests/test_cli.py tests/test_rpc.py
@@ -1019,6 +1025,7 @@ Issue: [#315](https://github.com/RoboNater/robomate/issues/315).
 **Tests** (`tests/test_worktrees.py`, `tests/test_rpc.py`).
 - The first implementer assignment names the branch; an existing local or remote ref is
   refused; a later task in the run reuses it.
+- The workflow row records the run's branch.
 - Two hubs of one repository name branches without collision.
 
 ```sh
