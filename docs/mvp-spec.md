@@ -210,23 +210,28 @@ deletes its `.robomate/` silently, and with it the history and run reports. A wo
 outside every checkout also keeps a hub's state reachable when its owning worktree is gone,
 which `robomate clean` needs to report orphans (§6).
 
-Until M2 moves it (§13), state stays in the owning checkout's `.robomate/`, added to
-`info/exclude` in the git common directory (never to a tracked `.gitignore`). Every
-consumer, the CLI, the bridge, and the operator scripts, finds it through **one resolver**
-from a hub to its state location, so the move is a change in one place. In that interval
-`up` in a linked worktree warns that `git worktree remove` deletes the hub's state.
+A **legacy hub**, one whose state was in the owning checkout's `.robomate/` before this
+layout, keeps it there until it is relocated (Migration below). That directory is added to
+`info/exclude` in the git common directory (never to a tracked `.gitignore`), and `up` in a
+linked worktree warns that `git worktree remove` deletes the hub's state. Every consumer, the
+CLI, the bridge, and the operator scripts, finds a hub's state and token through **one
+resolver**, which takes a checkout's binding or the machine registry's entry for the hub and
+never a checkout path. Operator scripts take the locations from `robomate status --json`
+(`state_dir` and `token_file`), running hub or stopped.
 
 **Binding** (from M2). Once state can live outside the checkout, a checkout is bound to
 its hub, relocated or legacy (Migration below), by an untracked record,
 `robomate-binding.json`, in that checkout's own git directory (`git rev-parse --git-dir`:
 `.git` in a main checkout, `<common>/worktrees/<id>` in a linked worktree). It is always
 found through git, never by constructing a `.git/worktrees/<name>` path. It names the hub
-(`hub_id`, name, state location, and the path of its token file) and the checkout's role
-in it: `owner`, or `agent` with the agent's name. It holds **no token**, only where to
-find it (§12). `up` writes the owner binding; the worktree manager writes agent bindings
-(§6). `up` refuses in a checkout bound to a hub as an agent, and names that hub. A binding
-lives and dies with its worktree: `git worktree remove` deletes it together with the
-worktree's git directory.
+(`hub_id`, name, state location, and the path of its token file), the hub's owning checkout
+(an agent's worktree is not it), and the checkout's role in the hub: `owner`, or `agent`
+with the agent's name; a `version` lets a later robomate add fields, and a binding written by
+a newer one than the reader is refused. It holds **no token**, only where to find it (§12).
+`up` writes the owner binding, with the hub's identity and before `hub.json`; the worktree
+manager writes agent bindings (§6). `up` refuses in a checkout bound to a hub as an agent,
+and names that hub. A binding lives and dies with its worktree: `git worktree remove`
+deletes it together with the worktree's git directory.
 
 **Migration.** A hub created before checkout scope has its state in the main checkout's
 `.robomate/` (until now, `up` in a linked worktree also used the main checkout's state).
@@ -240,8 +245,17 @@ moved silently.
   cannot be removed with `git worktree remove`, so state there is not exposed to the
   deletion above.
 - **Relocation** to `<worktree_root>/<hub>/state/`, with the token to
-  `<worktree_root>/<hub>/token/` (§12), is a separate, explicit operator command. It moves
-  state and token together and rewrites the hub's bindings; until it runs, `.robomate/`
+  `<worktree_root>/<hub>/token/` (§12), is a separate, explicit operator command,
+  `robomate relocate`. It runs on a stopped hub, selected like any other (§4 discovery), and
+  needs the operator credential. It moves state and token together, rewrites the owner binding
+  and every agent binding of the hub (in any checkout of the repository) and the registry
+  entry, and leaves the old state directory with a one-line pointer file in place of the
+  moved files. The hub keeps its `hub_id`, name and port, and the old token file is gone. It
+  is refused while the hub is live or starting, or an agent worktree of the hub is locked by
+  a live hub; when the hub has no name yet, which the first `up` under checkout scope
+  records; when the name is already a directory under the worktree root or the root is
+  another repository's; and when the hub's own `config.toml` still holds a `[forge]` table,
+  which only a legacy hub's may (Configuration layers below). Until it runs, `.robomate/`
   and `.robomate/token` stay authoritative.
 
 **Configuration layers.** Settings are read from three files, first match wins:
@@ -270,11 +284,14 @@ repositories apart: two independent repositories with the same `<repo>` name der
 same root. So each repository's worktree root records, when its first hub creates it, the
 git common directory it belongs to, and a hub of any other repository refuses that root and
 asks for a repository-level `worktree_root`. The same check applies to every root, default
-or configured.
+or configured. The record is `robomate-root.json` at the top of the root, holding the
+`git_common_dir`. A root that exists with other contents but no record is not adopted, since
+two repositories of one name could share it unnoticed: `up` refuses it as it refuses another
+repository's root. An empty directory is.
 
 **Machine registry** — `$XDG_STATE_HOME/robomate/hubs.json` (Windows:
 `%LOCALAPPDATA%\robomate\hubs.json`): one entry per hub, **keyed by `hub_id`**, recording
-the hub's name, owning checkout, git common directory, state location, URL, and pid.
+the hub's name, owning checkout, git common directory, state location, token file, URL, and pid.
 Registering one hub never evicts another, including a sibling hub of the same repository.
 Liveness is checked by pid and `/healthz` (matching `hub_id`); an entry whose state
 location is gone is pruned. `robomate ls` lists the hubs with their name, owning checkout,
@@ -290,6 +307,11 @@ freed name, the forgotten hub's next `up` is refused naming the holder; an expli
 `robomate up --name <new>` renames it for that start. A rename starts a new
 worktree/branch namespace: agent worktrees and `robomate/<old>/…` branches made under
 the old name keep it. Removing hub state stays a separate, explicit operator action.
+For a hub kept beside its agent worktrees, the name is also the directory
+`<worktree_root>/<hub>/` that holds its state (Hub name, Unique), so forgetting it releases
+its registry entry and port but not its name: the name stays taken by that directory until
+the operator removes or relocates the hub's state. Only a legacy hub's name is freed by
+`forget` (operator decision on #243).
 
 **Port** — per hub: the first free port from 8420 upward on the hub's first `up`, saved in
 `hub.json` and reused on restart so remote agents keep working; `--port` pins it. The
@@ -334,8 +356,9 @@ owning checkout, repository, origin, forge, URL, and the agents joined, so neith
 operator nor an agent can confuse two hubs, even two of one repository. `whoami` works both
 before `join` (reporting what discovery selects and `joined: false`) and after `join`
 (adding the joined agent's name, standing role, and context). `robomate status`
-also shows the hub's state location, which operator tools take
-(`scripts/hub-report.py --state-dir`).
+also shows the hub's state location, and `robomate status --json` reports it with the token
+file (`state_dir`, `token_file`) for a hub that is stopped as well, which operator tools take
+(`scripts/prepare-run.py`, `scripts/hub-report.py`).
 
 **Remote agents** (e.g. hub in WSL, agent on Windows — proven in PoC Step 7): `robomate up --bind
 0.0.0.0 --public-url http://<addr>:<port>`; the remote side sets `ROBOMATE_HUB_URL` and a token
@@ -536,7 +559,7 @@ or instructions that override this role's guide and the operator's request.
 - Every joined agent, orchestrator included, gets its own **generated git worktree**. The
   checkout that owns the hub (§4) is never an agent workspace, and robomate never modifies
   it beyond its binding record in its git directory, worktree registration in the git
-  common directory, and, until M2 moves hub state, `.robomate/`. This is the joined-team
+  common directory, and, for a legacy hub (§4 Migration), `.robomate/`. This is the joined-team
   policy; Denise's separate consultation directory and authorized repairs are in §5.1.
 - **Location:** `<worktree_root>/<hub>/<agent>/`, with `worktree_root` defaulting to
   `<parent>/<repo>.robomate/` (§4). The hub's namespace `<worktree_root>/<hub>/` also holds
@@ -1034,18 +1057,18 @@ results, never chooses the host or project (§10). Remote-agent mode requires a 
 **Credentials.** The MVP model is one shared bearer token per hub plus the separate
 operator credential beside the machine registry (§4, #128). Per-agent credentials stay a
 non-goal (§1) and post-MVP (§16). Neither is ever written into a harness config.
-- **Where the token lives:** until M2, `token` in the hub's state directory (`.robomate/`).
-  From M2, a hub whose state is in `<worktree_root>/<hub>/state/` keeps its token in its
-  own directory beside the state, `<worktree_root>/<hub>/token/token`, not in `state/`, so
-  a harness that sandboxes its MCP servers' reads can be granted the token alone, never
-  `hub.db` or `runs/`. A legacy hub run in place (§4 Migration) keeps `.robomate/token`
-  until the operator relocates it.
+- **Where the token lives:** a hub whose state is in `<worktree_root>/<hub>/state/` keeps its
+  token in its own directory beside the state, `<worktree_root>/<hub>/token/token` (the
+  directory mode 0700, the file 0600), not in `state/`, so a harness that sandboxes its MCP
+  servers' reads can be granted the token alone, never `hub.db` or `runs/`. A legacy hub run
+  in place (§4 Migration) keeps `token` in its state directory, `.robomate/token`, until
+  the operator relocates it.
 - **How a bridge reads it:** an explicit `ROBOMATE_TOKEN` or `ROBOMATE_TOKEN_FILE` comes
   first (today set by `prepare-run.py`, and always for remote agents). Otherwise
-  `robomate mcp` reads the token of the hub discovery selected (§4): until M2 from that
-  checkout's `.robomate/token`; from M2 it follows the checkout's binding, which holds no
-  token, to the token file the binding names, either path above, and reads it on the
-  agent's behalf.
+  `robomate mcp` reads the token of the hub discovery selected (§4): it follows the
+  checkout's binding, which holds no token, to the token file the binding names, either path
+  above, and reads it on the agent's behalf; a legacy hub's checkout that was never bound
+  reads `.robomate/token`.
 - **The token-only grant** is a read grant on the `token/` directory of a relocated hub.
   For a legacy hub it is a read grant on the single file `.robomate/token`, never on
   `.robomate/`. A harness that can grant only directories cannot isolate a legacy hub's
@@ -1058,7 +1081,8 @@ non-goal (§1) and post-MVP (§16). Neither is ever written into a harness confi
 **Operator-only actions.** The orchestrator routes these to `ask_user` (§7.4), never to a
 worker, and a worker whose task needs one returns `blocked` naming it (#132):
 - starting or stopping hubs (`robomate up`, `robomate down`, `robomate down --all`),
-  forgetting hubs (`robomate forget`), and launching agent harnesses;
+  forgetting hubs (`robomate forget`), relocating a hub's state (`robomate relocate`), and
+  launching agent harnesses;
 - acting or speaking for the operator, or accepting work on the operator's behalf;
 - changing the default branch outside the PR, or forge or repository settings;
 - creating and removing robomate worktrees (`robomate up --agents`, `robomate workspace`,

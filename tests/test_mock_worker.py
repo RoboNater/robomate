@@ -604,7 +604,7 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
 
 def test_join_via_mcp_against_live_hub(tmp_path: Path) -> None:
     """r1-1: join_via_mcp runs robomate mcp and registers with a live hub."""
-    from test_cli import await_hub, init_checkout, start, stop
+    from test_cli import await_hub, hub_token, init_checkout, start, stop
 
     root = tmp_path / "repo"
     init_checkout(root)
@@ -617,7 +617,7 @@ def test_join_via_mcp_against_live_hub(tmp_path: Path) -> None:
     hub = start(root, env)
     try:
         info = await_hub(root, hub)
-        token = (root / ".robomate" / "token").read_text(encoding="utf-8").strip()
+        token = hub_token(root).read_text(encoding="utf-8").strip()
         res = mock_worker.join_via_mcp(
             "bob",
             "implementer",

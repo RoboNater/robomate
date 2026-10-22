@@ -35,17 +35,27 @@ from agent_hub_common import (
     read_token_file,
     reserve_stdout,
 )
+from agent_hub_common.config_layers import repository_config_path
 from agent_hub_common.discovery import (
+    BINDING_FILENAME,
+    Binding,
     DiscoveryError,
     HubEndpoint,
+    HubPlacement,
     LocalHub,
     Repository,
+    checkout_git_dir,
+    create_hub_dirs,
     derive_hub_name,
     ensure_excluded,
     find_hub,
     hub_checkout,
+    is_legacy_state_dir,
     is_linked_worktree,
+    legacy_state_dir,
     local_hub,
+    plan_hub_placement,
+    read_binding,
     read_hub_json,
     repository_dir,
     resolve_checkout,
@@ -56,6 +66,7 @@ from agent_hub_common.discovery import (
     token_file,
     validate_hub_name,
     verify_local_hub,
+    write_binding,
     write_hub_json,
 )
 from agent_hub_common.registry import (
@@ -68,11 +79,13 @@ from agent_hub_common.registry import (
     mark_stopped,
     operator_token_path,
     process_alive,
+    recorded_entries,
     register,
 )
 from agent_hub_common.registry import (
     forget as forget_entry,
 )
+from agent_hub_common.relocation import relocate_hub, relocation_targets
 from agent_hub_common.stdio import escape_unencodable_output
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
@@ -199,7 +212,7 @@ class HubLockBusy(RuntimeError):
 
 
 @contextmanager
-def _hub_lock(checkout: Path) -> Iterator[None]:
+def _hub_lock(state: Path) -> Iterator[None]:
     """Hold this hub's OS file lock for its lifetime, including startup.
 
     The lock is per hub, in its state directory: it never blocks a sibling hub.
@@ -208,7 +221,7 @@ def _hub_lock(checkout: Path) -> Iterator[None]:
     running or starting).
     """
 
-    fd = os.open(state_dir(checkout) / "up.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(state / "up.lock", os.O_RDWR | os.O_CREAT, 0o600)
     locked = False
     try:
         try:
@@ -225,7 +238,7 @@ def _hub_lock(checkout: Path) -> Iterator[None]:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             locked = True
         except OSError as exc:
-            info = read_hub_json(checkout) or {}
+            info = read_hub_json(state) or {}
             url = info.get("url")
             message = f"hub already running at {url}" if url else "hub already starting"
             raise HubLockBusy(message) from exc
@@ -249,11 +262,10 @@ async def _up(args: argparse.Namespace) -> None:
         repo = replace(repo, forge=args.forge)
     if args.name is not None:
         validate_hub_name(args.name)
-    directory = state_dir(repo.root)
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(directory, 0o700)
-    with _hub_lock(repo.root):
-        await _run_up(args, repo, directory)
+    placement = plan_hub_placement(repo, args.name)
+    create_hub_dirs(placement)
+    with _hub_lock(placement.state_dir):
+        await _run_up(args, repo, placement)
 
 
 def _hub_name(requested: str | None, recorded: object, checkout: Path) -> str:
@@ -274,15 +286,17 @@ def _entry_port(entry: dict[str, Any]) -> int | None:
     return int(port) if port else None
 
 
-async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -> None:
+async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlacement) -> None:
+    directory = placement.state_dir
     layered_config = load_config_layers(
         hub_config=directory / "config.toml",
         git_common_dir=repo.git_common_dir,
     )
     for warning in layered_config.warnings:
         print(f"Warning: {warning}", flush=True)
-    ensure_excluded(repo.git_common_dir)
-    old = read_hub_json(repo.root) or {}
+    if placement.legacy:
+        ensure_excluded(repo.git_common_dir)
+    old = read_hub_json(directory) or {}
     old_pid = int(old.get("pid") or 0)
     if old_pid and old.get("url") and process_alive(old_pid):
         health = check_healthz(str(old["url"]), HEALTHZ_LIVE_PID_TIMEOUT_S)
@@ -332,12 +346,15 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         "repo_root": str(repo.root),
         "git_common_dir": str(repo.git_common_dir),
     }
-    entry = identity | {"state_dir": str(directory)}
-    if is_linked_worktree(repo.root, repo.git_common_dir):
+    entry = identity | {
+        "state_dir": str(directory),
+        "token_file": str(placement.token_file),
+    }
+    if placement.legacy and is_linked_worktree(repo.root, repo.git_common_dir):
         print(
             f"Warning: this hub's state is in {directory}, inside a linked worktree; "
-            "`git worktree remove` deletes it, with the hub's history and run reports, "
-            "until hub state moves out of the checkout (M2).",
+            "`git worktree remove` deletes it, with the hub's history and run reports. "
+            "Move it out of the checkout with robomate relocate while the hub is stopped.",
             flush=True,
         )
     if repo.forge == "unknown":
@@ -355,13 +372,24 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
                 "GitLab preflight refused startup; disable the named unsupported "
                 "settings or correct the origin before running up again"
             )
+    # The owner binding (spec §4) is this checkout's own record of the hub it
+    # owns and where its state and token are; it holds no token. It is written
+    # with the identity, before hub.json, so a sibling `up` of this checkout
+    # that looks while this one starts finds the hub bound, and meets the
+    # lock, not a "name taken" directory.
+    git_dir = checkout_git_dir(repo.root)
+    previous_binding = read_binding(git_dir)
+    binding = Binding("owner", hub_id, name, repo.root, directory, placement.token_file)
+    if previous_binding != binding:
+        write_binding(git_dir, binding)
     # Record the identity, then claim the name among the repository's hubs
     # before anything starts. The registry prunes an entry without hub.json,
-    # so the file comes first, and is restored if the name is refused.
+    # so the file comes first, and is restored if the name is refused (the
+    # binding with it).
     # `released_port` was read above from the forget marker in hub.json: while
     # it is set the startup entry claims no port, so the released port is
     # reusable by a sibling hub at once.
-    write_hub_json(repo.root, old | identity)
+    write_hub_json(directory, old | identity)
     try:
         register(
             entry
@@ -373,9 +401,13 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         )
     except RegistryError:
         if old:
-            write_hub_json(repo.root, old)
+            write_hub_json(directory, old)
         else:
             (directory / "hub.json").unlink(missing_ok=True)
+        if previous_binding is not None:
+            write_binding(git_dir, previous_binding)
+        else:
+            (git_dir / BINDING_FILENAME).unlink(missing_ok=True)
         raise
     if args.port is not None:
         requested_port = args.port
@@ -393,7 +425,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     # inside the repository or hub state is refused with the token-path
     # diagnostic even when the saved or requested port is occupied. Binding
     # first would mask it with the port-unavailable diagnostic.
-    _validate_operator_token_path(operator_token_path(), repo)
+    _validate_operator_token_path(operator_token_path(), repo, placement)
     sock, port = _bind(
         args.bind, int(requested_port) if requested_port is not None else None, taken
     )
@@ -404,7 +436,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
             "HUB_HOST": args.bind,
             "HUB_PORT": str(port),
             "HUB_DB_PATH": str(directory / "hub.db"),
-            "HUB_TOKEN_FILE": str(token_file(repo.root)),
+            "HUB_TOKEN_FILE": str(placement.token_file),
             "HUB_CALL_ACCOUNTING": "0" if args.no_call_accounting else "1",
         }
     )
@@ -414,7 +446,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
     try:
         settings = HubSettings.from_env(overlay)
         load_or_create_token(settings.token, settings.token_file)
-        _provision_operator_token(settings, repo)
+        _provision_operator_token(settings, repo, placement)
         info: dict[str, Any] = {
             **identity,
             "origin": repo.origin,
@@ -428,7 +460,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
         }
 
         def started() -> None:
-            write_hub_json(repo.root, info)
+            write_hub_json(directory, info)
             register(entry | {"url": settings.public_url, "port": port, "pid": os.getpid()})
             print(f"Hub {name} running at {settings.public_url}", flush=True)
             if released_port is not None and released_port != port:
@@ -457,7 +489,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
             # skip mark_stopped, so the registry update runs even if the
             # read or write still fails after retries.
             try:
-                current = read_hub_json(repo.root)
+                current = read_hub_json(directory)
                 if (
                     current
                     and current.get("hub_id") == info["hub_id"]
@@ -465,14 +497,31 @@ async def _run_up(args: argparse.Namespace, repo: Repository, directory: Path) -
                 ):
                     current["pid"] = None
                     current["started_at"] = None
-                    write_hub_json(repo.root, current)
+                    write_hub_json(directory, current)
             finally:
                 mark_stopped(hub_id, pid=os.getpid())
     finally:
         sock.close()
 
 
-def _validate_operator_token_path(path: Path | None, repo: Repository) -> Path | None:
+def _operator_token_off_limits(repo: Repository, placement: HubPlacement) -> tuple[Path, ...]:
+    """Where agents read: the repository, the hub's state and token, and its namespace."""
+
+    places = [
+        repo.root,
+        placement.state_dir,
+        placement.token_file.parent,
+        repository_dir(repo.git_common_dir),
+    ]
+    if not placement.legacy:
+        # `<worktree_root>/<hub>/` also holds the hub's agent worktrees (spec §6).
+        places.append(placement.state_dir.parent)
+    return tuple(places)
+
+
+def _validate_operator_token_path(
+    path: Path | None, repo: Repository, placement: HubPlacement
+) -> Path | None:
     """Refuse an operator-token path inside the repository or hub state (#128, #192).
 
     Pure validation without creating any credential, so `_run_up` can run it
@@ -482,7 +531,7 @@ def _validate_operator_token_path(path: Path | None, repo: Repository) -> Path |
     if path is None:
         return None
     resolved = path.resolve()
-    for place in (repo.root, state_dir(repo.root), repository_dir(repo.git_common_dir)):
+    for place in _operator_token_off_limits(repo, placement):
         if resolved.is_relative_to(place.resolve()):
             raise RuntimeError(
                 f"the operator token file must not be inside the repository or the "
@@ -491,7 +540,9 @@ def _validate_operator_token_path(path: Path | None, repo: Repository) -> Path |
     return resolved
 
 
-def _provision_operator_token(settings: HubSettings, repo: Repository) -> None:
+def _provision_operator_token(
+    settings: HubSettings, repo: Repository, placement: HubPlacement
+) -> None:
     """Create the operator credential beside the machine registry (#128).
 
     Agents read the repository, its checkouts and the hub's state, so a path
@@ -499,7 +550,7 @@ def _provision_operator_token(settings: HubSettings, repo: Repository) -> None:
     they must not hold. The token and its path are never printed.
     """
 
-    resolved = _validate_operator_token_path(settings.operator_token_file, repo)
+    resolved = _validate_operator_token_path(settings.operator_token_file, repo, placement)
     if resolved is None:
         return
     resolved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -532,7 +583,7 @@ def _down(selector: str | None) -> None:
         stale = ""
         if hub is not None:
             stale = (
-                f"; stale state remains in {state_dir(hub.checkout) / 'hub.json'} "
+                f"; stale state remains in {hub.state_dir / 'hub.json'} "
                 f"(hub_id {hub.hub_id}, pid {pid or '-'}, "
                 f"port {hub.info.get('port') or '-'})"
             )
@@ -572,11 +623,8 @@ def _down_all(as_json: bool) -> None:
         name = entry.get("name") or "(unnamed)"
         url = str(entry.get("url") or "")
         hub_id = str(entry.get("hub_id") or "")
-        checkout = hub_checkout(entry)
         try:
-            if checkout is None:
-                raise RuntimeError("registry entry names no checkout")
-            token = token_file(checkout).read_text(encoding="utf-8").strip()
+            token = token_file(entry).read_text(encoding="utf-8").strip()
             result = _rpc(url, token, "hub.shutdown", operator_token=operator_token)
             if not result.get("stopping"):
                 raise RuntimeError("hub did not acknowledge shutdown")
@@ -665,12 +713,12 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
 
     hub_id = str(entry.get("hub_id"))
     name = entry.get("name") or "(unnamed)"
-    entry_checkout = hub_checkout(entry)
-    if entry_checkout is None:
-        raise RuntimeError(f"hub {name} names no checkout; cannot forget it")
+    if not entry.get("state_dir") and hub_checkout(entry) is None:
+        raise RuntimeError(f"hub {name} names no state location; cannot forget it")
+    entry_state = state_dir(entry)
     with ExitStack() as stack:
         try:
-            stack.enter_context(_hub_lock(entry_checkout))
+            stack.enter_context(_hub_lock(entry_state))
         except HubLockBusy as exc:
             # Lock contention (r2-1): a concurrent `up` holds the checkout
             # lock. Read fresh state to say whether that hub is live or still
@@ -711,13 +759,13 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
                 print(f"Hub {name} is already forgotten.")
             return {"hub_id": hub_id, "name": name, "forgotten": False}
         port = removed.get("port") or _entry_port(removed)
-        state = str(removed.get("state_dir") or state_dir(entry_checkout))
+        state = str(removed.get("state_dir") or entry_state)
         # Release the saved port: record it as released so the next up takes
         # the first free port and says so. The last URL and port stay in
         # hub.json so `status` still reports the stopped hub; only pid and
         # started_at are cleared. Anything else — hub_id, name, checkout,
         # origin — stays, as does hub.db.
-        stored = read_hub_json(entry_checkout)
+        stored = read_hub_json(entry_state)
         if stored is not None and stored.get("hub_id") == hub_id:
             stored["pid"] = None
             stored["started_at"] = None
@@ -727,17 +775,30 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
                 stored["released_port"] = None
             if stored.get("released_port") is None:
                 stored.pop("released_port", None)
-            write_hub_json(entry_checkout, stored)
+            write_hub_json(entry_state, stored)
+        # A hub kept beside its worktrees still holds its name as the directory
+        # <worktree_root>/<hub>/, which its state occupies (spec §4, operator
+        # decision Q2 on #243): only a legacy hub's name is released.
+        name_released = is_legacy_state_dir(Path(state))
         if not as_json:
+            released = ["its name"] if name_released else []
+            released += [f"port {port}"] if port else []
             print(
-                f"Forgot hub {name} (hub_id {hub_id}): released its name"
-                + (f" and port {port}" if port else "")
+                f"Forgot hub {name} (hub_id {hub_id}): released "
+                + (" and ".join(released) or "its registry entry")
                 + f"; state kept at {state}"
+                + (
+                    ""
+                    if name_released
+                    else f"; the name stays taken by {Path(state).parent} until that state "
+                    "is removed or relocated"
+                )
             )
         return {
             "hub_id": hub_id,
             "name": name,
             "forgotten": True,
+            "name_released": name_released,
             "port": port,
             "state_dir": state,
         }
@@ -939,12 +1000,25 @@ def _snapshot(as_json: bool, stopped_at: str | None, selector: str | None) -> No
         print(render_snapshot(snapshot))
 
 
-def _state_location(local: LocalHub | None, checkout: Path) -> str:
+def _hub_location(
+    local: LocalHub | None, checkout: Path | None, hub_id: object
+) -> tuple[Path, Path] | None:
+    """A hub's state directory and token file, as the resolver finds them.
+
+    A hub selected by URL has no binding; its state is only known when this
+    machine's registry or the checkout it reports holds it.
+    """
+
     if local is not None:
-        return str(state_dir(local.checkout))
-    # Selected by URL: the state is only known when that checkout is on this machine.
-    state = state_dir(checkout)
-    return str(state) if (state / "hub.json").is_file() else "unknown (hub selected by URL)"
+        return local.state_dir, local.token_file
+    for entry in recorded_entries():
+        if hub_id and entry.get("hub_id") == hub_id:
+            return state_dir(entry), token_file(entry)
+    if checkout is not None:
+        legacy = legacy_state_dir(checkout)
+        if (legacy / "hub.json").is_file():
+            return legacy, legacy / "token"
+    return None
 
 
 def _status(as_json: bool, selector: str | None) -> None:
@@ -966,7 +1040,8 @@ def _status(as_json: bool, selector: str | None) -> None:
             report |= {
                 "name": local.name,
                 "checkout": str(local.checkout),
-                "state_dir": str(state_dir(local.checkout)),
+                "state_dir": str(local.state_dir),
+                "token_file": str(local.token_file),
             }
         if reason is not None:
             report["reason"] = reason
@@ -1011,8 +1086,20 @@ def _status(as_json: bool, selector: str | None) -> None:
         raise RuntimeError(f"hub at {url} rejected status (HTTP {exc.code})") from exc
     except (OSError, urllib.error.URLError):
         stopped(url, port)
+    reported = status.get("checkout") or status.get("repo_root")
+    location = _hub_location(local, Path(reported) if reported else None, status.get("hub_id"))
     if as_json:
-        print(json.dumps(status))
+        # Operator tools take the hub's state from here (spec §4): prepare-run
+        # reads hub.db and hub-report reads its state directory through it.
+        print(
+            json.dumps(
+                status
+                | {
+                    "state_dir": str(location[0]) if location else None,
+                    "token_file": str(location[1]) if location else None,
+                }
+            )
+        )
         return
     # name, checkout and git_common_dir are absent from a hub older than #147.
     name = status.get("name") or (local.name if local else None)
@@ -1021,7 +1108,7 @@ def _status(as_json: bool, selector: str | None) -> None:
     print(f"Hub: {name or '(unnamed)'}  {status['url']}")
     print(f"Checkout: {checkout}")
     print(f"Repository: {repository_dir(Path(common)) if common else checkout}")
-    print(f"State: {_state_location(local, checkout)}")
+    print(f"State: {location[0] if location else 'unknown (hub selected by URL)'}")
     print(f"Origin: {status['origin']}")
     print(f"Forge: {status['forge']}  Default branch: {status['default_branch']}")
     workflow = status["workflow"]
@@ -1300,6 +1387,61 @@ def _submit(
     )
 
 
+def _relocate(selector: str | None) -> None:
+    """Move a stopped hub's state and token beside its agent worktrees (spec §4 Migration).
+
+    Operator-only (spec §12): it needs the operator credential. It moves state
+    and token together, rewrites the hub's bindings and registry entry, and
+    leaves a pointer file where the state was. The same hub_id serves from the
+    new location at the next `robomate up`.
+    """
+
+    escape_unencodable_output()
+    read_token_file(operator_token_path(), "operator token")
+    hub = find_hub(Path.cwd(), selector=selector)
+    if not isinstance(hub, LocalHub):
+        raise DiscoveryError(
+            "robomate relocate moves a hub on this machine; select it with --hub, "
+            "not with ROBOMATE_HUB_URL"
+        )
+    # A hub from before checkout scope (#147) does not record its repository.
+    common_raw = hub.info.get("git_common_dir")
+    common = Path(str(common_raw)) if common_raw else resolve_checkout(hub.checkout)[1]
+    root = load_config_layers(git_common_dir=common).worktree_root
+    assert root is not None
+    name, _, _ = relocation_targets(hub, root)
+    if not hub.state_dir.is_dir():
+        raise DiscoveryError(f"{hub.label()}: its state {hub.state_dir} is missing")
+    pid = int(hub.info.get("pid") or 0)
+    if (
+        pid
+        and process_alive(pid)
+        and check_healthz(hub.url, HEALTHZ_LIVE_PID_TIMEOUT_S).hub_id == hub.hub_id
+    ):
+        raise RuntimeError(
+            f"{hub.label()} is running at {hub.url}; stop it with robomate down first"
+        )
+    operator = operator_token_path().resolve()
+    if operator.is_relative_to((root / name).resolve()):
+        raise RuntimeError(
+            f"the operator token file must not be inside the hub's namespace ({root / name})"
+        )
+    try:
+        with _hub_lock(hub.state_dir):
+            result = relocate_hub(hub, common, root, repository_config_path(common))
+    except HubLockBusy:
+        raise RuntimeError(
+            f"{hub.label()} is running or starting; stop it with robomate down first"
+        ) from None
+    # The lock was open while the state moved, so it is removed once released.
+    (result.old_state_dir / "up.lock").unlink(missing_ok=True)
+    print(f"Relocated hub {result.name} (hub_id {result.hub_id})")
+    print(f"State: {result.state_dir}")
+    print(f"Token: {result.token_file}")
+    print(f"Bindings rewritten: {len(result.bindings)}")
+    print(f"Start it with robomate up in {hub.checkout}.")
+
+
 def _ls(as_json: bool) -> None:
     """List every registered hub, live or stopped, with name, checkout and repository."""
 
@@ -1312,7 +1454,7 @@ def _ls(as_json: bool) -> None:
         agent_count, phase = None, None
         if entry["live"]:
             try:
-                token = token_file(checkout).read_text(encoding="utf-8").strip()
+                token = token_file(entry).read_text(encoding="utf-8").strip()
                 status = _rpc(url, token, "hub.status")
                 agent_count = len(status["agents"])
                 phase = status["workflow"]["status"] if status["workflow"] else "none"
@@ -1327,7 +1469,8 @@ def _ls(as_json: bool) -> None:
                 "repo_root": str(checkout),
                 "repository": str(repository_dir(Path(common)) if common else checkout),
                 "git_common_dir": common,
-                "state_dir": str(entry.get("state_dir") or state_dir(checkout)),
+                "state_dir": str(state_dir(entry)),
+                "token_file": str(token_file(entry)),
                 "url": url,
                 "agent_count": agent_count,
                 "workflow_status": phase,
@@ -1420,7 +1563,11 @@ def main() -> None:
             " e.g. max_review_rounds=5, allow_no_ci=auto)"
         ),
     )
-    for command in (down, status, inbox, answer, submit):
+    relocate = commands.add_parser(
+        "relocate",
+        help="move a stopped hub's state and token out of its checkout, beside its worktrees",
+    )
+    for command in (down, status, inbox, answer, submit, relocate):
         command.add_argument(
             "--hub",
             metavar="NAME|HUB_ID|CHECKOUT",
@@ -1474,6 +1621,8 @@ def main() -> None:
             _answer(args.question_id, args.text, args.option, args.hub)
         elif args.command == "submit":
             _submit(args.file, args.issue, args.policy, args.hub)
+        elif args.command == "relocate":
+            _relocate(args.hub)
         elif args.command == "ls":
             _ls(args.json)
         elif args.command == "forget":

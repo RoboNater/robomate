@@ -14,7 +14,7 @@ Both launchers share ``agent_launcher.py`` (#165):
    resumes an unspecified "latest" conversation.
 3. When the harness exits, it reads the run hub with bearer-only ``hub.info``
    and ``hub.status``, pinned to the hub and workflow it first saw. It never
-   opens an orchestrator session, reads ``.robomate/``, or changes hub state.
+   opens an orchestrator session, reads the hub's state directory, or changes hub state.
 4. A ``done`` workflow ends it successfully. ``active`` or ``escalated`` resumes
    the same conversation with one fixed continuation prompt that carries no
    state and no operator decision, backing off between resumes (#158): the wait

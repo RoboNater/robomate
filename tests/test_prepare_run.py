@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
-from agent_hub_common.discovery import state_dir, token_file
+from agent_hub_common.discovery import legacy_state_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("prepare_run", ROOT / "scripts/prepare-run.py")
@@ -92,6 +92,36 @@ def origin(tmp_path: Path) -> Path:
     return path
 
 
+def state_dir(repo: Path) -> Path:
+    """Where a hub that keeps its state in the checkout (a legacy hub) has it."""
+
+    return legacy_state_dir(repo)
+
+
+def token_file(repo: Path) -> Path:
+    return legacy_state_dir(repo) / "token"
+
+
+# The real `hub_status` runs `robomate status --json`; tests that need a hub
+# stand in for it with the recorded hub.json of a legacy hub in the checkout.
+REAL_HUB_STATUS = PREPARE_RUN.hub_status
+
+
+@pytest.fixture(autouse=True)
+def recorded_hub_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    def status(hub_repo: Path) -> dict[str, Any]:
+        state = state_dir(hub_repo)
+        try:
+            info: dict[str, Any] = json.loads((state / "hub.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raise ValueError(
+                f"no running robomate hub in {hub_repo}: no hub is recorded; run robomate up first"
+            ) from None
+        return info | {"state_dir": str(state), "token_file": str(token_file(hub_repo))}
+
+    monkeypatch.setattr(PREPARE_RUN, "hub_status", status)
+
+
 def hub_repo(tmp_path: Path, url: str = "http://127.0.0.1:8521") -> Path:
     repo = tmp_path / "target"
     state = state_dir(repo)
@@ -138,7 +168,6 @@ def running_hub(
             },
         ),
     )
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(PREPARE_RUN, "codex_login_status", lambda _: "logged in")
     return target
 
@@ -153,6 +182,23 @@ def prepare(
     kwargs.setdefault("account", "tester")
     manifest = PREPARE_RUN.prepare(str(source), run_dir, hub_repo=target, **kwargs)
     return run_dir, manifest
+
+
+def test_hub_status_asks_robomate_where_the_hubs_state_is(tmp_path: Path) -> None:
+    """The real `hub_status` runs `robomate status --json --hub <checkout>` (spec §4)."""
+
+    target = hub_repo(tmp_path)
+    subprocess.run(["git", "init", "-b", "main", str(target)], check=True, capture_output=True)
+    report = REAL_HUB_STATUS(target)
+    # Nothing answers on the recorded URL, so the hub is reported stopped, with the
+    # state and token the resolver finds for it.
+    assert report["running"] is False
+    assert report["state_dir"] == str(state_dir(target))
+    assert report["token_file"] == str(token_file(target))
+    plain = tmp_path / "not-a-checkout"
+    plain.mkdir()
+    with pytest.raises(ValueError, match=r"no running robomate hub in .*not inside a git"):
+        REAL_HUB_STATUS(plain)
 
 
 def test_a_linked_worktree_hub_repo_uses_that_worktrees_hub(
@@ -278,7 +324,7 @@ def test_unsupported_explicit_doctor_fails_before_hub_or_repo_access(
     def unexpected(*args: Any) -> None:
         pytest.fail("doctor settings must be checked before accessing a hub")
 
-    monkeypatch.setattr(PREPARE_RUN, "read_hub_json", unexpected)
+    monkeypatch.setattr(PREPARE_RUN, "hub_status", unexpected)
     with pytest.raises(ValueError, match="explicit --denise-harness"):
         PREPARE_RUN.prepare("repository", tmp_path / "new-run", denise_harness="devin")
     assert not (tmp_path / "new-run").exists()
@@ -339,12 +385,15 @@ def test_missing_or_different_hub_is_rejected(
     with pytest.raises(ValueError, match="--hub-repo is required"):
         PREPARE_RUN.prepare(str(source), tmp_path / "run")
     target = hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     with pytest.raises(ValueError, match="differs from the running hub"):
         PREPARE_RUN.prepare(
             str(source), tmp_path / "run", hub_repo=target, hub_url="http://127.0.0.1:9999"
         )
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: False)
+    monkeypatch.setattr(
+        PREPARE_RUN,
+        "hub_status",
+        lambda _repo: {"running": False, "reason": "answers as hub other, not abc"},
+    )
     with pytest.raises(ValueError, match="not responding"):
         PREPARE_RUN.prepare(str(source), tmp_path / "run", hub_repo=target)
 
@@ -533,7 +582,9 @@ def test_backward_clock_check_hub_workflow_names_live_run(
     times[0] = base - timedelta(seconds=1)
     store.start_workflow("Queued goal")
     with pytest.raises(ValueError) as error:
-        PREPARE_RUN.check_hub_workflow(target, tmp_path / "other-run", "Other goal", None)
+        PREPARE_RUN.check_hub_workflow(
+            target, state_dir(target), tmp_path / "other-run", "Other goal", None
+        )
     # Insertion order names the live run; wall-clock order would name the queued one.
     assert "Live goal" in str(error.value)
 
@@ -1108,7 +1159,6 @@ def test_fails_when_gh_unauthenticated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -1129,7 +1179,6 @@ def test_fails_when_runtime_missing(
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -1206,7 +1255,6 @@ def test_default_rendering_matches_the_golden_files(
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path, "http://127.0.0.1:8420")
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -1520,7 +1568,6 @@ def test_rerun_is_idempotent_and_preserves_clone_token_identity(
 ) -> None:
     source = origin(tmp_path)
     target = hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2426,7 +2473,6 @@ def gitlab_hub_repo(
 
 def test_gitlab_requires_full_origin_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = gitlab_hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2447,7 +2493,6 @@ def test_gitlab_rejects_origin_differing_from_hub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = gitlab_hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2477,7 +2522,6 @@ def test_gitlab_slug_parsing() -> None:
 
 def test_gitlab_preflight_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = gitlab_hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2644,7 +2688,6 @@ def test_gitlab_no_origin_refuses_with_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = gitlab_hub_repo_no_origin(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2671,7 +2714,6 @@ def test_gitlab_origin_match_incl_ssh_https(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hub_origin: str, repository: str
 ) -> None:
     target = gitlab_hub_repo(tmp_path, origin_url=hub_origin)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2723,7 +2765,6 @@ def test_gitlab_merge_matrix_same_as_before(
     from agent_hub.gitlab_gate import check_merge_compatibility
 
     target = gitlab_hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2788,7 +2829,6 @@ def test_gitlab_explicit_allow_no_ci_makes_no_ci_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allow: str
 ) -> None:
     target = gitlab_hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -2850,7 +2890,6 @@ def test_gitlab_unsupported_settings_refuse(
     """Base `Unsupported settings: refuse` must refuse prepare-run too (r1-1)."""
 
     target = gitlab_hub_repo(tmp_path)
-    monkeypatch.setattr(PREPARE_RUN, "hub_healthy", lambda *_: True)
     monkeypatch.setattr(
         PREPARE_RUN,
         "probe_versions",
@@ -4294,7 +4333,7 @@ def test_same_work_after_completion_queues_a_new_run(
     store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
     assert HubStore(db_path).get_state()["queue"] == []
     # Preparing the same work again must queue a new run, not reuse the done one.
-    second = PREPARE_RUN.queue_goal_in_hub(tmp_path / "target", goal, policy)
+    second = PREPARE_RUN.queue_goal_in_hub(state_dir(tmp_path / "target"), goal, policy)
     assert second["run_id"] != first_run_id
     assert HubStore(db_path).get_state()["queue"], "second queue must exist"
     HubStore(db_path).start_workflow()

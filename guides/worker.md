@@ -196,7 +196,8 @@ allowed, only under all of these limits:
   `XDG_STATE_HOME` and `XDG_CONFIG_HOME` (POSIX) or `LOCALAPPDATA` and
   `APPDATA` (Windows) also point into that directory. `ROBOMATE_HUB_URL` and
   `ROBOMATE_TOKEN*` from your MCP environment are unset for that command.
-- `robomate up` and `down` keep their state in the checkout's `.robomate/`
+- `robomate up` and `down` keep their state beside the checkout, in
+  `<checkout>.robomate/<hub>/` (a legacy hub's, in the checkout's `.robomate/`),
   whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a
   clone, or `git init`) inside that directory, never from your workspace
   (spec §4, Isolated smoke hubs). The checkout needs an origin remote with

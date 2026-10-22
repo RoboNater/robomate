@@ -34,9 +34,11 @@ uv run --locked python scripts/prepare-run.py --hub-repo "$HUB_REPO" \
 Run the generated `start-alice.sh`, `start-bob.sh`, and `start-charlie.sh` in
 separate foreground terminals (or the `.ps1` equivalents on Windows). Do not
 rerun `prepare-run.py` to resume a run: preserve its manifest, configuration,
-workspaces, and prompt. Keep the hub's `.robomate/` directory, especially
-`hub.db`, `hub.json`, and `token`. `HUB_STATE_DIR` is anchored by the hub setup;
-the generated run manifest names the actual state directory. The run directory
+workspaces, and prompt. Keep the hub's state directory, especially
+`hub.db` and `hub.json`, and its token file (`robomate status --json` reports
+both locations; a legacy hub keeps them in the checkout's `.robomate/`).
+`HUB_STATE_DIR` is anchored by the hub setup; the generated run manifest names
+the actual state directory. The run directory
 contains `run.json`, generated start scripts, prompts, isolated Codex
 config, and worker telemetry. The worker clone paths are in
 `run.json.workspaces`; do not assume they are adjacent to the hub checkout:
@@ -114,7 +116,8 @@ for the restart proof; Alice must reassign a new task for a new attempt.
    mkdir -m 700 "$CAPTURE"
    cd "$HUB_REPO"
    uv run --locked robomate status --json > "$CAPTURE/before-status.json"
-   python3 -c 'import sqlite3,sys; src=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); dst=sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()' "$HUB_REPO/.robomate/hub.db" "$CAPTURE/before.db"
+   STATE_DIR=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state_dir"])' "$CAPTURE/before-status.json")
+   python3 -c 'import sqlite3,sys; src=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); dst=sqlite3.connect(sys.argv[2]); src.backup(dst); dst.close(); src.close()' "$STATE_DIR/hub.db" "$CAPTURE/before.db"
    python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print("workflow",c.execute("select id,status from workflow").fetchall()); print("tasks",c.execute("select id,assignee,state from task").fetchall()); print("events",c.execute("select id,kind,state,delivery_id,delivery_attempts,delivered_at,delivery_expires,acked_at from event order by id").fetchall())' "$CAPTURE/before.db" > "$CAPTURE/before-rows.txt"
    ```
 

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from agent_hub.gitlab_gate import (
     check_merge_compatibility,
     is_definite_ci_absence,
 )
-from agent_hub_common.discovery import Repository, read_hub_json
+from agent_hub_common.discovery import Repository, local_hub
 
 ORIGIN = "git@host:group/project.git"
 BASE: dict[str, Any] = {
@@ -187,6 +188,7 @@ async def test_up_integration(
 ) -> None:
     root = tmp_path / "repo"
     root.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
     repo = Repository(root, root / ".git", ORIGIN, "main", forge)
     monkeypatch.setattr(cli, "resolve_repository", lambda *_a, **_kw: repo)
     # Never the machine's registry: no reads, no writes.
@@ -222,13 +224,13 @@ async def test_up_integration(
     if setting:
         with pytest.raises(RuntimeError, match="preflight refused"):
             await cli._up(args)
-        assert not served and read_hub_json(root) is None
+        assert not served and local_hub(root) is None
         assert setting in capsys.readouterr().out
     else:
         await cli._up(args)
         assert served
-        info = read_hub_json(root)
-        assert info is not None and info["forge"] == (override or forge)
+        hub = local_hub(root)
+        assert hub is not None and hub.info["forge"] == (override or forge)
     if (override or forge) in ("github", "unknown"):
         assert not runner.calls
 
