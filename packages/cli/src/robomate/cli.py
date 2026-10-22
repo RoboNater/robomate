@@ -51,6 +51,7 @@ from agent_hub_common.discovery import (
     resolve_checkout,
     resolve_repository,
     select_hub,
+    stale_partial_text,
     state_dir,
     token_file,
     validate_hub_name,
@@ -982,6 +983,10 @@ def _status(as_json: bool, selector: str | None) -> None:
         url = local.url
         port = local.info.get("port")
         pid = int(local.info.get("pid") or 0)
+        if not url:
+            # A startup that failed before serving left identity without an
+            # address: report the stale partial record, not bare "not running".
+            stopped(url, port, stale_partial_text(local))
         # A worker in another PID namespace cannot see the hub process. The
         # matching HTTP hub ID is the authoritative live check in that case.
         alive = process_alive(pid)

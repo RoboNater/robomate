@@ -1,6 +1,7 @@
 """End-to-end operator CLI tests in a disposable Git checkout."""
 
 import argparse
+import asyncio
 import errno
 import io
 import json
@@ -28,6 +29,7 @@ from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
 from agent_hub_common.discovery import (
+    GitTimeoutError,
     HubEndpoint,
     read_hub_json,
     resolve_repository,
@@ -2366,6 +2368,65 @@ def test_down_reports_stale_state_left_by_failed_up(
     assert result.returncode == 1
     assert "stale state remains in" in result.stderr
     assert "hub.json" in result.stderr
+
+
+def test_up_failed_startup_leaves_reportable_stale_state(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#301 r1-1/r1-3: a startup that never serves fails fast; down names the stale record.
+
+    Drives a real `up` (in-process) against a stub server that never starts,
+    through the startup deadline. Pre-fix code hangs at this wait forever;
+    the deadline makes it fail fast with the cause named.
+    """
+
+    class NeverServingHub:
+        started = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.should_exit = False
+
+        async def serve(self, sockets: object) -> None:
+            await asyncio.Event().wait()
+
+    root, env = repository
+    port = reserve_port_block(1)
+    monkeypatch.setattr("agent_hub.main.HubServer", NeverServingHub)
+    monkeypatch.setattr("agent_hub.main._START_TIMEOUT_S", 0.05)
+    up = _inproc_cli(monkeypatch, capsys, root, env, "up", "--port", str(port))
+    assert up.returncode == 1
+    assert "did not start serving within" in up.stderr
+    saved = read_hub_json(root)
+    assert saved is not None and saved.get("hub_id")
+    assert not saved.get("url")
+    down = _inproc_cli(monkeypatch, capsys, root, env, "down")
+    assert down.returncode == 1
+    assert "never finished starting" in down.stderr
+    assert "stale partial state remains in" in down.stderr
+    assert "no hub is recorded for checkout" not in down.stderr
+
+
+def test_up_git_timeout_names_hung_command(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#301 r1-4: a hung `git` child fails `up` fast with the command named."""
+
+    root, env = repository
+
+    def hung(_cwd: Path, *args: str) -> str:
+        raise GitTimeoutError(
+            f"git {' '.join(args)} timed out after 10 s; check the repository and try again (#301)"
+        )
+
+    monkeypatch.setattr("agent_hub_common.discovery._git", hung)
+    up = _inproc_cli(monkeypatch, capsys, root, env, "up", "--port", "8521")
+    assert up.returncode == 1
+    assert "timed out" in up.stderr
+    assert "not inside a git repository" not in up.stderr
 
 
 def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str]]) -> None:

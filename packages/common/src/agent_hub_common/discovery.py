@@ -27,6 +27,14 @@ class DiscoveryError(RuntimeError):
     """A repository or hub cannot be identified unambiguously."""
 
 
+class GitTimeoutError(DiscoveryError):
+    """A `git` child hung past its deadline instead of answering (#301).
+
+    Raised instead of a masking message (e.g. "not inside a git repository"
+    or "origin/HEAD is unset") so the cause and command stay visible.
+    """
+
+
 @dataclass(frozen=True)
 class Repository:
     root: Path
@@ -63,7 +71,7 @@ def _git(cwd: Path, *args: str) -> str:
             timeout=_GIT_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired as exc:
-        raise DiscoveryError(
+        raise GitTimeoutError(
             f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S:g} s; "
             "check the repository and try again (#301)"
         ) from exc
@@ -98,6 +106,8 @@ def resolve_checkout(cwd: Path) -> tuple[Path, Path]:
 
     try:
         common = _absolute_git_path(cwd, "--git-common-dir")
+    except GitTimeoutError:
+        raise
     except DiscoveryError:
         raise DiscoveryError(f"{cwd} is not inside a git repository") from None
     if _git(cwd, "rev-parse", "--is-inside-work-tree") != "true":
@@ -136,10 +146,14 @@ def _default_branch(root: Path, common: Path) -> str:
 
     try:
         head = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    except GitTimeoutError:
+        raise
     except DiscoveryError as exc:
         if _git(root, f"--git-dir={common}", "rev-parse", "--is-bare-repository") == "true":
             try:
                 return _git(root, f"--git-dir={common}", "symbolic-ref", "--short", "HEAD")
+            except GitTimeoutError:
+                raise
             except DiscoveryError:
                 raise DiscoveryError(f"the bare repository {common} has no HEAD branch") from exc
         raise DiscoveryError("origin/HEAD is unset; run git remote set-head origin --auto") from exc
@@ -152,6 +166,8 @@ def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
     root, common = resolve_checkout(cwd)
     try:
         origin = _git(root, "remote", "get-url", "origin")
+    except GitTimeoutError:
+        raise
     except DiscoveryError as exc:
         # Name the cause for a smoke checkout with no origin (#301): `up`
         # fails fast here instead of hanging.
@@ -166,6 +182,8 @@ def resolve_repository(cwd: Path, *, probe_cli: bool = False) -> Repository:
         )
     try:
         default_branch = _default_branch(root, common)
+    except GitTimeoutError:
+        raise
     except DiscoveryError as exc:
         if "origin/HEAD is unset" in str(exc):
             raise DiscoveryError(
@@ -485,6 +503,15 @@ class LocalHub:
         return HubEndpoint(self.url.rstrip("/"), token)
 
 
+def stale_partial_text(hub: LocalHub) -> str:
+    """Describe a hub.json that never finished startup: identity without address (#301)."""
+
+    return (
+        f"stale partial state remains in {state_dir(hub.checkout) / 'hub.json'} "
+        f"(hub_id {hub.hub_id}, no url/port recorded: startup never finished)"
+    )
+
+
 def verify_local_hub(hub: LocalHub) -> None:
     """Check a local hub's recorded hub_id against /healthz before it is used (spec §4).
 
@@ -499,6 +526,11 @@ def verify_local_hub(hub: LocalHub) -> None:
         process_alive,
     )
 
+    if not hub.url:
+        raise DiscoveryError(
+            f"{hub.label()} (checkout {hub.checkout}) never finished starting; "
+            f"{stale_partial_text(hub)}; run robomate up in that checkout"
+        )
     pid = int(hub.info.get("pid") or 0)
     alive = process_alive(pid)
     timeout_s = HEALTHZ_LIVE_PID_TIMEOUT_S if alive else HEALTHZ_TIMEOUT_S
@@ -527,10 +559,15 @@ def verify_local_hub(hub: LocalHub) -> None:
 
 
 def local_hub(checkout: Path) -> LocalHub | None:
-    """The hub a checkout owns, if `up` has ever recorded one there."""
+    """The hub a checkout owns, if `up` has ever recorded one there.
+
+    Identity without an address (a startup that failed before serving) still
+    resolves, so `down` and `status` report the stale partial record instead
+    of saying no hub is recorded (#301).
+    """
 
     info = read_hub_json(checkout)
-    if info is None or not info.get("url"):
+    if info is None or (not info.get("hub_id") and not info.get("url")):
         return None
     return LocalHub(checkout, info)
 
