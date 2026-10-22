@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from agent_hub_common import registry
-from agent_hub_common.discovery import write_hub_json
+from agent_hub_common.discovery import legacy_state_dir, write_hub_json
 from agent_hub_common.registry import (
     RegistryError,
     forget,
@@ -29,7 +29,7 @@ from conftest import closed_port_url
 
 def _entry(tmp_path: Path, hub_id: str, name: str, common: str = "/repo/.git") -> dict[str, object]:
     checkout = tmp_path / hub_id
-    write_hub_json(checkout, {"hub_id": hub_id, "name": name})
+    write_hub_json(legacy_state_dir(checkout), {"hub_id": hub_id, "name": name})
     return {
         "hub_id": hub_id,
         "name": name,

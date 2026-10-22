@@ -7,8 +7,8 @@ Before acting, read `robomate status --json`, Alice's durable `get_state`,
 The manifest names the state directory, generated config, scripts, and exact
 worker workspaces. Verify the old harness process is gone using its recorded
 PID and terminal exit before relaunch; two live Alice sessions race, and only
-the newest may use RPC. Preserve the generated configuration, `.robomate/`
-database/token/metadata, and all worker workspaces. Do not rerun `prepare-run.py`
+the newest may use RPC. Preserve the generated configuration, the hub's state and token
+(database, token, metadata; `robomate status --json` reports where), and all worker workspaces. Do not rerun `prepare-run.py`
 or initialize a new workflow in this state directory.
 
 If the hub itself stopped, run `uv run --locked robomate up` from its own

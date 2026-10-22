@@ -181,3 +181,60 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
+
+
+def test_hub_entry_point_keeps_its_token_in_a_directory_of_its_own(tmp_path: Path) -> None:
+    """A relocated hub's token is in `token/`, apart from `state/` (spec §4, §12)."""
+
+    port = reserve_port_block(1)
+    namespace = tmp_path / "ns"
+    state, token_file = namespace / "state", namespace / "token" / "token"
+    operator_file = tmp_path / "operator-token"
+    operator_file.write_text("operator-secret\n")
+    operator_file.chmod(0o600)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "agent_hub.main"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("HUB_")},
+            "HUB_STATE_DIR": str(state),
+            "HUB_TOKEN_FILE": str(token_file),
+            "HUB_HOST": "127.0.0.1",
+            "HUB_PORT": str(port),
+            "ROBOMATE_OPERATOR_TOKEN_FILE": str(operator_file),
+        },
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not token_file.is_file() or not token_file.read_text().strip():
+            assert process.poll() is None and time.monotonic() < deadline, (
+                process.stderr.read().decode() if process.stderr else "timed out"
+            )
+            time.sleep(0.02)
+        token = token_file.read_text().strip()
+        rpc_url = f"http://127.0.0.1:{port}/rpc"
+        while True:
+            try:
+                refused = _request(rpc_url, token, "hub.shutdown")
+                break
+            except OSError:
+                assert process.poll() is None and time.monotonic() < deadline, "timed out"
+                time.sleep(0.02)
+        # The bearer token read from its own directory authenticates; it is not the operator's.
+        assert refused["error"]["code"] == OPERATOR_REQUIRED
+        assert not (state / "token").exists()
+        if sys.platform != "win32":
+            assert token_file.stat().st_mode & 0o777 == 0o600
+            assert token_file.parent.stat().st_mode & 0o777 == 0o700
+        operator = {"X-Robomate-Operator": "operator-secret"}
+        _request(rpc_url, token, "hub.shutdown", headers=operator)
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()

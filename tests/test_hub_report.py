@@ -13,6 +13,9 @@ from agent_hub.database import SCHEMA_VERSION, initialize_database
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
+from agent_hub_common.discovery import write_hub_json
+from agent_hub_common.registry import register
+from conftest import closed_port_url
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("hub_report", ROOT / "scripts/hub-report.py")
@@ -647,3 +650,40 @@ def test_stall_episodes_are_reported_with_their_evidence(tmp_path: Path, capsys:
     assert "  - alice: cleared " in out and "(recovered)" in out
     assert "no task progress for 3m10s" in out and f"task {task.id}" in out
     assert MARKER not in out
+
+
+def test_report_takes_the_state_directory_from_robomate_status(
+    tmp_path: Path, capsys: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no --state-dir, `robomate status --json` says where the hub's state is (spec §4).
+
+    The hub is stopped and its checkout is gone, as after `git worktree remove`:
+    its state, beside the agent worktrees, is still reached, by name.
+    """
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    for name in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    state = seed_run(tmp_path / "ns")
+    token = tmp_path / "ns" / "token" / "token"
+    write_hub_json(state, {"hub_id": "hid", "name": "team", "url": closed_port_url(), "pid": None})
+    register(
+        {
+            "hub_id": "hid",
+            "name": "team",
+            "checkout": str(tmp_path / "removed-worktree"),
+            "state_dir": str(state),
+            "token_file": str(token),
+            "url": closed_port_url(),
+            "pid": None,
+        }
+    )
+
+    assert REPORT.main(["--hub", "team", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["report"]["state_dir"] == str(state)
+    assert REPORT.status_state_dir("team") == state
+    assert REPORT.main(["--hub", "team", "--state-dir", str(state)]) == 2
+    assert "either --state-dir or --hub" in capsys.readouterr().err
+    assert REPORT.main(["--hub", "nobody"]) == 2
+    assert "cannot find the hub's state directory" in capsys.readouterr().err

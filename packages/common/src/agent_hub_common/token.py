@@ -84,7 +84,8 @@ def load_or_create_token(
             raise TokenError(f"explicit {label} cannot be empty")
         return explicit_token
 
-    token_file.parent.mkdir(parents=True, exist_ok=True)
+    # A token directory of its own is owner-only (spec §12).
+    token_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     generated = secrets.token_urlsafe(32)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:

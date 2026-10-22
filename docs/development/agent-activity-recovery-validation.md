@@ -68,9 +68,10 @@ Observation commands, all read-only:
 ```sh
 (cd "$RUN/hub-target" && rm8 status)                     # STALLED lines and evidence
 (cd "$RUN/hub-target" && rm8 status --json) | python -m json.tool
-uv run --locked python "$ROBOMATE/scripts/hub-report.py" --state-dir "$RUN/hub-target/.robomate"
-# One query over the hub database, read-only:
-q() { python - "$RUN/hub-target/.robomate/hub.db" "$1" <<'EOF'
+uv run --locked python "$ROBOMATE/scripts/hub-report.py" --hub "$RUN/hub-target"
+# One query over the hub database, read-only, at the state directory status reports:
+STATE=$(cd "$RUN/hub-target" && rm8 status --json | python -c 'import json,sys; print(json.load(sys.stdin)["state_dir"])')
+q() { python - "$STATE/hub.db" "$1" <<'EOF'
 import sqlite3, sys
 db = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 for row in db.execute(sys.argv[2]):
