@@ -2230,6 +2230,26 @@ def test_unknown_worker_provider_surfaces_in_preflight_checks(
     }
 
 
+def test_rendered_opencode_config_disables_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#324: opencode 1.x per-step snapshots hang on a full-file line-ending flip."""
+    template = json.loads((ROOT / "runtimes/opencode.json").read_text(encoding="utf-8"))
+    assert template["snapshot"] is False
+    rendered = RUN_COMMON.render_opencode_config({"ROBOMATE_HUB_URL": "http://example"})
+    assert rendered["snapshot"] is False
+
+    run_dir, _ = prepare(
+        tmp_path,
+        monkeypatch,
+        bob_harness="opencode",
+        bob_model="opencode/claude-sonnet-4-6",
+    )
+    bob_oc = json.loads((run_dir / "configs" / "bob.opencode.json").read_text(encoding="utf-8"))
+    assert bob_oc["snapshot"] is False
+
+
 def test_worker_only_backoff_options_reach_script_and_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
