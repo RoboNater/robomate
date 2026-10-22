@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from agent_hub_common import registry
 from agent_hub_common.discovery import (
     BINDING_FILENAME,
     ROOT_RECORD_FILENAME,
@@ -735,7 +736,7 @@ def _bound_hub(tmp_path: Path, owner: Path) -> tuple[Path, Path]:
 
 
 def test_discovery_follows_an_agent_binding_to_the_hub_and_its_token(
-    repository: Path, tmp_path: Path
+    repository: Path, tmp_path: Path, layers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Rule 2: a worktree bound as an agent reaches the owner's hub, and nothing else."""
 
@@ -751,17 +752,28 @@ def test_discovery_follows_an_agent_binding_to_the_hub_and_its_token(
     nested = worktree / "src"
     nested.mkdir()
     for cwd in (worktree, nested):
-        hub = find_hub(cwd, {})
+        hub = find_hub(cwd, layers)
         assert isinstance(hub, LocalHub)
         assert (hub.checkout, hub.state_dir, hub.token_file) == (repository, state, token)
         assert hub.endpoint() == HubEndpoint("http://team:8420", "team-token")
     # A worktree with no binding reaches nothing, however many bound ones are beside it.
+    # That error lists the live hubs, so it reads the machine registry: only the
+    # test's own (#243 r1-2), never the operator's.
+    locked: list[Path] = []
+    real_locked = registry._locked
+
+    def recording(path: Path) -> Any:
+        locked.append(path)
+        return real_locked(path)
+
+    monkeypatch.setattr(registry, "_locked", recording)
     with pytest.raises(DiscoveryError, match="no hub is recorded for checkout"):
-        find_hub(stranger, {})
+        find_hub(stranger, layers)
+    assert locked and all(path.is_relative_to(tmp_path) for path in locked)
 
 
 def test_a_binding_to_a_missing_hub_names_it_and_never_falls_through(
-    repository: Path, tmp_path: Path
+    repository: Path, tmp_path: Path, layers: dict[str, str]
 ) -> None:
     state, token = _bound_hub(tmp_path, repository)
     write_binding(
@@ -770,28 +782,28 @@ def test_a_binding_to_a_missing_hub_names_it_and_never_falls_through(
     )
     # The checkout also holds legacy state of another hub: the binding still wins.
     write_hub_json(legacy_state_dir(repository), {"hub_id": "legacy", "url": "http://legacy:1"})
-    bound = find_hub(repository, {})
+    bound = find_hub(repository, layers)
     assert isinstance(bound, LocalHub) and bound.url == "http://team:8420"
     # Bound, but its hub.json is not there (a start in progress): found, and not running.
     (state / "hub.json").unlink()
-    starting = find_hub(repository, {})
+    starting = find_hub(repository, layers)
     assert isinstance(starting, LocalHub) and (starting.hub_id, starting.url) == ("hid", "")
     with pytest.raises(DiscoveryError, match=r"hub team \(checkout [^)]*\) is not running"):
         verify_local_hub(starting)
     shutil.rmtree(state)
     with pytest.raises(DiscoveryError) as missing:
-        find_hub(repository, {})
+        find_hub(repository, layers)
     message = str(missing.value)
     assert "hub team (hub_id hid)" in message and f"owned by checkout {repository}" in message
     assert str(state) in message
     # Another hub's state at that location is not the bound hub either.
     write_hub_json(state, {"hub_id": "other", "url": "http://other:1"})
     with pytest.raises(DiscoveryError, match="belongs to another hub"):
-        find_hub(repository, {})
+        find_hub(repository, layers)
 
 
 def test_a_stopped_bound_hub_is_an_error_naming_it_and_its_checkout(
-    repository: Path, tmp_path: Path
+    repository: Path, tmp_path: Path, layers: dict[str, str]
 ) -> None:
     state, token = _bound_hub(tmp_path, repository)
     write_hub_json(state, {"hub_id": "hid", "name": "team", "url": closed_port_url()})
@@ -801,7 +813,7 @@ def test_a_stopped_bound_hub_is_an_error_naming_it_and_its_checkout(
         checkout_git_dir(worktree),
         Binding("agent", "hid", "team", repository, state, token, agent="bob"),
     )
-    hub = find_hub(worktree, {})
+    hub = find_hub(worktree, layers)
     assert isinstance(hub, LocalHub)
     with pytest.raises(
         DiscoveryError, match=rf"hub team \(checkout {re.escape(str(repository))}\)"
