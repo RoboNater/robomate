@@ -1059,9 +1059,14 @@ def _status(as_json: bool, selector: str | None) -> None:
         port = local.info.get("port")
         pid = int(local.info.get("pid") or 0)
         if not url:
-            # A startup that failed before serving left identity without an
-            # address: report the stale partial record, not bare "not running".
-            stopped(url, port, stale_partial_text(local))
+            if (local.state_dir / "hub.json").is_file():
+                # A startup that failed before serving left identity without
+                # an address: report the stale partial record, not bare
+                # "not running" (#301). A bound hub whose state directory
+                # holds no hub.json yet is still starting: it reports bare
+                # "not running" below, like `down` does.
+                stopped(url, port, stale_partial_text(local))
+            stopped(url, port)
         # A worker in another PID namespace cannot see the hub process. The
         # matching HTTP hub ID is the authoritative live check in that case.
         alive = process_alive(pid)

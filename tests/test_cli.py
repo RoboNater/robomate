@@ -2444,6 +2444,39 @@ def test_down_reports_stale_state_left_by_failed_up(
     assert "hub.json" in result.stderr
 
 
+def test_status_gates_stale_partial_on_existing_hub_json(
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#301 r5-1: status names stale partial state only when hub.json exists.
+
+    An empty bound state directory (binding exists, hub.json absent: still
+    starting) reports bare not-running like down does; a real identity-only
+    hub.json reports the stale partial record.
+    """
+
+    root, env = repository
+    state = tmp_path / "ns" / "state"
+    state.mkdir(parents=True)
+    write_binding(
+        checkout_git_dir(root),
+        Binding("owner", "r5-hub", "repo", root, state, tmp_path / "ns" / "token" / "token"),
+    )
+    empty = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+    assert empty.returncode == 1
+    assert json.loads(empty.stdout)["running"] is False
+    assert "reason" not in empty.stdout
+    assert "stale partial state" not in empty.stdout + empty.stderr
+
+    write_hub_json(state, {"hub_id": "r5-hub", "name": "repo"})
+    partial = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+    assert partial.returncode == 1
+    assert "stale partial state remains in" in partial.stdout
+    assert "startup never finished" in partial.stdout
+
+
 def test_up_failed_startup_leaves_reportable_stale_state(
     repository: tuple[Path, dict[str, str]],
     monkeypatch: pytest.MonkeyPatch,
