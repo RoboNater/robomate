@@ -61,6 +61,7 @@ from agent_hub_common.discovery import (
     resolve_checkout,
     resolve_repository,
     select_hub,
+    stale_partial_text,
     state_dir,
     token_file,
     validate_hub_name,
@@ -578,17 +579,25 @@ def _down(selector: str | None) -> None:
         ) from exc
     except (OSError, urllib.error.URLError) as exc:
         pid = int(hub.info.get("pid") or 0) if hub is not None else 0
+        # Name the stale state a hung or killed `up` left behind (#301).
+        stale = ""
+        if hub is not None:
+            stale = (
+                f"; stale state remains in {hub.state_dir / 'hub.json'} "
+                f"(hub_id {hub.hub_id}, pid {pid or '-'}, "
+                f"port {hub.info.get('port') or '-'})"
+            )
         if _timed_out(exc):
             alive = f"; pid {pid} is still alive" if process_alive(pid) else ""
             raise RuntimeError(
                 f"{label} at {endpoint.url} did not answer shutdown within "
-                f"{_RPC_TIMEOUT_S:g} s{alive}"
+                f"{_RPC_TIMEOUT_S:g} s{alive}{stale}"
             ) from exc
         if process_alive(pid):
             raise RuntimeError(
-                f"{label} at {endpoint.url} is unreachable; pid {pid} is still alive"
+                f"{label} at {endpoint.url} is unreachable; pid {pid} is still alive{stale}"
             ) from exc
-        raise RuntimeError(f"{label} at {endpoint.url} is not running") from exc
+        raise RuntimeError(f"{label} at {endpoint.url} is not running{stale}") from exc
     if not result.get("stopping"):
         raise RuntimeError("hub did not acknowledge shutdown")
     print(f"Stopping {label} at {endpoint.url}")
@@ -1049,6 +1058,15 @@ def _status(as_json: bool, selector: str | None) -> None:
         url = local.url
         port = local.info.get("port")
         pid = int(local.info.get("pid") or 0)
+        if not url:
+            if (local.state_dir / "hub.json").is_file():
+                # A startup that failed before serving left identity without
+                # an address: report the stale partial record, not bare
+                # "not running" (#301). A bound hub whose state directory
+                # holds no hub.json yet is still starting: it reports bare
+                # "not running" below, like `down` does.
+                stopped(url, port, stale_partial_text(local))
+            stopped(url, port)
         # A worker in another PID namespace cannot see the hub process. The
         # matching HTTP hub ID is the authoritative live check in that case.
         alive = process_alive(pid)

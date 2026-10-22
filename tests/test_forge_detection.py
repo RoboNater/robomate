@@ -35,6 +35,13 @@ def test_extract_origin_host() -> None:
         ("https://gitlab.corp.net:8443/team/project.git", "gitlab.corp.net"),
         ("ssh://git@my-gitlab.org:2222/org/proj.git", "my-gitlab.org"),
         ("/var/git/local.git", None),
+        # Local Windows paths never name a forge host (#301).
+        (r"C:\n\w\robomate", None),
+        ("C:/n/w/robomate", None),
+        ("C:", None),
+        (r"\\server\share\repo", None),
+        ("file:///C:/n/w/robomate", None),
+        ("file:///var/git/local.git", None),
     ]
     for origin, expected in cases:
         assert extract_origin_host(origin) == expected
@@ -197,6 +204,20 @@ def test_detect_forge_cli_probes_not_run_by_default(monkeypatch: pytest.MonkeyPa
     result = detect_forge("git@unknown-server.net:team/repo.git", probe_cli=False)
     assert result == "unknown"
     assert called is False
+
+
+def test_detect_forge_local_windows_path_never_probes_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#301: a Windows local-path origin is not a host, so no gh/glab probe runs."""
+
+    def fake_run(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("subprocess.run should not probe a local path")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/" + cmd)
+    for origin in (r"C:\n\w\robomate", "C:/n/w/robomate", "file:///C:/n/w/robomate"):
+        assert detect_forge(origin, probe_cli=True) == "unknown"
 
 
 def test_detect_forge_cli_probe_glab_success(monkeypatch: pytest.MonkeyPatch) -> None:

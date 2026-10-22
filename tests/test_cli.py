@@ -1,6 +1,7 @@
 """End-to-end operator CLI tests in a disposable Git checkout."""
 
 import argparse
+import asyncio
 import errno
 import io
 import json
@@ -29,12 +30,14 @@ from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
 from agent_hub_common.discovery import (
     Binding,
+    GitTimeoutError,
     HubEndpoint,
     HubPlacement,
     checkout_git_dir,
     legacy_state_dir,
     local_hub,
     read_binding,
+    read_hub_json,
     resolve_repository,
     write_binding,
     write_hub_json,
@@ -2352,6 +2355,187 @@ def test_up_malformed_origin_warns_and_serves(
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+
+def test_up_no_origin_fails_fast_with_cause(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#301: a smoke checkout with no origin fails fast instead of hanging."""
+
+    _, env = repository
+    root = tmp_path / "no-origin"
+    root.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+    result = _run_cli(
+        [CLI, "up"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.returncode == 1
+    assert "origin" in result.stderr.lower()
+    assert "smoke" in result.stderr.lower() or "guides/worker.md" in result.stderr
+    assert not (root / ".robomate" / "hub.json").exists()
+
+
+def test_up_unset_origin_head_fails_fast_with_cause(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """#301: a checkout with origin but no origin/HEAD fails fast, naming the fix."""
+
+    _, env = repository
+    root = tmp_path / "no-head"
+    root.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:example/repo.git"],
+        cwd=root,
+        check=True,
+    )
+    result = _run_cli(
+        [CLI, "up"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.returncode == 1
+    assert "origin/HEAD is unset" in result.stderr
+    assert "smoke" in result.stderr.lower() or "set-head" in result.stderr
+
+
+def test_down_reports_stale_state_left_by_failed_up(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#301: down names the stale hub.json a hung or killed up left behind."""
+
+    root, env = repository
+    port = reserve_port_block(1)
+    write_hub_json(
+        legacy_state_dir(root),
+        {
+            "hub_id": "stale-id",
+            "name": "repo",
+            "checkout": str(root),
+            "repo_root": str(root),
+            "git_common_dir": str(root / ".git"),
+            "origin": "git@github.com:example/repo.git",
+            "forge": "github",
+            "default_branch": "main",
+            "url": f"http://127.0.0.1:{port}",
+            "port": port,
+            "pid": 999999,
+            "started_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
+    result = _run_cli(
+        [CLI, "down"],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.returncode == 1
+    assert "stale state remains in" in result.stderr
+    assert "hub.json" in result.stderr
+
+
+def test_status_gates_stale_partial_on_existing_hub_json(
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#301 r5-1: status names stale partial state only when hub.json exists.
+
+    An empty bound state directory (binding exists, hub.json absent: still
+    starting) reports bare not-running like down does; a real identity-only
+    hub.json reports the stale partial record.
+    """
+
+    root, env = repository
+    state = tmp_path / "ns" / "state"
+    state.mkdir(parents=True)
+    write_binding(
+        checkout_git_dir(root),
+        Binding("owner", "r5-hub", "repo", root, state, tmp_path / "ns" / "token" / "token"),
+    )
+    empty = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+    assert empty.returncode == 1
+    assert json.loads(empty.stdout)["running"] is False
+    assert "reason" not in empty.stdout
+    assert "stale partial state" not in empty.stdout + empty.stderr
+
+    write_hub_json(state, {"hub_id": "r5-hub", "name": "repo"})
+    partial = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+    assert partial.returncode == 1
+    assert "stale partial state remains in" in partial.stdout
+    assert "startup never finished" in partial.stdout
+
+
+def test_up_failed_startup_leaves_reportable_stale_state(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#301 r1-1/r1-3: a startup that never serves fails fast; down names the stale record.
+
+    Drives a real `up` (in-process) against a stub server that never starts,
+    through the startup deadline. Pre-fix code hangs at this wait forever;
+    the deadline makes it fail fast with the cause named.
+    """
+
+    class NeverServingHub:
+        started = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.should_exit = False
+
+        async def serve(self, sockets: object) -> None:
+            await asyncio.Event().wait()
+
+    root, env = repository
+    port = reserve_port_block(1)
+    monkeypatch.setattr("agent_hub.main.HubServer", NeverServingHub)
+    monkeypatch.setattr("agent_hub.main._START_TIMEOUT_S", 0.05)
+    up = _inproc_cli(monkeypatch, capsys, root, env, "up", "--port", str(port))
+    assert up.returncode == 1
+    assert "did not start serving within" in up.stderr
+    placed = local_hub(root)
+    assert placed is not None
+    saved = read_hub_json(placed.state_dir)
+    assert saved is not None and saved.get("hub_id")
+    assert not saved.get("url")
+    down = _inproc_cli(monkeypatch, capsys, root, env, "down")
+    assert down.returncode == 1
+    assert "never finished starting" in down.stderr
+    assert "stale partial state remains in" in down.stderr
+    assert "no hub is recorded for checkout" not in down.stderr
+
+
+def test_up_git_timeout_names_hung_command(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#301 r1-4: a hung `git` child fails `up` fast with the command named."""
+
+    root, env = repository
+
+    def hung(_cwd: Path, *args: str) -> str:
+        raise GitTimeoutError(
+            f"git {' '.join(args)} timed out after 10 s; check the repository and try again (#301)"
+        )
+
+    monkeypatch.setattr("agent_hub_common.discovery._git", hung)
+    up = _inproc_cli(monkeypatch, capsys, root, env, "up", "--port", "8521")
+    assert up.returncode == 1
+    assert "timed out" in up.stderr
+    assert "not inside a git repository" not in up.stderr
 
 
 def test_up_forge_flag_overrides_detection(repository: tuple[Path, dict[str, str]]) -> None:

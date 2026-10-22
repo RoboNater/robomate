@@ -18,6 +18,7 @@ from agent_hub_common.discovery import (
     ROOT_RECORD_FILENAME,
     Binding,
     DiscoveryError,
+    GitTimeoutError,
     HubEndpoint,
     LocalHub,
     checkout_git_dir,
@@ -30,6 +31,7 @@ from agent_hub_common.discovery import (
     is_legacy_state_dir,
     is_linked_worktree,
     legacy_state_dir,
+    local_hub,
     plan_hub_placement,
     read_binding,
     read_hub_json,
@@ -472,7 +474,10 @@ def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
     write_hub_json(
         legacy_state_dir(repository), {"url": silent, "hub_id": "expected-hub", "name": "repo"}
     )
-    with pytest.raises(DiscoveryError, match=r"at .* did not answer /healthz within 0.2 s$"):
+    with pytest.raises(
+        DiscoveryError,
+        match=r"at .* did not answer /healthz within 0.2 s; stale state remains in",
+    ):
         discover(repository, {})
     monkeypatch.setattr("agent_hub_common.registry.process_alive", lambda pid: pid == 4321)
     write_hub_json(
@@ -490,6 +495,53 @@ def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 10.0)
     with pytest.raises(DiscoveryError, match="answers as hub different-hub, not expected-hub"):
         discover(repository, {})
+
+
+def test_identity_without_address_reports_never_finished_starting(tmp_path: Path) -> None:
+    """#301 r1-3: a startup that failed before serving resolves its partial record."""
+
+    root = init_repository(tmp_path / "repo")
+    write_hub_json(
+        legacy_state_dir(root), {"hub_id": "partial-id", "name": "repo", "checkout": str(root)}
+    )
+    hub = local_hub(root)
+    assert isinstance(hub, LocalHub)
+    assert (hub.hub_id, hub.url) == ("partial-id", "")
+    with pytest.raises(DiscoveryError, match="never finished starting"):
+        verify_local_hub(hub)
+    with pytest.raises(DiscoveryError, match="stale partial state remains in"):
+        verify_local_hub(hub)
+
+
+def test_git_timeout_is_not_masked_by_resolve_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#301 r1-4: a hung `git` child reports its timeout, not a wrong location."""
+
+    def hung(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["git", "rev-parse"], 10)
+
+    monkeypatch.setattr(subprocess, "run", hung)
+    with pytest.raises(GitTimeoutError, match="timed out after 10"):
+        resolve_checkout(tmp_path)
+
+
+def test_git_timeout_is_not_masked_as_unset_origin_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#301 r1-4: a timeout reading origin/HEAD is not reported as an unset ref."""
+
+    root = init_repository(tmp_path / "repo")
+    real_run = subprocess.run
+
+    def selective(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "symbolic-ref" in args:
+            raise subprocess.TimeoutExpired(args, 10)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", selective)
+    with pytest.raises(GitTimeoutError, match="timed out"):
+        resolve_repository(root)
 
 
 # -- Step 6 of M2: where state and token live, bindings, the worktree root ------

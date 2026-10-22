@@ -204,7 +204,14 @@ allowed, only under all of these limits:
   `<checkout>.robomate/<hub>/` (a legacy hub's, in the checkout's `.robomate/`),
   whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a
   clone, or `git init`) inside that directory, never from your workspace
-  (spec §4, Isolated smoke hubs).
+  (spec §4, Isolated smoke hubs). The checkout needs an origin remote with
+  `origin/HEAD` set (#301): a clone with a GitHub origin (preferred, so the
+  forge gate binds as in production), or `git init` plus `git remote add
+  origin <github-url>` plus `git symbolic-ref refs/remotes/origin/HEAD
+  refs/remotes/origin/main`. A `git init` with no origin, or a checkout with
+  `origin/HEAD` unset, fails fast instead of serving. A local-path clone
+  serves with forge `unknown` (unbound gate), so prefer a GitHub origin for
+  a realistic smoke.
 - Its own port, never the run hub's.
 - Stopped before the task ends, with `robomate down` in the same isolated
   environment, or by stopping the `hub` process you started.
