@@ -50,6 +50,7 @@ from agent_hub_common.discovery import (
     ensure_excluded,
     find_hub,
     hub_checkout,
+    is_legacy_state_dir,
     is_linked_worktree,
     legacy_state_dir,
     local_hub,
@@ -766,16 +767,29 @@ def _forget_one(entry: dict[str, Any], *, forget_all: bool, as_json: bool) -> di
             if stored.get("released_port") is None:
                 stored.pop("released_port", None)
             write_hub_json(entry_state, stored)
+        # A hub kept beside its worktrees still holds its name as the directory
+        # <worktree_root>/<hub>/, which its state occupies (spec §4, operator
+        # decision Q2 on #243): only a legacy hub's name is released.
+        name_released = is_legacy_state_dir(Path(state))
         if not as_json:
+            released = ["its name"] if name_released else []
+            released += [f"port {port}"] if port else []
             print(
-                f"Forgot hub {name} (hub_id {hub_id}): released its name"
-                + (f" and port {port}" if port else "")
+                f"Forgot hub {name} (hub_id {hub_id}): released "
+                + (" and ".join(released) or "its registry entry")
                 + f"; state kept at {state}"
+                + (
+                    ""
+                    if name_released
+                    else f"; the name stays taken by {Path(state).parent} until that state "
+                    "is removed or relocated"
+                )
             )
         return {
             "hub_id": hub_id,
             "name": name,
             "forgotten": True,
+            "name_released": name_released,
             "port": port,
             "state_dir": state,
         }

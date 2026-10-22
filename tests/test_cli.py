@@ -3520,3 +3520,45 @@ def test_a_worktree_root_of_another_repository_is_refused_by_up(
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+
+def test_a_forgotten_new_hub_keeps_its_name_taken_by_its_directory(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """Spec §4 (operator decision Q2 on #243): forget frees a new hub's port, not its name.
+
+    Its state still occupies `<worktree_root>/<hub>/`, the directory a sibling of
+    that name would need. Only a legacy hub's name is freed by `forget`
+    (test_forgotten_hub_can_be_renamed_and_pinned).
+    """
+
+    root, env = repository
+    wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
+    _commit_and_add_worktrees(root, wt_a, wt_b)
+    namespace = tmp_path / "repo.robomate" / "wt-a"
+    hub_a = start(wt_a, env)
+    try:
+        first = await_hub(wt_a, hub_a)
+        stop(wt_a, env, hub_a)
+        forgotten = _cli(root, env, "forget", "wt-a", "--json")
+        assert forgotten.returncode == 0, forgotten.stderr
+        [outcome] = json.loads(forgotten.stdout)
+        assert (outcome["forgotten"], outcome["name_released"]) == (True, False)
+        assert outcome["state_dir"] == str(namespace / "state")
+        assert not any(
+            row["name"] == "wt-a" for row in json.loads(_cli(root, env, "ls", "--json").stdout)
+        )
+        # A sibling cannot take the name: the forgotten hub's state holds the directory.
+        taken = _cli(wt_b, env, "up", "--name", "wt-a")
+        assert taken.returncode == 1 and "'wt-a' is taken" in taken.stderr
+        assert (namespace / "state" / "hub.db").is_file()
+        assert read_binding(checkout_git_dir(wt_b)) is None
+        # The forgotten hub itself comes back under its name, from its own state.
+        hub_a = start(wt_a, env)
+        again = await_hub(wt_a, hub_a)
+        assert (again["hub_id"], again["name"]) == (first["hub_id"], "wt-a")
+        assert hub_state(wt_a) == namespace / "state"
+        stop(wt_a, env, hub_a)
+    finally:
+        if hub_a.poll() is None:
+            stop(wt_a, env, hub_a)

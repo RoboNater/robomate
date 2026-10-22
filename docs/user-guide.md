@@ -371,8 +371,10 @@ uv run --project /absolute/path/to/robomate robomate forget --all   # every stop
 
 Forgetting deletes nothing: the hub's database and run reports are kept; hub.json keeps
 its identity and last address, records the released port, and clears its pid. Only the
-registry entry goes, so the hub leaves `robomate ls` and its name and port become
-reusable. A live hub is never forgotten: stop it first. The forgotten hub's next `up`
+registry entry goes, so the hub leaves `robomate ls` and its port becomes reusable. A
+legacy hub's name (state in the checkout's `.robomate/`) becomes reusable too; a hub kept
+beside its worktrees keeps its name taken by its directory under the worktree root,
+which still holds its state, until you remove or relocate that state. A live hub is never forgotten: stop it first. The forgotten hub's next `up`
 takes the first free port from 8420 and says that its port was released and names the
 new one, since remote agents configured with the old port need the new one. If another
 hub has taken the freed name since, that `up` is refused; rename with

@@ -307,6 +307,11 @@ freed name, the forgotten hub's next `up` is refused naming the holder; an expli
 `robomate up --name <new>` renames it for that start. A rename starts a new
 worktree/branch namespace: agent worktrees and `robomate/<old>/…` branches made under
 the old name keep it. Removing hub state stays a separate, explicit operator action.
+For a hub kept beside its agent worktrees, the name is also the directory
+`<worktree_root>/<hub>/` that holds its state (Hub name, Unique), so forgetting it releases
+its registry entry and port but not its name: the name stays taken by that directory until
+the operator removes or relocates the hub's state. Only a legacy hub's name is freed by
+`forget` (operator decision on #243).
 
 **Port** — per hub: the first free port from 8420 upward on the hub's first `up`, saved in
 `hub.json` and reused on restart so remote agents keep working; `--port` pins it. The
