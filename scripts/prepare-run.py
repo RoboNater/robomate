@@ -2032,6 +2032,8 @@ def agent_launch_lines(
         lines = antigravity_launch(
             spelling(config), spelling(prompt), spelling(prompt.parent), [], False, powershell
         )
+        normal, _ = interactive_templates(lines, harness, powershell)
+        lines = normal.replace(" __ROBOMATE_HARNESS_ARGS__", "").splitlines()
         spelled = "agy --dangerously-skip-permissions --add-dir " + shell_word(
             spelling(prompt.parent), powershell
         )
