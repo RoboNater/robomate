@@ -114,7 +114,10 @@ def test_interrupt_while_the_hub_starts_stops_it_and_writes_a_summary(
             downs.append(hub_dir)
         return subprocess.CompletedProcess(["robomate", *args], 0)
 
-    monkeypatch.setattr(RUN_CASE, "TOOLING", tmp_path / "tooling")
+    # The runner refuses to run from a checkout under ~/lw. tmp_path itself
+    # may sit under ~/lw when pytest's basetemp does (worker TMPDIR), so keep
+    # the mocked TOOLING outside ~/lw; the stand-ins never touch it.
+    monkeypatch.setattr(RUN_CASE, "TOOLING", Path(tmp_path.anchor) / "fake-tooling")
     monkeypatch.setattr(RUN_CASE, "seed", lambda case, name, source: {"ssh_url": "git@h:a/b.git"})
     monkeypatch.setattr(RUN_CASE.subprocess, "run", clone)
     monkeypatch.setattr(RUN_CASE.subprocess, "Popen", hub)
@@ -129,3 +132,15 @@ def test_interrupt_while_the_hub_starts_stops_it_and_writes_a_summary(
     (results,) = (eval_root / "results").iterdir()
     summary = json.loads((results / "summary.json").read_text(encoding="utf-8"))
     assert summary["error"] == "interrupted"
+
+
+def test_tooling_guard_refuses_path_under_lw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal_handlers: None
+) -> None:
+    """The production tooling-location guard still refuses ~/lw paths."""
+    case = tmp_path / "case.json"
+    case.write_text(json.dumps({"id": "review-1-r1", "kind": "review"}), encoding="utf-8")
+    monkeypatch.setattr(RUN_CASE, "TOOLING", Path.home() / "lw" / "fake-tooling")
+    with pytest.raises(SystemExit) as exc:
+        RUN_CASE.main([str(case), "--label", "t", "--eval-root", str(tmp_path / "root")])
+    assert exc.value.code == 2
