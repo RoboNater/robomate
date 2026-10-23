@@ -408,7 +408,14 @@ async def test_waiting_worker_gets_the_task_and_claims_it(store: HubStore) -> No
     assert waited is not None
     # The task is claimed as it is handed over, so a second waiter cannot take it.
     assert waited.state is TaskState.WORKING
-    assert await store.await_assignment(agent.context_id, 0.05) is None
+    assert waited.already_held is False
+    # #326: the same worker calling again gets its held task back as a
+    # redelivery instead of timing out.
+    redelivered = await store.await_assignment(agent.context_id, 0.05)
+    assert redelivered is not None and not isinstance(redelivered, Released)
+    assert redelivered.id == waited.id
+    assert redelivered.already_held is True
+    assert redelivered.state is TaskState.WORKING
 
 
 async def test_waiting_worker_is_released_while_it_waits(store: HubStore) -> None:
@@ -1892,3 +1899,155 @@ def test_joined_workers_remain_assignable_between_runs(tmp_path: Path, queued: b
     claimed = store._claim_assignment("bob")
     assert claimed is not None and not isinstance(claimed, Released)
     assert claimed.id == task.id
+
+
+async def test_held_working_task_is_redelivered_with_flag(store: HubStore) -> None:
+    """#326: a worker that lost track gets its held task back, not a timeout."""
+
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    claimed = await store.await_assignment(agent.context_id, 2.0)
+    assert claimed is not None and not isinstance(claimed, Released)
+    assert claimed.id == task_id
+    assert claimed.already_held is False
+    before = store.get_task(task_id)
+    assert before is not None
+
+    redelivered = await store.await_assignment(agent.context_id, 0.05)
+    assert redelivered is not None and not isinstance(redelivered, Released)
+    assert redelivered.id == task_id
+    assert redelivered.already_held is True
+    assert redelivered.state is TaskState.WORKING
+    # No state or lease change on redelivery: the heartbeat still owns renewal.
+    after = store.get_task(task_id)
+    assert after is not None
+    assert after.state is TaskState.WORKING
+    assert after.lease_expires == before.lease_expires
+
+
+async def test_held_input_required_task_is_redelivered(store: HubStore) -> None:
+    """#326: a parked question is also an open held task worth returning."""
+
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    claimed = await store.await_assignment(agent.context_id, 2.0)
+    assert claimed is not None
+    assert not isinstance(claimed, Released)
+    assert claimed.id == task_id
+    store.open_question(task_id, "bob", "Which base?", "q-1")
+
+    redelivered = await store.await_assignment(agent.context_id, 0.05)
+    assert redelivered is not None and not isinstance(redelivered, Released)
+    assert redelivered.id == task_id
+    assert redelivered.already_held is True
+    assert redelivered.state is TaskState.INPUT_REQUIRED
+
+
+async def test_released_worker_gets_release_despite_held_task(store: HubStore) -> None:
+    """#326: release outranks redelivery."""
+
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    claimed = await store.await_assignment(agent.context_id, 2.0)
+    assert claimed is not None
+    assert not isinstance(claimed, Released)
+    assert claimed.id == task_id
+    store.release_agent("bob")
+
+    assert await store.await_assignment(agent.context_id, 0.05) == Released(agent="bob")
+
+
+def _complete_then_hold(store: HubStore, first_title: str = "First") -> tuple[str, str]:
+    """Complete one task, then hold a second: the #326 lost-track shape."""
+
+    store.check_in("bob")
+    first_id = store.assign_task("bob", "implementer", first_title, "Do first").id
+    store._claim_assignment("bob")
+    store.submit_result(first_id, "bob", TaskState.COMPLETED, "first done")
+    second_id = store.assign_task("bob", "implementer", "Second", "Do second").id
+    store._claim_assignment("bob")
+    return first_id, second_id
+
+
+def test_report_progress_on_finished_names_held_task(store: HubStore) -> None:
+    first_id, second_id = _complete_then_hold(store)
+    with pytest.raises(ConflictError) as exc_info:
+        store.record_progress(first_id, "bob", "late note")
+    message = str(exc_info.value)
+    assert "already completed" in message
+    assert second_id in message
+    assert "Second" in message
+    assert "use that task_id" in message
+
+
+def test_report_progress_on_finished_without_held_points_to_await(store: HubStore) -> None:
+    store.check_in("bob")
+    task_id = assign(store)
+    store._claim_assignment("bob")
+    store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
+    with pytest.raises(ConflictError) as exc_info:
+        store.record_progress(task_id, "bob", "late note")
+    message = str(exc_info.value)
+    assert "already completed" in message
+    assert "hold no open task" in message
+    assert "await_assignment" in message
+
+
+def test_submit_result_on_finished_names_held_task(store: HubStore) -> None:
+    first_id, second_id = _complete_then_hold(store)
+    with pytest.raises(ConflictError) as exc_info:
+        store.submit_result(first_id, "bob", TaskState.COMPLETED, "again")
+    message = str(exc_info.value)
+    assert "already completed" in message
+    assert second_id in message
+    assert "use that task_id" in message
+
+
+def test_submit_result_on_finished_without_held_points_to_await(store: HubStore) -> None:
+    store.check_in("bob")
+    task_id = assign(store)
+    store._claim_assignment("bob")
+    store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
+    with pytest.raises(ConflictError) as exc_info:
+        store.submit_result(task_id, "bob", TaskState.COMPLETED, "again")
+    message = str(exc_info.value)
+    assert "hold no open task" in message
+    assert "await_assignment" in message
+
+
+def test_ask_alice_on_finished_names_held_task(store: HubStore) -> None:
+    first_id, second_id = _complete_then_hold(store)
+    with pytest.raises(ConflictError) as exc_info:
+        store.open_question(first_id, "bob", "late question?", "q-9")
+    message = str(exc_info.value)
+    assert "already completed" in message
+    assert second_id in message
+    assert "use that task_id" in message
+
+
+def test_ask_alice_on_finished_without_held_points_to_await(store: HubStore) -> None:
+    store.check_in("bob")
+    task_id = assign(store)
+    store._claim_assignment("bob")
+    store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
+    with pytest.raises(ConflictError) as exc_info:
+        store.open_question(task_id, "bob", "late question?", "q-9")
+    assert "await_assignment" in str(exc_info.value)
+
+
+def test_finished_task_error_names_only_the_callers_task(store: HubStore) -> None:
+    """#326: never list other workers' tasks in a finished-task error."""
+
+    store.check_in("bob")
+    store.check_in("charlie")
+    bob_task = store.assign_task("bob", "implementer", "Bob work", "Do it").id
+    store._claim_assignment("bob")
+    store.submit_result(bob_task, "bob", TaskState.COMPLETED, "bob done")
+    charlie_task = store.assign_task("charlie", "implementer", "Charlie work", "Do it").id
+    store._claim_assignment("charlie")
+    with pytest.raises(ConflictError) as exc_info:
+        store.record_progress(bob_task, "bob", "late note")
+    message = str(exc_info.value)
+    assert "await_assignment" in message
+    assert charlie_task not in message
+    assert "Charlie work" not in message

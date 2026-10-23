@@ -1041,3 +1041,123 @@ async def test_manual_override_returns_terminal_task_to_question_stream(
         MetaKeys.STATE: state.value,
     }
     assert result["metadata"][MetaKeys.RESULT]["summary"] == "Superseded"
+
+
+async def test_second_next_returns_held_task_with_already_held(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#326: a lost worker gets its held task back instead of timing out."""
+
+    context_id, task_id = await assigned_context(client, hub_store)
+    response = await client.post(
+        "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
+    )
+    redelivered = sse_results(response)[0]
+    assert redelivered["id"] == task_id
+    assert redelivered["metadata"][MetaKeys.ALREADY_HELD] is True
+    assert redelivered["status"]["message"]["metadata"][MetaKeys.ALREADY_HELD] is True
+
+
+async def test_first_next_has_no_already_held_flag(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#326: fresh assignments stay unflagged; wire `hub.schema_version` stays 1."""
+
+    context_id = await check_in(client, "bob")
+    hub_store.assign_task("bob", "implementer", "Fix #1", "Open a PR")
+    response = await client.post(
+        "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
+    )
+    assigned = sse_results(response)[0]
+    assert MetaKeys.ALREADY_HELD not in (assigned.get("metadata") or {})
+    assert "hub.schema_version" not in (assigned.get("metadata") or {})
+
+
+async def test_progress_on_finished_task_names_held_task(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#326: finished-task errors name only the caller's held task."""
+
+    context_id, first_id = await assigned_context(client, hub_store)
+    first = hub_store.get_task(first_id)
+    assert first is not None
+    hub_store.submit_result(first_id, "bob", first.state.COMPLETED, "done")
+    second = hub_store.assign_task("bob", "implementer", "Second", "Do second")
+    # Drain the claim so the second task is held as working.
+    second_response = await client.post(
+        "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
+    )
+    assert sse_results(second_response)[0]["id"] == second.id
+    body = await post(
+        client,
+        "message/send",
+        message(
+            "late note",
+            context_id=context_id,
+            task_id=first_id,
+            metadata={
+                MetaKeys.KIND: "progress",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.OPERATION_ID: "op-proto-held-prog",
+            },
+        ),
+    )
+    assert "already completed" in body["error"]["message"]
+    assert second.id in body["error"]["message"]
+    assert "use that task_id" in body["error"]["message"]
+
+
+async def test_progress_on_finished_task_without_held_points_to_next(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    context_id, task_id = await assigned_context(client, hub_store)
+    task = hub_store.get_task(task_id)
+    assert task is not None
+    hub_store.submit_result(task_id, "bob", task.state.COMPLETED, "done")
+    body = await post(
+        client,
+        "message/send",
+        message(
+            "late note",
+            context_id=context_id,
+            task_id=task_id,
+            metadata={
+                MetaKeys.KIND: "progress",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.OPERATION_ID: "op-proto-noheld-prog",
+            },
+        ),
+    )
+    assert "hold no open task" in body["error"]["message"]
+    assert "await_assignment" in body["error"]["message"]
+
+
+async def test_result_on_finished_task_names_held_task(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    context_id, first_id = await assigned_context(client, hub_store)
+    first = hub_store.get_task(first_id)
+    assert first is not None
+    hub_store.submit_result(first_id, "bob", first.state.COMPLETED, "done")
+    second = hub_store.assign_task("bob", "implementer", "Second", "Do second")
+    second_response = await client.post(
+        "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
+    )
+    assert sse_results(second_response)[0]["id"] == second.id
+    body = await post(
+        client,
+        "message/send",
+        message(
+            "again",
+            context_id=context_id,
+            task_id=first_id,
+            metadata={
+                MetaKeys.KIND: "result",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.OPERATION_ID: "op-proto-held-res",
+                MetaKeys.RESULT: {"outcome": "failed", "summary": "again"},
+            },
+        ),
+    )
+    assert "already completed" in body["error"]["message"]
+    assert second.id in body["error"]["message"]
