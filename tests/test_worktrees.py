@@ -550,3 +550,146 @@ def test_migration_from_v24_leaves_workspace_path_and_kind_null(
 def test_wire_schema_version_stays_1() -> None:
     assert WIRE_SCHEMA_VERSION == 1
     assert SCHEMA_VERSION == 25
+
+
+async def test_explicit_join_revalidates_identity_for_join_name(tmp_path: Path) -> None:
+    """r1-1: a clone configured for bob cannot authorize a join as charlie."""
+
+    import sys
+
+    from agent_hub_common.discovery import HubEndpoint
+    from worker_mcp.client import WorkerHubClient, WorkerProtocolError
+    from worker_mcp.config import WorkerSettings
+
+    app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
+    origin = tmp_path / "origin-r11"
+    subprocess.run(["git", "init", "--initial-branch=main", str(origin)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(origin),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    destination = tmp_path / "bob-clone-r11"
+    root = Path(__file__).resolve().parents[1]
+    bootstrap = (
+        [sys.executable, str(root / "scripts/bootstrap-workspace.py")]
+        if __import__("os").name == "nt"
+        else [str(root / "scripts/bootstrap-workspace.sh")]
+    )
+    subprocess.run(
+        [*bootstrap, "bob", str(destination), str(origin)],
+        check=True,
+        capture_output=True,
+    )
+    env = {
+        "ROBOMATE_HUB_URL": BASE_URL,
+        "ROBOMATE_TOKEN": TOKEN,
+        "AGENT_NAME": "bob",
+        "HUB_WORKSPACE": str(destination),
+    }
+    settings = WorkerSettings.from_discovered(
+        HubEndpoint(BASE_URL, TOKEN), agent_name="bob", environ=env
+    )
+    # The configured profile carries bob's clone ID before join runs.
+    assert settings.profile.workspace_id is not None
+    import httpx
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+        WorkerHubClient(settings, http_client=http) as bridge,
+    ):
+        with pytest.raises(WorkerProtocolError, match="HUB_WORKSPACE"):
+            await bridge.join(name="charlie", role="implementer")
+    # No worktree was created for the refused explicit join.
+    assert not (worktree_root / hub_info["name"] / "charlie").exists()
+    assert store.agent_by_name("charlie") is None
+
+
+async def test_from_env_settings_join_honors_explicit_workspace(tmp_path: Path) -> None:
+    """r1-2: `from_env` workspace (environ=None) still joins as a clone."""
+
+    import sys
+
+    from worker_mcp.client import WorkerHubClient
+    from worker_mcp.config import WorkerSettings
+
+    app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
+    origin = tmp_path / "origin-r12"
+    subprocess.run(["git", "init", "--initial-branch=main", str(origin)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(origin),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    destination = tmp_path / "bob-clone-r12"
+    root = Path(__file__).resolve().parents[1]
+    bootstrap = (
+        [sys.executable, str(root / "scripts/bootstrap-workspace.py")]
+        if __import__("os").name == "nt"
+        else [str(root / "scripts/bootstrap-workspace.sh")]
+    )
+    out = subprocess.run(
+        [*bootstrap, "bob", str(destination), str(origin)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    identity = json.loads(out)
+    settings = WorkerSettings.from_env(
+        {
+            "HUB_URL": BASE_URL,
+            "HUB_TOKEN": TOKEN,
+            "AGENT_NAME": "bob",
+            "HUB_WORKSPACE": str(destination),
+        }
+    )
+    assert settings.workspace is not None and settings.environ is None
+    assert settings.profile.workspace_id == identity["workspace_id"]
+    import httpx
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+        WorkerHubClient(settings, http_client=http) as bridge,
+    ):
+        res = await bridge.join(name="bob", role="implementer")
+    assert res["workspace_kind"] == "clone"
+    assert res["workspace_path"] == str(destination)
+    assert res["workspace_id"] == identity["workspace_id"]
+    assert not (worktree_root / hub_info["name"] / "bob").exists()
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    assert (agent.workspace_path, agent.workspace_kind) == (str(destination), "clone")

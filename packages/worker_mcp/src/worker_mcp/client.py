@@ -681,26 +681,45 @@ class WorkerHubClient:
 
         bridge_cwd = (self.settings.cwd or Path.cwd()).resolve()
         env = self.settings.environ or {}
-        explicit_raw = (env.get("HUB_WORKSPACE") or "").strip()
-        workspace_explicit = bool(explicit_raw)
+        explicit_raw_env = (env.get("HUB_WORKSPACE") or "").strip()
+        # Standalone `run_worker` builds settings with `from_env()`, which
+        # records the validated clone in `settings.workspace` but leaves
+        # `environ` unset (r1-2 on #244). Honor that path too, so an explicit
+        # clone never falls through to worktree creation.
+        configured_workspace = self.settings.workspace
+        if explicit_raw_env:
+            explicit_raw = explicit_raw_env
+            workspace_explicit = True
+        elif configured_workspace is not None:
+            explicit_raw = str(configured_workspace)
+            workspace_explicit = True
+        else:
+            explicit_raw = ""
+            workspace_explicit = False
         if workspace_explicit:
             try:
                 canonical_path = canonical_workspace(explicit_raw).resolve()
             except Exception:
                 # An invalid explicit workspace is the hub's to refuse (r2-2
                 # on #244), not a bridge crash: send the raw path with no
-                # identity and let the hub name it.
+                # identity and let the hub name it. Clear any stale ID so a
+                # configured clone for another agent cannot authorize this join.
                 resolved_workspace_path = bridge_cwd
                 reported_workspace_path = explicit_raw
+                profile = replace(profile, workspace_id=None)
             else:
                 resolved_workspace_path = canonical_path
                 reported_workspace_path = str(canonical_path)
-                if profile.workspace_id is None:
-                    try:
-                        identity = read_identity(canonical_path, clean_name)
-                        profile = replace(profile, workspace_id=identity["workspace_id"])
-                    except Exception:
-                        pass
+                # Revalidate for the name passed to each join (r1-1 on #244):
+                # a profile ID configured for another agent (e.g. via
+                # `from_discovered` with AGENT_NAME=bob joining as charlie)
+                # must not survive. A failure clears to None so the hub
+                # refuses the explicit mismatch.
+                try:
+                    identity = read_identity(canonical_path, clean_name)
+                    profile = replace(profile, workspace_id=identity["workspace_id"])
+                except Exception:
+                    profile = replace(profile, workspace_id=None)
         else:
             resolved_workspace_path = bridge_cwd
             reported_workspace_path = str(bridge_cwd)
