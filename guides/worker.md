@@ -45,6 +45,8 @@ The loop is:
 await_assignment -> get_role_guide -> do work -> submit_result -> repeat
 ```
 
+If a task call says the task is already finished, call `await_assignment`, which returns any task you still hold (#326).
+
 ## Waiting
 
 <!-- Headless turn end: #115. -->

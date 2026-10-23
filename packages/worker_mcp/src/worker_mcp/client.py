@@ -941,7 +941,7 @@ class WorkerHubClient:
                 instructions += part["root"]["text"]
 
         self.current_task_id = str(task_id) if task_id else None
-        assignment = {
+        assignment: dict[str, Any] = {
             "task_id": str(task_id) if task_id else "",
             "role": str(role),
             "title": str(metadata.get(MetaKeys.TITLE, "")),
@@ -958,6 +958,15 @@ class WorkerHubClient:
         statement_sha256 = metadata.get(MetaKeys.STATEMENT_SHA256)
         if isinstance(statement_sha256, str) and statement_sha256:
             assignment["statement_sha256"] = statement_sha256
+        # Redelivery marker (#326): the hub returns the task the caller
+        # already holds instead of timing out, flagged so the worker knows
+        # it is not new work. Additive metadata; wire version stays 1.
+        if metadata.get(MetaKeys.ALREADY_HELD) is True:
+            assignment["already_held"] = True
+        else:
+            status_metadata = status_msg.get("metadata") or {}
+            if status_metadata.get(MetaKeys.ALREADY_HELD) is True:
+                assignment["already_held"] = True
         return assignment
 
     async def report_progress(

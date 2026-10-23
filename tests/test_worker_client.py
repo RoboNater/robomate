@@ -814,3 +814,89 @@ async def test_join_declared_model_no_mismatch(
         state = hub_store.get_state()
         agent_summary = next(a for a in state["agents"] if a["name"] == "bob")
         assert agent_summary["model_mismatch"] is False
+
+
+async def test_await_assignment_redelivers_held_task_with_flag(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+) -> None:
+    """#326: second await_assignment returns the held task, flagged."""
+
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
+
+    first = await worker.await_assignment(timeout_s=1.0)
+    assert first["task_id"] == task.id
+    assert "already_held" not in first
+
+    second = await worker.await_assignment(timeout_s=0.2)
+    assert second["task_id"] == task.id
+    assert second["already_held"] is True
+
+
+async def test_finished_task_errors_name_held_task(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+) -> None:
+    """#326: progress/result on a finished task name the held open task."""
+
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    first = hub_store.assign_task("bob", "implementer", "First", "Do first")
+    first_claim = await worker.await_assignment(timeout_s=1.0)
+    assert first_claim["task_id"] == first.id
+    await worker.submit_result(
+        first.id,
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "pr_url": "https://github.com/org/repo/pull/1",
+            "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        },
+    )
+    second = hub_store.assign_task("bob", "implementer", "Second", "Do second")
+    held = await worker.await_assignment(timeout_s=1.0)
+    assert held["task_id"] == second.id
+
+    with pytest.raises(WorkerProtocolError) as prog_info:
+        await worker.report_progress(first.id, "late note")
+    assert second.id in prog_info.value.message
+    assert "use that task_id" in prog_info.value.message
+
+    with pytest.raises(WorkerProtocolError) as res_info:
+        await worker.submit_result(first.id, {"outcome": "failed", "summary": "again"})
+    assert second.id in res_info.value.message
+
+    with pytest.raises(WorkerProtocolError) as ask_info:
+        await worker.ask_alice(first.id, "late question?", timeout_s=0.2)
+    assert second.id in ask_info.value.message
+
+
+async def test_finished_task_errors_without_held_point_to_await(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+) -> None:
+    """#326: with no held task, finished-task errors direct to await_assignment."""
+
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
+    claimed = await worker.await_assignment(timeout_s=1.0)
+    assert claimed["task_id"] == task.id
+    await worker.submit_result(
+        task.id,
+        {
+            "outcome": "completed",
+            "summary": "done",
+            "pr_url": "https://github.com/org/repo/pull/1",
+            "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        },
+    )
+    with pytest.raises(WorkerProtocolError) as exc_info:
+        await worker.report_progress(task.id, "late note")
+    assert "hold no open task" in exc_info.value.message
+    assert "await_assignment" in exc_info.value.message
