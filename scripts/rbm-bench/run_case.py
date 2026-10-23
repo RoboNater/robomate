@@ -51,6 +51,21 @@ ACCOUNT = "RoboNater"
 AGENTS = ("alice", "bob", "charlie")
 
 
+def restore_interrupts() -> None:
+    """Make SIGINT and SIGTERM stop the run through its cleanup.
+
+    A shell starts a background job (the documented ``setsid nohup ... &``)
+    with SIGINT ignored, and neither Python nor ``asyncio.run`` replaces an
+    inherited ``SIG_IGN``, so without this the documented stop does nothing.
+    """
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, _interrupt)
+
+
+def _interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def say(message: str) -> None:
     stamp = datetime.now(UTC).strftime("%H:%M:%S")
     print(f"[eval {stamp}] {message}", file=sys.stderr, flush=True)
@@ -478,6 +493,7 @@ def main(argv: list[str] | None = None) -> None:
         for option in ("harness", "model", "effort"):
             parser.add_argument(f"--{agent}-{option}", default="")
     args = parser.parse_args(argv)
+    restore_interrupts()
     if Path.home() / "lw" in TOOLING.parents:
         parser.error(f"run from the tooling copy, not {TOOLING} (the sandbox hides ~/lw)")
 

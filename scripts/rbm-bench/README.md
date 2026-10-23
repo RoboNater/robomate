@@ -53,6 +53,10 @@ uv run --locked python scripts/rbm-bench/cases.py fetch
 uv run --locked python scripts/rbm-bench/cases.py survey
 uv run --locked python scripts/rbm-bench/cases.py refix 312        # PR number
 uv run --locked python scripts/rbm-bench/cases.py review 307 1     # PR, review round
+#   only findings a later fix resolved are reference; when the parser cannot tell a
+#   resolved finding's severity, read the review and classify it:
+uv run --locked python scripts/rbm-bench/cases.py review 143 1 \
+    --severity r1-1=blocking --severity r1-2=blocking
 rsync -a --delete --exclude .git --exclude .venv ./ ~/robomate-eval/tooling/
 (cd ~/robomate-eval/tooling && uv sync --locked --all-packages --dev)
 
@@ -87,7 +91,10 @@ other hubs and accounts.
 - OpenCode accepts an unknown `--variant` silently, so an effort typo runs at
   the default. Check the variant in the stored session before trusting it.
 - The re-review judge is only as good as its model; read the reviews when the
-  judge is not a frontier model.
+  judge is not a frontier model. Its response must name every reference
+  finding exactly once; otherwise it is retried once and reported as
+  `judge_invalid`. Aggregate with `blocking_caught` / `blocking_total`, not
+  by averaging per-case recall.
 
 Run one case at a time on a small machine: a re-fix run has three harnesses
 and their test suites going at once.

@@ -7,7 +7,9 @@
 (``mr-notes.json``). A judge model (``--judge``, run with no tools) matches its
 findings against the case's original findings and classifies each extra
 finding as a valid defect, a defensible nit or a false positive. The judge's
-JSON is saved as ``score.json`` with recall over the original blocking findings.
+JSON is saved as ``score.json`` with recall over the confirmed (later resolved)
+blocking findings; a judge response that skips, repeats or invents a reference
+is retried once and otherwise reported as ``judge_invalid``.
 
 **Re-fix:** the merged ``main`` is checked out into a scoring directory and
 validated inside the sandbox: ruff, mypy, the full pytest suite, and the
@@ -33,6 +35,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from jail import seed_opencode_db  # noqa: E402
+from run_case import restore_interrupts  # noqa: E402
 
 TOOLING = Path(__file__).resolve().parents[2]
 #: ``harness:model`` for the judge; Claude Code or OpenCode, run with no tools.
@@ -41,7 +44,7 @@ DEFAULT_JUDGE = "opencode:opencode-go/muse-spark-1.3-contributor"
 JUDGE_PROMPT = """\
 You are grading a code reviewer in a benchmark. The same merge request, at the
 same head commit, was reviewed earlier by a strong reviewer; the findings it
-raised were confirmed by later fixes (marked resolved) and are the reference.
+raised were confirmed by later fixes and are the reference.
 
 Compare the CANDIDATE REVIEW to the REFERENCE FINDINGS.
 
@@ -123,30 +126,95 @@ def judge(prompt: str, spec: str) -> dict[str, Any]:
     return data
 
 
+MATCH_WEIGHT = {"yes": 1.0, "partial": 0.5, "no": 0.0}
+EXTRA_CLASSES = ("valid", "nit", "false_positive")
+JUDGE_ATTEMPTS = 2
+
+
+def reference_findings(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """The case's confirmed findings: those a later fix resolved.
+
+    An unresolved or declined original comment is not reference, so a
+    candidate is never charged for omitting it. A confirmed finding must have
+    a curated severity (``cases.py review --severity``).
+    """
+    confirmed = [f for f in case["truth"]["findings"] if f.get("resolved")]
+    unknown = [f["id"] for f in confirmed if f["severity"] not in ("blocking", "nonblocking")]
+    if unknown:
+        raise ValueError(
+            f"case {case['id']}: severity of {', '.join(unknown)} is uncurated; rebuild "
+            "the case with cases.py review --severity ID=blocking|nonblocking"
+        )
+    return confirmed
+
+
+def judge_problems(verdict: dict[str, Any], reference_ids: list[str]) -> list[str]:
+    """Why a judge response cannot be scored: each reference exactly once, valid values."""
+    entries = verdict.get("reference")
+    if not isinstance(entries, list):
+        return ["reference is not a list"]
+    problems = []
+    seen: list[str] = []
+    for entry in entries:
+        ident = entry.get("id") if isinstance(entry, dict) else None
+        if ident not in reference_ids:
+            problems.append(f"unknown reference id {ident!r}")
+            continue
+        if ident in seen:
+            problems.append(f"duplicate reference id {ident!r}")
+        seen.append(ident)
+        if entry.get("match") not in MATCH_WEIGHT:
+            problems.append(f"invalid match {entry.get('match')!r} for {ident}")
+    missing = [ident for ident in reference_ids if ident not in seen]
+    if missing:
+        problems.append(f"missing reference ids {missing}")
+    extra = verdict.get("extra", [])
+    if not isinstance(extra, list) or any(
+        not isinstance(item, dict) or item.get("class") not in EXTRA_CLASSES for item in extra
+    ):
+        problems.append("extra entries must each have a class of valid, nit or false_positive")
+    return problems
+
+
+def blocking_matches(
+    verdict: dict[str, Any], references: list[dict[str, Any]]
+) -> tuple[float, int]:
+    """Matched blocking references (partial counts half) and how many there are."""
+    blocking = [f["id"] for f in references if f["severity"] == "blocking"]
+    weights = {entry["id"]: MATCH_WEIGHT[entry["match"]] for entry in verdict["reference"]}
+    return sum(weights[ident] for ident in blocking), len(blocking)
+
+
 def score_review(case: dict[str, Any], results: Path, judge_spec: str) -> dict[str, Any]:
     review = candidate_review(results)
     if not review:
         return {"status": "no_review", "recall_blocking": 0.0}
     truth = case["truth"]
+    references = reference_findings(case)
     reference = "\n\n".join(
-        f"[{f['id']}] severity={f['severity']} resolved={f['resolved']}\n{f['text']}"
-        for f in truth["findings"]
+        f"[{f['id']}] severity={f['severity']}\n{f['text']}" for f in references
     )
     prompt = (
         JUDGE_PROMPT.replace("{verdict}", truth["verdict"])
         .replace("{reference}", reference or "(none: the reference approved this head)")
         .replace("{candidate}", review)
     )
-    verdict = judge(prompt, judge_spec)
-    blocking = {f["id"] for f in truth["findings"] if f["severity"] != "nonblocking"}
-    weight = {"yes": 1.0, "partial": 0.5, "no": 0.0}
-    hits = [
-        weight.get(r.get("match", "no"), 0.0) for r in verdict["reference"] if r["id"] in blocking
-    ]
-    extras = [e.get("class") for e in verdict.get("extra", [])]
+    ids = [f["id"] for f in references]
+    problems: list[str] = []
+    for _ in range(JUDGE_ATTEMPTS):
+        verdict = judge(prompt, judge_spec)
+        problems = judge_problems(verdict, ids)
+        if not problems:
+            break
+    else:
+        return {"status": "judge_invalid", "problems": problems, "judge": verdict}
+    caught, total = blocking_matches(verdict, references)
+    extras = [e["class"] for e in verdict.get("extra", [])]
     return {
         "status": "scored",
-        "recall_blocking": round(sum(hits) / len(hits), 2) if hits else None,
+        "blocking_caught": caught,
+        "blocking_total": total,
+        "recall_blocking": round(caught / total, 2) if total else None,
         "extra_valid": extras.count("valid"),
         "extra_nit": extras.count("nit"),
         "false_positives": extras.count("false_positive"),
@@ -192,7 +260,9 @@ def validation_steps(work: Path, workers: int) -> dict[str, str]:
     }
 
 
-def score_refix(case: dict[str, Any], results: Path, run_dir: Path, workers: int) -> dict[str, Any]:
+def score_refix(
+    case: dict[str, Any], results: Path, run_dir: Path, workers: int, eval_root: Path
+) -> dict[str, Any]:
     summary = json.loads((results / "summary.json").read_text(encoding="utf-8"))
     seed = json.loads((results / "seed.json").read_text(encoding="utf-8"))
     target = summary.get("main")
@@ -244,7 +314,7 @@ def score_refix(case: dict[str, Any], results: Path, run_dir: Path, workers: int
         # Hidden tests: the original PR's test files over the candidate's.
         merged = case["truth"]["merge_commit"]
         tests = [f for f in case["truth"]["files"] if f.startswith("tests/") and f.endswith(".py")]
-        source = Path.home() / "robomate-eval" / "source.git"
+        source = eval_root / "source.git"
         for path in tests:
             content = subprocess.run(
                 ["git", "-C", str(source), "show", f"{merged}:{path}"],
@@ -284,14 +354,17 @@ def main(argv: list[str] | None = None) -> None:
         "--judge", default=DEFAULT_JUDGE, help="harness:model, e.g. claude:claude-opus-5-5"
     )
     args = parser.parse_args(argv)
+    restore_interrupts()
     results = args.results.resolve()
     config = json.loads((results / "config.json").read_text(encoding="utf-8"))
     case = json.loads(Path(config["case"]).read_text(encoding="utf-8"))
-    run_dir = results.parent.parent / "runs" / results.name
+    # <eval root>/results/<run id>: the run directory and mirror sit beside it.
+    eval_root = results.parent.parent
+    run_dir = eval_root / "runs" / results.name
     if case["kind"] == "review":
         score = score_review(case, results, args.judge)
     else:
-        score = score_refix(case, results, run_dir, args.pytest_workers)
+        score = score_refix(case, results, run_dir, args.pytest_workers, eval_root)
     (results / "score.json").write_text(json.dumps(score, indent=1), encoding="utf-8")
     print(json.dumps({k: v for k, v in score.items() if k != "judge"}, indent=1))
 

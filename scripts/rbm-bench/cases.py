@@ -31,8 +31,6 @@ from typing import Any, cast
 
 REPO = "RoboNater/robomate"
 DEFAULT_EVAL_ROOT = Path.home() / "robomate-eval"
-#: A bare mirror of the repository, with GitHub's refs/pull/* (``cases.py mirror``).
-SOURCE = DEFAULT_EVAL_ROOT / "source.git"
 
 PR_QUERY = """
 query($owner: String!, $name: String!, $n: Int!) {
@@ -97,9 +95,17 @@ def gh_graphql(query: str, number: int) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(out)["data"]["repository"])
 
 
-def git(*args: str) -> str:
+def source_repo(eval_root: Path) -> Path:
+    """The eval root's bare mirror of the repository, with GitHub's refs/pull/*."""
+    return eval_root / "source.git"
+
+
+def git(eval_root: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", "-C", str(SOURCE), *args], check=True, capture_output=True, text=True
+        ["git", "-C", str(source_repo(eval_root)), *args],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
 
 
@@ -221,26 +227,26 @@ def pr_commits(pr: dict[str, Any]) -> list[dict[str, Any]]:
     return [node["commit"] for node in pr["commits"]["nodes"]]
 
 
-def branch_base(pr: dict[str, Any]) -> str:
+def branch_base(eval_root: Path, pr: dict[str, Any]) -> str:
     """The main commit the PR's first commit was made on."""
     first = pr_commits(pr)[0]
     parent = str(first["parents"]["nodes"][0]["oid"])
-    git("merge-base", "--is-ancestor", parent, "main")
+    git(eval_root, "merge-base", "--is-ancestor", parent, "main")
     return parent
 
 
-def commit_time(sha: str) -> str:
-    return git("show", "-s", "--format=%cI", sha).strip()
+def commit_time(eval_root: Path, sha: str) -> str:
+    return git(eval_root, "show", "-s", "--format=%cI", sha).strip()
 
 
-def work_start(pr: dict[str, Any]) -> str:
+def work_start(eval_root: Path, pr: dict[str, Any]) -> str:
     """When work on the PR began: its first commit's author date, in UTC.
 
     Issue bodies, comments and context issues are taken as they stood then.
     PR commits come from the mirror's ``refs/pull/<n>/head``.
     """
     first = pr_commits(pr)[0]["oid"]
-    stamp = git("show", "-s", "--format=%aI", first).strip()
+    stamp = git(eval_root, "show", "-s", "--format=%aI", first).strip()
     moment = datetime.fromisoformat(stamp).astimezone(UTC)
     return moment.isoformat().replace("+00:00", "Z")
 
@@ -275,11 +281,12 @@ def body_at(issue: dict[str, Any], when: str) -> tuple[str, str]:
 
 
 def cmd_mirror(args: argparse.Namespace) -> None:
-    if SOURCE.exists():
-        subprocess.run(["git", "-C", str(SOURCE), "remote", "update", "--prune"], check=True)
+    source = source_repo(args.eval_root)
+    if source.exists():
+        subprocess.run(["git", "-C", str(source), "remote", "update", "--prune"], check=True)
     else:
         url = f"https://github.com/{REPO}.git"
-        subprocess.run(["git", "clone", "--mirror", url, str(SOURCE)], check=True)
+        subprocess.run(["git", "clone", "--mirror", url, str(source)], check=True)
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
@@ -343,9 +350,9 @@ def cmd_refix(args: argparse.Namespace) -> None:
     if len(issues) != 1:
         raise SystemExit(f"PR #{args.pr} closes {len(issues)} issues; a re-fix case needs one")
     number = issues[0]["number"]
-    base = branch_base(pr)
-    base_time = commit_time(base)
-    cutoff = work_start(pr)
+    base = branch_base(args.eval_root, pr)
+    base_time = commit_time(args.eval_root, base)
+    cutoff = work_start(args.eval_root, pr)
     issue = load_issue(args.eval_root, number)
     body, source = body_at(issue, cutoff)
     merged = pr["mergeCommit"]["oid"]
@@ -366,16 +373,47 @@ def cmd_refix(args: argparse.Namespace) -> None:
         "base_time": base_time,
         "work_start": cutoff,
         "context_issues": related_issues(
-            args.eval_root, body + "\n" + (git("show", f"{base}:AGENTS.md")), cutoff, {number}
+            args.eval_root,
+            body + "\n" + (git(args.eval_root, "show", f"{base}:AGENTS.md")),
+            cutoff,
+            {number},
         ),
         "truth": {
             "merge_commit": merged,
-            "diff_stat": git("diff", "--stat", base, merged).splitlines()[-1].strip(),
-            "files": git("diff", "--name-only", base, merged).split(),
+            "diff_stat": git(args.eval_root, "diff", "--stat", base, merged)
+            .splitlines()[-1]
+            .strip(),
+            "files": git(args.eval_root, "diff", "--name-only", base, merged).split(),
             "review_rounds": len(reviews(pr)),
         },
     }
     save_case(args.eval_root, case)
+
+
+def curated(found: list[dict[str, Any]], overrides: list[str]) -> list[dict[str, Any]]:
+    """Findings with ``--severity ID=blocking|nonblocking`` applied.
+
+    Only resolved findings are reference. The parsed severity is a heuristic
+    over free-form review text, so a resolved finding whose severity it could
+    not tell must be classified by hand before the case is written.
+    """
+    severity: dict[str, str] = {}
+    for item in overrides:
+        ident, _, value = item.partition("=")
+        if value not in ("blocking", "nonblocking"):
+            raise SystemExit(f"--severity {item!r}: expected ID=blocking or ID=nonblocking")
+        severity[ident] = value
+    ids = {f["id"] for f in found}
+    if unknown := sorted(set(severity) - ids):
+        raise SystemExit(f"--severity names findings this round did not raise: {unknown}")
+    result = [f | {"severity": severity.get(f["id"], f["severity"])} for f in found]
+    unclear = [f["id"] for f in result if f["resolved"] and f["severity"] == "unknown"]
+    if unclear:
+        raise SystemExit(
+            f"severity unclear for resolved finding(s) {', '.join(unclear)}; read the review "
+            "and pass --severity ID=blocking|nonblocking for each"
+        )
+    return result
 
 
 def cmd_review(args: argparse.Namespace) -> None:
@@ -389,11 +427,11 @@ def cmd_review(args: argparse.Namespace) -> None:
     if review["head"] not in shas:
         raise SystemExit(f"reviewed head {review['head']} is not a PR commit")
     upto = commits[: shas.index(review["head"]) + 1]
-    base = branch_base(pr)
+    base = branch_base(args.eval_root, pr)
     issues = pr["closingIssuesReferences"]["nodes"]
     number = issues[0]["number"] if issues else None
-    base_time = commit_time(base)
-    cutoff = work_start(pr)
+    base_time = commit_time(args.eval_root, base)
+    cutoff = work_start(args.eval_root, pr)
     issue = load_issue(args.eval_root, number) if number else None
     body, source = body_at(issue, cutoff) if issue else ("", "")
     case = {
@@ -425,13 +463,13 @@ def cmd_review(args: argparse.Namespace) -> None:
             + "\n"
             + body_at(pr, review["created_at"])[0]
             + "\n"
-            + git("show", f"{base}:AGENTS.md"),
+            + git(args.eval_root, "show", f"{base}:AGENTS.md"),
             cutoff,
             {number} if number else set(),
         ),
         "truth": {
             "verdict": review["verdict"],
-            "findings": review["findings"],
+            "findings": curated(review["findings"], args.severity),
             "later_rounds": len(rounds) - args.round,
         },
     }
@@ -451,6 +489,13 @@ def main(argv: list[str] | None = None) -> None:
     review = sub.add_parser("review")
     review.add_argument("pr", type=int)
     review.add_argument("round", type=int)
+    review.add_argument(
+        "--severity",
+        action="append",
+        default=[],
+        metavar="ID=blocking|nonblocking",
+        help="classify a finding whose severity the parser could not tell (repeatable)",
+    )
     args = parser.parse_args(argv)
     {
         "mirror": cmd_mirror,
