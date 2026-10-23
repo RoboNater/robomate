@@ -4597,10 +4597,11 @@ def test_interactive_launch_controls_execute_verbatim(
         for action, lines in (("ask", ask), ("start", start), ("resume", resume)):
             script = run / f"controls-{action}.{'ps1' if powershell else 'sh'}"
             script.write_text(PREPARE_RUN.start_script(lines, powershell))
-            help_result = execute_ask(script, env, "--help")
-            assert help_result.returncode == 0, help_result.stdout + help_result.stderr
-            assert "--harness-args" in help_result.stdout
-            assert "prompting defaults" in help_result.stdout
+            for help_flag in ("--help", "-h"):
+                help_result = execute_ask(script, env, help_flag)
+                assert help_result.returncode == 0, help_result.stdout + help_result.stderr
+                assert "--harness-args" in help_result.stdout
+                assert "prompting defaults" in help_result.stdout
             for safe in (False, True):
                 controls = ["--safe-mode"] if safe else []
                 if action == "ask":

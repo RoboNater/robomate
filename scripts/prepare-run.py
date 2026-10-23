@@ -1804,10 +1804,10 @@ def recovery_arguments(powershell: bool) -> list[str]:
     if powershell:
         return [
             "$ResumeArgs = @($args)",
-            "if ($ResumeArgs.Count -gt 0 -and -not $ResumeArgs[0].StartsWith('--')) { "
+            "if ($ResumeArgs.Count -gt 0 -and -not $ResumeArgs[0].StartsWith('-')) { "
             "$ResumeArgs = @('--resume-session') + $ResumeArgs }",
         ]
-    return ['if [ $# -gt 0 ] && [[ "$1" != --* ]]; then set -- --resume-session "$@"; fi']
+    return ['if [ $# -gt 0 ] && [[ "$1" != -* ]]; then set -- --resume-session "$@"; fi']
 
 
 def interactive_recovery_lines(
