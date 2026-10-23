@@ -267,6 +267,11 @@ class TaskRecord:
     run_id: str | None = None
     # The statement this run was started from, if any.
     statement_sha256: str | None = None
+    # Transient redelivery marker (#326): True only when `await_assignment`
+    # returns a task the caller already holds. Never persisted; `_task()`
+    # always reads False and `get_state()` omits it. Additive metadata, so
+    # wire `hub.schema_version` stays 1 (mvp-spec §3).
+    already_held: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1131,6 +1136,8 @@ class HubStore:
                 ).fetchall():
                     summary = asdict(_task(row))
                     summary.pop("instructions")
+                    # Transient redelivery marker (#326): never persisted.
+                    summary.pop("already_held", None)
                     tasks.append(summary)
                 previous_run = self._previous_run_summary(connection)
             elif queue:
@@ -1162,6 +1169,8 @@ class HubStore:
                     ).fetchall():
                         summary = asdict(_task(row))
                         summary.pop("instructions")
+                        # Transient redelivery marker (#326): never persisted.
+                        summary.pop("already_held", None)
                         tasks.append(summary)
                     previous_run = self._previous_run_summary(
                         connection, exclude_id=str(recent["id"])
@@ -2445,7 +2454,7 @@ class HubStore:
                         )
                     return (row["response_json"], False)
 
-            task = self._require_open_task(connection, task_id)
+            task = self._require_open_task_for_worker(connection, task_id, agent)
             record = self._require_agent(connection, agent)
             self._add_message(
                 connection,
@@ -2495,7 +2504,7 @@ class HubStore:
         """
 
         with database(self.path) as connection:
-            task = self._require_open_task(connection, task_id)
+            task = self._require_open_task_for_worker(connection, task_id, agent)
             record = self._require_agent(connection, agent)
             asked = self._asked_question(connection, task.id, sent_as)
             if asked is not None:
@@ -2756,7 +2765,7 @@ class HubStore:
                         )
                     return (row["response_json"], False)
 
-            task = self._require_open_task(connection, task_id)
+            task = self._require_open_task_for_worker(connection, task_id, agent)
             record = self._require_agent(connection, agent)
             self._add_message(
                 connection,
@@ -2838,6 +2847,30 @@ class HubStore:
         if task.state in TERMINAL_STATES:
             raise ConflictError(f"task {task_id} is already {task.state.value}")
         return task
+
+    def _require_open_task_for_worker(
+        self, connection: Connection, task_id: str, agent_name: str
+    ) -> TaskRecord:
+        """Like `_require_open_task` but names what the caller still holds (#326).
+
+        Only the caller's own `current_task_id` is ever named: no counts or
+        lists of other workers' tasks.
+        """
+
+        task = self._require_task(connection, task_id)
+        if task.state not in TERMINAL_STATES:
+            return task
+        base = f"task {task_id} is already {task.state.value}"
+        row = connection.execute(
+            "SELECT current_task_id FROM agent WHERE name = ?", (agent_name,)
+        ).fetchone()
+        held_id = self._open_task_id(connection, row["current_task_id"] if row else None)
+        if held_id is None or held_id == task_id:
+            raise ConflictError(f"{base}. You hold no open task; call await_assignment")
+        held = self._require_task(connection, held_id)
+        raise ConflictError(
+            f'{base}. You hold open task {held.id} ("{held.title}"); use that task_id'
+        )
 
     def _task_context_id(self, connection: Connection, task: TaskRecord) -> str:
         if task.assignee is None:
@@ -3115,10 +3148,32 @@ class HubStore:
                 "SELECT * FROM task WHERE assignee = ? AND state = ? ORDER BY rowid LIMIT 1",
                 (name, TaskState.SUBMITTED.value),
             ).fetchone()
-            if row is None:
+            if row is not None:
+                self._set_state(connection, row["id"], TaskState.WORKING)
+                return self._require_task(connection, row["id"])
+            # No new work: a worker that lost track of its open task waits
+            # forever without this (#326). Return the task it already holds,
+            # marked as a redelivery, instead of timing out. No state or lease
+            # change: the heartbeat still owns renewal and `worker_hold`
+            # still exempts the surrounding wait.
+            held_id = self._open_task_id(connection, agent.current_task_id)
+            if held_id is None:
                 return None
-            self._set_state(connection, row["id"], TaskState.WORKING)
-            return self._require_task(connection, row["id"])
+            held = self._require_task(connection, held_id)
+            if held.assignee != name:
+                return None
+            if held.state not in (
+                TaskState.WORKING,
+                TaskState.INPUT_REQUIRED,
+                TaskState.SUBMITTED,
+            ):
+                return None
+            if held.state is TaskState.SUBMITTED:
+                # Assigned but never claimed (e.g. a crash between assign and
+                # claim): claim it now as new work, not a redelivery.
+                self._set_state(connection, held.id, TaskState.WORKING)
+                return self._require_task(connection, held.id)
+            return replace(held, already_held=True)
 
     async def await_reply(
         self, task_id: str, after_message_id: int, timeout_s: float

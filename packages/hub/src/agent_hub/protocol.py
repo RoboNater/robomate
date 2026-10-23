@@ -396,6 +396,11 @@ def _task_object(
         run_identity[MetaKeys.RUN_ID] = record.run_id
     if record.statement_sha256 is not None:
         run_identity[MetaKeys.STATEMENT_SHA256] = record.statement_sha256
+    # Redelivery marker (#326): additive metadata, so wire `hub.schema_version`
+    # stays 1 (mvp-spec §3). Only present when true, so older clients ignore it.
+    redelivery: dict[str, Any] = (
+        {MetaKeys.ALREADY_HELD: True} if getattr(record, "already_held", False) else {}
+    )
     if status_message is None:
         status_message = _agent_message(
             record.instructions,
@@ -407,7 +412,8 @@ def _task_object(
                 MetaKeys.TITLE: record.title,
             }
             | bound_head
-            | run_identity,
+            | run_identity
+            | redelivery,
         )
     return Task(
         id=record.id,
@@ -427,7 +433,8 @@ def _task_object(
             MetaKeys.RESULT: record.result,
         }
         | bound_head
-        | run_identity,
+        | run_identity
+        | redelivery,
     )
 
 
