@@ -1,5 +1,6 @@
 """Repository discovery and atomic local metadata."""
 
+import errno
 import json
 import os
 import re
@@ -1138,3 +1139,58 @@ def test_unrelated_nonempty_root_and_foreign_record_are_still_refused(
     )
     with pytest.raises(DiscoveryError, match="belongs to the repository"):
         check_worktree_root(root, common)
+
+
+def test_check_reconciles_record_published_between_read_and_iterdir(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#327 r1-1: a same-repo publish between read(None) and iterdir must not refuse."""
+
+    from unittest.mock import patch as mock_patch
+
+    import agent_hub_common.discovery as d
+
+    common = repository / ".git"
+    root = tmp_path / "repo.robomate"
+    root.mkdir()
+    original_read = d.read_root_record
+
+    def interleaved_read(path: Path) -> dict[str, Any] | None:
+        record = original_read(path)
+        if record is None:
+            # Another legitimate claimant publishes after this caller's read,
+            # before its directory enumeration.
+            with mock_patch.object(d, "read_root_record", original_read):
+                d.claim_worktree_root(root, common)
+        return record
+
+    monkeypatch.setattr(d, "read_root_record", interleaved_read)
+    # Without reconciliation this raises the unrelated-root refusal while the
+    # final record is valid and same-repo; with it, the claim succeeds.
+    d.claim_worktree_root(root, common)
+    assert original_read(root) == {"git_common_dir": str(common)}
+    assert d.check_worktree_root(root, common) is True
+
+
+def test_claim_fails_explicitly_without_hardlink_support(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#327 r1-2: no silent non-atomic fallback; explicit failure, nothing partial."""
+
+    import agent_hub_common.discovery as d
+
+    common = repository / ".git"
+    root = tmp_path / "repo.robomate"
+
+    def no_link(src: object, dst: object) -> None:
+        raise OSError(errno.EOPNOTSUPP, "no links")
+
+    monkeypatch.setattr("agent_hub_common.discovery.os.link", no_link)
+    with pytest.raises(DiscoveryError, match="hard links are not supported"):
+        d.claim_worktree_root(root, common)
+    # Nothing partial is left behind: readers see missing, not empty/corrupt,
+    # and the empty root is claimable (False), not an unrelated refusal.
+    assert d.read_root_record(root) is None
+    assert d.check_worktree_root(root, common) is False
+    assert [p.name for p in root.iterdir()] == []
+    assert list(root.parent.glob(".robomate-root-*")) == []

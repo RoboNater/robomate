@@ -715,12 +715,21 @@ def check_worktree_root(root: Path, common: Path) -> bool:
     record = read_root_record(root)
     if record is None:
         if any(root.iterdir()):
-            raise DiscoveryError(
-                f"the worktree root {root} holds files but no {ROOT_RECORD_FILENAME}, "
-                f"so it is not known to belong to {repository_dir(common)}; {advice}, "
-                "or move what it holds away"
-            )
-        return False
+            # Another legitimate claimant may have published a complete record
+            # between the read above and this enumeration: reconcile ownership
+            # before refusing a nonempty directory as unrelated (review r1-1,
+            # #327). The re-read observes the now-published record when that
+            # is what happened; a still-missing record stays unrelated, and a
+            # foreign record is refused below as before.
+            record = read_root_record(root)
+            if record is None:
+                raise DiscoveryError(
+                    f"the worktree root {root} holds files but no {ROOT_RECORD_FILENAME}, "
+                    f"so it is not known to belong to {repository_dir(common)}; {advice}, "
+                    "or move what it holds away"
+                )
+        else:
+            return False
     recorded = record.get("git_common_dir")
     if not isinstance(recorded, str) or not _same_path(Path(recorded), common):
         raise DiscoveryError(
@@ -739,6 +748,10 @@ def claim_worktree_root(root: Path, common: Path) -> None:
     empty or partially-written file. Two hubs of one repository racing here
     publish identical content; the loser observes the winner's record via the
     trailing check. A root of another repository is still refused.
+
+    When the filesystem cannot hard-link, publication fails explicitly
+    instead of falling back to a non-atomic exclusive create, which would
+    re-expose the empty/partial-record startup failure (review r1-2, #327).
     """
 
     if check_worktree_root(root, common):
@@ -761,19 +774,16 @@ def claim_worktree_root(root: Path, common: Path) -> None:
             # A sibling hub published first (same or another repository);
             # compare below.
             pass
-        except OSError:
-            # Filesystems without hard-link support (or cross-device temp):
-            # fall back to exclusive creation, which still claims exactly once.
-            # The content is already complete in `temporary`, so copy it in one
-            # go rather than exposing an empty file.
-            try:
-                with (
-                    (root / ROOT_RECORD_FILENAME).open("x", encoding="utf-8") as stream,
-                    open(temporary, encoding="utf-8") as source,
-                ):
-                    stream.write(source.read())
-            except FileExistsError:
-                pass
+        except OSError as exc:
+            # No silent non-atomic fallback: opening the final name with "x"
+            # and copying would expose an empty/partial record to concurrent
+            # readers. Fail explicitly so the operator knows this filesystem
+            # cannot publish the ownership record atomically (review r1-2).
+            raise DiscoveryError(
+                f"cannot publish the worktree root record in {root}: "
+                f"hard links are not supported here ({exc}); "
+                "use a filesystem with hard-link support for the worktree root"
+            ) from exc
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temporary)
