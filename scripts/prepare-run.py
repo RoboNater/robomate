@@ -77,6 +77,7 @@ from agent_hub.store import HubStore
 from agent_hub_common import MAX_STATEMENT_BYTES
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from agent_interactive import quote_powershell  # noqa: E402
 from denise import render as render_denise  # noqa: E402
 from denise import resolve_settings as resolve_denise_settings  # noqa: E402
 from run_common import (  # noqa: E402
@@ -823,7 +824,7 @@ def shell_word(value: str, powershell: bool = False) -> str:
     """
     if not powershell:
         return shlex.quote(value)
-    return value if re.fullmatch(r"[\w.-]+", value) else "'" + value.replace("'", "''") + "'"
+    return value if re.fullmatch(r"[\w.-]+", value) else quote_powershell(value)
 
 
 def auto_start_instruction(prompt: str, powershell: bool = False) -> str:

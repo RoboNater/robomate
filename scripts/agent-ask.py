@@ -15,7 +15,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
-from agent_interactive import add_commands, launch_command, split_arguments
+from agent_interactive import add_commands, add_launch_controls, launch_command, split_arguments
 from agent_sessions import exact_id
 
 
@@ -132,10 +132,12 @@ def main() -> int:
     words = sys.argv[1:]
     boundary = words.index("--") if "--" in words else len(words)
     args = parser.parse_args(words[:boundary])
-    options = argparse.ArgumentParser(description="Ask this agent questions; no hub is needed")
+    options = argparse.ArgumentParser(
+        description="Ask this agent questions; no hub is needed", allow_abbrev=False
+    )
     options.add_argument("conversation_id", nargs="?")
     options.add_argument("--fork", action="store_true", help="ask in a new conversation")
-    options.add_argument("--safe-mode", action="store_true")
+    add_launch_controls(options)
     option_words, extra = split_arguments(words[boundary + 1 :])
     controls = options.parse_intermixed_args(option_words)
     try:

@@ -23,16 +23,39 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--safe-shell-command")
 
 
+def add_launch_controls(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--safe-mode", action="store_true", help="restore prompting defaults for this launch"
+    )
+    parser.add_argument(
+        "--harness-args",
+        nargs=argparse.REMAINDER,
+        metavar="WORD",
+        help="pass every following word verbatim to the harness; "
+        "put wrapper controls and IDs before this marker",
+    )
+
+
+def quote_powershell(word: str) -> str:
+    """Escape every PowerShell single-quote delimiter inside a literal string."""
+    escaped = "".join(
+        character * 2 if character in "'\u2018\u2019\u201a\u201b" else character
+        for character in word
+    )
+    return "'" + escaped + "'"
+
+
 def shell_argv(command: str, powershell: bool) -> list[str]:
     if powershell:
         shell = shutil.which("pwsh") or shutil.which("powershell")
         if shell is None:
             raise OSError("PowerShell is unavailable")
         return [shell, "-NoProfile", "-Command", command + "\nexit $LASTEXITCODE"]
-    shell = shutil.which("bash")
-    if shell is None:
-        raise OSError("Bash is unavailable")
-    return [shell, "-c", command]
+    # Recovery imports split_arguments from this module. Resolve only at launch
+    # time so both paths share its existing native-Windows/WSL guard.
+    from agent_recovery import bash_executable
+
+    return [bash_executable(), "-c", command]
 
 
 def launch_command(
@@ -55,7 +78,7 @@ def launch_command(
         raise ValueError("Regenerate this script to use --harness-args")
 
     def quote(word: str) -> str:
-        return "'" + word.replace("'", "''") + "'" if powershell else shlex.quote(word)
+        return quote_powershell(word) if powershell else shlex.quote(word)
 
     command = command.replace(ARGUMENT_SLOT, " ".join(map(quote, harness_args)))
     mode = "safe-mode (prompting defaults)" if safe_mode else "run permissions"

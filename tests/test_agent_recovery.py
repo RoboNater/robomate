@@ -776,3 +776,37 @@ def test_launcher_exit_row_pins_workflow_seen_during_run(tmp_path: Path) -> None
     launcher.interrupted = False
     launcher.refresh_workflow_id_best_effort()
     assert launcher.workflow_id == "wf-1"
+
+
+def test_interactive_launch_keeps_windows_git_bash_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive = importlib.import_module("agent_interactive")
+    git = tmp_path / "Git/cmd/git.exe"
+    git.parent.mkdir(parents=True)
+    git.touch()
+    bash = tmp_path / "Git/bin/bash.exe"
+    bash.parent.mkdir(parents=True)
+    bash.touch()
+    wsl = tmp_path / "Windows/System32/bash.exe"
+    monkeypatch.setattr(RECOVERY.shutil, "which", lambda name: str(git if name == "git" else wsl))
+    resolver = RECOVERY.bash_executable
+    monkeypatch.setattr(RECOVERY, "bash_executable", lambda: resolver(windows=True))
+    argv = interactive.launch_command("harness", None, False, [], False)
+    assert argv == [str(bash), "-c", "harness"]
+    bash.unlink()
+    with pytest.raises(OSError, match="Git Bash is unavailable"):
+        interactive.launch_command("harness", None, False, [], False)
+
+
+def test_interactive_powershell_quotes_all_single_quote_delimiters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive = importlib.import_module("agent_interactive")
+    monkeypatch.setattr(interactive.shutil, "which", lambda _: "pwsh")
+    word = "don't ‘x’ ‚x‛"
+    argv = interactive.launch_command(
+        "harness __ROBOMATE_HARNESS_ARGS__", None, False, [word], True
+    )
+    assert argv[-1] == "harness 'don''t ‘‘x’’ ‚‚x‛‛'\nexit $LASTEXITCODE"

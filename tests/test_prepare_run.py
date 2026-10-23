@@ -3664,6 +3664,15 @@ def ask_fake(tmp_path: Path, harness: str) -> dict[str, str]:
     name = CLI_NAMES[harness]
     if os.name == "nt":
         (bin_dir / f"{name}.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
+        # The Bash execution matrix needs a Git Bash entry point alongside .cmd.
+        (bin_dir / name).write_text(
+            "#!/bin/bash\nexec "
+            + shlex.quote(Path(sys.executable).as_posix())
+            + " "
+            + shlex.quote(fake.as_posix())
+            + ' "$@"\n',
+            encoding="utf-8",
+        )
     else:
         cli = bin_dir / name
         cli.write_text(f"#!{sys.executable}\n{ASK_FAKE}")
@@ -3704,7 +3713,8 @@ def execute_ask(script: Path, env: dict[str, str], *args: str) -> subprocess.Com
         assert shell
         command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
     else:
-        command = ["bash", str(script)]
+        shell = importlib.import_module("agent_recovery").bash_executable()
+        command = [shell, PREPARE_RUN.git_bash_path(script)]
     return subprocess.run(command + list(args), env=env, capture_output=True, text=True, timeout=30)
 
 
@@ -4518,7 +4528,7 @@ def test_interactive_launch_controls_execute_verbatim(
     conversation = (
         "ses_exact123" if harness == "opencode" else "11111111-1111-1111-1111-111111111111"
     )
-    extra = ["--opaque", "a b", "-dash", "literal$HOME`x`'q", "--safe-mode"]
+    extra = ["--opaque", "a b", "-dash", "literal$HOME`x`'q", "don’t ‘x’ ‚x‛", "--safe-mode"]
     with stub_hub("active") as url:
         run, _ = prepare(
             tmp_path,
@@ -4587,6 +4597,10 @@ def test_interactive_launch_controls_execute_verbatim(
         for action, lines in (("ask", ask), ("start", start), ("resume", resume)):
             script = run / f"controls-{action}.{'ps1' if powershell else 'sh'}"
             script.write_text(PREPARE_RUN.start_script(lines, powershell))
+            help_result = execute_ask(script, env, "--help")
+            assert help_result.returncode == 0, help_result.stdout + help_result.stderr
+            assert "--harness-args" in help_result.stdout
+            assert "prompting defaults" in help_result.stdout
             for safe in (False, True):
                 controls = ["--safe-mode"] if safe else []
                 if action == "ask":
@@ -4706,3 +4720,7 @@ def test_interactive_safe_mode_keeps_permission_like_path_text(
     recorded = json.loads(Path(env["ASK_ARGV_LOG"]).read_text())
     assert Path(recorded["cwd"]).resolve() == workdir.resolve()
     assert_permission_mode(recorded, harness, True)
+
+
+def test_powershell_shell_word_preserves_typographic_single_quotes() -> None:
+    assert PREPARE_RUN.shell_word("C:/don’t ‘x’ ‚x‛", True) == "'C:/don’’t ‘‘x’’ ‚‚x‛‛'"

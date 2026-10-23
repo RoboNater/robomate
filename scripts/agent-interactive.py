@@ -7,7 +7,7 @@ import argparse
 import subprocess
 import sys
 
-from agent_interactive import add_commands, launch_command, split_arguments
+from agent_interactive import add_commands, add_launch_controls, launch_command, split_arguments
 
 
 def main() -> int:
@@ -18,8 +18,8 @@ def main() -> int:
     words = sys.argv[1:]
     boundary = words.index("--") if "--" in words else len(words)
     args = parser.parse_args(words[:boundary])
-    controls = argparse.ArgumentParser(description=__doc__)
-    controls.add_argument("--safe-mode", action="store_true")
+    controls = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    add_launch_controls(controls)
     options, extra = split_arguments(words[boundary + 1 :])
     selected = controls.parse_args(options)
     try:

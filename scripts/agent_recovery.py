@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_interactive import split_arguments
+from agent_interactive import add_launch_controls, split_arguments
 from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log_session, say
 from agent_sessions import exact_id as exact_id
 
@@ -97,11 +97,11 @@ def split_controls(
         else len(words)
     )
     parser = argparse.ArgumentParser(
-        description="Resume this saved agent run; no arguments needed."
+        description="Resume this saved agent run; no arguments needed.", allow_abbrev=False
     )
     add_options(parser, public=True)
     if interactive:
-        parser.add_argument("--safe-mode", action="store_true")
+        add_launch_controls(parser)
         parser.add_argument("conversation_id", nargs="?")
         option_words, extra = split_arguments(words[start + 1 : end])
         if "--" in option_words:
