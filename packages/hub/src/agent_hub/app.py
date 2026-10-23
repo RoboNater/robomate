@@ -103,7 +103,15 @@ def create_app(
         default_event_lease_s=resolved.event_lease_s,
         state_dir=resolved.state_dir,
     )
-    protocol = A2AProtocol(store=store, settings=resolved)
+    from .worktrees import WorktreeManager
+
+    worktree_manager = WorktreeManager.from_hub_info(
+        hub_info,
+        state_dir=resolved.state_dir,
+        token_file=resolved.token_file,
+        worktree_root=config_layers.worktree_root,
+    )
+    protocol = A2AProtocol(store=store, settings=resolved, worktree_manager=worktree_manager)
     orchestrator = OrchestratorOps(store, select_gate(hub_info))
     accounting = CallAccounting(
         resolved.database_path,
@@ -116,6 +124,7 @@ def create_app(
         shutdown=shutdown,
         accounting=accounting,
         guides_dir=resolved.guides_dir,
+        worktree_manager=worktree_manager,
     )
 
     @asynccontextmanager

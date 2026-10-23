@@ -237,6 +237,8 @@ def test_get_state_shows_each_workers_profile(store: HubStore) -> None:
         "effort_source": "unknown",
         "capabilities": ["python"],
         "workspace_id": None,
+        "workspace_path": None,
+        "workspace_kind": None,
         "declared_model": "unknown",
         # A direct store call has no connection, so nothing was observed.
         "checkin_remote_addr": None,

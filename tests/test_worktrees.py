@@ -1,0 +1,552 @@
+"""M2 Step 7a (#244): worktrees created at join, reused per (hub, agent).
+
+The hub runs `git worktree add --detach <root>/<hub>/<agent>/ origin/<default>`
+at join, writes the agent binding into the worktree's own git directory, and
+locks the worktree with the hub's reason. A second join reuses it. The
+orchestrator gets one the same way. An explicit `HUB_WORKSPACE` creates no
+worktree and keeps its full-clone check; an explicit workspace with no matching
+identity is refused, while the bridge-cwd fallback stays lenient (r2-2).
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import uuid
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from agent_hub import create_app
+from agent_hub.database import SCHEMA_VERSION, database, initialize_database
+from agent_hub.store import HubStore
+from agent_hub.worktrees import (
+    WorktreeError,
+    WorktreeManager,
+    worktree_lock_reason,
+)
+from agent_hub_common import (
+    SCHEMA_VERSION as WIRE_SCHEMA_VERSION,
+)
+from agent_hub_common import (
+    AgentProfile,
+    HubSettings,
+    MetaKeys,
+)
+from agent_hub_common.discovery import (
+    checkout_git_dir,
+    plan_hub_placement,
+    read_binding,
+    resolve_repository,
+)
+from conftest import BASE_URL, CALLER_HEADERS, TOKEN, message, rpc
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def make_repo(tmp_path: Path, name: str = "repo") -> Path:
+    """A git repo with a commit and an origin/<default> ref for worktree adds."""
+
+    root = tmp_path / name
+    root.mkdir(parents=True)
+    _git(root, "init", "-b", "main")
+    _git(root, "remote", "add", "origin", "git@github.com:example/repo.git")
+    _git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(
+        root,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "start",
+    )
+    _git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return root
+
+
+def make_manager(
+    root: Path, tmp_path: Path, hub: str = "repo", agent: str = "bob"
+) -> tuple[WorktreeManager, Path, Path]:
+    repo = resolve_repository(root)
+    from agent_hub_common.config_layers import load_config_layers
+    from agent_hub_common.discovery import claim_worktree_root
+
+    layered = load_config_layers(git_common_dir=repo.git_common_dir)
+    assert layered.worktree_root is not None
+    claim_worktree_root(layered.worktree_root, repo.git_common_dir)
+    state, token = (
+        layered.worktree_root / hub / "state",
+        layered.worktree_root / hub / "token" / "token",
+    )
+    state.mkdir(parents=True, exist_ok=True)
+    token.parent.mkdir(parents=True, exist_ok=True)
+    manager = WorktreeManager(
+        hub_id=f"hub-{hub}",
+        hub_name=hub,
+        checkout=repo.root,
+        git_common_dir=repo.git_common_dir,
+        default_branch=repo.default_branch,
+        worktree_root=layered.worktree_root,
+        state_dir=state,
+        token_file=token,
+    )
+    return manager, layered.worktree_root, repo.git_common_dir
+
+
+def test_join_creates_detached_locked_worktree_with_binding_and_reuses(
+    tmp_path: Path,
+) -> None:
+    """Plan Step 7a: create at origin/<default>, lock, bind, reuse per (hub, agent)."""
+
+    root = make_repo(tmp_path)
+    manager, worktree_root, common = make_manager(root, tmp_path)
+    path, workspace_id = manager.ensure("bob")
+    assert path == worktree_root / "repo" / "bob"
+    assert path.is_dir()
+    assert len(workspace_id) == 64 and all(c in "0123456789abcdef" for c in workspace_id)
+    # Detached at origin/main, locked with the hub's reason.
+    listing = subprocess.run(
+        ["git", f"--git-dir={common}", "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert f"worktree {path}" in listing
+    assert "detached" in listing
+    assert worktree_lock_reason("repo") in listing
+    # Agent binding in the worktree's own git directory, with the workspace id.
+    binding = read_binding(checkout_git_dir(path))
+    assert binding is not None
+    assert binding.role == "agent" and binding.agent == "bob"
+    assert binding.hub_id == "hub-repo" and binding.workspace_id == workspace_id
+    # A second join reuses the same worktree and identity.
+    again_path, again_id = manager.ensure("bob")
+    assert (again_path, again_id) == (path, workspace_id)
+
+
+def test_up_in_agent_worktree_is_refused_naming_the_hub(tmp_path: Path) -> None:
+    """Spec §4: `up` runs in the owning checkout, never in an agent's worktree."""
+
+    root = make_repo(tmp_path)
+    manager, _, _ = make_manager(root, tmp_path)
+    path, _ = manager.ensure("bob")
+    repo = resolve_repository(path)
+    with pytest.raises(Exception, match="hub repo.*agent 'bob'|agent.*bob"):
+        plan_hub_placement(repo, None)
+
+
+def test_state_and_token_are_refused_as_agent_names(tmp_path: Path) -> None:
+    root = make_repo(tmp_path)
+    manager, _, _ = make_manager(root, tmp_path)
+    for reserved in ("state", "token"):
+        with pytest.raises(WorktreeError, match="reserved"):
+            manager.ensure(reserved)
+
+
+def test_two_hubs_of_one_repository_create_worktrees_without_collision(
+    tmp_path: Path,
+) -> None:
+    root = make_repo(tmp_path)
+    first, worktree_root, _ = make_manager(root, tmp_path, hub="repo")
+    second, _, _ = make_manager(root, tmp_path, hub="other")
+    # Same agent name under two hub namespaces: distinct paths, both locked.
+    first_path, first_id = first.ensure("bob")
+    second_path, second_id = second.ensure("bob")
+    assert first_path != second_path
+    assert first_path == worktree_root / "repo" / "bob"
+    assert second_path == worktree_root / "other" / "bob"
+    assert first_id != second_id
+    assert first_path.is_dir() and second_path.is_dir()
+
+
+def _hub_app_with_repo(
+    tmp_path: Path, hub: str = "repo"
+) -> tuple[Any, HubStore, Path, Path, dict[str, Any]]:
+    """An app whose hub knows its repository, so joins create worktrees."""
+
+    root = make_repo(tmp_path / "app" / hub)
+    repo = resolve_repository(root)
+    from agent_hub_common.config_layers import load_config_layers
+    from agent_hub_common.discovery import claim_worktree_root
+
+    layered = load_config_layers(git_common_dir=repo.git_common_dir)
+    assert layered.worktree_root is not None
+    claim_worktree_root(layered.worktree_root, repo.git_common_dir)
+    state = layered.worktree_root / hub / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    settings = HubSettings(
+        host="127.0.0.1",
+        port=8420,
+        public_url="http://hub.example:8420",
+        state_dir=state,
+        database_path=state / "hub.db",
+        token=TOKEN,
+        token_file=layered.worktree_root / hub / "token" / "token",
+        guides_dir=tmp_path / "guides",
+        default_wait_s=0.2,
+        max_wait_s=1.0,
+        lost_after_s=60.0,
+        sweep_interval_s=3600.0,
+    )
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# Worker\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# Impl\n", encoding="utf-8")
+    (settings.guides_dir / "orchestrator.md").write_text("# Orch\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# GH\n", encoding="utf-8")
+    (settings.guides_dir / "forge" / "orchestrator-github.md").write_text(
+        "# Orch GH\n", encoding="utf-8"
+    )
+    hub_info: dict[str, Any] = {
+        "hub_id": f"hub-{hub}-{uuid.uuid4().hex[:8]}",
+        "name": hub,
+        "checkout": str(repo.root),
+        "repo_root": str(repo.root),
+        "git_common_dir": str(repo.git_common_dir),
+        "origin": repo.origin,
+        "forge": repo.forge,
+        "default_branch": repo.default_branch,
+        "url": settings.public_url,
+        "port": 8420,
+    }
+    app = create_app(settings, hub_info=hub_info)
+    store: HubStore = app.state.store
+    initialize_database(store.path)
+    store.initialize_workflow()
+    return app, store, layered.worktree_root, repo.git_common_dir, hub_info
+
+
+async def _a2a_join(
+    app: Any, name: str, role: str, *, explicit: bool = False, path: str | None = None
+) -> tuple[dict[str, Any], HubStore]:
+    store: HubStore = app.state.store
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        metadata: dict[str, Any] = {
+            MetaKeys.AGENT: name,
+            MetaKeys.STANDING_ROLE: role,
+            MetaKeys.TAKEOVER: False,
+            MetaKeys.CAPABILITIES: ["python"],
+            MetaKeys.SCHEMA_VERSION: 1,
+            MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+            MetaKeys.WORKER_INSTANCE_ID: f"{name}-instance",
+            MetaKeys.WORKSPACE_EXPLICIT: explicit,
+            MetaKeys.WORKSPACE_PATH: path or str(Path.cwd()),
+        }
+        payload = rpc("message/send", message("READY", metadata=metadata))
+        response = await client.post("/a2a", json=payload)
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        return result, store
+
+
+async def test_worker_join_creates_worktree_and_records_path_and_kind(
+    tmp_path: Path,
+) -> None:
+    app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
+    result, _ = await _a2a_join(app, "bob", "implementer")
+    meta = result.get("metadata") or {}
+    workspace_path = meta.get(MetaKeys.WORKSPACE_PATH)
+    workspace_kind = meta.get(MetaKeys.WORKSPACE_KIND)
+    workspace_id = meta.get(MetaKeys.WORKSPACE_ID)
+    assert workspace_kind == "worktree"
+    assert workspace_path == str(worktree_root / hub_info["name"] / "bob")
+    assert isinstance(workspace_id, str) and len(workspace_id) == 64
+    assert Path(str(workspace_path)).is_dir()
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    assert (agent.workspace_path, agent.workspace_kind) == (workspace_path, "worktree")
+    assert agent.workspace_id == workspace_id
+    # The porcelain listing shows the worktree locked with the hub's reason.
+    common = hub_info["git_common_dir"]
+    listing = subprocess.run(
+        ["git", f"--git-dir={common}", "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert f"worktree {workspace_path}" in listing
+    assert worktree_lock_reason(hub_info["name"]) in listing
+
+
+async def test_second_join_reuses_the_worktree(tmp_path: Path) -> None:
+    app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
+    first, _ = await _a2a_join(app, "bob", "implementer")
+    first_meta = first.get("metadata") or {}
+    # A live name without takeover is refused; with takeover it reattaches.
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        metadata: dict[str, Any] = {
+            MetaKeys.AGENT: "bob",
+            MetaKeys.STANDING_ROLE: "implementer",
+            MetaKeys.TAKEOVER: True,
+            MetaKeys.CAPABILITIES: ["python"],
+            MetaKeys.SCHEMA_VERSION: 1,
+            MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+            MetaKeys.WORKER_INSTANCE_ID: "bob-second",
+            MetaKeys.WORKSPACE_EXPLICIT: False,
+            MetaKeys.WORKSPACE_PATH: str(Path.cwd()),
+        }
+        payload = rpc("message/send", message("READY", metadata=metadata))
+        response = await client.post("/a2a", json=payload)
+        assert response.status_code == 200, response.text
+        second_meta = response.json()["result"].get("metadata") or {}
+    assert second_meta.get(MetaKeys.WORKSPACE_PATH) == first_meta.get(MetaKeys.WORKSPACE_PATH)
+    assert second_meta.get(MetaKeys.WORKSPACE_ID) == first_meta.get(MetaKeys.WORKSPACE_ID)
+
+
+async def test_orchestrator_join_creates_its_own_worktree(tmp_path: Path) -> None:
+    app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={
+                "Authorization": f"Bearer {TOKEN}",
+                **CALLER_HEADERS,
+            },
+        ) as client,
+    ):
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "join",
+            "params": {
+                "name": "alice",
+                "role": "orchestrator",
+                "takeover": False,
+                "profile": {},
+                "workspace_path": str(Path.cwd()),
+                "workspace_explicit": False,
+            },
+        }
+        response = await client.post("/rpc", json=payload)
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+    assert result["workspace_kind"] == "worktree"
+    assert result["workspace_path"] == str(worktree_root / hub_info["name"] / "alice")
+    assert isinstance(result["workspace_id"], str) and len(result["workspace_id"]) == 64
+    agent = store.agent_by_name("alice")
+    assert agent is not None
+    assert agent.standing_role.value == "orchestrator"
+    assert (agent.workspace_path, agent.workspace_kind) == (
+        result["workspace_path"],
+        "worktree",
+    )
+
+
+async def test_explicit_workspace_creates_no_worktree_and_keeps_clone(
+    tmp_path: Path,
+) -> None:
+    """An explicit HUB_WORKSPACE join records a clone and creates no worktree."""
+
+    import sys
+
+    app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
+    origin = tmp_path / "origin"
+    subprocess.run(["git", "init", "--initial-branch=main", str(origin)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(origin),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    destination = tmp_path / "bob-clone"
+    root = Path(__file__).resolve().parents[1]
+    bootstrap = (
+        [sys.executable, str(root / "scripts/bootstrap-workspace.py")]
+        if __import__("os").name == "nt"
+        else [str(root / "scripts/bootstrap-workspace.sh")]
+    )
+    out = subprocess.run(
+        [*bootstrap, "bob", str(destination), str(origin)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    identity = json.loads(out)
+    # Join with the bootstrap identity so the hub records the clone.
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        metadata: dict[str, Any] = {
+            MetaKeys.AGENT: "bob2",
+            MetaKeys.STANDING_ROLE: "implementer",
+            MetaKeys.TAKEOVER: False,
+            MetaKeys.CAPABILITIES: ["python"],
+            MetaKeys.SCHEMA_VERSION: 1,
+            MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+            MetaKeys.WORKER_INSTANCE_ID: "bob2-instance",
+            MetaKeys.WORKSPACE_ID: identity["workspace_id"],
+            MetaKeys.WORKSPACE_EXPLICIT: True,
+            MetaKeys.WORKSPACE_PATH: str(destination),
+        }
+        payload = rpc("message/send", message("READY", metadata=metadata))
+        response = await client.post("/a2a", json=payload)
+        assert response.status_code == 200, response.text
+        meta = response.json()["result"].get("metadata") or {}
+    assert meta.get(MetaKeys.WORKSPACE_KIND) == "clone"
+    assert meta.get(MetaKeys.WORKSPACE_PATH) == str(destination)
+    agent = store.agent_by_name("bob2")
+    assert agent is not None
+    assert (agent.workspace_path, agent.workspace_kind) == (str(destination), "clone")
+    # No worktree was created for the explicit clone.
+    assert not (worktree_root / hub_info["name"] / "bob2").exists()
+
+
+async def test_explicit_mismatch_is_refused_while_fallback_stays_lenient(
+    tmp_path: Path,
+) -> None:
+    app, _, _, _, _ = _hub_app_with_repo(tmp_path)
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        # Explicit with no identity: refused (r2-2).
+        refused = await client.post(
+            "/a2a",
+            json=rpc(
+                "message/send",
+                message(
+                    "READY",
+                    metadata={
+                        MetaKeys.AGENT: "bob",
+                        MetaKeys.STANDING_ROLE: "implementer",
+                        MetaKeys.TAKEOVER: False,
+                        MetaKeys.SCHEMA_VERSION: 1,
+                        MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+                        MetaKeys.WORKER_INSTANCE_ID: "bob-explicit",
+                        MetaKeys.WORKSPACE_EXPLICIT: True,
+                        MetaKeys.WORKSPACE_PATH: str(tmp_path / "missing"),
+                    },
+                ),
+            ),
+        )
+        assert refused.status_code == 200, refused.text
+        assert "error" in refused.json()
+        assert "HUB_WORKSPACE" in refused.json()["error"]["message"]
+        # Fallback with no identity: lenient, creates a worktree.
+        ok = await client.post(
+            "/a2a",
+            json=rpc(
+                "message/send",
+                message(
+                    "READY",
+                    metadata={
+                        MetaKeys.AGENT: "bob",
+                        MetaKeys.STANDING_ROLE: "implementer",
+                        MetaKeys.TAKEOVER: False,
+                        MetaKeys.SCHEMA_VERSION: 1,
+                        MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+                        MetaKeys.WORKER_INSTANCE_ID: "bob-fallback",
+                        MetaKeys.WORKSPACE_EXPLICIT: False,
+                        MetaKeys.WORKSPACE_PATH: str(Path.cwd()),
+                    },
+                ),
+            ),
+        )
+        assert ok.status_code == 200, ok.text
+        assert (ok.json()["result"].get("metadata") or {}).get(MetaKeys.WORKSPACE_KIND) == (
+            "worktree"
+        )
+
+
+def test_db_records_workspace_path_and_kind_and_rejects_other_kinds(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "hub.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow()
+    store.check_in(
+        "bob",
+        AgentProfile(),
+        standing_role="implementer",
+        worker_instance_id="i-1",
+        workspace_path="/wt/repo/bob",
+        workspace_kind="worktree",
+    )
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    assert (agent.workspace_path, agent.workspace_kind) == ("/wt/repo/bob", "worktree")
+    with pytest.raises(Exception, match="workspace_kind|CHECK|constraint"):
+        store.check_in(
+            "charlie",
+            AgentProfile(),
+            standing_role="implementer",
+            worker_instance_id="i-2",
+            workspace_path="/wt/repo/charlie",
+            workspace_kind="yurt",
+        )
+
+
+def test_migration_from_v24_leaves_workspace_path_and_kind_null(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "schema_v24.sql"
+    path = tmp_path / "v24.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(fixture.read_text(encoding="utf-8"))
+        connection.execute(
+            "INSERT INTO agent (name, status, context_id, last_seen)"
+            " VALUES ('bob', 'idle', 'ctx-bob', '2026-10-22T00:00:00Z')"
+        )
+    initialize_database(path)
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        row = connection.execute(
+            "SELECT workspace_path, workspace_kind FROM agent WHERE name = 'bob'"
+        ).fetchone()
+        assert (row["workspace_path"], row["workspace_kind"]) == (None, None)
+
+
+def test_wire_schema_version_stays_1() -> None:
+    assert WIRE_SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 25

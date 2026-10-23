@@ -437,6 +437,10 @@ class A2AProtocol:
 
     store: HubStore
     settings: HubSettings
+    # Worktree creation at join (M2 Step 7a, #244). None for hubs without a
+    # repository context (test hubs, the `hub` entry point): no worktree is
+    # created and the bridge's path is echoed.
+    worktree_manager: Any | None = None
 
     async def dispatch(self, payload: Any, remote_addr: str | None = None) -> Response:
         """Route one JSON-RPC request, turning refusals into error responses.
@@ -562,6 +566,10 @@ class A2AProtocol:
             agent_name = validate_agent_name(name.strip())
         except ValueError as exc:
             raise _invalid(str(exc)) from exc
+        # A `join` names its standing role explicitly; a legacy `check_in`
+        # leaves it out and keeps the pre-worktree clone behaviour (no
+        # worktree is ever created for it). Only joins create worktrees.
+        is_join = MetaKeys.STANDING_ROLE in metadata
         raw_role = _profile_text(metadata, MetaKeys.STANDING_ROLE) or StandingRole.WORKER.value
         try:
             standing_role = StandingRole(raw_role)
@@ -576,6 +584,49 @@ class A2AProtocol:
             raise _invalid(f"metadata.{MetaKeys.TAKEOVER} must be a boolean")
         takeover = raw_takeover
         profile = _profile(metadata)
+        # Explicit `HUB_WORKSPACE` vs the bridge-cwd fallback (r2-2 on #244):
+        # an explicit workspace with no matching identity is refused; the
+        # fallback stays lenient and gets a generated worktree.
+        raw_explicit = metadata.get(MetaKeys.WORKSPACE_EXPLICIT, False)
+        if not isinstance(raw_explicit, bool):
+            raise _invalid(f"metadata.{MetaKeys.WORKSPACE_EXPLICIT} must be a boolean")
+        workspace_explicit = raw_explicit
+        raw_path = metadata.get(MetaKeys.WORKSPACE_PATH)
+        if raw_path is not None and (not isinstance(raw_path, str) or not raw_path.strip()):
+            raise _invalid(f"metadata.{MetaKeys.WORKSPACE_PATH} must be a non-empty string")
+        reported_path = raw_path.strip() if isinstance(raw_path, str) else None
+
+        workspace_path: str | None = None
+        workspace_kind: str | None = None
+        if is_join:
+            if workspace_explicit:
+                if profile.workspace_id is None:
+                    raise _invalid(
+                        f"explicit HUB_WORKSPACE {reported_path or '(unset)'} has no matching "
+                        f"identity for agent {agent_name!r}; run scripts/bootstrap-workspace "
+                        "for that agent, or unset HUB_WORKSPACE to use a generated worktree"
+                    )
+                if reported_path is None:
+                    raise _invalid(
+                        f"explicit join for agent {agent_name!r} names no "
+                        f"metadata.{MetaKeys.WORKSPACE_PATH}"
+                    )
+                workspace_path = reported_path
+                workspace_kind = "clone"
+            elif self.worktree_manager is not None:
+                from .worktrees import WorktreeError
+
+                try:
+                    worktree_path, worktree_id = self.worktree_manager.ensure(agent_name)
+                except Exception as exc:
+                    if isinstance(exc, WorktreeError):
+                        raise _invalid(str(exc)) from exc
+                    raise
+                from dataclasses import replace
+
+                profile = replace(profile, workspace_id=worktree_id)
+                workspace_path = str(worktree_path)
+                workspace_kind = "worktree"
 
         payload_hash = _hash_payload(
             {
@@ -595,6 +646,9 @@ class A2AProtocol:
                 "effort": profile.effort,
                 "effort_source": profile.effort_source.value,
                 "workspace_id": profile.workspace_id,
+                "workspace_path": workspace_path,
+                "workspace_kind": workspace_kind,
+                "workspace_explicit": workspace_explicit,
             }
         )
 
@@ -606,6 +660,12 @@ class A2AProtocol:
                 MetaKeys.WORKER_INSTANCE_ID: agent.worker_instance_id,
                 MetaKeys.STANDING_ROLE: agent.standing_role.value,
             }
+            if agent.workspace_id is not None:
+                ack_meta[MetaKeys.WORKSPACE_ID] = agent.workspace_id
+            if agent.workspace_path is not None:
+                ack_meta[MetaKeys.WORKSPACE_PATH] = agent.workspace_path
+            if agent.workspace_kind is not None:
+                ack_meta[MetaKeys.WORKSPACE_KIND] = agent.workspace_kind
             if agent.reattached_task is not None:
                 ack_meta[MetaKeys.REATTACHED_TASK] = agent.reattached_task
             return json.dumps(
@@ -626,6 +686,8 @@ class A2AProtocol:
             payload_hash=payload_hash,
             response_builder=_build_ack,
             remote_addr=remote_addr,
+            workspace_path=workspace_path,
+            workspace_kind=workspace_kind,
         )
         note_a2a(actor=agent_name)
         response = A2AMessage.model_validate(json.loads(resp_json))
