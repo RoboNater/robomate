@@ -481,9 +481,10 @@ override remedy, while team preparation succeeds. Choosing `denise_settings_from
 explicitly, still means inheritance; only a nonempty `denise_harness` override selects an
 explicit harness, whose lack of doctor support is a preparation error. Model and effort
 values pass through the harness adapters without a new allowlist. If an effort option
-cannot be rendered for the interactive harness, a nonempty `denise_effort` override errors
-and an inherited effort skips the doctor profile with a warning. Never silently substitute
-values.
+cannot be rendered for the interactive harness, a nonempty `denise_effort` override errors.
+An inherited effort never skips Denise: preparation still generates her start script
+without the effort option, so she runs at the harness's default effort, and prints a note
+naming the inherited effort that is not applied. Never silently substitute values.
 
 **Startup context.** A short local prompt identifies the run directory and manifest,
 expected hub identity and checkout, target repository, agents and workspace locations,
