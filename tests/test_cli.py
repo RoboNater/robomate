@@ -3741,7 +3741,8 @@ def test_up_is_refused_in_a_manager_created_agent_worktree(
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {path}" in listing
+    # `git worktree list --porcelain` prints forward slashes even on Windows.
+    assert f"worktree {path.as_posix()}" in listing
     assert worktree_lock_reason("team") in listing
 
 

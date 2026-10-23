@@ -119,7 +119,9 @@ def test_join_creates_detached_locked_worktree_with_binding_and_reuses(
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {path}" in listing
+    # `git worktree list --porcelain` prints forward slashes even on Windows,
+    # while `str(Path)` uses backslashes there.
+    assert f"worktree {path.as_posix()}" in listing
     assert "detached" in listing
     assert worktree_lock_reason("repo") in listing
     # Agent binding in the worktree's own git directory, with the workspace id.
@@ -279,7 +281,8 @@ async def test_worker_join_creates_worktree_and_records_path_and_kind(
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {workspace_path}" in listing
+    # `git worktree list --porcelain` prints forward slashes even on Windows.
+    assert f"worktree {Path(str(workspace_path)).as_posix()}" in listing
     assert worktree_lock_reason(hub_info["name"]) in listing
 
 
