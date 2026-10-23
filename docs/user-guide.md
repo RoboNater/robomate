@@ -437,7 +437,7 @@ newly prepared runs; old run directories do not acquire them automatically.
 
 With no arguments, the script reads `<agent>-sessions.jsonl`, uses the latest
 recorded conversation ID, and prints other recorded IDs. An explicit ID as the
-first argument overrides discovery, including when an interactive run has no
+argument before `--harness-args` overrides discovery, including when an interactive run has no
 session log. IDs use the same exact syntax as recovery; session names, `--last`,
 and `--continue` are rejected. **Do not use Claude Code's `-c` to resume an ID**:
 it continues the most recent conversation in that directory and ignores the
@@ -446,8 +446,8 @@ intended ID. The ask script uses `--resume ID` instead.
 Before launching, the script prints the agent, harness, conversation ID, working
 directory, and that hub tools are unavailable. It restores the run's working
 directory, temporary directory, isolated harness home/config, model and effort.
-It supplies no prompt, unattended permission flags, launcher, recovery guard, or
-hub connection. Ask questions at the harness's interactive prompt. Use
+It uses the run's permission flags by default, and supplies no prompt, launcher,
+recovery guard, or hub connection. Ask questions at the harness's interactive prompt. Use
 `resume-<agent>` to continue hub work; use `ask-<agent>` after the run and after
 the original agent and launcher have exited.
 
@@ -464,11 +464,60 @@ Hub MCP suppression is specific to the harness:
 
 | Harness | Ask configuration |
 |---|---|
-| Claude Code | `--strict-mcp-config` without `--mcp-config`. |
-| Codex | Same `CODEX_HOME`, with `-c mcp_servers.robomate.enabled=false` and interactive approvals. See the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). |
-| OpenCode | Same `OPENCODE_CONFIG`, with an [inline override](https://docs.opencode.ai/docs/config/#precedence-order) disabling `mcp.robomate` and requesting permissions. Effort is preserved as the build agent's `variant`, since the interactive CLI has no `--variant` flag. |
-| AntiGravity | Same `HOME`/`USERPROFILE`; temporarily replaces the run home's `.gemini/config/mcp_config.json` with an empty server map and restores the original bytes on exit, including harness errors and ordinary interrupts. |
-| Devin CLI (prototype, #224) | Same working directory, `devin --resume ID` without `--permission-mode`; temporarily replaces the agent's `.devin/mcp_config.local.json` with a disabled `robomate` entry, which also masks a `robomate` server inherited from project or user scope (an empty map would not), restored as for AntiGravity. |
+| Claude Code | `--permission-mode auto`, with `--strict-mcp-config` without `--mcp-config`. |
+| Codex | Same `CODEX_HOME`, with `-c mcp_servers.robomate.enabled=false` and `--approve-for-me`. See the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). |
+| OpenCode | Same `OPENCODE_CONFIG`, with an [inline override](https://docs.opencode.ai/docs/config/#precedence-order) disabling `mcp.robomate`, with no permission override and `--auto` so the run config's `external_directory: allow` applies. Effort is preserved as the build agent's `variant`, since the interactive CLI has no `--variant` flag. |
+| AntiGravity | `--dangerously-skip-permissions`, same `HOME`/`USERPROFILE`; temporarily replaces the run home's `.gemini/config/mcp_config.json` with an empty server map and restores the original bytes on exit, including harness errors and ordinary interrupts. |
+| Devin CLI (prototype, #224) | Same working directory, `devin --permission-mode dangerous --respect-workspace-trust=false --resume ID`; temporarily replaces the agent's `.devin/mcp_config.local.json` with a disabled `robomate` entry, which also masks a `robomate` server inherited from project or user scope (an empty map would not), restored as for AntiGravity. |
+
+The same permission defaults apply to **every `--no-auto-start` start and resume
+script**, for Alice and workers, local and worker-only, in Bash and PowerShell.
+Windows worker-only interactive bundles include both `.sh` and `.ps1` forms.
+This changes harness access only: role-guide restrictions and operator-only
+actions still apply. Resume still runs the identity, attachment and workflow
+recovery checks before launching.
+
+All of these interactive scripts (`ask-<agent>`, `start-<agent>` and
+`resume-<agent>` with `--no-auto-start`) accept the same per-launch controls:
+
+- `--safe-mode` restores prompting defaults for this launch. Claude Code,
+  AntiGravity and Devin omit the run's permission flags (Devin also omits the
+  trust bypass). Codex uses `-a on-request`. OpenCode omits `--auto` and overrides
+  permissions with `{"*": "ask", "external_directory": "ask"}` while retaining
+  ask's MCP disable and effort variant. Other installed harness settings still
+  apply. This wrapper option is distinct from Claude Code's own `--safe-mode`.
+- `--harness-args` marks the end of wrapper controls. Every subsequent word goes
+  to the harness unchanged, in order; put the ID, `--fork`, recovery controls and
+  wrapper `--safe-mode` **before** this marker, in any order. Nothing after the
+  marker is interpreted, validated or filtered by robomate. Quote words with
+  spaces as usual in your shell. Extras follow generated options and precede
+  positional IDs or prompts; for `--resume`/`--session`/`--conversation` adapters
+  they precede that final option and its ID. Start scripts append extras after
+  generated flags. Resume passes them through `agent-recovery.py --shell-command`.
+
+```sh
+"$RUN_DIR/ask-bob.sh" --safe-mode --fork ID --harness-args --model 'a model'
+"$RUN_DIR/start-alice.sh" --safe-mode --harness-args --model 'a model'
+"$RUN_DIR/resume-bob.sh" --safe-mode ID --confirm-stopped --harness-args --model 'a model'
+```
+
+PowerShell uses the same spellings and order, for example
+`& "$RUN_DIR/ask-bob.ps1" ID --safe-mode --harness-args --model 'a model'`.
+The line printed before the harness starts states the permission mode and lists
+the extra words. Explicit extras may override generated settings, including
+permissions; the printed mode describes the wrapper's generated defaults.
+Existing run scripts must be regenerated to acquire these controls.
+
+Harness support was checked against local Claude Code, Codex, OpenCode and
+AntiGravity CLI help. Claude's `--permission-mode auto` applies to interactive
+`--resume`; OpenCode's TUI supports `--auto`, `--session` and `--fork` together
+([CLI reference](https://opencode.ai/docs/cli/)). Devin's
+[command reference](https://docs.devin.ai/cli/reference/commands.md) lists
+`--permission-mode` and `--respect-workspace-trust` as general flags, including
+interactive REPL use; Devin was not installed on the implementation host, so
+live REPL verification remains an operator check. Native Windows live prompt
+behavior also needs an operator run. PowerShell 5.1's OpenCode inline JSON
+quoting issue (#287) still applies; the override is smaller, but still exists.
 
 For AntiGravity and Devin CLI, do not start recovery or another agent using
 that home or working directory while asking. A private

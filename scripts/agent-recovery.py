@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import urllib.error
 from pathlib import Path
 
+from agent_interactive import add_commands, launch_command
 from agent_launcher import HARNESSES, HubReader, Stop, log_session, say
-from agent_recovery import add_options, agent_lock, bash_executable, prepare, split_controls
+from agent_recovery import add_options, agent_lock, prepare, split_controls
 from agent_sessions import ask_hint, ask_hint_from_args
 
 
@@ -27,9 +27,9 @@ def main() -> int:
     parser.add_argument("--resume-prompt", type=Path, required=True)
     parser.add_argument("--resume-session")
     parser.add_argument("--powershell", action="store_true")
-    parser.add_argument("--shell-command", required=True)
+    add_commands(parser)
     try:
-        argv, controls = split_controls(None)
+        argv, controls = split_controls(None, interactive=True)
         args = parser.parse_args(argv)
     except SystemExit as exc:
         hint = ask_hint_from_args(sys.argv[1:])
@@ -45,13 +45,13 @@ def main() -> int:
                 f"Interactive recovery: read {args.resume_prompt} in the resumed conversation "
                 "before taking action. This launch keeps interactive mode."
             )
-            if args.powershell:
-                shell = shutil.which("pwsh") or shutil.which("powershell")
-                if shell is None:
-                    raise OSError("PowerShell unavailable; restore the original run environment")
-                command = [shell, "-NoProfile", "-Command", args.shell_command]
-            else:
-                command = [bash_executable(), "-c", args.shell_command]
+            command = launch_command(
+                args.shell_command,
+                args.safe_shell_command,
+                controls.get("safe_mode", False),
+                controls.get("harness_args", []),
+                args.powershell,
+            )
             child = subprocess.Popen(
                 command, env=os.environ | {"ROBOMATE_RESUME_SESSION_ID": conversation}
             )

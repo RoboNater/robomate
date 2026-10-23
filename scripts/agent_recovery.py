@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_interactive import add_launch_controls, split_arguments
 from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log_session, say
 from agent_sessions import exact_id as exact_id
 
@@ -82,7 +83,9 @@ def add_options(parser: argparse.ArgumentParser, *, public: bool = False) -> Non
     )
 
 
-def split_controls(argv: list[str] | None) -> tuple[list[str], dict[str, Any]]:
+def split_controls(
+    argv: list[str] | None, *, interactive: bool = False
+) -> tuple[list[str], dict[str, Any]]:
     """Generated wrappers expose controls, never their pinned configuration/command."""
     words = list(sys.argv[1:] if argv is None else argv)
     if "--recovery-options" not in words:
@@ -94,10 +97,24 @@ def split_controls(argv: list[str] | None) -> tuple[list[str], dict[str, Any]]:
         else len(words)
     )
     parser = argparse.ArgumentParser(
-        description="Resume this saved agent run; no arguments needed."
+        description="Resume this saved agent run; no arguments needed.", allow_abbrev=False
     )
     add_options(parser, public=True)
-    controls = vars(parser.parse_args(words[start + 1 : end]))
+    if interactive:
+        add_launch_controls(parser)
+        parser.add_argument("conversation_id", nargs="?")
+        option_words, extra = split_arguments(words[start + 1 : end])
+        if "--" in option_words:
+            parser.error("use --harness-args for extra harness words")
+        controls = vars(parser.parse_intermixed_args(option_words))
+        conversation = controls.pop("conversation_id")
+        if conversation:
+            if controls.get("resume_session"):
+                parser.error("supply either an ID or --resume-session")
+            controls["resume_session"] = conversation
+        controls["harness_args"] = extra
+    else:
+        controls = vars(parser.parse_args(words[start + 1 : end]))
     remainder = words[end + 1 :] if end < len(words) else []
     return words[:start] + remainder, {k: v for k, v in controls.items() if v is not None}
 
@@ -736,14 +753,17 @@ def process_exists(pid: int) -> bool:
 
 
 def bash_executable(*, windows: bool | None = None) -> str:
-    """Use native Git Bash on Windows, never System32's WSL launcher."""
+    """Prefer Git for Windows' MSYS Bash, never System32's WSL launcher."""
     windows = os.name == "nt" if windows is None else windows
     if not windows:
         return "bash"
     git = shutil.which("git")
     if git:
         for parent in Path(git).parents[:3]:
-            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+            # Git's bin/bash.exe is a native forwarding launcher. Prefer the
+            # MSYS binary so a Bash-to-Bash exec keeps argv in MSYS, rather
+            # than serializing quote-bearing words through a Windows cmdline.
+            for relative in ("usr/bin/bash.exe", "bin/bash.exe"):
                 candidate = parent / relative
                 if candidate.is_file():
                     return str(candidate)

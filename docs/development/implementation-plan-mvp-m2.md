@@ -1276,3 +1276,18 @@ run exposed. Fixes of more than a few lines get their own issue.
 - The interim issues outside the M2 section (#188, #189, #190, #219, #220, #222, #223,
   #232) keep their tracks; their issues get a comment with the disposition above when the
   step that settles them lands.
+
+
+### Interactive launcher compatibility (#335)
+
+When replacing generated launch scripts, #222's `--interactive`, Step 10
+(#247) and the scriptable preparation replacement (#268) inherit these rules:
+interactive ask/start/resume use the run's harness permission flags by default,
+for Alice and every worker, on local and worker-only hosts in Bash and
+PowerShell. Every interactive entry point keeps a per-launch `--safe-mode`
+(prompting defaults) and `--harness-args` marker (opaque, ordered argv following
+generated flags and before positionals). Print the permission mode and extra
+words before launch. Preserve ask's hub MCP suppression and recovery's guards.
+See [the user guide](../user-guide.md#ask-an-agent-after-the-run) for the control
+contract and harness details. Keep #287's PowerShell 5.1 inline OpenCode JSON
+quoting interaction in view; #335 does not resolve it.

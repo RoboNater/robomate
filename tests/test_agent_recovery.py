@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
 import json
 import os
 import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -350,7 +352,8 @@ def test_generated_controls_cannot_replace_the_pinned_run_or_command(
                 *control,
                 "--recovery-command",
                 *([] if interactive else ["--", "codex", "exec"]),
-            ]
+            ],
+            interactive=interactive,
         )
     assert error.value.code == 2
 
@@ -775,3 +778,70 @@ def test_launcher_exit_row_pins_workflow_seen_during_run(tmp_path: Path) -> None
     launcher.interrupted = False
     launcher.refresh_workflow_id_best_effort()
     assert launcher.workflow_id == "wf-1"
+
+
+def test_interactive_launch_keeps_windows_git_bash_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive = importlib.import_module("agent_interactive")
+    git = tmp_path / "Git/cmd/git.exe"
+    git.parent.mkdir(parents=True)
+    git.touch()
+    bash = tmp_path / "Git/bin/bash.exe"
+    bash.parent.mkdir(parents=True)
+    bash.touch()
+    wsl = tmp_path / "Windows/System32/bash.exe"
+    monkeypatch.setattr(RECOVERY.shutil, "which", lambda name: str(git if name == "git" else wsl))
+    resolver = RECOVERY.bash_executable
+    monkeypatch.setattr(RECOVERY, "bash_executable", lambda: resolver(windows=True))
+    argv = interactive.launch_command("harness", None, False, [], False)
+    assert argv == [str(bash), "-c", "harness"]
+    bash.unlink()
+    with pytest.raises(OSError, match="Git Bash is unavailable"):
+        interactive.launch_command("harness", None, False, [], False)
+
+
+def test_interactive_powershell_quotes_all_single_quote_delimiters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive = importlib.import_module("agent_interactive")
+    monkeypatch.setattr(interactive.shutil, "which", lambda _: "pwsh")
+    word = "don't ‘x’ ‚x‛"
+    argv = interactive.launch_command(
+        "harness __ROBOMATE_HARNESS_ARGS__", None, False, [word], True
+    )
+    assert argv[-1] == "harness 'don''t ‘‘x’’ ‚‚x‛‛'\nexit $LASTEXITCODE"
+
+
+def test_interactive_unicode_arguments_do_not_depend_on_console_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive = importlib.import_module("agent_interactive")
+    monkeypatch.setattr(interactive.shutil, "which", lambda _: "pwsh")
+    output = io.BytesIO()
+    console = io.TextIOWrapper(output, encoding="ascii")
+    monkeypatch.setattr(sys, "stdout", console)
+    interactive.launch_command("harness __ROBOMATE_HARNESS_ARGS__", None, False, ["don’t ‛"], True)
+    console.flush()
+    assert b"\\u2019" in output.getvalue() and b"\\u201b" in output.getvalue()
+
+
+def test_windows_shell_selection_prefers_msys_over_git_native_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git = tmp_path / "Git/cmd/git.exe"
+    launcher = tmp_path / "Git/bin/bash.exe"
+    msys = tmp_path / "Git/usr/bin/bash.exe"
+    for executable in (git, launcher, msys):
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.touch()
+    monkeypatch.setattr(
+        RECOVERY.shutil, "which", lambda name: str(git if name == "git" else launcher)
+    )
+    assert RECOVERY.bash_executable(windows=True) == str(msys)
+    interactive = importlib.import_module("agent_interactive")
+    resolver = RECOVERY.bash_executable
+    monkeypatch.setattr(RECOVERY, "bash_executable", lambda: resolver(windows=True))
+    assert interactive.launch_command("harness", None, False, [], False)[0] == str(msys)
