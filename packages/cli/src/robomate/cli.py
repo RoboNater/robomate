@@ -338,9 +338,13 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         name = validate_hub_name(args.name)
     else:
         name = _hub_name(args.name, old.get("name"), repo.root)
-    # M2 Step 7b (#314): `robomate up --agents a,b,c` creates each agent's
-    # worktree ahead of the join through the same path as `hub.workspace`,
-    # printing each path for the operator to start the harness in.
+    # M2 Step 7b (#314): `robomate up --agents a,b,c` names are validated
+    # here; worktrees are created after the hub identity is recorded (below),
+    # via the same WorktreeManager `hub.workspace` uses (r1-2). `robomate
+    # workspace` goes through the operator-only `hub.workspace` RPC once the
+    # hub answers; `up --agents` creates directly in the starting hub after
+    # `hub.json`/registry claim so a refused name never leaves locked
+    # worktrees bound to an unrecorded hub_id.
     up_agents: list[str] = []
     if getattr(args, "agents", None):
         seen: set[str] = set()
@@ -352,24 +356,6 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
             if cleaned not in seen:
                 seen.add(cleaned)
                 up_agents.append(cleaned)
-        if up_agents:
-            if layered_config.worktree_root is None:
-                raise RuntimeError("hub has no worktree root; cannot create agent worktrees")
-            from agent_hub.worktrees import WorktreeManager
-
-            _up_manager = WorktreeManager(
-                hub_id=hub_id,
-                hub_name=name,
-                checkout=repo.root,
-                git_common_dir=repo.git_common_dir,
-                default_branch=repo.default_branch,
-                worktree_root=layered_config.worktree_root,
-                state_dir=directory,
-                token_file=placement.token_file,
-            )
-            for agent in up_agents:
-                _up_path, _ = _up_manager.ensure(agent)
-                print(str(_up_path), flush=True)
     identity = {
         "hub_id": hub_id,
         "name": name,
@@ -462,6 +448,27 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
     sock, port = _bind(
         args.bind, int(requested_port) if requested_port is not None else None, taken
     )
+    # Worktrees for `up --agents` are created here, after `hub.json`/registry
+    # claim and a successful port bind, so a refused name (RegistryError above)
+    # never leaves locked worktrees bound to an unrecorded hub_id (r1-2).
+    if up_agents:
+        if layered_config.worktree_root is None:
+            raise RuntimeError("hub has no worktree root; cannot create agent worktrees")
+        from agent_hub.worktrees import WorktreeManager
+
+        _up_manager = WorktreeManager(
+            hub_id=hub_id,
+            hub_name=name,
+            checkout=repo.root,
+            git_common_dir=repo.git_common_dir,
+            default_branch=repo.default_branch,
+            worktree_root=layered_config.worktree_root,
+            state_dir=directory,
+            token_file=placement.token_file,
+        )
+        for agent in up_agents:
+            _up_path, _ = _up_manager.ensure(agent)
+            print(str(_up_path), flush=True)
     overlay = dict(os.environ)
     overlay.update(
         {

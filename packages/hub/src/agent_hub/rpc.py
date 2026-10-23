@@ -398,60 +398,55 @@ class RpcDispatcher:
             digest = hashlib.sha256(guide.encode("utf-8")).hexdigest()
             # M2 Step 7b (#314): `setup` and agent pins from the layers (Step 5).
             # An invalid layer file refuses the join naming the file and key.
-            from agent_hub_common import load_config_layers
+            # Shared with the worker join via `join_config` (r1-4).
+            from pathlib import Path as _Path
+
+            from agent_hub_common import ModelSource
             from agent_hub_common.config_layers import ConfigLayerError
+
+            from .join_config import load_join_config
 
             try:
                 _common_raw = (self.hub_info or {}).get("git_common_dir")
-                from pathlib import Path as _Path
-
-                _common = _Path(str(_common_raw)) if _common_raw else None
+                _common: _Path | None = _Path(str(_common_raw)) if _common_raw else None
                 if _common is None and self.worktree_manager is not None:
                     _common = self.worktree_manager.common
                 _state_raw = (self.hub_info or {}).get("state_dir")
                 if _state_raw is not None:
-                    _hub_config = _Path(str(_state_raw)) / "config.toml"
-                    _layers = load_config_layers(hub_config=_hub_config, git_common_dir=_common)
+                    _store_state = _Path(str(_state_raw))
                 else:
                     try:
                         _store_state = self.ops.store._state_dir()
                     except Exception:
                         _store_state = None
-                    _layers = load_config_layers(
-                        hub_config=(_store_state / "config.toml")
-                        if _store_state is not None
-                        else None,
-                        git_common_dir=_common,
-                    )
+                _join_setup, _pin_model, _pin_effort = load_join_config(
+                    state_dir=_store_state,
+                    git_common_dir=_common,
+                    agent_name=name,
+                )
             except ConfigLayerError as exc:
                 raise RpcError(INVALID_PARAMS, str(exc)) from exc
-            _pinned = _layers.agent_config(name)
-            _join_setup = _layers.setup
-            if _pinned.model is not None:
-                from dataclasses import replace as _replace_pin
-
-                from agent_hub_common import ModelSource as _ModelSource
+            if _pin_model is not None:
+                from dataclasses import replace as _replace
 
                 params = params.model_copy(
                     update={
-                        "profile": _replace_pin(
+                        "profile": _replace(
                             params.profile,
-                            model=_pinned.model,
-                            model_source=_ModelSource.ENV,
+                            model=_pin_model,
+                            model_source=ModelSource.ENV,
                         )
                     }
                 )
-            if _pinned.effort is not None:
+            if _pin_effort is not None:
                 from dataclasses import replace as _replace_effort
-
-                from agent_hub_common import ModelSource as _ModelSourceEffort
 
                 params = params.model_copy(
                     update={
                         "profile": _replace_effort(
                             params.profile,
-                            effort=_pinned.effort,
-                            effort_source=_ModelSourceEffort.ENV,
+                            effort=_pin_effort,
+                            effort_source=ModelSource.ENV,
                         )
                     }
                 )

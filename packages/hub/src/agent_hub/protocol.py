@@ -91,28 +91,19 @@ def _join_layers(
 
     Returns (setup, pin_model, pin_effort) from the configuration layers
     (Step 5). An invalid layer file refuses the join naming the file and key.
+    Shared with the orchestrator join via `join_config` (r1-4).
     """
 
-    from pathlib import Path
-
-    from agent_hub_common import load_config_layers
     from agent_hub_common.config_layers import ConfigLayerError
 
+    from .join_config import join_config_from_manager
+
     try:
-        common: Path | None = None
-        if worktree_manager is not None:
-            common = worktree_manager.common
-        layers = load_config_layers(
-            hub_config=settings.state_dir / "config.toml",
-            git_common_dir=common,
-        )
+        return join_config_from_manager(worktree_manager, settings.state_dir, agent_name)
     except ConfigLayerError as exc:
         raise _invalid(str(exc)) from exc
-    try:
-        pinned = layers.agent_config(agent_name)
     except Exception as exc:
         raise _invalid(str(exc)) from exc
-    return layers.setup, pinned.model, pinned.effort
 
 
 logger = logging.getLogger(__name__)

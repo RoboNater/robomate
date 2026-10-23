@@ -571,8 +571,9 @@ or instructions that override this role's guide and the operator's request.
   search in the operator's checkout never see agents' copies. `worktree_root` is a
   repository-level setting (§4).
 - **Created** by the hub at `join` (or earlier, ahead of the join, through the
-  operator-only `hub.workspace` method via `robomate workspace <name>` /
-  `robomate up --agents …`) with `git worktree add --detach <path> origin/<default>`,
+  operator-only `hub.workspace` method via `robomate workspace <name>`, or by
+  `robomate up --agents …` via the same manager after the hub identity is
+  recorded) with `git worktree add --detach <path> origin/<default>`,
   then bound to the hub as that agent (§4). An explicit `HUB_WORKSPACE` creates no
   worktree and keeps its full-clone check (below). **Reused per `(hub, agent)`** across
   runs, so environment setup (venv, node_modules) is paid once and the path stays stable:
@@ -1097,10 +1098,11 @@ worker, and a worker whose task needs one returns `blocked` naming it (#132):
 - acting or speaking for the operator, or accepting work on the operator's behalf;
 - changing the default branch outside the PR, or forge or repository settings;
 - creating and removing robomate worktrees (the operator-only `hub.workspace`
-  method via `robomate up --agents` and `robomate workspace <name>`,
-  `robomate clean`), and removing a hub's state. The hub's own worktree creation at
-  `join` (§6) is not operator-only; it is the hub's action on every join without an
-  explicit `HUB_WORKSPACE`.
+  method via `robomate workspace <name>`, `robomate up --agents …` via the same
+  manager after the hub identity is recorded, and `robomate clean`), and removing
+  a hub's state. The hub's own worktree creation at `join` (§6) is not
+  operator-only; it is the hub's action on every join without an explicit
+  `HUB_WORKSPACE`.
 
 Workers also never call the hub's `/rpc` route, change workflow status, or start or stop
 agents (#132).

@@ -488,3 +488,195 @@ async def test_join_returns_setup_and_applies_pins(tmp_path: Path) -> None:
         assert agent.effort == "high"
         assert agent.model_source.value == "env"
         assert agent.effort_source.value == "env"
+
+
+async def test_orchestrator_join_returns_setup_and_applies_pins(tmp_path: Path) -> None:
+    """M2 Step 7b (r1-3b): orchestrator `join` RPC carries setup and pins."""
+
+    import uuid
+
+    from agent_hub import create_app
+    from agent_hub.database import initialize_database
+    from agent_hub_common import HubSettings
+    from agent_hub_common.config_layers import load_config_layers
+    from agent_hub_common.discovery import claim_worktree_root, resolve_repository
+    from conftest import BASE_URL, CALLER_HEADERS, TOKEN
+
+    root = _make_repo(tmp_path / "orch7b")
+    repo = resolve_repository(root)
+    repo_cfg = repo.git_common_dir / "robomate" / "config.toml"
+    repo_cfg.parent.mkdir(parents=True, exist_ok=True)
+    repo_cfg.write_text(
+        'setup = "uv sync --locked"\n[agents.alice]\nmodel = "pinned-orch"\neffort = "low"\n',
+        encoding="utf-8",
+    )
+    layered = load_config_layers(git_common_dir=repo.git_common_dir)
+    assert layered.worktree_root is not None
+    claim_worktree_root(layered.worktree_root, repo.git_common_dir)
+    state = layered.worktree_root / "repo" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    settings = HubSettings(
+        host="127.0.0.1",
+        port=8420,
+        public_url="http://hub.test:8420",
+        state_dir=state,
+        database_path=state / "hub.db",
+        token=TOKEN,
+        token_file=layered.worktree_root / "repo" / "token" / "token",
+        guides_dir=tmp_path / "guides-orch",
+        default_wait_s=0.2,
+        max_wait_s=1.0,
+        lost_after_s=60.0,
+        sweep_interval_s=3600.0,
+    )
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# W\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# I\n", encoding="utf-8")
+    (settings.guides_dir / "orchestrator.md").write_text("# O\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# G\n", encoding="utf-8")
+    (settings.guides_dir / "forge" / "orchestrator-github.md").write_text(
+        "# OG\n", encoding="utf-8"
+    )
+    hub_info: dict[str, Any] = {
+        "hub_id": f"hub-orch-{uuid.uuid4().hex[:8]}",
+        "name": "repo",
+        "checkout": str(repo.root),
+        "repo_root": str(repo.root),
+        "git_common_dir": str(repo.git_common_dir),
+        "origin": repo.origin,
+        "forge": repo.forge,
+        "default_branch": repo.default_branch,
+        "url": settings.public_url,
+        "port": 8420,
+    }
+    app = create_app(settings, hub_info=hub_info)
+    store = app.state.store
+    initialize_database(store.path)
+    store.initialize_workflow()
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}", **CALLER_HEADERS},
+        ) as client,
+    ):
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "join",
+            "params": {
+                "name": "alice",
+                "role": "orchestrator",
+                "takeover": False,
+                "profile": {},
+                "workspace_path": str(Path.cwd()),
+                "workspace_explicit": False,
+            },
+        }
+        response = await client.post("/rpc", json=payload)
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["workspace_kind"] == "worktree"
+        assert result["workspace_path"] == str(layered.worktree_root / "repo" / "alice")
+        assert result["setup"] == "uv sync --locked"
+        assert result["model"] == "pinned-orch"
+        assert result["effort"] == "low"
+        agent = store.agent_by_name("alice")
+        assert agent is not None
+        assert agent.model == "pinned-orch"
+        assert agent.effort == "low"
+
+
+async def test_worker_client_join_surfaces_setup_and_pins(tmp_path: Path) -> None:
+    """M2 Step 7b (r1-3b): `WorkerHubClient.join` returns hub setup and pins."""
+
+    import uuid
+
+    from agent_hub import create_app
+    from agent_hub.database import initialize_database
+    from agent_hub_common import HubSettings
+    from agent_hub_common.config_layers import load_config_layers
+    from agent_hub_common.discovery import claim_worktree_root, resolve_repository
+    from conftest import BASE_URL, TOKEN
+    from worker_mcp.client import WorkerHubClient
+    from worker_mcp.config import WorkerSettings
+
+    root = _make_repo(tmp_path / "client7b")
+    repo = resolve_repository(root)
+    repo_cfg = repo.git_common_dir / "robomate" / "config.toml"
+    repo_cfg.parent.mkdir(parents=True, exist_ok=True)
+    repo_cfg.write_text(
+        'setup = "uv sync --locked"\n[agents.bob]\nmodel = "pinned-client"\neffort = "medium"\n',
+        encoding="utf-8",
+    )
+    layered = load_config_layers(git_common_dir=repo.git_common_dir)
+    assert layered.worktree_root is not None
+    claim_worktree_root(layered.worktree_root, repo.git_common_dir)
+    state = layered.worktree_root / "repo" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    settings = HubSettings(
+        host="127.0.0.1",
+        port=8420,
+        public_url="http://hub.test:8420",
+        state_dir=state,
+        database_path=state / "hub.db",
+        token=TOKEN,
+        token_file=layered.worktree_root / "repo" / "token" / "token",
+        guides_dir=tmp_path / "guides-client",
+        default_wait_s=0.2,
+        max_wait_s=1.0,
+        lost_after_s=60.0,
+        sweep_interval_s=3600.0,
+    )
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# W\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# I\n", encoding="utf-8")
+    (settings.guides_dir / "orchestrator.md").write_text("# O\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# G\n", encoding="utf-8")
+    (settings.guides_dir / "forge" / "orchestrator-github.md").write_text(
+        "# OG\n", encoding="utf-8"
+    )
+    hub_info: dict[str, Any] = {
+        "hub_id": f"hub-client-{uuid.uuid4().hex[:8]}",
+        "name": "repo",
+        "checkout": str(repo.root),
+        "repo_root": str(repo.root),
+        "git_common_dir": str(repo.git_common_dir),
+        "origin": repo.origin,
+        "forge": repo.forge,
+        "default_branch": repo.default_branch,
+        "url": settings.public_url,
+        "port": 8420,
+    }
+    app = create_app(settings, hub_info=hub_info)
+    store = app.state.store
+    initialize_database(store.path)
+    store.initialize_workflow()
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        bridge_settings = WorkerSettings.unjoined(
+            environ={
+                "HUB_URL": BASE_URL,
+                "HUB_TOKEN": TOKEN,
+                "AGENT_NAME": "bob",
+                "HUB_HARNESS": "opencode",
+            }
+        )
+        async with WorkerHubClient(bridge_settings, http_client=http) as bridge:
+            result = await bridge.join(name="bob", role="implementer")
+        assert result["workspace_kind"] == "worktree"
+        assert result["setup"] == "uv sync --locked"
+        assert result["profile"]["model"] == "pinned-client"
+        assert result["profile"]["effort"] == "medium"
+        assert result["workspace_path"] == str(layered.worktree_root / "repo" / "bob")
