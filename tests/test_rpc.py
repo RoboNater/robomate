@@ -1844,3 +1844,20 @@ async def test_new_run_refuses_stale_released_worker_until_check_in(
     assert code == CONFLICT and "must check in again before it can be given work" in message
     await check_in(client, "bob")
     assert "result" in await call(client, "assign_task", **assign)
+
+
+async def test_orchestrator_explicit_workspace_mismatch_is_refused(
+    client: httpx.AsyncClient,
+) -> None:
+    """M2 Step 7a (#244, r2-2): an explicit workspace with no identity is refused."""
+
+    body = await call(
+        client,
+        "join",
+        name="alice",
+        workspace_explicit=True,
+        workspace_path="/tmp/missing-workspace",
+    )
+    code, message = error_of(body)
+    assert code == INVALID_PARAMS
+    assert "HUB_WORKSPACE" in message

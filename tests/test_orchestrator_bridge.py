@@ -343,6 +343,21 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         cwd=repo,
         check=True,
     )
+    # A commit and origin/main, so worktree creation at join (M2 Step 7a #244)
+    # has something to check out.
+    subprocess.run(
+        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "commit"]
+        + ["--allow-empty", "-m", "start"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     command = str(Path(sys.executable).with_name("robomate"))
     env = {
         **os.environ,

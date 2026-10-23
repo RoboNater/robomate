@@ -681,21 +681,54 @@ class WorkerHubClient:
 
         bridge_cwd = (self.settings.cwd or Path.cwd()).resolve()
         env = self.settings.environ or {}
-        if "HUB_WORKSPACE" in env and env["HUB_WORKSPACE"]:
-            resolved_workspace_path = canonical_workspace(env["HUB_WORKSPACE"]).resolve()
+        explicit_raw_env = (env.get("HUB_WORKSPACE") or "").strip()
+        # Standalone `run_worker` builds settings with `from_env()`, which
+        # records the validated clone in `settings.workspace` but leaves
+        # `environ` unset (r1-2 on #244). Honor that path too, so an explicit
+        # clone never falls through to worktree creation.
+        configured_workspace = self.settings.workspace
+        if explicit_raw_env:
+            explicit_raw = explicit_raw_env
+            workspace_explicit = True
+        elif configured_workspace is not None:
+            explicit_raw = str(configured_workspace)
+            workspace_explicit = True
+        else:
+            explicit_raw = ""
+            workspace_explicit = False
+        if workspace_explicit:
+            try:
+                canonical_path = canonical_workspace(explicit_raw).resolve()
+            except Exception:
+                # An invalid explicit workspace is the hub's to refuse (r2-2
+                # on #244), not a bridge crash: send the raw path with no
+                # identity and let the hub name it. Clear any stale ID so a
+                # configured clone for another agent cannot authorize this join.
+                resolved_workspace_path = bridge_cwd
+                reported_workspace_path = explicit_raw
+                profile = replace(profile, workspace_id=None)
+            else:
+                resolved_workspace_path = canonical_path
+                reported_workspace_path = str(canonical_path)
+                # Revalidate for the name passed to each join (r1-1 on #244):
+                # a profile ID configured for another agent (e.g. via
+                # `from_discovered` with AGENT_NAME=bob joining as charlie)
+                # must not survive. A failure clears to None so the hub
+                # refuses the explicit mismatch.
+                try:
+                    identity = read_identity(canonical_path, clean_name)
+                    profile = replace(profile, workspace_id=identity["workspace_id"])
+                except Exception:
+                    profile = replace(profile, workspace_id=None)
         else:
             resolved_workspace_path = bridge_cwd
-
-        cwd_inside_workspace = bridge_cwd == resolved_workspace_path or bridge_cwd.is_relative_to(
-            resolved_workspace_path
-        )
-
-        if profile.workspace_id is None:
-            try:
-                identity = read_identity(resolved_workspace_path, clean_name)
-                profile = replace(profile, workspace_id=identity["workspace_id"])
-            except Exception:
-                pass
+            reported_workspace_path = str(bridge_cwd)
+            if profile.workspace_id is None:
+                try:
+                    identity = read_identity(resolved_workspace_path, clean_name)
+                    profile = replace(profile, workspace_id=identity["workspace_id"])
+                except Exception:
+                    pass
 
         if standing_role is StandingRole.ORCHESTRATOR:
             if self.orchestrator is None:
@@ -705,14 +738,26 @@ class WorkerHubClient:
                     http_client=self._ensure_client(),
                 )
             self.orchestrator.name = clean_name
-            result = await self.orchestrator.register(profile, takeover=takeover)
+            result = await self.orchestrator.register(
+                profile,
+                takeover=takeover,
+                workspace_path=reported_workspace_path,
+                workspace_explicit=workspace_explicit,
+            )
             self.settings = replace(self.settings, agent_name=clean_name)
             self.standing_role = standing_role
             self._joined = True
+            hub_path = result.get("workspace_path") or reported_workspace_path
+            try:
+                cwd_inside = bridge_cwd == Path(
+                    str(hub_path)
+                ).resolve() or bridge_cwd.is_relative_to(Path(str(hub_path)).resolve())
+            except Exception:
+                cwd_inside = False
             return result | {
-                "workspace_path": str(resolved_workspace_path),
-                "workspace_id": profile.workspace_id,
-                "cwd_inside_workspace": cwd_inside_workspace,
+                "workspace_path": str(hub_path),
+                "workspace_id": result.get("workspace_id", profile.workspace_id),
+                "cwd_inside_workspace": cwd_inside,
                 "profile": asdict(profile),
             }
 
@@ -736,6 +781,8 @@ class WorkerHubClient:
             MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
             MetaKeys.OPERATION_ID: op_id,
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
+            MetaKeys.WORKSPACE_EXPLICIT: workspace_explicit,
+            MetaKeys.WORKSPACE_PATH: reported_workspace_path,
         }
         if profile.workspace_id is not None:
             metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
@@ -786,6 +833,25 @@ class WorkerHubClient:
             "default_branch": who_data.get("default_branch"),
         }
 
+        hub_workspace_path = res_meta.get(MetaKeys.WORKSPACE_PATH)
+        hub_workspace_id = res_meta.get(MetaKeys.WORKSPACE_ID)
+        hub_workspace_kind = res_meta.get(MetaKeys.WORKSPACE_KIND)
+        final_workspace_path = (
+            str(hub_workspace_path)
+            if isinstance(hub_workspace_path, str) and hub_workspace_path
+            else str(resolved_workspace_path)
+        )
+        final_workspace_id = (
+            str(hub_workspace_id)
+            if isinstance(hub_workspace_id, str) and hub_workspace_id
+            else profile.workspace_id
+        )
+        try:
+            final_cwd_inside = bridge_cwd == Path(final_workspace_path).resolve() or (
+                bridge_cwd.is_relative_to(Path(final_workspace_path).resolve())
+            )
+        except Exception:
+            final_cwd_inside = False
         profile_dict = {
             "harness": profile.harness,
             "harness_source": profile.harness_source.value,
@@ -797,7 +863,7 @@ class WorkerHubClient:
             "effort_source": profile.effort_source.value,
             "declared_model": profile.declared_model,
             "capabilities": list(profile.capabilities),
-            "workspace_id": profile.workspace_id,
+            "workspace_id": final_workspace_id,
         }
 
         return {
@@ -808,9 +874,10 @@ class WorkerHubClient:
             "context_id": self.context_id,
             "worker_instance_id": self.worker_instance_id,
             "hub": hub_summary,
-            "workspace_path": str(resolved_workspace_path),
-            "workspace_id": profile.workspace_id,
-            "cwd_inside_workspace": cwd_inside_workspace,
+            "workspace_path": final_workspace_path,
+            "workspace_id": final_workspace_id,
+            "workspace_kind": hub_workspace_kind,
+            "cwd_inside_workspace": final_cwd_inside,
             "profile": profile_dict,
             "role_guide": role_guide,
             "guide": worker_guide,

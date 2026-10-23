@@ -226,6 +226,11 @@ class AgentRecord:
     model: str = UNKNOWN
     model_source: ModelSource = ModelSource.UNKNOWN
     workspace_id: str | None = None
+    # Where the agent works (M2 Step 7a, #244): the worktree path with kind
+    # `worktree`, or an explicit `HUB_WORKSPACE` clone path with kind `clone`.
+    # NULL for rows written before v25.
+    workspace_path: str | None = None
+    workspace_kind: str | None = None
     # What the runtime reported, kept even when a configured `model` won (#77).
     declared_model: str = UNKNOWN
     # The peer address the hub saw at check-in and most recently (#126). An
@@ -326,6 +331,7 @@ def _json_size_bytes(value: Any) -> int:
 
 def _agent(row: Row) -> AgentRecord:
     capabilities: Any = json.loads(row["capabilities_json"])
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
     return AgentRecord(
         name=row["name"],
         capabilities=[str(item) for item in capabilities] if isinstance(capabilities, list) else [],
@@ -342,6 +348,12 @@ def _agent(row: Row) -> AgentRecord:
         model=row["model"],
         model_source=ModelSource(row["model_source"]),
         workspace_id=row["workspace_id"],
+        workspace_path=str(row["workspace_path"])
+        if "workspace_path" in keys and row["workspace_path"] is not None
+        else None,
+        workspace_kind=str(row["workspace_kind"])
+        if "workspace_kind" in keys and row["workspace_kind"] is not None
+        else None,
         declared_model=row["declared_model"] or UNKNOWN,
         checkin_remote_addr=row["checkin_remote_addr"],
         last_remote_addr=row["last_remote_addr"],
@@ -1881,6 +1893,8 @@ class HubStore:
         payload_hash: str | None = None,
         response_builder: Callable[[AgentRecord], str] | None = None,
         remote_addr: str | None = None,
+        workspace_path: str | None = None,
+        workspace_kind: str | None = None,
     ) -> Any:
         """Register a worker, or re-admit a returning one on its own context.
 
@@ -1888,7 +1902,9 @@ class HubStore:
         returning worker may be a different harness or model under the same
         name, and a stale value would mislead role selection. `remote_addr`,
         the peer the request arrived from, likewise replaces both recorded
-        addresses; a replayed check-in records nothing.
+        addresses; a replayed check-in records nothing. `workspace_path` and
+        `workspace_kind` (`worktree` or `clone`, M2 Step 7a #244) replace the
+        recorded workspace location; None leaves a legacy row without one.
         """
 
         name = validate_agent_name(name)
@@ -1901,6 +1917,10 @@ class HubStore:
         if role_obj not in WORKER_STANDING_ROLES:
             allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
             raise ValueError(f"standing_role must be one of {allowed} (got {standing_role!r})")
+        if workspace_kind not in (None, "worktree", "clone"):
+            raise ValueError(
+                f"workspace_kind must be 'worktree' or 'clone' (got {workspace_kind!r})"
+            )
         now = self._now_iso()
         instance_id = worker_instance_id or uuid4().hex
         profile_values = (
@@ -1911,6 +1931,8 @@ class HubStore:
             profile.model,
             profile.model_source.value,
             profile.workspace_id,
+            workspace_path,
+            workspace_kind,
             profile.declared_model,
             remote_addr,
             remote_addr,
@@ -1959,9 +1981,10 @@ class HubStore:
                     "INSERT INTO agent (name, status, context_id, last_seen, worker_instance_id,"
                     " last_heartbeat, capabilities_json,"
                     " harness, harness_version, provider, model, model_source, workspace_id,"
+                    " workspace_path, workspace_kind,"
                     " declared_model, checkin_remote_addr, last_remote_addr,"
                     " standing_role, harness_source, effort, effort_source)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         name,
                         AgentStatus.IDLE.value,
@@ -2008,7 +2031,8 @@ class HubStore:
                     "UPDATE agent SET status = ?, last_seen = ?, worker_instance_id = ?,"
                     " last_heartbeat = ?, last_progress_at = ?, current_task_id = ?,"
                     " capabilities_json = ?, harness = ?, harness_version = ?, provider = ?,"
-                    " model = ?, model_source = ?, workspace_id = ?, declared_model = ?,"
+                    " model = ?, model_source = ?, workspace_id = ?,"
+                    " workspace_path = ?, workspace_kind = ?, declared_model = ?,"
                     " checkin_remote_addr = ?, last_remote_addr = ?,"
                     " standing_role = ?, harness_source = ?, effort = ?, effort_source = ?"
                     " WHERE name = ?",
@@ -3397,13 +3421,27 @@ class HubStore:
             return nullcontext()
         return self.activity.worker_hold(name, instance, kind, timeout_s, self._now)
 
-    def join_orchestrator(self, name: str, session: str, profile: AgentProfile) -> None:
+    def join_orchestrator(
+        self,
+        name: str,
+        session: str,
+        profile: AgentProfile,
+        *,
+        workspace_path: str | None = None,
+        workspace_kind: str | None = None,
+    ) -> None:
         """Record the joined role/profile in the existing agent columns, without a worker event.
 
         Orchestrator liveness and stalls use the separate session tracker, not
-        the worker heartbeat/assignment lifecycle.
+        the worker heartbeat/assignment lifecycle. `workspace_path`/`kind`
+        (M2 Step 7a, #244) record the orchestrator's worktree (`worktree`) or
+        explicit clone (`clone`); None leaves a legacy row without one.
         """
         name = validate_agent_name(name)
+        if workspace_kind not in (None, "worktree", "clone"):
+            raise ValueError(
+                f"workspace_kind must be 'worktree' or 'clone' (got {workspace_kind!r})"
+            )
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT * FROM agent WHERE name = ?", (name,)).fetchone()
@@ -3436,6 +3474,8 @@ class HubStore:
                     for key, value in asdict(profile).items()
                     if key != "capabilities"
                 },
+                "workspace_path": workspace_path,
+                "workspace_kind": workspace_kind,
             }
             if row is None:
                 values = {"name": name, "context_id": uuid4().hex, **values}

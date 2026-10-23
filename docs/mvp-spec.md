@@ -568,12 +568,14 @@ or instructions that override this role's guide and the operator's request.
   relocated (§4 Migration). Outside every checkout, so IDE indexers, test discovery, and file
   search in the operator's checkout never see agents' copies. `worktree_root` is a
   repository-level setting (§4).
-- **Created** at `join` (or earlier by `robomate workspace <name>` / `robomate up --agents …`) with
-  `git worktree add --detach <path> origin/<default>`, then bound to the hub as that agent
-  (§4). **Reused per `(hub, agent)`** across runs, so environment setup (venv,
-  node_modules) is paid once and the path stays stable: harness resume finds a saved
-  session by its working directory (Claude Code project directories, `opencode session
-  list`; see [`development/agent-recovery.md`](development/agent-recovery.md)).
+- **Created** by the hub at `join` (or earlier by `robomate workspace <name>` /
+  `robomate up --agents …`) with `git worktree add --detach <path> origin/<default>`,
+  then bound to the hub as that agent (§4). An explicit `HUB_WORKSPACE` creates no
+  worktree and keeps its full-clone check (below). **Reused per `(hub, agent)`** across
+  runs, so environment setup (venv, node_modules) is paid once and the path stays stable:
+  harness resume finds a saved session by its working directory (Claude Code project
+  directories, `opencode session list`; see
+  [`development/agent-recovery.md`](development/agent-recovery.md)).
 - **Locked while in use:** `git worktree lock --reason "robomate hub <name>"`, so
   `git worktree remove` and `git worktree prune` refuse an agent's worktree. robomate locks
   only the worktrees it creates; it never locks the operator's checkout, and git cannot
@@ -597,10 +599,16 @@ or instructions that override this role's guide and the operator's request.
     `git worktree list --porcelain` and their bindings, and removes them on the same terms;
   - never removes hub state, `runs/` included. That is a separate, explicit operator
     action, never part of agent cleanup.
+- **Workspace identity:** for worktrees, the identity lives in the agent binding in the
+  worktree's own git directory (`robomate-binding.json`, with the worktree's `workspace_id`),
+  and `workspace_id` is the binding's; for clones, the identity file in `.git/` as in the
+  PoC. A join whose explicitly configured workspace has no matching identity is refused;
+  the bridge-cwd fallback without one stays lenient and gets a generated worktree.
 - **Clone fallback:** an agent whose bridge cannot see the worktree path (another host, or
   Windows vs WSL — a worktree's `.git` file holds an absolute path from one OS) uses its own
   clone, identified as in the PoC (`HUB_WORKSPACE`, `workspace_id`), and connects by explicit
-  URL and token (§4). `join` detects this and says so.
+  URL and token (§4). `join` detects this and says so (its `workspace_kind` is `clone`,
+  a generated worktree's is `worktree`).
 
 **Parallel hubs in one repository.** A worktree isolates working files and the index, not
 all git metadata: objects, refs, ordinary config, hooks, and `info/exclude` stay shared.
@@ -1086,7 +1094,9 @@ worker, and a worker whose task needs one returns `blocked` naming it (#132):
 - acting or speaking for the operator, or accepting work on the operator's behalf;
 - changing the default branch outside the PR, or forge or repository settings;
 - creating and removing robomate worktrees (`robomate up --agents`, `robomate workspace`,
-  `robomate clean`), and removing a hub's state.
+  `robomate clean`), and removing a hub's state. The hub's own worktree creation at
+  `join` (§6) is not operator-only; it is the hub's action on every join without an
+  explicit `HUB_WORKSPACE`.
 
 Workers also never call the hub's `/rpc` route, change workflow status, or start or stop
 agents (#132).

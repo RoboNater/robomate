@@ -177,7 +177,14 @@ class OrchestratorBridge:
                 await asyncio.sleep(0.5 * 2**attempts)
                 attempts += 1
 
-    async def register(self, profile: AgentProfile, *, takeover: bool = False) -> dict[str, Any]:
+    async def register(
+        self,
+        profile: AgentProfile,
+        *,
+        takeover: bool = False,
+        workspace_path: str | None = None,
+        workspace_explicit: bool = False,
+    ) -> dict[str, Any]:
         result = await self.call(
             "join",
             {
@@ -185,6 +192,8 @@ class OrchestratorBridge:
                 "role": "orchestrator",
                 "takeover": takeover,
                 "profile": asdict(profile),
+                "workspace_path": workspace_path,
+                "workspace_explicit": workspace_explicit,
             },
         )
         self.joined = True

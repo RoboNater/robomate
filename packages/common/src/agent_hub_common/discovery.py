@@ -216,7 +216,10 @@ class Binding:
     The checkout is bound to one hub as its `owner` or as an `agent` by that
     name. The record names where the hub's state and token file are and holds
     no token. `checkout` is the hub's owning checkout, which an agent's
-    worktree is not.
+    worktree is not. An agent binding created by the worktree manager (M2
+    Step 7a, #244) also carries the worktree's `workspace_id`, which is the
+    workspace identity for worktrees (spec §6); owner bindings and
+    hand-written test bindings leave it unset.
     """
 
     role: Literal["owner", "agent"]
@@ -226,6 +229,7 @@ class Binding:
     state_dir: Path
     token_file: Path
     agent: str | None = None
+    workspace_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -239,6 +243,8 @@ class Binding:
         }
         if self.agent is not None:
             value["agent"] = self.agent
+        if self.workspace_id is not None:
+            value["workspace_id"] = self.workspace_id
         return value
 
 
@@ -383,6 +389,16 @@ def read_binding(git_dir: Path) -> Binding | None:
             raise DiscoveryError(f"invalid binding in {path}: {key} must be an absolute path")
         paths[key] = Path(raw)
     name = value.get("name")
+    workspace_id = value.get("workspace_id")
+    if workspace_id is not None:
+        if not isinstance(workspace_id, str) or not re.fullmatch(r"[0-9a-f]{64}", workspace_id):
+            raise DiscoveryError(
+                f"invalid binding in {path}: workspace_id must be 64 lowercase hex"
+            )
+        if role != "agent":
+            raise DiscoveryError(
+                f"invalid binding in {path}: only an agent binding names a workspace_id"
+            )
     return Binding(
         role,
         hub_id,
@@ -391,6 +407,7 @@ def read_binding(git_dir: Path) -> Binding | None:
         paths["state_dir"],
         paths["token_file"],
         agent if role == "agent" else None,
+        workspace_id if isinstance(workspace_id, str) else None,
     )
 
 

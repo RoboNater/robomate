@@ -173,6 +173,22 @@ def init_checkout(root: Path) -> None:
         cwd=root,
         check=True,
     )
+    # A commit and an origin/<default> ref, so a hub's worktree creation at
+    # join (`git worktree add --detach <path> origin/main`, M2 Step 7a #244)
+    # has something to check out in live-hub tests.
+    subprocess.run(
+        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "commit"]
+        + ["--allow-empty", "-m", "start"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.fixture
@@ -3672,6 +3688,62 @@ def test_up_is_refused_in_a_checkout_bound_as_an_agent(
     assert "bound to hub team as agent 'bob'" in refused.stderr and str(root) in refused.stderr
     assert not (tmp_path / "repo.robomate").exists() and not (wt_bob / ".robomate").exists()
     assert read_binding(checkout_git_dir(wt_bob)) is not None  # left as it was
+
+
+def test_up_is_refused_in_a_manager_created_agent_worktree(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """M2 Step 7a (#244): a join-created worktree (with workspace_id) refuses up.
+
+    The binding carries the worktree's workspace identity (spec §6); `up`
+    names the hub, and `git worktree list --porcelain` shows the worktree
+    locked with the hub's reason (the isolated-smoke shape).
+    """
+
+    from agent_hub.worktrees import WorktreeManager, worktree_lock_reason
+    from agent_hub_common.config_layers import load_config_layers
+    from agent_hub_common.discovery import claim_worktree_root
+
+    root, env = repository
+    repo = resolve_repository(root)
+    layered = load_config_layers(git_common_dir=repo.git_common_dir)
+    assert layered.worktree_root is not None
+    claim_worktree_root(layered.worktree_root, repo.git_common_dir)
+    state = layered.worktree_root / "team" / "state"
+    token = layered.worktree_root / "team" / "token" / "token"
+    state.mkdir(parents=True, exist_ok=True)
+    token.parent.mkdir(parents=True, exist_ok=True)
+    manager = WorktreeManager(
+        hub_id="hid-team",
+        hub_name="team",
+        checkout=repo.root,
+        git_common_dir=repo.git_common_dir,
+        default_branch=repo.default_branch,
+        worktree_root=layered.worktree_root,
+        state_dir=state,
+        token_file=token,
+    )
+    # The repository fixture now has a commit and origin/main (for worktree add).
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    path, workspace_id = manager.ensure("bob")
+    assert len(workspace_id) == 64
+    refused = _cli(path, env, "up")
+    assert refused.returncode == 1
+    assert "bound to hub team as agent 'bob'" in refused.stderr
+    listing = subprocess.run(
+        ["git", f"--git-dir={repo.git_common_dir}", "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    # `git worktree list --porcelain` prints forward slashes even on Windows.
+    assert f"worktree {path.as_posix()}" in listing
+    assert worktree_lock_reason("team") in listing
 
 
 def test_a_worktree_root_of_another_repository_is_refused_by_up(

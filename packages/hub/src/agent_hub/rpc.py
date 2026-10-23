@@ -134,6 +134,8 @@ class OrchestratorJoin(BaseModel):
     role: Literal["orchestrator"] = "orchestrator"
     takeover: StrictBool = False
     profile: AgentProfile = AgentProfile()
+    workspace_path: str | None = None
+    workspace_explicit: StrictBool = False
 
 
 class RpcDispatcher:
@@ -147,12 +149,14 @@ class RpcDispatcher:
         shutdown: Callable[[], None] | None = None,
         accounting: CallAccounting | None = None,
         guides_dir: Path | None = None,
+        worktree_manager: Any | None = None,
     ) -> None:
         self.ops = ops
         self.hub_info = hub_info
         self.shutdown = shutdown
         self.accounting = accounting
         self.guides_dir = guides_dir
+        self.worktree_manager = worktree_manager
         self._guide_hashes: dict[str, str] = {}
         # Set by the app's lifespan from the operator token file (#128).
         self.operator_token: str | None = None
@@ -359,8 +363,52 @@ class RpcDispatcher:
             except HTTPException as exc:
                 raise RpcError(NOT_FOUND, str(exc.detail)) from exc
             digest = hashlib.sha256(guide.encode("utf-8")).hexdigest()
+            reported_path = (params.workspace_path or "").strip() or None
+            workspace_path: str | None
+            workspace_kind: str | None
+            workspace_id: str | None
+            if params.workspace_explicit:
+                if params.profile.workspace_id is None:
+                    raise RpcError(
+                        INVALID_PARAMS,
+                        f"explicit HUB_WORKSPACE {reported_path or '(unset)'} has no matching "
+                        f"identity for agent {name!r}; run scripts/bootstrap-workspace "
+                        "for that agent, or unset HUB_WORKSPACE to use a generated worktree",
+                    )
+                if reported_path is None:
+                    raise RpcError(
+                        INVALID_PARAMS, "explicit orchestrator join names no workspace_path"
+                    )
+                workspace_path = reported_path
+                workspace_kind = "clone"
+                workspace_id = params.profile.workspace_id
+            elif self.worktree_manager is not None:
+                from .worktrees import WorktreeError
+
+                try:
+                    worktree_path, worktree_id = self.worktree_manager.ensure(name)
+                except WorktreeError as exc:
+                    raise RpcError(INVALID_PARAMS, str(exc)) from exc
+                from dataclasses import replace as _replace
+
+                params = params.model_copy(
+                    update={"profile": _replace(params.profile, workspace_id=worktree_id)}
+                )
+                workspace_path = str(worktree_path)
+                workspace_kind = "worktree"
+                workspace_id = worktree_id
+            else:
+                workspace_path = None
+                workspace_kind = None
+                workspace_id = params.profile.workspace_id
             self._check_session(*caller, takeover=params.takeover)
-            self.ops.store.join_orchestrator(name, caller[1], params.profile)
+            self.ops.store.join_orchestrator(
+                name,
+                caller[1],
+                params.profile,
+                workspace_path=workspace_path,
+                workspace_kind=workspace_kind,
+            )
             self._accept_session(*caller, takeover=params.takeover)
             unchanged = self._guide_hashes.get(caller[1]) == digest
             self._guide_hashes[caller[1]] = digest
@@ -378,6 +426,9 @@ class RpcDispatcher:
                 "guide_sha256": digest,
                 "state": state,
                 "unacked_delivered": state["unacked_delivered"],
+                "workspace_path": workspace_path,
+                "workspace_id": workspace_id,
+                "workspace_kind": workspace_kind,
                 "resume_procedure": (
                     "Call get_state first; independently read the known change request "
                     "and its head, state, base and merge commit using the forge appendix. "

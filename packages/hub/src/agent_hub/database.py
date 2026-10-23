@@ -21,6 +21,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v25 is #244's agent workspace path and kind (`worktree` or `clone`).
 # v24 is #281's forge-reported `gate_reading.merged_sha`.
 # v23 is #241's `work_submitted` event kind for `robomate submit`.
 # v22 is #240's run identity and sequential queue: `workflow.run_id`
@@ -45,7 +46,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 
 class DatabaseVersionError(RuntimeError):
@@ -97,9 +98,19 @@ JOIN_COLUMNS = {
     "effort_source": f"TEXT NOT NULL DEFAULT '{UNKNOWN}'"
     f" CHECK (effort_source IN ({_sql_values(ModelSource)}))",
 }
+# Agent workspace path and kind (#244, v25). Worktrees created at join record
+# their path with kind `worktree`; an explicit `HUB_WORKSPACE` clone records
+# its path with kind `clone`. Rows written before v25 (and legacy `check_in`
+# clones that report no path) hold NULL, which the CHECK admits.
+WORKSPACE_COLUMNS = {
+    "workspace_path": "TEXT",
+    "workspace_kind": "TEXT CHECK (workspace_kind IN ('worktree', 'clone'))",
+}
 _AGENT_SQL = "".join(
     f"\n    {name} {spec},"
-    for name, spec in (PROFILE_COLUMNS | PEER_ADDRESS_COLUMNS | JOIN_COLUMNS).items()
+    for name, spec in (
+        PROFILE_COLUMNS | PEER_ADDRESS_COLUMNS | JOIN_COLUMNS | WORKSPACE_COLUMNS
+    ).items()
 )
 
 
@@ -404,6 +415,7 @@ def initialize_database(path: Path) -> None:
         _migrate_orchestrator_last_call(connection)
         _migrate_standing_role_and_join_profile(connection)
         _migrate_run_identity_and_queue(connection)
+        _migrate_workspace_path_and_kind(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -470,6 +482,20 @@ def _migrate_run_identity_and_queue(connection: sqlite3.Connection) -> None:
             suffix += 1
             candidate = f"{run_id}{suffix}"
         connection.execute("UPDATE workflow SET run_id = ? WHERE id = ?", (candidate, workflow_id))
+
+
+def _migrate_workspace_path_and_kind(connection: sqlite3.Connection) -> None:
+    """Add the agent workspace path and kind on agent (#244, v25).
+
+    Worktrees created at join record their path with kind `worktree`; an
+    explicit `HUB_WORKSPACE` clone records its path with kind `clone`. Rows
+    written before v25 hold NULL for both, which the CHECK admits.
+    """
+
+    columns = _columns(connection, "agent")
+    for name, spec in WORKSPACE_COLUMNS.items():
+        if name not in columns:
+            connection.execute(f"ALTER TABLE agent ADD COLUMN {name} {spec}")
 
 
 def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:
