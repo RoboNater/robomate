@@ -334,6 +334,27 @@ def await_registry(
         time.sleep(0.05)
 
 
+def await_hub_stdout(process: subprocess.Popen[str], needle: str, timeout_s: float = 10.0) -> str:
+    """Poll a hub's stdout log until `needle` appears (#327 signature 3).
+
+    `await_hub` returns on hub.json, which `started()` writes before the
+    registry update and the "running" print. Waiting for the print ensures the
+    registry entry carries the live URL before `ls` probes it.
+    """
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        printed = _hub_stdout(process)
+        if needle in printed:
+            return printed
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"hub stdout did not contain {needle!r}\n"
+                f"--- stdout ---\n{printed}\n--- stderr ---\n{_hub_stderr(process)}"
+            )
+        time.sleep(0.05)
+
+
 @contextmanager
 def _cleanup_step(pending: BaseException | None, what: str) -> Iterator[None]:
     """Raise a cleanup failure, or note it on the failure already propagating."""
@@ -612,24 +633,82 @@ def test_two_hubs_in_one_repository(
             assert (worktree_root / str(info["name"]) / "token" / "token").is_file()
             assert not (checkout / ".robomate").exists()
         assert not (root / ".robomate").exists()
-        for _ in range(200):
-            printed = _hub_stdout(hub_a)
-            if "ROBOMATE_TOKEN_FILE=" in printed:
-                break
-            time.sleep(0.05)
-        assert f"Hub wt-a running at {a['url']}" in printed
-        assert f"Hub state: {worktree_root / 'wt-a' / 'state'}" in printed
+        # #327 signature 3: `started()` writes hub.json before the registry
+        # update and the print, so `await_hub` alone can precede a live
+        # registry entry. Wait for both prints, then for both registry entries
+        # to carry URLs, before the first `ls` probes /healthz.
+        printed_a = await_hub_stdout(hub_a, "ROBOMATE_TOKEN_FILE=")
+        printed_b = await_hub_stdout(hub_b, "ROBOMATE_TOKEN_FILE=")
+        assert f"Hub wt-a running at {a['url']}" in printed_a
+        assert f"Hub wt-b running at {b['url']}" in printed_b
+        assert f"Hub state: {worktree_root / 'wt-a' / 'state'}" in printed_a
         # State outside the checkout survives `git worktree remove`: no warning.
-        assert "`git worktree remove` deletes it" not in printed
+        assert "`git worktree remove` deletes it" not in printed_a
 
         # #265: read-only ls/status run in-process against the live hubs;
         # up/down lifecycle and the rename refusal stay subprocess per #145.
-        listing = _inproc_cli(monkeypatch, capsys, root, env, "ls")
-        assert listing.returncode == 0, listing.stderr
-        for checkout, info in ((wt_a, a), (wt_b, b)):
-            line = next(x for x in listing.stdout.splitlines() if x.startswith(f"{info['name']} "))
-            assert "live" in line and str(info["url"]) in line
-            assert f"checkout {checkout}" in line and f"repository {root}" in line
+        # #327 signature 3: under `-n auto` load a just-started hub can miss
+        # one /healthz probe and read as stopped. Poll until both read live,
+        # capturing the registry entry and health at the moment of listing.
+        deadline = time.monotonic() + 30.0
+        listing = None
+        last_diagnostics = ""
+        while True:
+            listing = _inproc_cli(monkeypatch, capsys, root, env, "ls")
+            assert listing.returncode == 0, listing.stderr
+            lines = {
+                name: next(
+                    (x for x in listing.stdout.splitlines() if x.startswith(f"{name} ")),
+                    None,
+                )
+                for name in ("wt-a", "wt-b")
+            }
+            if all(
+                line is not None
+                and "live" in line
+                and str(info["url"]) in line
+                and f"checkout {checkout}" in line
+                for line, (checkout, info) in zip(
+                    (lines["wt-a"], lines["wt-b"]), ((wt_a, a), (wt_b, b)), strict=True
+                )
+            ) and all(
+                f"repository {root}" in line
+                for line in (lines["wt-a"], lines["wt-b"])
+                if line is not None
+            ):
+                break
+            # Diagnostics for the #327 report: registry entry, pid liveness,
+            # and the /healthz answer `ls` saw.
+            from agent_hub_common.registry import check_healthz, process_alive
+
+            try:
+                entries = {
+                    e.get("name"): e
+                    for e in json.loads(
+                        _inproc_cli(monkeypatch, capsys, root, env, "ls", "--json").stdout
+                    )
+                }
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                entries = {"error": repr(exc)}
+            health = {}
+            for name, info in (("wt-a", a), ("wt-b", b)):
+                entry = entries.get(name) if isinstance(entries, dict) else None
+                url = str((entry or {}).get("url") or info.get("url") or "")
+                pid_raw = (entry or {}).get("pid") or info.get("pid") or 0
+                pid = int(str(pid_raw))
+                health[name] = {
+                    "registry_url": (entry or {}).get("url"),
+                    "registry_pid": (entry or {}).get("pid"),
+                    "pid_alive": process_alive(pid),
+                    "health": check_healthz(url).hub_id if url else None,
+                }
+            last_diagnostics = f"entries={entries!r} health={health!r}"
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"ls did not show both hubs live\nlast listing:\n{listing.stdout}\n"
+                    f"diagnostics: {last_diagnostics}"
+                )
+            time.sleep(0.2)
 
         # The main checkout owns no hub: both commands refuse and list both.
         for command in (["down"], ["status"]):
@@ -721,6 +800,11 @@ def test_bare_repository_hub_runs_in_a_linked_worktree(
             info = await_hub(checkout, process)
             assert (info["name"], info["git_common_dir"]) == (checkout.name, str(bare))
             assert info["default_branch"] == "main"
+        # #327: wait for both "running" prints so the registry entries carry
+        # live URLs before any later listing; concurrent first `up`s share one
+        # worktree root whose record is now published atomically.
+        for _checkout, process in processes.items():
+            await_hub_stdout(process, "ROBOMATE_TOKEN_FILE=")
         # New hubs keep their state outside every checkout: nothing to exclude.
         assert not (bare / "info" / "exclude").exists() or "/.robomate/" not in (
             bare / "info" / "exclude"
@@ -2584,6 +2668,10 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
         a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
         assert (a["name"], b["name"]) == ("wt-a", "wt-b")
         assert a["port"] != b["port"]
+        # #327: concurrent first `up`s share one worktree root; wait for both
+        # prints so both registry entries are live before asserting.
+        await_hub_stdout(hub_a, "ROBOMATE_TOKEN_FILE=")
+        await_hub_stdout(hub_b, "ROBOMATE_TOKEN_FILE=")
 
         # A live hub is never forgotten.
         refused = _cli(wt_a, env, "forget", "wt-a")

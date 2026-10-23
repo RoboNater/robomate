@@ -10,6 +10,7 @@ checkout for a legacy hub that has not been relocated.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -673,9 +674,19 @@ def read_root_record(root: Path) -> dict[str, Any] | None:
             return _read_json_object(path, "worktree root record")
         except DiscoveryError:
             # A sibling hub's first `up` may be between creating the record and
-            # writing it: an empty file is read again shortly.
-            if delay is None or path.stat().st_size:
+            # writing it: an empty file is read again shortly. Production now
+            # publishes atomically (claim writes a complete temp file then
+            # hard-links it), so an empty file is only a legacy crash remnant,
+            # but the retry stays as a safety net (#327).
+            if delay is None:
                 raise
+            try:
+                if path.stat().st_size:
+                    raise
+            except FileNotFoundError:
+                # The record vanished between the read and the stat: treat it
+                # as missing rather than failing the stat itself (#327).
+                return None
             time.sleep(delay)
     raise AssertionError("unreachable")  # pragma: no cover
 
@@ -704,12 +715,21 @@ def check_worktree_root(root: Path, common: Path) -> bool:
     record = read_root_record(root)
     if record is None:
         if any(root.iterdir()):
-            raise DiscoveryError(
-                f"the worktree root {root} holds files but no {ROOT_RECORD_FILENAME}, "
-                f"so it is not known to belong to {repository_dir(common)}; {advice}, "
-                "or move what it holds away"
-            )
-        return False
+            # Another legitimate claimant may have published a complete record
+            # between the read above and this enumeration: reconcile ownership
+            # before refusing a nonempty directory as unrelated (review r1-1,
+            # #327). The re-read observes the now-published record when that
+            # is what happened; a still-missing record stays unrelated, and a
+            # foreign record is refused below as before.
+            record = read_root_record(root)
+            if record is None:
+                raise DiscoveryError(
+                    f"the worktree root {root} holds files but no {ROOT_RECORD_FILENAME}, "
+                    f"so it is not known to belong to {repository_dir(common)}; {advice}, "
+                    "or move what it holds away"
+                )
+        else:
+            return False
     recorded = record.get("git_common_dir")
     if not isinstance(recorded, str) or not _same_path(Path(recorded), common):
         raise DiscoveryError(
@@ -719,18 +739,56 @@ def check_worktree_root(root: Path, common: Path) -> bool:
 
 
 def claim_worktree_root(root: Path, common: Path) -> None:
-    """Create a worktree root with its ownership record, or confirm it is this repository's."""
+    """Create a worktree root with its ownership record, or confirm it is this repository's.
+
+    Publication is atomic (#327): the complete record is written to a temp
+    file outside `root` (so concurrent readers never see a temp file as an
+    unrelated nonempty root) and then hard-linked into place. Readers
+    therefore observe only a missing record or a complete one, never an
+    empty or partially-written file. Two hubs of one repository racing here
+    publish identical content; the loser observes the winner's record via the
+    trailing check. A root of another repository is still refused.
+
+    When the filesystem cannot hard-link, publication fails explicitly
+    instead of falling back to a non-atomic exclusive create, which would
+    re-expose the empty/partial-record startup failure (review r1-2, #327).
+    """
 
     if check_worktree_root(root, common):
         return
+    # The temp file lives beside `root`, never inside it: a temp file inside
+    # `root` would make a concurrent `check_worktree_root` see a nonempty
+    # directory with no record and refuse it as unrelated (#327 signature 2).
+    root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".robomate-root-", dir=root.parent)
     try:
-        with (root / ROOT_RECORD_FILENAME).open("x", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump({"git_common_dir": str(common)}, stream, indent=2, sort_keys=True)
             stream.write("\n")
-    except FileExistsError:
-        # A sibling hub of another repository created it first; compare.
-        check_worktree_root(root, common)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, root / ROOT_RECORD_FILENAME)
+        except FileExistsError:
+            # A sibling hub published first (same or another repository);
+            # compare below.
+            pass
+        except OSError as exc:
+            # No silent non-atomic fallback: opening the final name with "x"
+            # and copying would expose an empty/partial record to concurrent
+            # readers. Fail explicitly so the operator knows this filesystem
+            # cannot publish the ownership record atomically (review r1-2).
+            raise DiscoveryError(
+                f"cannot publish the worktree root record in {root}: "
+                f"hard links are not supported here ({exc}); "
+                "use a filesystem with hard-link support for the worktree root"
+            ) from exc
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+    # Confirm the published record is this repository's (or refuse a foreign one).
+    check_worktree_root(root, common)
 
 
 def hub_paths(worktree_root: Path, name: str) -> tuple[Path, Path]:
