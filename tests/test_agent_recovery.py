@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
 import json
 import os
 import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -810,3 +812,16 @@ def test_interactive_powershell_quotes_all_single_quote_delimiters(
         "harness __ROBOMATE_HARNESS_ARGS__", None, False, [word], True
     )
     assert argv[-1] == "harness 'don''t ‘‘x’’ ‚‚x‛‛'\nexit $LASTEXITCODE"
+
+
+def test_interactive_unicode_arguments_do_not_depend_on_console_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interactive = importlib.import_module("agent_interactive")
+    monkeypatch.setattr(interactive.shutil, "which", lambda _: "pwsh")
+    output = io.BytesIO()
+    console = io.TextIOWrapper(output, encoding="ascii")
+    monkeypatch.setattr(sys, "stdout", console)
+    interactive.launch_command("harness __ROBOMATE_HARNESS_ARGS__", None, False, ["don’t ‛"], True)
+    console.flush()
+    assert b"\\u2019" in output.getvalue() and b"\\u201b" in output.getvalue()

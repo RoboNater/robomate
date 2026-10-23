@@ -82,5 +82,5 @@ def launch_command(
 
     command = command.replace(ARGUMENT_SLOT, " ".join(map(quote, harness_args)))
     mode = "safe-mode (prompting defaults)" if safe_mode else "run permissions"
-    print(f"Interactive launch: {mode}; harness arguments: {harness_args!r}", flush=True)
+    print(f"Interactive launch: {mode}; harness arguments: {harness_args!a}", flush=True)
     return shell_argv(command, powershell)

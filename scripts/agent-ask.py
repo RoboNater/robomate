@@ -154,7 +154,7 @@ def main() -> int:
             f"Ask {args.agent} ({args.harness}): conversation {selected}; "
             f"working directory {args.workdir}; hub tools are unavailable; "
             f"permissions: {'safe-mode' if controls.safe_mode else 'run permissions'}; "
-            f"harness arguments: {extra!r}.",
+            f"harness arguments: {extra!a}.",
             flush=True,
         )
         env = os.environ | {"ROBOMATE_ASK_SESSION_ID": selected}
