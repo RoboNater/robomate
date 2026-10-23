@@ -3666,8 +3666,9 @@ def ask_fake(tmp_path: Path, harness: str) -> dict[str, str]:
         (bin_dir / f"{name}.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
     # This matches npm's Bash shim shape and captures argv before the native hop.
     cli = bin_dir / name
+    interpreter = "/usr/bin/bash" if os.name == "nt" else "/bin/bash"
     cli.write_text(
-        "#!/bin/bash\n"
+        f"#!{interpreter}\n"
         'if [ -n "${ASK_SHIM_ARGV_LOG:-}" ]; then '
         'printf \'%s\\0\' "$@" > "$ASK_SHIM_ARGV_LOG"; fi\n'
         + "exec "

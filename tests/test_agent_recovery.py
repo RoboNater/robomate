@@ -825,3 +825,23 @@ def test_interactive_unicode_arguments_do_not_depend_on_console_encoding(
     interactive.launch_command("harness __ROBOMATE_HARNESS_ARGS__", None, False, ["don’t ‛"], True)
     console.flush()
     assert b"\\u2019" in output.getvalue() and b"\\u201b" in output.getvalue()
+
+
+def test_windows_shell_selection_prefers_msys_over_git_native_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    git = tmp_path / "Git/cmd/git.exe"
+    launcher = tmp_path / "Git/bin/bash.exe"
+    msys = tmp_path / "Git/usr/bin/bash.exe"
+    for executable in (git, launcher, msys):
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.touch()
+    monkeypatch.setattr(
+        RECOVERY.shutil, "which", lambda name: str(git if name == "git" else launcher)
+    )
+    assert RECOVERY.bash_executable(windows=True) == str(msys)
+    interactive = importlib.import_module("agent_interactive")
+    resolver = RECOVERY.bash_executable
+    monkeypatch.setattr(RECOVERY, "bash_executable", lambda: resolver(windows=True))
+    assert interactive.launch_command("harness", None, False, [], False)[0] == str(msys)

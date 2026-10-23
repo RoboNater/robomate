@@ -753,14 +753,17 @@ def process_exists(pid: int) -> bool:
 
 
 def bash_executable(*, windows: bool | None = None) -> str:
-    """Use native Git Bash on Windows, never System32's WSL launcher."""
+    """Prefer Git for Windows' MSYS Bash, never System32's WSL launcher."""
     windows = os.name == "nt" if windows is None else windows
     if not windows:
         return "bash"
     git = shutil.which("git")
     if git:
         for parent in Path(git).parents[:3]:
-            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+            # Git's bin/bash.exe is a native forwarding launcher. Prefer the
+            # MSYS binary so a Bash-to-Bash exec keeps argv in MSYS, rather
+            # than serializing quote-bearing words through a Windows cmdline.
+            for relative in ("usr/bin/bash.exe", "bin/bash.exe"):
                 candidate = parent / relative
                 if candidate.is_file():
                     return str(candidate)
