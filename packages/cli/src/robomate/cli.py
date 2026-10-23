@@ -64,6 +64,7 @@ from agent_hub_common.discovery import (
     stale_partial_text,
     state_dir,
     token_file,
+    validate_agent_name,
     validate_hub_name,
     verify_local_hub,
     write_binding,
@@ -337,6 +338,38 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         name = validate_hub_name(args.name)
     else:
         name = _hub_name(args.name, old.get("name"), repo.root)
+    # M2 Step 7b (#314): `robomate up --agents a,b,c` creates each agent's
+    # worktree ahead of the join through the same path as `hub.workspace`,
+    # printing each path for the operator to start the harness in.
+    up_agents: list[str] = []
+    if getattr(args, "agents", None):
+        seen: set[str] = set()
+        for raw in str(args.agents).split(","):
+            item = raw.strip()
+            if not item:
+                continue
+            cleaned = validate_agent_name(item)
+            if cleaned not in seen:
+                seen.add(cleaned)
+                up_agents.append(cleaned)
+        if up_agents:
+            if layered_config.worktree_root is None:
+                raise RuntimeError("hub has no worktree root; cannot create agent worktrees")
+            from agent_hub.worktrees import WorktreeManager
+
+            _up_manager = WorktreeManager(
+                hub_id=hub_id,
+                hub_name=name,
+                checkout=repo.root,
+                git_common_dir=repo.git_common_dir,
+                default_branch=repo.default_branch,
+                worktree_root=layered_config.worktree_root,
+                state_dir=directory,
+                token_file=placement.token_file,
+            )
+            for agent in up_agents:
+                _up_path, _ = _up_manager.ensure(agent)
+                print(str(_up_path), flush=True)
     identity = {
         "hub_id": hub_id,
         "name": name,
@@ -1447,6 +1480,35 @@ def _relocate(selector: str | None) -> None:
     print(f"Start it with robomate up in {hub.checkout}.")
 
 
+def _workspace(agent_name: str, selector: str | None) -> None:
+    """Create an agent's worktree ahead of join via operator-only `hub.workspace` (M2 Step 7b).
+
+    Operator-only (spec §12): needs the operator credential. Prints the
+    worktree path for the operator to start the harness in. A later join
+    reuses the same worktree with its binding and hub lock.
+    """
+
+    escape_unencodable_output()
+    clean = agent_name.strip()
+    validate_agent_name(clean)
+    endpoint, _ = _connect(selector)
+    operator_token = read_token_file(operator_token_path(), "operator token")
+    try:
+        result = _rpc(
+            endpoint.url,
+            endpoint.token,
+            "hub.workspace",
+            operator_token=operator_token,
+            params={"agent": clean},
+        )
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"hub at {endpoint.url} rejected workspace (HTTP {exc.code})") from exc
+    path = result.get("path")
+    if not isinstance(path, str) or not path:
+        raise RuntimeError("hub.workspace did not return a worktree path")
+    print(path)
+
+
 def _ls(as_json: bool) -> None:
     """List every registered hub, live or stopped, with name, checkout and repository."""
 
@@ -1522,6 +1584,14 @@ def main() -> None:
     up.add_argument("--public-url")
     up.add_argument("--port", type=int)
     up.add_argument("--no-call-accounting", action="store_true")
+    up.add_argument(
+        "--agents",
+        metavar="A,B,C",
+        help=(
+            "comma-separated agent names to create worktrees for ahead of join "
+            "(e.g. alice,bob,charlie); each prints its path"
+        ),
+    )
     down = commands.add_parser("down", help="stop this checkout's hub, or the one --hub names")
     down.add_argument(
         "--all",
@@ -1572,7 +1642,12 @@ def main() -> None:
         "relocate",
         help="move a stopped hub's state and token out of its checkout, beside its worktrees",
     )
-    for command in (down, status, inbox, answer, submit, relocate):
+    workspace = commands.add_parser(
+        "workspace",
+        help="create an agent's worktree ahead of join and print its path (operator-only)",
+    )
+    workspace.add_argument("agent", metavar="NAME", help="agent name (e.g. bob)")
+    for command in (down, status, inbox, answer, submit, relocate, workspace):
         command.add_argument(
             "--hub",
             metavar="NAME|HUB_ID|CHECKOUT",
@@ -1628,6 +1703,8 @@ def main() -> None:
             _submit(args.file, args.issue, args.policy, args.hub)
         elif args.command == "relocate":
             _relocate(args.hub)
+        elif args.command == "workspace":
+            _workspace(args.agent, args.hub)
         elif args.command == "ls":
             _ls(args.json)
         elif args.command == "forget":

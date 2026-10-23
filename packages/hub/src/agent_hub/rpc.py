@@ -344,6 +344,39 @@ class RpcDispatcher:
             audit.actor, audit.session = "operator", None
             background.add_task(self.shutdown)
             return {"stopping": True}
+        # Operator-only worktree creation ahead of join (M2 Step 7b, #314):
+        # `robomate workspace <name>` and `robomate up --agents …` go through
+        # here. The hub creates or reuses `<root>/<hub>/<agent>/` with its lock
+        # and binding; a later join reuses it. Workers never call `/rpc` (#132).
+        if method == "hub.workspace":
+            require_operator(headers, self.operator_token)
+            audit.actor, audit.session = "operator", None
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                raise RpcError(INVALID_PARAMS, "hub.workspace takes an object params")
+            raw_agent = params.get("agent", params.get("name"))
+            if not isinstance(raw_agent, str) or not raw_agent.strip():
+                raise RpcError(INVALID_PARAMS, "hub.workspace takes a string agent name")
+            try:
+                agent_name = validate_agent_name(raw_agent.strip())
+            except ValueError as exc:
+                raise RpcError(INVALID_PARAMS, str(exc)) from exc
+            if self.worktree_manager is None:
+                raise RpcError(
+                    INVALID_PARAMS,
+                    "hub has no repository context; worktree creation needs a checkout hub",
+                )
+            from .worktrees import WorktreeError
+
+            try:
+                _wt_path, _wt_id = self.worktree_manager.ensure(agent_name)
+            except WorktreeError as exc:
+                raise RpcError(INVALID_PARAMS, str(exc)) from exc
+            return {
+                "agent": agent_name,
+                "path": str(_wt_path),
+                "workspace_id": _wt_id,
+            }
         if method == "join":
             if caller is None:
                 raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
@@ -363,6 +396,65 @@ class RpcDispatcher:
             except HTTPException as exc:
                 raise RpcError(NOT_FOUND, str(exc.detail)) from exc
             digest = hashlib.sha256(guide.encode("utf-8")).hexdigest()
+            # M2 Step 7b (#314): `setup` and agent pins from the layers (Step 5).
+            # An invalid layer file refuses the join naming the file and key.
+            from agent_hub_common import load_config_layers
+            from agent_hub_common.config_layers import ConfigLayerError
+
+            try:
+                _common_raw = (self.hub_info or {}).get("git_common_dir")
+                from pathlib import Path as _Path
+
+                _common = _Path(str(_common_raw)) if _common_raw else None
+                if _common is None and self.worktree_manager is not None:
+                    _common = self.worktree_manager.common
+                _state_raw = (self.hub_info or {}).get("state_dir")
+                if _state_raw is not None:
+                    _hub_config = _Path(str(_state_raw)) / "config.toml"
+                    _layers = load_config_layers(hub_config=_hub_config, git_common_dir=_common)
+                else:
+                    try:
+                        _store_state = self.ops.store._state_dir()
+                    except Exception:
+                        _store_state = None
+                    _layers = load_config_layers(
+                        hub_config=(_store_state / "config.toml")
+                        if _store_state is not None
+                        else None,
+                        git_common_dir=_common,
+                    )
+            except ConfigLayerError as exc:
+                raise RpcError(INVALID_PARAMS, str(exc)) from exc
+            _pinned = _layers.agent_config(name)
+            _join_setup = _layers.setup
+            if _pinned.model is not None:
+                from dataclasses import replace as _replace_pin
+
+                from agent_hub_common import ModelSource as _ModelSource
+
+                params = params.model_copy(
+                    update={
+                        "profile": _replace_pin(
+                            params.profile,
+                            model=_pinned.model,
+                            model_source=_ModelSource.ENV,
+                        )
+                    }
+                )
+            if _pinned.effort is not None:
+                from dataclasses import replace as _replace_effort
+
+                from agent_hub_common import ModelSource as _ModelSourceEffort
+
+                params = params.model_copy(
+                    update={
+                        "profile": _replace_effort(
+                            params.profile,
+                            effort=_pinned.effort,
+                            effort_source=_ModelSourceEffort.ENV,
+                        )
+                    }
+                )
             reported_path = (params.workspace_path or "").strip() or None
             workspace_path: str | None
             workspace_kind: str | None
@@ -429,6 +521,11 @@ class RpcDispatcher:
                 "workspace_path": workspace_path,
                 "workspace_id": workspace_id,
                 "workspace_kind": workspace_kind,
+                "setup": _join_setup,
+                "model": params.profile.model,
+                "model_source": params.profile.model_source.value,
+                "effort": params.profile.effort,
+                "effort_source": params.profile.effort_source.value,
                 "resume_procedure": (
                     "Call get_state first; independently read the known change request "
                     "and its head, state, base and merge commit using the forge appendix. "

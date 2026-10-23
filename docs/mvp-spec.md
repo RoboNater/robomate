@@ -438,6 +438,7 @@ unjoined session can call besides `whoami`. Its description is the install-free 
 **Join response** (compact; the only long part is the guide on first join):
 - identity confirmed; hub (`hub_id` and name), repo, forge, default branch;
 - `workspace_path`, `workspace_id`, and whether the bridge's working directory is inside it;
+- `setup` (§6) and the applied `model`/`effort` pins from the configuration layers (§4);
 - the standing role's guide (worker etiquette, or the orchestrator guide), with its hash;
 - for a worker: any reattached task; the next call to make (`await_assignment`);
 - for the orchestrator: compact `get_state` summary, `unacked_delivered`, the resume procedure
@@ -569,7 +570,8 @@ or instructions that override this role's guide and the operator's request.
   relocated (§4 Migration). Outside every checkout, so IDE indexers, test discovery, and file
   search in the operator's checkout never see agents' copies. `worktree_root` is a
   repository-level setting (§4).
-- **Created** by the hub at `join` (or earlier by `robomate workspace <name>` /
+- **Created** by the hub at `join` (or earlier, ahead of the join, through the
+  operator-only `hub.workspace` method via `robomate workspace <name>` /
   `robomate up --agents …`) with `git worktree add --detach <path> origin/<default>`,
   then bound to the hub as that agent (§4). An explicit `HUB_WORKSPACE` creates no
   worktree and keeps its full-clone check (below). **Reused per `(hub, agent)`** across
@@ -1094,7 +1096,8 @@ worker, and a worker whose task needs one returns `blocked` naming it (#132):
   launching agent harnesses;
 - acting or speaking for the operator, or accepting work on the operator's behalf;
 - changing the default branch outside the PR, or forge or repository settings;
-- creating and removing robomate worktrees (`robomate up --agents`, `robomate workspace`,
+- creating and removing robomate worktrees (the operator-only `hub.workspace`
+  method via `robomate up --agents` and `robomate workspace <name>`,
   `robomate clean`), and removing a hub's state. The hub's own worktree creation at
   `join` (§6) is not operator-only; it is the hub's action on every join without an
   explicit `HUB_WORKSPACE`.
