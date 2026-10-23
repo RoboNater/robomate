@@ -91,7 +91,7 @@ harness" means a nonempty `denise_harness` CLI/TOML override, not merely choosin
 | Nonempty `denise_harness` naming a harness without doctor support | Preparation error naming that override and supported alternatives. |
 | Model/effort values, inherited or explicitly supplied | Forward through the existing adapters without a new model/effort allowlist or provider probe; the harness validates values when Denise is started. Never silently substitute a different value. |
 | Nonempty explicit `denise_effort` where the interactive harness has no supported way to render an effort option | Preparation error naming the unsupported option. This is an adapter capability check, not validation of the effort value. |
-| Inherited effort with no supported interactive representation | Keep team preparation working; skip the doctor profile with a warning and an override remedy. |
+| Inherited effort with no supported interactive representation | Keep team preparation working and still generate the doctor profile and `start-denise`, without the effort option: Denise uses the harness's default effort. Print a note naming the inherited effort that is not applied. Never skip Denise for effort alone. |
 | Invalid selector/type, or `denise_settings_from = "none"` without the required harness | Configuration error, independent of the unsupported-inheritance rule. |
 
 Initially implement interactive Claude Code and Codex on Bash/native PowerShell; then
@@ -316,7 +316,10 @@ Cover generated scripts by executing them with fake harness executables, not jus
 their text. Prove no HTTP is needed at startup, no worker check-in/orchestrator takeover
 occurs, no team session file changes, and repeated consultations keep separate reports.
 Carry forward Step 1's unsupported-inheritance tests through the emitted start-script
-path. In this same first-runnable PR, clarify `AGENTS.md`'s role wording for Denise's
+path. Apply the default-effort rule above in settings resolution: an inherited effort
+the harness can't render no longer skips Denise, so before Step 3 an OpenCode or
+AntiGravity team's only skip reason is the unsupported harness, and the warning says so.
+In this same first-runnable PR, clarify `AGENTS.md`'s role wording for Denise's
 explicitly requested recovery (including leaving a restored run hub running), while
 retaining joined workers' restrictions and the isolated-smoke-only exception.
 
@@ -337,7 +340,12 @@ are separate operator evidence, not inferred from fake-harness tests.
 ### Step 3 — Remaining interactive harnesses, remote context and docs
 
 Add OpenCode/AntiGravity interactive doctor profiles; test the no-MCP configuration,
-model/effort flags and effective access independently. Cover Windows Git Bash wrappers and
+model/effort flags and effective access independently. Interactive `opencode` rejects
+`--variant`, but the generated ask scripts already carry an effort as
+`agent.build.variant` in `OPENCODE_CONFIG_CONTENT`. Render an inherited OpenCode effort
+the same way if the interactive doctor session honours it; otherwise apply the
+default-effort rule. Either way, a team whose selected agent uses OpenCode gets
+`start-denise`. Cover Windows Git Bash wrappers and
 remote-worker metadata, honest unavailable evidence and a concrete worker-host resume
 recommendation. Add usage/troubleshooting to `docs/user-guide.md`, recovery links in
 `docs/development/agent-recovery.md`, `guides/README.md`'s pointer to the separate local
