@@ -3906,3 +3906,128 @@ def test_a_forgotten_new_hub_keeps_its_name_taken_by_its_directory(
     finally:
         if hub_a.poll() is None:
             stop(wt_a, env, hub_a)
+
+
+def test_workspace_creates_ahead_of_join_and_reuses(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """M2 Step 7b (#314): `robomate workspace bob` creates ahead of join with lock/binding."""
+
+    from agent_hub.worktrees import worktree_lock_reason
+
+    root, env = repository
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        name = str(info["name"])
+        # Without the operator credential the hub is never asked.
+        no_token = {**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(root / "absent-token")}
+        refused = _cli(root, no_token, "workspace", "bob")
+        assert refused.returncode == 1 and "operator token" in refused.stderr
+
+        first = _cli(root, env, "workspace", "bob")
+        assert first.returncode == 0, first.stderr
+        expected = tmp_path_worktree_root(root) / name / "bob"
+        assert first.stdout.strip() == str(expected)
+        assert expected.is_dir()
+        binding = read_binding(checkout_git_dir(expected))
+        assert binding is not None and binding.role == "agent" and binding.agent == "bob"
+        listing = subprocess.run(
+            ["git", f"--git-dir={root / '.git'}", "worktree", "list", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert f"worktree {expected.as_posix()}" in listing
+        assert worktree_lock_reason(name) in listing
+
+        # A second call reuses the same worktree.
+        second = _cli(root, env, "workspace", "bob")
+        assert second.returncode == 0, second.stderr
+        assert second.stdout.strip() == str(expected)
+
+        # Reserved names are refused.
+        for reserved in ("state", "token"):
+            bad = _cli(root, env, "workspace", reserved)
+            assert bad.returncode == 1 and "reserved" in bad.stderr
+    finally:
+        if process.poll() is None:
+            stop(root, env, process)
+
+
+def tmp_path_worktree_root(root: Path) -> Path:
+    """Default `<parent>/<repo>.robomate/` for the repository fixture."""
+
+    return root.parent / f"{root.name}.robomate"
+
+
+def test_up_with_agents_creates_worktrees_ahead_of_join(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """M2 Step 7b (#314): `robomate up --agents bob,charlie` prints each path."""
+
+    import uuid
+
+    import httpx
+    from agent_hub.worktrees import worktree_lock_reason
+    from agent_hub_common import SCHEMA_VERSION, MetaKeys
+
+    root, env = repository
+    process = start(root, env, "--agents", "bob,charlie")
+    try:
+        info = await_hub(root, process)
+        name = str(info["name"])
+        out = _hub_stdout(process)
+        # Each worktree path is printed for the operator to start the harness in.
+        for agent in ("bob", "charlie"):
+            expected = tmp_path_worktree_root(root) / name / agent
+            assert str(expected) in out, out
+            assert expected.is_dir()
+            binding = read_binding(checkout_git_dir(expected))
+            assert binding is not None and binding.agent == agent
+        listing = subprocess.run(
+            ["git", f"--git-dir={root / '.git'}", "worktree", "list", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert worktree_lock_reason(name) in listing
+
+        # A later join reuses the `up --agents` worktree (r1-3a): same path.
+        token = hub_token(root).read_text(encoding="utf-8").strip()
+        url = str(info["url"])
+        expected_bob = tmp_path_worktree_root(root) / name / "bob"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "messageId": uuid.uuid4().hex,
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "READY"}],
+                    "metadata": {
+                        MetaKeys.AGENT: "bob",
+                        MetaKeys.STANDING_ROLE: "implementer",
+                        MetaKeys.TAKEOVER: False,
+                        MetaKeys.CAPABILITIES: ["python"],
+                        MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+                        MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+                        MetaKeys.WORKER_INSTANCE_ID: "bob-up-agents",
+                        MetaKeys.WORKSPACE_EXPLICIT: False,
+                        MetaKeys.WORKSPACE_PATH: str(root),
+                    },
+                }
+            },
+        }
+        with httpx.Client(
+            base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=10.0
+        ) as live:
+            response = live.post("/a2a", json=payload)
+        assert response.status_code == 200, response.text
+        meta = response.json()["result"].get("metadata") or {}
+        assert meta.get(MetaKeys.WORKSPACE_PATH) == str(expected_bob)
+        assert meta.get(MetaKeys.WORKSPACE_KIND) == "worktree"
+    finally:
+        if process.poll() is None:
+            stop(root, env, process)

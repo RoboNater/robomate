@@ -83,6 +83,29 @@ from .store import (
     _normalize_part,
 )
 
+
+def _join_layers(
+    settings: HubSettings, worktree_manager: Any | None, agent_name: str
+) -> tuple[str | None, str | None, str | None]:
+    """Load `setup` and the agent's model/effort pins for a join (M2 Step 7b, #314).
+
+    Returns (setup, pin_model, pin_effort) from the configuration layers
+    (Step 5). An invalid layer file refuses the join naming the file and key.
+    Shared with the orchestrator join via `join_config` (r1-4).
+    """
+
+    from agent_hub_common.config_layers import ConfigLayerError
+
+    from .join_config import join_config_from_manager
+
+    try:
+        return join_config_from_manager(worktree_manager, settings.state_dir, agent_name)
+    except ConfigLayerError as exc:
+        raise _invalid(str(exc)) from exc
+    except Exception as exc:
+        raise _invalid(str(exc)) from exc
+
+
 logger = logging.getLogger(__name__)
 
 CHECK_IN_TEXT = "READY"
@@ -591,6 +614,21 @@ class A2AProtocol:
             raise _invalid(f"metadata.{MetaKeys.TAKEOVER} must be a boolean")
         takeover = raw_takeover
         profile = _profile(metadata)
+        # M2 Step 7b (#314): `setup` and agent pins from the layers (Step 5).
+        # Only joins get them; legacy `check_in` keeps its pre-worktree behaviour.
+        join_setup: str | None = None
+        if is_join:
+            join_setup, pin_model, pin_effort = _join_layers(
+                self.settings, self.worktree_manager, agent_name
+            )
+            if pin_model is not None:
+                from dataclasses import replace as _replace_profile
+
+                profile = _replace_profile(profile, model=pin_model, model_source=ModelSource.ENV)
+            if pin_effort is not None:
+                profile = _replace_profile(
+                    profile, effort=pin_effort, effort_source=ModelSource.ENV
+                )
         # Explicit `HUB_WORKSPACE` vs the bridge-cwd fallback (r2-2 on #244):
         # an explicit workspace with no matching identity is refused; the
         # fallback stays lenient and gets a generated worktree.
@@ -656,6 +694,7 @@ class A2AProtocol:
                 "workspace_path": workspace_path,
                 "workspace_kind": workspace_kind,
                 "workspace_explicit": workspace_explicit,
+                "setup": join_setup,
             }
         )
 
@@ -675,6 +714,16 @@ class A2AProtocol:
                 ack_meta[MetaKeys.WORKSPACE_KIND] = agent.workspace_kind
             if agent.reattached_task is not None:
                 ack_meta[MetaKeys.REATTACHED_TASK] = agent.reattached_task
+            if is_join:
+                # M2 Step 7b: the join response carries `setup` and the
+                # applied model/effort pins, so the agent runs setup in its
+                # worktree with the operator's pins.
+                ack_meta[MetaKeys.MODEL] = agent.model
+                ack_meta[MetaKeys.MODEL_SOURCE] = agent.model_source.value
+                ack_meta[MetaKeys.EFFORT] = agent.effort
+                ack_meta[MetaKeys.EFFORT_SOURCE] = agent.effort_source.value
+                if join_setup is not None:
+                    ack_meta[MetaKeys.SETUP] = join_setup
             return json.dumps(
                 _agent_message(
                     "REGISTERED",

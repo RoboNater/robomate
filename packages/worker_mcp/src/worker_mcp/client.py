@@ -754,11 +754,17 @@ class WorkerHubClient:
                 ).resolve() or bridge_cwd.is_relative_to(Path(str(hub_path)).resolve())
             except Exception:
                 cwd_inside = False
+            pinned_profile = dict(asdict(profile))
+            for _key in ("model", "model_source", "effort", "effort_source"):
+                if isinstance(result.get(_key), str) and result.get(_key):
+                    pinned_profile[_key] = result.get(_key)
+            if isinstance(result.get("workspace_id"), str):
+                pinned_profile["workspace_id"] = result.get("workspace_id")
             return result | {
                 "workspace_path": str(hub_path),
                 "workspace_id": result.get("workspace_id", profile.workspace_id),
                 "cwd_inside_workspace": cwd_inside,
-                "profile": asdict(profile),
+                "profile": pinned_profile,
             }
 
         self.settings = replace(self.settings, agent_name=clean_name)
@@ -836,6 +842,34 @@ class WorkerHubClient:
         hub_workspace_path = res_meta.get(MetaKeys.WORKSPACE_PATH)
         hub_workspace_id = res_meta.get(MetaKeys.WORKSPACE_ID)
         hub_workspace_kind = res_meta.get(MetaKeys.WORKSPACE_KIND)
+        # M2 Step 7b (#314): the join response carries `setup` and the applied
+        # model/effort pins from the configuration layers.
+        hub_setup_raw = res_meta.get(MetaKeys.SETUP)
+        hub_setup = str(hub_setup_raw) if isinstance(hub_setup_raw, str) and hub_setup_raw else None
+        hub_model_raw = res_meta.get(MetaKeys.MODEL)
+        hub_model_source_raw = res_meta.get(MetaKeys.MODEL_SOURCE)
+        hub_effort_raw = res_meta.get(MetaKeys.EFFORT)
+        hub_effort_source_raw = res_meta.get(MetaKeys.EFFORT_SOURCE)
+        final_model = (
+            str(hub_model_raw)
+            if isinstance(hub_model_raw, str) and hub_model_raw
+            else profile.model
+        )
+        final_model_source = (
+            str(hub_model_source_raw)
+            if isinstance(hub_model_source_raw, str) and hub_model_source_raw
+            else profile.model_source.value
+        )
+        final_effort = (
+            str(hub_effort_raw)
+            if isinstance(hub_effort_raw, str) and hub_effort_raw
+            else profile.effort
+        )
+        final_effort_source = (
+            str(hub_effort_source_raw)
+            if isinstance(hub_effort_source_raw, str) and hub_effort_source_raw
+            else profile.effort_source.value
+        )
         final_workspace_path = (
             str(hub_workspace_path)
             if isinstance(hub_workspace_path, str) and hub_workspace_path
@@ -857,10 +891,10 @@ class WorkerHubClient:
             "harness_source": profile.harness_source.value,
             "harness_version": profile.harness_version,
             "provider": profile.provider,
-            "model": profile.model,
-            "model_source": profile.model_source.value,
-            "effort": profile.effort,
-            "effort_source": profile.effort_source.value,
+            "model": final_model,
+            "model_source": final_model_source,
+            "effort": final_effort,
+            "effort_source": final_effort_source,
             "declared_model": profile.declared_model,
             "capabilities": list(profile.capabilities),
             "workspace_id": final_workspace_id,
@@ -878,6 +912,7 @@ class WorkerHubClient:
             "workspace_id": final_workspace_id,
             "workspace_kind": hub_workspace_kind,
             "cwd_inside_workspace": final_cwd_inside,
+            "setup": hub_setup,
             "profile": profile_dict,
             "role_guide": role_guide,
             "guide": worker_guide,

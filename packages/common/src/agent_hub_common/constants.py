@@ -48,6 +48,7 @@ class MetaKeys(StrEnum):
     WORKSPACE_PATH = "hub.workspace_path"
     WORKSPACE_KIND = "hub.workspace_kind"
     WORKSPACE_EXPLICIT = "hub.workspace_explicit"
+    SETUP = "hub.setup"
     STATUS = "hub.status"
     TIMEOUT = "hub.timeout"
     TIMEOUT_S = "hub.timeout_s"

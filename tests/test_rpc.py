@@ -1861,3 +1861,32 @@ async def test_orchestrator_explicit_workspace_mismatch_is_refused(
     code, message = error_of(body)
     assert code == INVALID_PARAMS
     assert "HUB_WORKSPACE" in message
+
+
+async def test_hub_workspace_needs_operator_and_validates_name(
+    app: FastAPI, client: httpx.AsyncClient
+) -> None:
+    """M2 Step 7b (#314): `hub.workspace` is operator-only and validates the name."""
+
+    # Without the operator credential it is refused, even with a valid name.
+    body = await bare_call(app, "hub.workspace", {"X-Robomate-Operator": "wrong"}, agent="bob")
+    assert error_of(body)[0] == OPERATOR_REQUIRED
+    body = await bare_call(app, "hub.workspace", None, agent="bob")
+    assert error_of(body)[0] == OPERATOR_REQUIRED
+
+    cast(RpcDispatcher, app.state.rpc).operator_token = OPERATOR_TOKEN
+    # Reserved names are refused like at join.
+    for reserved in ("state", "token"):
+        body = await bare_call(app, "hub.workspace", OPERATOR, agent=reserved)
+        assert error_of(body)[0] == INVALID_PARAMS
+        assert "reserved" in error_of(body)[1]
+    # Bad params shape.
+    for params in ({}, {"agent": ""}, {"agent": 3}, {"agent": "bob", "x": 1}):
+        body = await bare_call(app, "hub.workspace", OPERATOR, **params)
+        # Empty dict and unknown keys fall through to the method's own checks;
+        # hub.workspace with no repo context reports it needs a checkout hub.
+        assert error_of(body)[0] in (INVALID_PARAMS, METHOD_NOT_FOUND)
+    # No repository context on this test hub: creation is refused, not created.
+    body = await bare_call(app, "hub.workspace", OPERATOR, agent="bob")
+    assert error_of(body)[0] == INVALID_PARAMS
+    assert "repository" in error_of(body)[1].lower() or "checkout" in error_of(body)[1].lower()
