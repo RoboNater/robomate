@@ -92,6 +92,11 @@ def hub_status(hub_dir: Path) -> dict[str, Any]:
 
 
 def start_hub(hub_dir: Path, log: Path) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
+    """Start the hub and wait until it serves; stop it again if anything ends the wait.
+
+    That includes an interrupt: the hub runs in its own session, so nothing
+    else would stop it.
+    """
     with log.open("ab") as out:
         process = subprocess.Popen(
             ["uv", "run", "--locked", "--project", str(TOOLING), "robomate", "up"]
@@ -101,17 +106,24 @@ def start_hub(hub_dir: Path, log: Path) -> tuple[subprocess.Popen[bytes], dict[s
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    deadline = time.monotonic() + 120
-    while time.monotonic() < deadline:
-        status = hub_status(hub_dir)
-        if status.get("running") is not False and status.get("url") and status.get("token_file"):
-            return process, status
-        if process.poll() is not None:
-            raise RuntimeError(f"robomate up exited {process.returncode}; see {log}")
-        time.sleep(1)
-    robomate(hub_dir, "down")
-    stop(process, 30)
-    raise RuntimeError(f"hub did not come up; see {log}")
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            status = hub_status(hub_dir)
+            if (
+                status.get("running") is not False
+                and status.get("url")
+                and status.get("token_file")
+            ):
+                return process, status
+            if process.poll() is not None:
+                raise RuntimeError(f"robomate up exited {process.returncode}; see {log}")
+            time.sleep(1)
+        raise RuntimeError(f"hub did not come up; see {log}")
+    except BaseException:
+        robomate(hub_dir, "down")
+        stop(process, 30)
+        raise
 
 
 def review_statement(case: dict[str, Any], record: dict[str, Any]) -> str:
@@ -516,15 +528,17 @@ def main(argv: list[str] | None = None) -> None:
     (results / "seed.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
     subprocess.run(["git", "clone", "-q", record["ssh_url"], str(hub_dir)], check=True)
 
-    say("starting hub")
-    hub_process, hub = start_hub(hub_dir, results / "hub.log")
+    hub_process: subprocess.Popen[bytes] | None = None
+    hub: dict[str, Any] = {}
     processes: dict[str, subprocess.Popen[bytes]] = {}
     services: subprocess.Popen[bytes] | None = None
-    summary: dict[str, Any] = {}
+    summary: dict[str, Any] = {"error": "interrupted"}
     started = time.monotonic()
     try:
+        say("starting hub")
+        # start_hub stops its own hub if the start fails or is interrupted.
+        hub_process, hub = start_hub(hub_dir, results / "hub.log")
         say(f"hub at {hub['url']}; preparing run")
-        summary["error"] = "interrupted"
         prepare(args, case, record, run_dir, hub_dir, results)
         detach_tooling(run_dir)
         repoint_prompts(run_dir)
@@ -582,13 +596,14 @@ def main(argv: list[str] | None = None) -> None:
         for agent, process in processes.items():
             say(f"stopping {agent}")
             stop(process)
-        try:
-            summary |= collect(case, record, run_dir, hub, results)
-        except Exception as exc:  # collection must not keep the hub running
-            summary["collect_error"] = repr(exc)
-        say("stopping hub")
-        robomate(hub_dir, "down")
-        stop(hub_process, 60)
+        if hub_process is not None:
+            try:
+                summary |= collect(case, record, run_dir, hub, results)
+            except Exception as exc:  # collection must not keep the hub running
+                summary["collect_error"] = repr(exc)
+            say("stopping hub")
+            robomate(hub_dir, "down")
+            stop(hub_process, 60)
         if services is not None:
             stop(services, 5)
         (results / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
