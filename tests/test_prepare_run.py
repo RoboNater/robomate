@@ -3664,19 +3664,20 @@ def ask_fake(tmp_path: Path, harness: str) -> dict[str, str]:
     name = CLI_NAMES[harness]
     if os.name == "nt":
         (bin_dir / f"{name}.cmd").write_text(f'@"{sys.executable}" "{fake}" %*\r\n')
-        # The Bash execution matrix needs a Git Bash entry point alongside .cmd.
-        (bin_dir / name).write_text(
-            "#!/bin/bash\nexec "
-            + shlex.quote(Path(sys.executable).as_posix())
-            + " "
-            + shlex.quote(fake.as_posix())
-            + ' "$@"\n',
-            encoding="utf-8",
-        )
-    else:
-        cli = bin_dir / name
-        cli.write_text(f"#!{sys.executable}\n{ASK_FAKE}")
-        cli.chmod(0o700)
+    # This matches npm's Bash shim shape and captures argv before the native hop.
+    cli = bin_dir / name
+    cli.write_text(
+        "#!/bin/bash\n"
+        'if [ -n "${ASK_SHIM_ARGV_LOG:-}" ]; then '
+        'printf \'%s\\0\' "$@" > "$ASK_SHIM_ARGV_LOG"; fi\n'
+        + "exec "
+        + shlex.quote(Path(sys.executable).as_posix())
+        + " "
+        + shlex.quote(fake.as_posix())
+        + ' "$@"\n',
+        encoding="utf-8",
+    )
+    cli.chmod(0o700)
     return os.environ | {
         "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
         "ASK_ARGV_LOG": str(tmp_path / "asked.jsonl"),
@@ -3712,10 +3713,24 @@ def execute_ask(script: Path, env: dict[str, str], *args: str) -> subprocess.Com
         shell = shutil.which("pwsh") or shutil.which("powershell")
         assert shell
         command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
-    else:
-        shell = importlib.import_module("agent_recovery").bash_executable()
-        command = [shell, PREPARE_RUN.git_bash_path(script)]
-    return subprocess.run(command + list(args), env=env, capture_output=True, text=True, timeout=30)
+        return subprocess.run(
+            command + list(args), env=env, capture_output=True, text=True, timeout=30
+        )
+    shell = importlib.import_module("agent_recovery").bash_executable()
+    # Native Windows subprocess argv uses CRT quoting. Git Bash/MSYS interprets
+    # a bare apostrophe in that command line, before the generated script starts.
+    # Enter Bash with fixed argv, then launch as an operator would from Bash.
+    launch = shlex.join(
+        ["exec", PREPARE_RUN.git_bash_path(Path(shell)), PREPARE_RUN.git_bash_path(script), *args]
+    )
+    return subprocess.run(
+        [shell, "-s"],
+        input=launch + "\n",
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=30,
+    )
 
 
 @pytest.mark.parametrize("harness", CLI_NAMES)
@@ -4525,6 +4540,22 @@ def test_interactive_launch_controls_execute_verbatim(
     if powershell and not (shutil.which("pwsh") or shutil.which("powershell")):
         pytest.skip("PowerShell execution runs on native Windows CI")
     env = ask_fake(tmp_path, harness)
+    trace_paths = {stage: tmp_path / f"{stage}.argv" for stage in ("entry", "child", "shim")}
+    if not powershell:
+        env |= {
+            f"ASK_{stage.upper()}_ARGV_LOG": PREPARE_RUN.git_bash_path(path)
+            for stage, path in trace_paths.items()
+        }
+        templates = PREPARE_RUN.interactive_templates
+
+        def traced_templates(*args: Any, **kwargs: Any) -> tuple[str, str]:
+            normal, safe = templates(*args, **kwargs)
+            if args[2]:
+                return normal, safe
+            trace = "printf '%s\\0' __ROBOMATE_HARNESS_ARGS__ > \"$ASK_CHILD_ARGV_LOG\"\n"
+            return trace + normal, trace + safe
+
+        monkeypatch.setattr(PREPARE_RUN, "interactive_templates", traced_templates)
     conversation = (
         "ses_exact123" if harness == "opencode" else "11111111-1111-1111-1111-111111111111"
     )
@@ -4596,6 +4627,8 @@ def test_interactive_launch_controls_execute_verbatim(
         )
         for action, lines in (("ask", ask), ("start", start), ("resume", resume)):
             script = run / f"controls-{action}.{'ps1' if powershell else 'sh'}"
+            if not powershell:
+                lines = ['printf \'%s\\0\' "$@" > "$ASK_ENTRY_ARGV_LOG"', *lines]
             script.write_text(PREPARE_RUN.start_script(lines, powershell))
             for help_flag in ("--help", "-h"):
                 help_result = execute_ask(script, env, help_flag)
@@ -4634,6 +4667,15 @@ def test_interactive_launch_controls_execute_verbatim(
                     assert "a b" in result.stdout and "-dash" in result.stdout
                     recorded = json.loads(Path(env["ASK_ARGV_LOG"]).read_text().splitlines()[-1])
                     argv = recorded["argv"]
+                    if not powershell:
+                        traces = {
+                            stage: path.read_bytes().decode("utf-8").split("\0")[:-1]
+                            for stage, path in trace_paths.items()
+                        }
+                        assert traces["entry"] == [*ordered, "--harness-args", *extra], traces
+                        assert traces["child"] == extra, traces
+                        assert traces["shim"] == argv, traces
+
                     index = argv.index("--opaque")
                     assert argv[index : index + len(extra)] == extra
                     assert "__ROBOMATE_HARNESS_ARGS__" not in argv
