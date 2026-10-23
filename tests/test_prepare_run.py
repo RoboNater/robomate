@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 import shlex
@@ -32,6 +33,18 @@ assert SPEC and SPEC.loader
 PREPARE_RUN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE_RUN)
 RUN_COMMON = sys.modules["run_common"]
+
+
+def interactive_command_lines(lines: list[str], auto_start: bool) -> list[str]:
+    """Inspect the pinned default command inside an interactive start wrapper."""
+    if auto_start:
+        return lines
+    words = shlex.split(lines[1])
+    return (
+        words[words.index("--shell-command") + 1]
+        .replace(" __ROBOMATE_HARNESS_ARGS__", "")
+        .splitlines()
+    )
 
 
 class WindowsLinkError(OSError):
@@ -645,6 +658,7 @@ def test_claude_launch_lines_carry_model_effort_and_prompt(
         "high",
         auto_start,
     )
+    lines = interactive_command_lines(lines, auto_start)
     assert lines[0] == f"cd {run_dir / 'bob'}"
     command = lines[1]
     assert command.startswith("claude --model 'opus[1m]' --effort high ")
@@ -653,7 +667,7 @@ def test_claude_launch_lines_carry_model_effort_and_prompt(
         assert "--permission-mode auto" in command
         assert command.endswith(f"-p 'Read {prompt} and follow the instructions in it'")
     else:
-        assert "--permission-mode" not in command and " -p " not in command
+        assert "--permission-mode auto" in command and " -p " not in command
     assert len(lines) == 2
 
 
@@ -677,6 +691,7 @@ def test_codex_launch_lines_keep_the_session_and_carry_model_effort(
         expected = f"CODEX_HOME={home} codex exec {flags} - < {prompt}"
     else:
         expected = f"CODEX_HOME={home} codex {flags}"
+    lines = interactive_command_lines(lines, auto_start)
     assert lines == [f"cd {run_dir / 'charlie'}", expected]
     assert "--ephemeral" not in expected
     assert "--skip-git-repo-check" not in expected
@@ -712,6 +727,7 @@ def test_opencode_launch_lines_carry_model_variant_and_prompt(
         "high" if auto_start else "",
         auto_start,
     )
+    lines = interactive_command_lines(lines, auto_start)
     if auto_start:
         expected = (
             f"OPENCODE_CONFIG={config} opencode run --auto "
@@ -741,6 +757,7 @@ def test_antigravity_launch_lines_isolate_home_and_carry_model_effort(
         "high",
         auto_start,
     )
+    lines = interactive_command_lines(lines, auto_start)
     env_prefix = (
         'GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$HOME/.gitconfig}" '
         'XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" '
@@ -871,6 +888,7 @@ def test_start_scripts_take_metacharacter_paths_literally(
     lines = PREPARE_RUN.launch_lines(
         harness, workdir, config, prompt, workdir / ".git", "opus[1m]", effort, auto_start
     )
+    lines = interactive_command_lines(lines, auto_start)
     assert lines[0] == f"cd {shlex.quote(str(workdir))}"
     words = shlex.split(lines[1])
     if harness == "codex":
@@ -1056,10 +1074,11 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it(
         posix_lines = PREPARE_RUN.worker_launch(
             "charlie", "claude-code", posix, posix / "charlie", auto_start=False
         )
-    assert posix_lines == [
+    assert interactive_command_lines(posix_lines, False) == [
         "cd /srv/run/charlie",
         "export TMPDIR=/srv/run/tmp/charlie",
-        "claude --strict-mcp-config --mcp-config /srv/run/configs/charlie.mcp.json "
+        "claude --permission-mode auto --strict-mcp-config "
+        "--mcp-config /srv/run/configs/charlie.mcp.json "
         "--add-dir /srv/run",
     ]
 
@@ -1298,7 +1317,7 @@ def test_no_auto_start_opens_each_agent_without_its_prompt(
     assert manifest["launch"]["auto_start"] is False
     for name in ("alice", "bob", "charlie"):
         script = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text()
-        assert "prompt.md" not in script and " -p " not in script and "exec" not in script
+        assert "prompt.md" not in script and " -p " not in script and "codex exec" not in script
     alice_script = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
     assert "codex -C . --approve-for-me" in alice_script
     assert "--skip-git-repo-check" not in alice_script
@@ -3562,15 +3581,23 @@ def test_ask_rendering(harness: str, powershell: bool, worker_only: bool) -> Non
             git_bash=worker_only and not powershell,
         )
     )
+    normal_body = body.split("--shell-command ", 1)[1].split("--safe-shell-command", 1)[0]
     assert "agent-ask.py" in body
+    if harness == "opencode":
+        assert '"permission"' not in normal_body
+    else:
+        expected = {
+            "claude-code": "--permission-mode auto",
+            "codex": "--approve-for-me",
+            "antigravity": "--dangerously-skip-permissions",
+            "devin": "--permission-mode dangerous --respect-workspace-trust=false",
+        }[harness]
+        assert expected in normal_body
     assert "bob-sessions.jsonl" in body
     assert "model-x" in body and ("high" in body or harness == "devin")
     for absent in (
         "agent-recovery.py",
         "launcher.py",
-        "--permission-mode",
-        "--approve-for-me",
-        "--dangerously-skip-permissions",
         ".prompt.md",
         "--mcp-config",
     ):
@@ -3584,10 +3611,10 @@ def test_ask_rendering(harness: str, powershell: bool, worker_only: bool) -> Non
     elif harness == "opencode":
         assert "OPENCODE_CONFIG" in body and "OPENCODE_CONFIG_CONTENT" in body
         assert '"enabled": false' in body and '"variant": "high"' in body
-        assert "--session" in body and "--fork" in body and "--auto" not in body
+        assert "--session" in body and "--fork" in body and "--auto" in body
     elif harness == "devin":
         # agent-ask.py disables the local-scope server; Devin has no fork option.
-        assert "devin --model model-x --resume" in body and ".devin" in body
+        assert "devin --model model-x --permission-mode dangerous" in body and ".devin" in body
         assert "--fork-command" not in body and "--export" not in body
     else:
         assert "USERPROFILE" in body and "HOME" in body and "--conversation" in body
@@ -3647,6 +3674,28 @@ def ask_fake(tmp_path: Path, harness: str) -> dict[str, str]:
         "ROBOMATE_HUB_URL": "http://127.0.0.1:1",
         "ROBOMATE_TOKEN_FILE": str(tmp_path / "nonexistent-token"),
     }
+
+
+def assert_permission_mode(run: dict[str, Any], harness: str, safe: bool) -> None:
+    argv = run["argv"]
+    permission = {
+        "claude-code": "--permission-mode",
+        "codex": "--approve-for-me",
+        "opencode": "--auto",
+        "antigravity": "--dangerously-skip-permissions",
+        "devin": "--permission-mode",
+    }[harness]
+    assert (permission in argv) == (not safe)
+    if harness == "codex" and safe:
+        assert argv[argv.index("-a") + 1] == "on-request"
+    if harness == "devin":
+        assert ("--respect-workspace-trust=false" in argv) == (not safe)
+    if harness == "opencode":
+        inline = json.loads(run["env"].get("OPENCODE_CONFIG_CONTENT") or "{}")
+        if safe:
+            assert inline["permission"] == {"*": "ask", "external_directory": "ask"}
+        else:
+            assert "permission" not in inline
 
 
 def execute_ask(script: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
@@ -3737,13 +3786,10 @@ def test_ask_executes_without_hub_and_preserves_run_log(
             "-p",
             "exec",
             "run",
-            "--auto",
-            "--permission-mode",
-            "--approve-for-me",
-            "--dangerously-skip-permissions",
             "--mcp-config",
         ):
             assert absent not in run["argv"]
+        assert_permission_mode(run, harness, False)
         if harness == "codex":
             assert Path(run["env"]["CODEX_HOME"]) == config
             assert "mcp_servers.robomate.enabled=false" in run["argv"]
@@ -3834,7 +3880,10 @@ def test_ask_hint_ends_every_resume_refusal(
         row["conversation_id"] = "bad id"
     (run_dir / "bob-sessions.jsonl").write_text(json.dumps(row) + "\n")
     result = execute_ask(
-        script, env, *(["--not-a-recovery-option"] if reason == "arguments" else [])
+        script,
+        env,
+        *(["--not-a-recovery-option"] if reason == "arguments" else []),
+        *(["--safe-mode", "--harness-args", "--force", "a b"] if not auto_start else []),
     )
     assert result.returncode != 0, result.stdout + result.stderr
     last = result.stderr.splitlines()[-1]
@@ -3939,9 +3988,11 @@ def test_ask_does_not_launch_if_workdir_is_missing(tmp_path: Path) -> None:
 # Devin writes its config into the real clone, so it is covered by
 # test_devin_worker_only_bundle_writes_the_clone_scope instead (#224).
 @pytest.mark.parametrize("harness", [name for name in CLI_NAMES if name != "devin"])
+@pytest.mark.parametrize("auto_start", [False, True])
 def test_ask_worker_bundle_writes_bash_and_powershell_for_windows(
     tmp_path: Path,
     harness: str,
+    auto_start: bool,
 ) -> None:
     run_dir = PureWindowsPath("C:/runs/remote questions")
     PREPARE_RUN.render_worker_bundle(
@@ -3957,7 +4008,8 @@ def test_ask_worker_bundle_writes_bash_and_powershell_for_windows(
         run_dir,
         run_dir / "bob",
         tmp_path,
-        effort="high",
+        effort="high" if auto_start else "",
+        auto_start=auto_start,
     )
     bash = (tmp_path / "ask-bob.sh").read_text()
     ps = (tmp_path / "ask-bob.ps1").read_text()
@@ -3968,6 +4020,12 @@ def test_ask_worker_bundle_writes_bash_and_powershell_for_windows(
     assert "--powershell" in ps
     assert "C:/runs/remote questions/bob-sessions.jsonl" in bash
     assert "C:\\runs\\remote questions\\bob-sessions.jsonl" in ps
+
+    if not auto_start:
+        for action in ("start", "resume"):
+            interactive = (tmp_path / f"{action}-bob.ps1").read_text()
+            assert "--powershell" in interactive
+            assert "--safe-shell-command" in interactive
 
 
 def test_ask_git_bash_spells_windows_interpreter_path() -> None:
@@ -4154,13 +4212,14 @@ def test_devin_launch_and_resume_lines(tmp_path: Path, auto_start: bool) -> None
     lines = PREPARE_RUN.launch_lines(
         "devin", workdir, config, prompt, workdir / ".git", "swe-1.6-slow", "", auto_start
     )
+    lines = interactive_command_lines(lines, auto_start)
     command = lines[-1]
     assert command.startswith("devin --model swe-1.6-slow")
     if auto_start:
         assert "--permission-mode dangerous --respect-workspace-trust=false -p" in command
         assert f"Read {prompt} and follow the instructions in it" in command
     else:
-        assert command == "devin --model swe-1.6-slow"
+        assert "--permission-mode dangerous --respect-workspace-trust=false" in command
     resume = PREPARE_RUN.devin_resume(
         str(run_dir / "resume-bob.prompt.md"), ["--model", "swe-1.6-slow"], auto_start, "ID"
     )
@@ -4438,3 +4497,212 @@ def test_late_staging_failure_queues_nothing(
     if db_path.exists():
         assert HubStore(db_path).get_state()["queue"] == []
     assert not (tmp_path / "run" / "run.json").exists()
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+@pytest.mark.parametrize("worker_only", [False, True])
+@pytest.mark.parametrize("agent", ["alice", "bob"])
+@pytest.mark.parametrize("powershell", [False, True])
+def test_interactive_launch_controls_execute_verbatim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    worker_only: bool,
+    agent: str,
+    powershell: bool,
+) -> None:
+    """Run every script against a recording harness; native Windows CI covers PS."""
+    if powershell and not (shutil.which("pwsh") or shutil.which("powershell")):
+        pytest.skip("PowerShell execution runs on native Windows CI")
+    env = ask_fake(tmp_path, harness)
+    conversation = (
+        "ses_exact123" if harness == "opencode" else "11111111-1111-1111-1111-111111111111"
+    )
+    extra = ["--opaque", "a b", "-dash", "literal$HOME`x`'q", "--safe-mode"]
+    with stub_hub("active") as url:
+        run, _ = prepare(
+            tmp_path,
+            monkeypatch,
+            test_hub_url=url,
+            auto_start=False,
+            **{f"{agent}_harness": harness, f"{agent}_model": "model-x"},
+        )
+        workdir = run / ("alice-runtime" if agent == "alice" else agent)
+        config = PREPARE_RUN.launch_config_path(harness, run / "configs", agent, workdir)
+        workdir.mkdir(exist_ok=True)
+        token = run / "control-token"
+        token.write_text("stub-token\n")
+        prompt = run / f"{agent}.prompt.md"
+        resume_prompt = run / f"resume-{agent}.prompt.md"
+        if worker_only:
+            start = PREPARE_RUN.worker_launch(
+                agent,
+                harness,
+                run,
+                workdir,
+                "model-x",
+                auto_start=False,
+                token_file=str(token),
+                hub_url=url,
+                powershell=powershell,
+            )
+            resume = PREPARE_RUN.worker_resume(
+                agent,
+                harness,
+                run,
+                workdir,
+                "model-x",
+                auto_start=False,
+                token_file=str(token),
+                hub_url=url,
+                powershell=powershell,
+            )
+        else:
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "name", "nt" if powershell else "posix")
+                start = PREPARE_RUN.launch_lines(
+                    harness, workdir, config, prompt, workdir / ".git", "model-x", auto_start=False
+                )
+                resume = PREPARE_RUN.resume_lines(
+                    agent,
+                    harness,
+                    workdir,
+                    config,
+                    resume_prompt,
+                    workdir / ".git",
+                    "model-x",
+                    auto_start=False,
+                    token_file=token,
+                    hub_url=url,
+                )
+        ask = PREPARE_RUN.ask_lines(
+            agent,
+            harness,
+            run,
+            workdir,
+            "model-x",
+            powershell=powershell,
+            git_bash=worker_only and not powershell,
+        )
+        for action, lines in (("ask", ask), ("start", start), ("resume", resume)):
+            script = run / f"controls-{action}.{'ps1' if powershell else 'sh'}"
+            script.write_text(PREPARE_RUN.start_script(lines, powershell))
+            for safe in (False, True):
+                controls = ["--safe-mode"] if safe else []
+                if action == "ask":
+                    controls += [conversation]
+                    if harness not in ("devin", "antigravity"):
+                        controls += ["--fork"]
+                if action == "resume":
+                    controls += [
+                        conversation,
+                        "--hub-id",
+                        "abc",
+                        "--workflow-id",
+                        "wf-stub",
+                        "--confirm-stopped",
+                        "--stopped-at",
+                        "2026-10-08T12:34:56Z",
+                    ]
+                    # Earlier calls logged a manual resume; explicitly keep the same identity.
+                orders = [controls]
+                if safe and action == "ask":
+                    orders = [list(order) for order in itertools.permutations(controls)]
+                if safe and action == "resume":
+                    orders.append([*controls[1:], controls[0]])
+                for ordered in orders:
+                    result = execute_ask(script, env, *ordered, "--harness-args", *extra)
+                    assert result.returncode == 0, result.stdout + result.stderr
+                    assert (
+                        "safe-mode (prompting defaults)" if safe else "run permissions"
+                    ) in result.stdout
+                    assert "a b" in result.stdout and "-dash" in result.stdout
+                    recorded = json.loads(Path(env["ASK_ARGV_LOG"]).read_text().splitlines()[-1])
+                    argv = recorded["argv"]
+                    index = argv.index("--opaque")
+                    assert argv[index : index + len(extra)] == extra
+                    assert "__ROBOMATE_HARNESS_ARGS__" not in argv
+                    if action != "start":
+                        assert index < argv.index(conversation)
+                    assert_permission_mode(recorded, harness, safe)
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+@pytest.mark.parametrize("powershell", [False, True])
+@pytest.mark.parametrize("worker_only", [False, True])
+def test_no_auto_start_permission_rendering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    powershell: bool,
+    worker_only: bool,
+) -> None:
+    run = tmp_path / "render"
+    workspace = run / "bob"
+    config = PREPARE_RUN.launch_config_path(harness, run / "configs", "bob", workspace)
+    if worker_only:
+        start = PREPARE_RUN.worker_launch(
+            "bob", harness, run, workspace, auto_start=False, powershell=powershell
+        )
+        resume = PREPARE_RUN.worker_resume(
+            "bob",
+            harness,
+            run,
+            workspace,
+            auto_start=False,
+            token_file="unused",
+            powershell=powershell,
+        )
+    else:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "name", "nt" if powershell else "posix")
+            start = PREPARE_RUN.launch_lines(
+                harness, workspace, config, run / "bob.prompt.md", None, auto_start=False
+            )
+            resume = PREPARE_RUN.resume_lines(
+                "bob",
+                harness,
+                workspace,
+                config,
+                run / "resume-bob.prompt.md",
+                None,
+                auto_start=False,
+                token_file="unused",
+            )
+    permission = {
+        "claude-code": "--permission-mode auto",
+        "codex": "--approve-for-me",
+        "opencode": "--auto",
+        "antigravity": "--dangerously-skip-permissions",
+        "devin": "--permission-mode dangerous --respect-workspace-trust=false",
+    }[harness]
+    for lines in (start, resume):
+        body = "\n".join(lines)
+        assert permission in body
+        assert "--safe-shell-command" in body
+        assert "__ROBOMATE_HARNESS_ARGS__" in body
+        assert "@args" in body or "@ResumeArgs" in body if powershell else '"$@"' in body
+    assert "agent-recovery.py" in "\n".join(resume)
+
+
+@pytest.mark.parametrize("harness", CLI_NAMES)
+def test_interactive_safe_mode_keeps_permission_like_path_text(
+    tmp_path: Path,
+    harness: str,
+) -> None:
+    """Selecting prompting mode must not rewrite a permission flag inside a path."""
+    env = ask_fake(tmp_path, harness)
+    run = tmp_path / ("literal " + " ".join(PREPARE_RUN.RUN_PERMISSIONS[harness]) + " directory")
+    workdir = run / "bob"
+    workdir.mkdir(parents=True)
+    config = run / "config"
+    lines = PREPARE_RUN.launch_lines(
+        harness, workdir, config, run / "prompt.md", None, auto_start=False
+    )
+    script = tmp_path / f"start-bob.{SCRIPT_SUFFIX}"
+    script.write_text(PREPARE_RUN.start_script(lines, os.name == "nt"))
+    result = execute_ask(script, env, "--safe-mode")
+    assert result.returncode == 0, result.stdout + result.stderr
+    recorded = json.loads(Path(env["ASK_ARGV_LOG"]).read_text())
+    assert Path(recorded["cwd"]).resolve() == workdir.resolve()
+    assert_permission_mode(recorded, harness, True)

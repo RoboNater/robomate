@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -16,6 +15,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
+from agent_interactive import add_commands, launch_command, split_arguments
 from agent_sessions import exact_id
 
 
@@ -123,7 +123,8 @@ def main() -> int:
     parser.add_argument("--harness", required=True)
     parser.add_argument("--sessions", required=True, type=Path)
     parser.add_argument("--workdir", required=True)
-    parser.add_argument("--shell-command", required=True)
+    add_commands(parser)
+    parser.add_argument("--safe-fork-command")
     parser.add_argument("--fork-command")
     parser.add_argument("--powershell", action="store_true")
     parser.add_argument("--config", required=True, type=Path)
@@ -134,31 +135,28 @@ def main() -> int:
     options = argparse.ArgumentParser(description="Ask this agent questions; no hub is needed")
     options.add_argument("conversation_id", nargs="?")
     options.add_argument("--fork", action="store_true", help="ask in a new conversation")
-    controls = options.parse_args(words[boundary + 1 :])
+    options.add_argument("--safe-mode", action="store_true")
+    option_words, extra = split_arguments(words[boundary + 1 :])
+    controls = options.parse_intermixed_args(option_words)
     try:
         selected = conversation(args.sessions, args.agent, args.harness, controls.conversation_id)
         command = args.shell_command
+        safe_command = args.safe_shell_command
         if controls.fork:
             if not args.fork_command:
                 name = NO_FORK.get(args.harness, args.harness)
                 raise ValueError(f"{name} has no CLI fork option; --fork is unavailable")
             command = args.fork_command
+            safe_command = args.safe_fork_command
         print(
             f"Ask {args.agent} ({args.harness}): conversation {selected}; "
-            f"working directory {args.workdir}; hub tools are unavailable.",
+            f"working directory {args.workdir}; hub tools are unavailable; "
+            f"permissions: {'safe-mode' if controls.safe_mode else 'run permissions'}; "
+            f"harness arguments: {extra!r}.",
             flush=True,
         )
         env = os.environ | {"ROBOMATE_ASK_SESSION_ID": selected}
-        if args.powershell:
-            shell = shutil.which("pwsh") or shutil.which("powershell")
-            if shell is None:
-                raise OSError("PowerShell is unavailable")
-            argv = [shell, "-NoProfile", "-Command", command + "\nexit $LASTEXITCODE"]
-        else:
-            shell = shutil.which("bash")
-            if shell is None:
-                raise OSError("Bash is unavailable")
-            argv = [shell, "-c", command]
+        argv = launch_command(command, safe_command, controls.safe_mode, extra, args.powershell)
         suppressed = SUPPRESSED_MCP.get(args.harness)
         suppression = (
             suppress_mcp(args.config / suppressed[0], suppressed[1])

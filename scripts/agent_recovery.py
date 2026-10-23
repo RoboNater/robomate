@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_interactive import split_arguments
 from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log_session, say
 from agent_sessions import exact_id as exact_id
 
@@ -82,7 +83,9 @@ def add_options(parser: argparse.ArgumentParser, *, public: bool = False) -> Non
     )
 
 
-def split_controls(argv: list[str] | None) -> tuple[list[str], dict[str, Any]]:
+def split_controls(
+    argv: list[str] | None, *, interactive: bool = False
+) -> tuple[list[str], dict[str, Any]]:
     """Generated wrappers expose controls, never their pinned configuration/command."""
     words = list(sys.argv[1:] if argv is None else argv)
     if "--recovery-options" not in words:
@@ -97,7 +100,21 @@ def split_controls(argv: list[str] | None) -> tuple[list[str], dict[str, Any]]:
         description="Resume this saved agent run; no arguments needed."
     )
     add_options(parser, public=True)
-    controls = vars(parser.parse_args(words[start + 1 : end]))
+    if interactive:
+        parser.add_argument("--safe-mode", action="store_true")
+        parser.add_argument("conversation_id", nargs="?")
+        option_words, extra = split_arguments(words[start + 1 : end])
+        if "--" in option_words:
+            parser.error("use --harness-args for extra harness words")
+        controls = vars(parser.parse_intermixed_args(option_words))
+        conversation = controls.pop("conversation_id")
+        if conversation:
+            if controls.get("resume_session"):
+                parser.error("supply either an ID or --resume-session")
+            controls["resume_session"] = conversation
+        controls["harness_args"] = extra
+    else:
+        controls = vars(parser.parse_args(words[start + 1 : end]))
     remainder = words[end + 1 :] if end < len(words) else []
     return words[:start] + remainder, {k: v for k, v in controls.items() if v is not None}
 

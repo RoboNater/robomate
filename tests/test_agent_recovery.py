@@ -350,7 +350,8 @@ def test_generated_controls_cannot_replace_the_pinned_run_or_command(
                 *control,
                 "--recovery-command",
                 *([] if interactive else ["--", "codex", "exec"]),
-            ]
+            ],
+            interactive=interactive,
         )
     assert error.value.code == 2
 

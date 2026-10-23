@@ -862,6 +862,21 @@ def model_flags(
     return flags
 
 
+RUN_PERMISSIONS = {
+    "claude-code": ["--permission-mode", "auto"],
+    "codex": ["--approve-for-me"],
+    "opencode": ["--auto"],
+    "antigravity": ["--dangerously-skip-permissions"],
+    "devin": ["--permission-mode", "dangerous", "--respect-workspace-trust=false"],
+}
+PERMISSION_SLOT = "__ROBOMATE_PERMISSION_FLAGS__"
+
+
+def permission_flags(harness: str, auto_start: bool) -> list[str]:
+    """Interactive templates expand one dedicated slot, never edit shell text or paths."""
+    return RUN_PERMISSIONS[harness] if auto_start else [PERMISSION_SLOT]
+
+
 def claude_launch(
     config: str,
     prompt: str,
@@ -875,8 +890,7 @@ def claude_launch(
     ``--add-dir`` lets Claude read the prompt when it is outside the clone.
     """
     words = ["claude", *flags]
-    if auto_start:
-        words += ["--permission-mode", "auto"]
+    words += permission_flags("claude-code", auto_start)
     words += [
         "--strict-mcp-config",
         "--mcp-config",
@@ -886,6 +900,8 @@ def claude_launch(
     ]
     if auto_start:
         words += ["-p", auto_start_instruction(prompt, powershell)]
+    if not auto_start:
+        words += ["__ROBOMATE_HARNESS_ARGS__"]
     return [" ".join(words)]
 
 
@@ -918,7 +934,9 @@ def codex_launch(
         words += ["--add-dir", shell_word(git_dir, powershell)]
     elif auto_start:
         words += ["--skip-git-repo-check"]
-    words += ["--approve-for-me", *flags]
+    words += [*permission_flags("codex", auto_start), *flags]
+    if not auto_start:
+        words += ["__ROBOMATE_HARNESS_ARGS__"]
     command = " ".join(words)
     home_word = shell_word(home, powershell)
     prompt_word = shell_word(prompt, powershell)
@@ -957,11 +975,17 @@ def opencode_launch(
     ``opencode run --title`` so the session is findable after a crash (#94);
     it is omitted for interactive launches, which take no title.
     """
-    words = ["opencode", "run", "--auto", *flags] if auto_start else ["opencode", "--auto", *flags]
+    words = (
+        ["opencode", "run", "--auto", *flags]
+        if auto_start
+        else ["opencode", *permission_flags("opencode", False), *flags]
+    )
     if auto_start and title:
         words += ["--title", shell_word(title, powershell)]
     if auto_start:
         words.append(auto_start_instruction(prompt, powershell))
+    if not auto_start:
+        words += ["__ROBOMATE_HARNESS_ARGS__"]
     command = " ".join(words)
     config_word = shell_word(config, powershell)
     if powershell:
@@ -991,12 +1015,14 @@ def antigravity_launch(
     words = [
         "agy",
         *flags,
-        "--dangerously-skip-permissions",
+        *permission_flags("antigravity", auto_start),
         "--add-dir",
         shell_word(prompt_dir, powershell),
     ]
     if auto_start:
         words += ["-p", auto_start_instruction(prompt, powershell)]
+    if not auto_start:
+        words += ["__ROBOMATE_HARNESS_ARGS__"]
     command = " ".join(words)
     home_word = shell_word(home, powershell)
     if powershell:
@@ -1026,10 +1052,9 @@ def antigravity_launch(
     return [f"{env_prefix} {command}"]
 
 
-#: Headless Devin flags (#224): approve every tool, since the default mode
-#: prompts before each MCP call and ``-p`` cannot answer, and skip the
-#: workspace-trust prompt, which print mode cannot show either.
-DEVIN_HEADLESS = ["--permission-mode", "dangerous", "--respect-workspace-trust=false"]
+#: Run permission flags (#224, #335), shared by print and interactive modes.
+#: Safe interactive launches omit both tool approval and workspace-trust bypass.
+DEVIN_PERMISSIONS = RUN_PERMISSIONS["devin"]
 
 
 def devin_launch(
@@ -1042,12 +1067,13 @@ def devin_launch(
 
     Its MCP server and permissions are the local scope (``.devin/``) that
     preparation wrote there. Auto-start runs ``devin -p`` on the prompt file;
-    without it, the interactive REPL keeps Devin's own approval prompts,
-    except for robomate's tools, which the local scope allows.
+    interactive launches use the same permission and trust flags.
     """
-    words = ["devin", *flags]
+    words = ["devin", *flags, *permission_flags("devin", auto_start)]
     if auto_start:
-        words += [*DEVIN_HEADLESS, "-p", auto_start_instruction(prompt, powershell)]
+        words += ["-p", auto_start_instruction(prompt, powershell)]
+    if not auto_start:
+        words += ["__ROBOMATE_HARNESS_ARGS__"]
     return [" ".join(words)]
 
 
@@ -1146,7 +1172,10 @@ def launch_lines(
             ]
         else:
             temp_lines = [f"export TMPDIR={shell_word(str(tmp_dir), powershell)}"]
-    return [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, *lines]
+    result = [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, *lines]
+    if not auto_start:
+        return interactive_start_lines(result, harness, powershell=powershell)
+    return result
 
 
 def pytest_worker_environment(
@@ -1337,8 +1366,7 @@ def claude_resume(
     spent. The original kickoff prompt is never reused.
     """
     words = ["claude", *flags]
-    if auto_start:
-        words += ["--permission-mode", "auto"]
+    words += permission_flags("claude-code", auto_start)
     words += ["--strict-mcp-config"]
     if not ask:
         words += ["--mcp-config", shell_word(config, powershell)]
@@ -1347,6 +1375,7 @@ def claude_resume(
     words += [
         "--add-dir",
         shell_word(prompt_dir, powershell),
+        *([] if auto_start else ["__ROBOMATE_HARNESS_ARGS__"]),
         "--resume",
         session_var,
     ]
@@ -1388,10 +1417,9 @@ def codex_resume(
         return [f"CODEX_HOME={home_word} {command} < {prompt_word}"]
     words = ["codex", "fork" if fork else "resume"]
     if ask:
-        words += ["-c", "mcp_servers.robomate.enabled=false", "-a", "on-request"]
-    else:
-        words += ["--approve-for-me"]
-    words += [*flags, session_var]
+        words += ["-c", "mcp_servers.robomate.enabled=false"]
+    words += permission_flags("codex", False)
+    words += [*flags, "__ROBOMATE_HARNESS_ARGS__", session_var]
     if ask and not powershell:
         words.insert(0, "exec")
     command = " ".join(words)
@@ -1420,9 +1448,10 @@ def opencode_resume(
         words += ["--session", session_var, auto_start_instruction(resume_prompt, powershell)]
         command = " ".join(words)
     else:
-        words = ["opencode", *([] if ask else ["--auto"]), *flags, "--session", session_var]
+        words = ["opencode", *permission_flags("opencode", False), *flags]
         if fork:
             words += ["--fork"]
+        words += ["__ROBOMATE_HARNESS_ARGS__", "--session", session_var]
         command = " ".join(words)
     if ask and not powershell:
         command = "exec " + command
@@ -1448,9 +1477,10 @@ def antigravity_resume(
     words = [
         "agy",
         *flags,
-        *([] if ask else ["--dangerously-skip-permissions"]),
+        *permission_flags("antigravity", auto_start),
         "--add-dir",
         shell_word(prompt_dir, powershell),
+        *([] if auto_start else ["__ROBOMATE_HARNESS_ARGS__"]),
         "--conversation",
         session_var,
     ]
@@ -1502,14 +1532,76 @@ def devin_resume(
     the session, so the hub tools are gone; Devin documents no fork option.
     """
     words = ["devin", *flags]
-    if auto_start:
-        words += DEVIN_HEADLESS
+    words += permission_flags("devin", auto_start)
+    if not auto_start:
+        words += ["__ROBOMATE_HARNESS_ARGS__"]
     words += ["--resume", session_var]
     if auto_start:
         words += ["-p", auto_start_instruction(resume_prompt, powershell)]
     if ask and not powershell:
         words.insert(0, "exec")
     return [" ".join(words)]
+
+
+def interactive_templates(
+    lines: list[str],
+    harness: str,
+    powershell: bool,
+    overrides: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Pin both permission modes at generation time; leave only an argv insertion slot."""
+    template = "\n".join(lines)
+    normal = template.replace(PERMISSION_SLOT, " ".join(RUN_PERMISSIONS[harness]))
+    safe = template.replace(PERMISSION_SLOT, "-a on-request" if harness == "codex" else "")
+    if harness == "opencode":
+
+        def environment(value: dict[str, Any]) -> str:
+            content = shell_word(json.dumps(value), powershell)
+            return (
+                f"$env:OPENCODE_CONFIG_CONTENT = {content}\n"
+                if powershell
+                else f"export OPENCODE_CONFIG_CONTENT={content}\n"
+            )
+
+        if overrides is not None:
+            normal = environment(overrides) + normal
+        safe = (
+            environment(
+                (overrides or {}) | {"permission": {"*": "ask", "external_directory": "ask"}}
+            )
+            + safe
+        )
+    return normal, safe
+
+
+def interactive_start_lines(
+    lines: list[str],
+    harness: str,
+    *,
+    powershell: bool = False,
+    root: PurePath = ROOT,
+    python: str = sys.executable,
+    git_bash: bool = False,
+) -> list[str]:
+    """Use the same per-launch controls for local and bundled interactive starts."""
+    normal, safe = interactive_templates(lines, harness, powershell)
+    if git_bash and (root.drive or os.name == "nt"):
+        python = git_bash_path(PureWindowsPath(python))
+    words = [
+        "&" if powershell else "exec",
+        shell_word(python, powershell),
+        shell_word((root / "scripts/agent-interactive.py").as_posix(), powershell),
+        "--harness",
+        harness,
+        "--shell-command",
+        shell_word(normal, powershell),
+        "--safe-shell-command",
+        shell_word(safe, powershell),
+    ]
+    if powershell:
+        words += ["--powershell"]
+    words += ["--", "@args" if powershell else '"$@"']
+    return [lines[0], " ".join(words), *(["exit $LASTEXITCODE"] if powershell else [])]
 
 
 def ask_lines(
@@ -1541,24 +1633,14 @@ def ask_lines(
         if run_dir.drive or os.name == "nt":
             prefix += [f"export {key}={shell_word(spelling(temp))}" for key in ("TEMP", "TMP")]
     flags = model_flags(harness, model, "" if harness == "opencode" else effort, powershell, False)
+    overrides: dict[str, Any] | None = None
     if harness == "opencode":
-        # Inline config wins over custom/project config. Keep OPENCODE_CONFIG
-        # pointing to the run's file, but disable its bridge and unattended access.
-        overrides: dict[str, Any] = {
-            "mcp": {"robomate": {"enabled": False}},
-            "permission": {"*": "ask", "external_directory": "ask"},
-        }
+        overrides = {"mcp": {"robomate": {"enabled": False}}}
         if effort:
             overrides["agent"] = {"build": {"variant": effort}}
-        content = shell_word(json.dumps(overrides), powershell)
-        prefix += [
-            f"$env:OPENCODE_CONFIG_CONTENT = {content}"
-            if powershell
-            else f"export OPENCODE_CONFIG_CONTENT={content}"
-        ]
     session = "$env:ROBOMATE_ASK_SESSION_ID" if powershell else '"$ROBOMATE_ASK_SESSION_ID"'
 
-    def command(fork: bool) -> str:
+    def command(fork: bool) -> tuple[str, str]:
         options = {"powershell": powershell, "ask": True, "fork": fork}
         if harness == "codex":
             lines = codex_resume(spelling(config), None, "", flags, False, session, **options)
@@ -1572,10 +1654,11 @@ def ask_lines(
             lines = devin_resume("", flags, False, session, powershell, ask=True)
         else:
             lines = claude_resume("", spelling(run_dir), "", flags, False, session, **options)
-        return "\n".join([*prefix, *lines])
+        return interactive_templates([*prefix, *lines], harness, powershell, overrides)
 
     if git_bash and (run_dir.drive or os.name == "nt"):
         python = git_bash_path(PureWindowsPath(python))
+    normal, safe = command(False)
     words = [
         "&" if powershell else "exec",
         shell_word(python, powershell),
@@ -1591,10 +1674,18 @@ def ask_lines(
         "--config",
         shell_word(spelling(config), powershell),
         "--shell-command",
-        shell_word(command(False), powershell),
+        shell_word(normal, powershell),
+        "--safe-shell-command",
+        shell_word(safe, powershell),
     ]
     if harness not in ("antigravity", "devin"):
-        words += ["--fork-command", shell_word(command(True), powershell)]
+        normal_fork, safe_fork = command(True)
+        words += [
+            "--fork-command",
+            shell_word(normal_fork, powershell),
+            "--safe-fork-command",
+            shell_word(safe_fork, powershell),
+        ]
     if powershell:
         words += ["--powershell"]
     words += ["--", "@args" if powershell else '"$@"']
@@ -1741,8 +1832,10 @@ def interactive_recovery_lines(
 
     session = "$env:ROBOMATE_RESUME_SESSION_ID" if powershell else "$ROBOMATE_RESUME_SESSION_ID"
     text = "\n".join(lines).replace("$SessionId" if powershell else "$SESSION_ID", session)
+    normal, safe = interactive_templates(text.splitlines(), harness, powershell)
     if powershell:
-        text += "\nexit $LASTEXITCODE"
+        normal += "\nexit $LASTEXITCODE"
+        safe += "\nexit $LASTEXITCODE"
     words = [
         "&" if powershell else "exec",
         shell_word(python, powershell),
@@ -1764,7 +1857,9 @@ def interactive_recovery_lines(
         "--recovery-config",
         shell_word(spelling(config), powershell),
         "--shell-command",
-        shell_word(text, powershell),
+        shell_word(normal, powershell),
+        "--safe-shell-command",
+        shell_word(safe, powershell),
         *(["--powershell"] if powershell else []),
         "--recovery-options",
         "@ResumeArgs" if powershell else '"$@"',
@@ -1871,7 +1966,7 @@ def agent_launch_lines(
         # The ATIF export after each turn is where the launcher reads the
         # session ID when Devin's output does not print it (#224).
         export = prompt.parent / f"{worker or 'alice'}-devin-export.json"
-        base = ["devin", *flags, *DEVIN_HEADLESS]
+        base = ["devin", *flags, *DEVIN_PERMISSIONS]
         base += ["--export", shell_word(spelling(export), powershell)]
     else:
         base = ["claude", *flags, "--permission-mode", "auto", "--strict-mcp-config"]
@@ -2033,6 +2128,7 @@ def worker_launch(
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
+    powershell: bool = False,
 ) -> list[str]:
     """A remote worker's launch lines, spelled for its host.
 
@@ -2047,7 +2143,7 @@ def worker_launch(
         tmp_dir = run_dir / "tmp" / name
     is_windows = bool(run_dir.drive) or os.name == "nt"
     prompt = run_dir / f"{name}.prompt.md"
-    flags = model_flags(harness, model, effort, auto_start=auto_start)
+    flags = model_flags(harness, model, effort, powershell, auto_start=auto_start)
     if supervised(harness, auto_start):
         return agent_launch_lines(
             harness,
@@ -2081,8 +2177,13 @@ def worker_launch(
         flags,
         auto_start,
         title=title,
+        powershell=powershell,
     )
-    if is_windows:
+    if powershell:
+        temp_lines = [
+            f"$env:{key} = {shell_word(tmp_dir.as_posix(), True)}" for key in ("TEMP", "TMP")
+        ]
+    elif is_windows:
         temp_lines = [
             f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
             f"export TEMP={shell_word(tmp_dir.as_posix())}",
@@ -2090,7 +2191,22 @@ def worker_launch(
         ]
     else:
         temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
-    return [f"cd {shell_word(git_bash_path(workspace))}", *temp_lines, *lines]
+    directory = workspace.as_posix() if powershell else git_bash_path(workspace)
+    result = [
+        f"cd {shell_word(directory, powershell)}",
+        *temp_lines,
+        *lines,
+    ]
+    if not auto_start:
+        return interactive_start_lines(
+            result,
+            harness,
+            root=root,
+            python=python,
+            powershell=powershell,
+            git_bash=not powershell,
+        )
+    return result
 
 
 def worker_resume(
@@ -2112,6 +2228,7 @@ def worker_resume(
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
     resume_total_s: float = DEFAULT_RESUME_TOTAL_S,
     resume_series_reset_s: float = DEFAULT_RESUME_SERIES_RESET_S,
+    powershell: bool = False,
 ) -> list[str]:
     """A remote worker's resume lines, spelled for its host's bash (#94).
 
@@ -2149,26 +2266,38 @@ def worker_resume(
             powershell=False,
             git_bash=True,
         )
-    flags = model_flags(harness, model, effort, auto_start=auto_start)
-    session_var = '"$SESSION_ID"'
+    flags = model_flags(harness, model, effort, powershell, auto_start=auto_start)
+    session_var = "$SessionId" if powershell else '"$SESSION_ID"'
     config = launch_config_path(harness, run_dir / "configs", name, workspace).as_posix()
     if harness == "codex":
         lines = codex_resume(
-            config, (workspace / ".git").as_posix(), prompt_arg, flags, auto_start, session_var
+            config,
+            (workspace / ".git").as_posix(),
+            prompt_arg,
+            flags,
+            auto_start,
+            session_var,
+            powershell,
         )
     elif harness == "opencode":
-        lines = opencode_resume(config, prompt_arg, flags, auto_start, session_var, title)
+        lines = opencode_resume(
+            config, prompt_arg, flags, auto_start, session_var, title, powershell
+        )
     elif harness == "antigravity":
         lines = antigravity_resume(
-            config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var
+            config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var, powershell
         )
     elif harness == "devin":
-        lines = devin_resume(prompt_arg, flags, auto_start, session_var)
+        lines = devin_resume(prompt_arg, flags, auto_start, session_var, powershell)
     else:
         lines = claude_resume(
-            config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var
+            config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var, powershell
         )
-    if is_windows:
+    if powershell:
+        temp_lines = [
+            f"$env:{key} = {shell_word(tmp_dir.as_posix(), True)}" for key in ("TEMP", "TMP")
+        ]
+    elif is_windows:
         temp_lines = [
             f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
             f"export TEMP={shell_word(tmp_dir.as_posix())}",
@@ -2176,18 +2305,23 @@ def worker_resume(
         ]
     else:
         temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
+    directory = workspace.as_posix() if powershell else git_bash_path(workspace)
     return interactive_recovery_lines(
         name,
         harness,
         prompt,
         hub_url,
         token_file,
-        [f"cd {shell_word(git_bash_path(workspace))}", *temp_lines, *lines],
+        [
+            f"cd {shell_word(directory, powershell)}",
+            *temp_lines,
+            *lines,
+        ],
         config=launch_config_path(harness, run_dir / "configs", name, workspace),
         root=root,
-        python=git_bash_path(PureWindowsPath(python)) if is_windows else python,
-        powershell=False,
-        git_bash=True,
+        python=git_bash_path(PureWindowsPath(python)) if is_windows and not powershell else python,
+        powershell=powershell,
+        git_bash=not powershell,
     )
 
 
@@ -2408,6 +2542,24 @@ def render_worker_bundle(
                 True,
             ),
         )
+    if not auto_start and (run_dir.drive or os.name == "nt"):
+        for action, render in (("start", worker_launch), ("resume", worker_resume)):
+            ps_lines = render(
+                name,
+                harness,
+                run_dir,
+                workspace,
+                model,
+                effort,
+                auto_start=False,
+                root=root,
+                hub_url=hub_url,
+                token_file=token_file,
+                title=title,
+                powershell=True,
+            )
+            ps_lines = pytest_worker_environment(ps_lines, pytest_workers, True)
+            write_script(out_dir / f"{action}-{name}.ps1", start_script(ps_lines, True))
     bundle = {
         "credential_exposure": exposures,
         "config": config.as_posix(),
