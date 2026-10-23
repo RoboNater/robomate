@@ -21,7 +21,9 @@ from agent_hub_common.discovery import (
     GitTimeoutError,
     HubEndpoint,
     LocalHub,
+    check_worktree_root,
     checkout_git_dir,
+    claim_worktree_root,
     create_hub_dirs,
     derive_hub_name,
     discover,
@@ -35,6 +37,7 @@ from agent_hub_common.discovery import (
     plan_hub_placement,
     read_binding,
     read_hub_json,
+    read_root_record,
     repository_dir,
     resolve_checkout,
     resolve_repository,
@@ -955,3 +958,183 @@ def test_no_module_outside_discovery_names_the_legacy_state_directory() -> None:
         if named.search(line)
     ]
     assert offenders == []
+
+
+# -- #327: concurrent worktree-root ownership publication ---------------------
+
+
+def test_empty_root_record_is_retried_then_refused(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#327 signature 1: an empty record is a transient publish, retried, then refused."""
+
+    root = tmp_path / "repo.robomate"
+    root.mkdir()
+    (root / ROOT_RECORD_FILENAME).write_text("", encoding="utf-8")
+    # Two retries allowed (0.05 s + 0.1 s): a third read still empty raises.
+    monkeypatch.setattr("agent_hub_common.discovery.time.sleep", lambda s: None)
+    with pytest.raises(DiscoveryError, match="cannot read"):
+        read_root_record(root)
+    # A non-empty invalid record is refused at once, without sleeping.
+    (root / ROOT_RECORD_FILENAME).write_text("{not json", encoding="utf-8")
+    sleeps: list[float] = []
+    monkeypatch.setattr("agent_hub_common.discovery.time.sleep", lambda s: sleeps.append(s))
+    with pytest.raises(DiscoveryError, match="cannot read"):
+        read_root_record(root)
+    assert sleeps == []
+
+
+def test_partially_written_root_record_is_refused(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#327: a truncated non-empty record is corrupt, not transient: no retry."""
+
+    root = tmp_path / "repo.robomate"
+    root.mkdir()
+    (root / ROOT_RECORD_FILENAME).write_text('{"git_common_dir":', encoding="utf-8")
+    monkeypatch.setattr(
+        "agent_hub_common.discovery.time.sleep", lambda s: pytest.fail("must not retry")
+    )
+    with pytest.raises(DiscoveryError, match="cannot read"):
+        read_root_record(root)
+
+
+def test_concurrent_claims_for_same_repository_all_succeed(
+    repository: Path, tmp_path: Path
+) -> None:
+    """#327 signatures 1-2: racing first `up`s publish one identical record."""
+
+    import threading
+
+    common = repository / ".git"
+    root = tmp_path / "repo.robomate"
+    barrier = threading.Barrier(8)
+    errors: list[BaseException] = []
+
+    def claim() -> None:
+        try:
+            barrier.wait(timeout=10)
+            claim_worktree_root(root, common)
+        except BaseException as exc:  # noqa: BLE001 - collected and re-raised below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=claim) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not [t for t in threads if t.is_alive()]
+    assert errors == []
+    assert check_worktree_root(root, common) is True
+    record = read_root_record(root)
+    assert record == {"git_common_dir": str(common)}
+    # No temp files leak into the root (they would trip the unrelated-nonempty
+    # refusal for a concurrent reader) nor beside it.
+    assert [p.name for p in root.iterdir()] == [ROOT_RECORD_FILENAME]
+    assert list(root.parent.glob(".robomate-root-*")) == []
+
+
+def test_concurrent_readers_never_observe_an_empty_record(repository: Path, tmp_path: Path) -> None:
+    """#327 signature 1: publication is atomic; readers see missing or complete."""
+
+    import threading
+
+    common = repository / ".git"
+    root = tmp_path / "repo.robomate"
+    stop = threading.Event()
+    observed: list[object] = []
+    failures: list[BaseException] = []
+
+    def reader() -> None:
+        while not stop.is_set():
+            try:
+                value = read_root_record(root)
+                observed.append(value is not None)
+            except DiscoveryError as exc:
+                # Only a foreign record may raise here; an empty file must not
+                # surface as "cannot read ... Expecting value".
+                if "Expecting value" in str(exc):
+                    failures.append(exc)
+                    stop.set()
+                    return
+            except FileNotFoundError:
+                pass
+
+    readers = [threading.Thread(target=reader, daemon=True) for _ in range(4)]
+    for thread in readers:
+        thread.start()
+    try:
+        for _ in range(20):
+            # Fresh root each round to re-exercise the publish window.
+            import shutil
+
+            shutil.rmtree(root, ignore_errors=True)
+            claim_worktree_root(root, common)
+            assert read_root_record(root) == {"git_common_dir": str(common)}
+    finally:
+        stop.set()
+    for thread in readers:
+        thread.join(timeout=10)
+    assert failures == []
+
+
+def test_concurrent_claims_for_different_repositories_refuse_foreign(
+    tmp_path: Path,
+) -> None:
+    """#327: two repos sharing one `<name>.robomate` path still refuse each other."""
+
+    import threading
+
+    repo_a = init_repository(tmp_path / "a" / "repo")
+    repo_b = init_repository(tmp_path / "b" / "repo")
+    common_a, common_b = repo_a / ".git", repo_b / ".git"
+    # Both derive `<shared>/repo.robomate` when the user config points there.
+    root = tmp_path / "shared" / "repo.robomate"
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, str] = {}
+
+    def claim(name: str, common: Path) -> None:
+        barrier.wait(timeout=10)
+        try:
+            claim_worktree_root(root, common)
+            outcomes[name] = "ok"
+        except DiscoveryError as exc:
+            outcomes[name] = str(exc)
+
+    first = threading.Thread(target=claim, args=("a", common_a))
+    second = threading.Thread(target=claim, args=("b", common_b))
+    first.start()
+    second.start()
+    first.join(timeout=30)
+    second.join(timeout=30)
+    assert sorted(outcomes) == ["a", "b"]
+    assert sorted(outcomes.values()) != ["ok", "ok"]
+    winner = "a" if outcomes["a"] == "ok" else "b"
+    loser = "b" if winner == "a" else "a"
+    assert "belongs to the repository" in outcomes[loser]
+    # The winner's record survives intact.
+    expected = common_a if winner == "a" else common_b
+    assert read_root_record(root) == {"git_common_dir": str(expected)}
+
+
+def test_unrelated_nonempty_root_and_foreign_record_are_still_refused(
+    repository: Path, tmp_path: Path
+) -> None:
+    """#327: atomic publication preserves both refusals."""
+
+    common = repository / ".git"
+    root = tmp_path / "repo.robomate"
+    root.mkdir()
+    (root / "notes.txt").write_text("not robomate's\n")
+    with pytest.raises(DiscoveryError, match=f"holds files but no {ROOT_RECORD_FILENAME}"):
+        check_worktree_root(root, common)
+    with pytest.raises(DiscoveryError, match=f"holds files but no {ROOT_RECORD_FILENAME}"):
+        claim_worktree_root(root, common)
+    (root / "notes.txt").unlink()
+    other = tmp_path / "other"
+    other.mkdir()
+    (root / ROOT_RECORD_FILENAME).write_text(
+        json.dumps({"git_common_dir": str(other)}), encoding="utf-8"
+    )
+    with pytest.raises(DiscoveryError, match="belongs to the repository"):
+        check_worktree_root(root, common)
