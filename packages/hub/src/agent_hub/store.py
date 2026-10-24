@@ -1265,9 +1265,13 @@ class HubStore:
                     "state": row["state"],
                     "pr_url": None,
                     "head_sha": row["pr_head_sha"],
+                    # Additive for #299 hand recovery: open tasks span
+                    # workflows, so recovery needs each task's membership.
+                    # Wire `hub.schema_version` stays 1.
+                    "workflow_id": row["workflow_id"],
                 }
                 for row in connection.execute(
-                    "SELECT id, role, assignee, state, pr_head_sha FROM task"
+                    "SELECT id, role, assignee, state, pr_head_sha, workflow_id FROM task"
                     " WHERE state IN ('submitted', 'working', 'input-required')"
                     # Durable insertion order (#209): `created` can step backwards.
                     " ORDER BY rowid"
@@ -1351,6 +1355,8 @@ class HubStore:
                     "role": row["role"],
                     "state": row["state"],
                     "lease_expires": row["lease_expires"],
+                    # Additive for #299 (see status_summary).
+                    "workflow_id": row["workflow_id"],
                 }
                 for row in connection.execute(
                     f"SELECT * FROM task WHERE state IN ({_placeholders(OPEN_STATES)})"
