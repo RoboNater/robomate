@@ -710,6 +710,12 @@ def test_branch_label_derivation_prefers_issue_number_and_slugifies() -> None:
     assert derive_branch_label("Address issue `RoboNater/robomate#315`, merge it.") == "315"
     assert derive_branch_label("Fix login") == "fix-login"
     assert derive_branch_label("  ") != ""
+    # Reserved words (hub/agent name rules) fall back to a SHA prefix, so the
+    # hub never names a branch it would then refuse (r1-2).
+    for reserved in ("Token", "con", "State"):
+        label = derive_branch_label(reserved)
+        assert label not in ("token", "con", "state")
+        assert len(label) == 8
 
 
 def _branch_store(
@@ -737,6 +743,16 @@ def test_first_implementer_assignment_names_branch_and_reuses(tmp_path: Path) ->
     second = store.assign_task("bob2", "implementer", "Build more", "more")
     assert second.branch == first.branch
     assert store.get_state()["workflow"]["branch"] == first.branch
+
+
+def test_reserved_word_statement_still_names_a_branch(tmp_path: Path) -> None:
+    """r1-2: a reserved-word slug falls back instead of failing every assignment."""
+
+    store, _ = _branch_store(tmp_path, hub="myhub", goal="Token")
+    task = store.assign_task("bob", "implementer", "Build", "build it")
+    assert task.branch is not None
+    assert task.branch.startswith("robomate/myhub/bob/")
+    assert task.branch.split("/")[-1] not in ("token", "con", "state")
 
 
 def test_existing_local_ref_is_refused(tmp_path: Path) -> None:

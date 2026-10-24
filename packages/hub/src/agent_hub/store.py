@@ -2308,18 +2308,19 @@ class HubStore:
             if existing_branch is not None:
                 branch = str(existing_branch)
             elif role == TaskRole.IMPLEMENTER.value and self.hub_name is not None:
-                from .branches import branch_name, derive_branch_label, ensure_branch_available
+                from .branches import (
+                    BranchError,
+                    branch_name,
+                    derive_branch_label,
+                    ensure_branch_available,
+                )
 
                 label = derive_branch_label(str(workflow_row["goal"] or ""))
-                candidate = branch_name(self.hub_name, agent, label)
                 try:
+                    candidate = branch_name(self.hub_name, agent, label)
                     ensure_branch_available(self.git_common_dir, candidate)
-                except Exception as exc:
-                    from .branches import BranchError as _BranchError
-
-                    if isinstance(exc, _BranchError):
-                        raise ConflictError(str(exc)) from exc
-                    raise
+                except BranchError as exc:
+                    raise ConflictError(str(exc)) from exc
                 connection.execute(
                     "UPDATE workflow SET branch = ? WHERE id = ?",
                     (candidate, workflow_id),

@@ -900,3 +900,29 @@ async def test_finished_task_errors_without_held_point_to_await(
         await worker.report_progress(task.id, "late note")
     assert "hold no open task" in exc_info.value.message
     assert "await_assignment" in exc_info.value.message
+
+
+async def test_worker_await_assignment_surfaces_branch(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+) -> None:
+    """M2 Step 7c r1-1: an assignment carrying hub.branch returns branch."""
+
+    from agent_hub.database import database
+
+    hub_store.hub_name = "testhub"
+    state = hub_store.get_state()
+    workflow_id = state["workflow"]["id"]
+    with database(hub_store.path) as connection:
+        connection.execute(
+            "UPDATE workflow SET goal = ? WHERE id = ?",
+            ("Address issue `o/r#99`, merge it.", workflow_id),
+        )
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    task = hub_store.assign_task("bob", "implementer", "Build", "Do it")
+    assert task.branch == "robomate/testhub/bob/99"
+    assignment = await worker.await_assignment(timeout_s=1.0)
+    assert assignment["task_id"] == task.id
+    assert assignment["branch"] == "robomate/testhub/bob/99"

@@ -19,8 +19,9 @@ change request, or merge it.
    assignment (`hub.branch`, `robomate/<hub>/<agent>/<label>`): the hub names it
    in the run's first implementer assignment, with `<label>` derived from the
    statement (issue number or a slug) and validated like a name, and later tasks
-   of the same run reuse it. It is refused if that ref already exists locally or
-   on origin, so check `git show-ref` before creating it. For an address task,
+   of the same run reuse it. The hub refuses a label whose ref already exists
+   locally or on origin, so a first assignment's branch is new; on later tasks
+   of the same run, check out the existing branch. For an address task,
    check out the existing change-request
    branch and verify its current head from the forge (see the forge appendix).
 3. Check the roadmap reservation named in the assignment before changing any
