@@ -16,7 +16,12 @@ change request, or merge it.
    assignment text points to the requirements but does not replace them.
 2. Confirm the repository, base branch, and current branch before editing. For
    initial implementation, create or use the issue branch named by the
-   assignment. For an address task, check out the existing change-request
+   assignment (`hub.branch`, `robomate/<hub>/<agent>/<label>`): the hub names it
+   in the run's first implementer assignment, with `<label>` derived from the
+   statement (issue number or a slug) and validated like a name, and later tasks
+   of the same run reuse it. It is refused if that ref already exists locally or
+   on origin, so check `git show-ref` before creating it. For an address task,
+   check out the existing change-request
    branch and verify its current head from the forge (see the forge appendix).
 3. Check the roadmap reservation named in the assignment before changing any
    shared monotonic counter. Use that value exactly. If the assignment omits a

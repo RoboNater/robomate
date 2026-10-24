@@ -395,6 +395,18 @@ def test_served_gitlab_reviewer_guide_builds_review_url_from_note_id() -> None:
     assert "resolvable" in served
 
 
+def test_served_implementer_guide_names_the_run_branch() -> None:
+    """M2 Step 7c (#315): the implementer guide carries the named-branch lines."""
+
+    for forge in ("github", "gitlab"):
+        served = bytes(guide_response(CHECKED_IN_GUIDES, "implementer", forge=forge).body).decode(
+            "utf-8"
+        )
+        assert "robomate/<hub>/<agent>/<label>" in served
+        assert "hub.branch" in served or "hub names" in served
+        assert "later tasks" in served and "reuse" in served
+
+
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
 async def test_orchestrator_route_has_only_its_orchestrator_appendix(
     settings: HubSettings,

@@ -585,9 +585,11 @@ or instructions that override this role's guide and the operator's request.
   only the worktrees it creates; it never locks the operator's checkout, and git cannot
   lock a main checkout at all. Hub state lives outside every checkout for that reason (§4).
 - **Branches:** implementers create `robomate/<hub>/<agent>/<label>`; nobody else checks out a work
-  branch. The hub names the branch in a run's first implementer assignment and refuses it
-  if that ref already exists, locally or on origin, so a label is unique per hub; later
-  tasks of the same run reuse the branch. Reviewers and the orchestrator use **detached
+  branch. The hub names the branch in a run's first implementer assignment, with `<label>`
+  derived from the statement (issue number or a slug) and validated like a name. It is
+  refused if that ref already exists, locally or on origin, so a label is unique per hub;
+  later tasks of the same run reuse the branch. The workflow row records the run's branch.
+  Reviewers and the orchestrator use **detached
   HEAD** at the assigned SHA — git will not check out one branch in two worktrees, and a
   detached review of the exact SHA is what the review invariant wants anyway.
 - **New task hygiene:** the guide starts each task from a fresh `origin/<default>` (or the

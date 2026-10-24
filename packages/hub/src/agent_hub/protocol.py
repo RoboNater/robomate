@@ -419,6 +419,11 @@ def _task_object(
         run_identity[MetaKeys.RUN_ID] = record.run_id
     if record.statement_sha256 is not None:
         run_identity[MetaKeys.STATEMENT_SHA256] = record.statement_sha256
+    # Named branch travels with the assignment so the implementer knows which
+    # `robomate/<hub>/<agent>/<label>` branch to create (M2 Step 7c, #315).
+    # Additive, so wire `hub.schema_version` stays 1 (mvp-spec §3).
+    if record.branch is not None:
+        run_identity[MetaKeys.BRANCH] = record.branch
     # Redelivery marker (#326): additive metadata, so wire `hub.schema_version`
     # stays 1 (mvp-spec §3). Only present when true, so older clients ignore it.
     redelivery: dict[str, Any] = (

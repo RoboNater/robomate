@@ -1890,3 +1890,51 @@ async def test_hub_workspace_needs_operator_and_validates_name(
     body = await bare_call(app, "hub.workspace", OPERATOR, agent="bob")
     assert error_of(body)[0] == INVALID_PARAMS
     assert "repository" in error_of(body)[1].lower() or "checkout" in error_of(body)[1].lower()
+
+
+async def test_assign_task_names_branch_and_reuses_it(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """M2 Step 7c (#315): first implementer assignment names the run's branch."""
+
+    hub_store.hub_name = "testhub"
+    await check_in(client, "bob")
+    await check_in(client, "bob2")
+    # The default workflow goal has no issue number, so the label is a slug.
+    event = hub_store.lease_next_event()
+    assert event is not None
+    first = (
+        await call(
+            client,
+            "assign_task",
+            agent="bob",
+            role="implementer",
+            title="Build",
+            instructions="Do it",
+            event_id=event.id,
+        )
+    )["result"]
+    assert first["branch"] is not None
+    assert first["branch"].startswith("robomate/testhub/bob/")
+    assert hub_store.get_state()["workflow"]["branch"] == first["branch"]
+    # A later implementer task in the same run reuses the same branch.
+    second_event = hub_store.lease_next_event()
+    if second_event is None:
+        # No new event: assign directly through the store for the reuse check.
+        second_task = hub_store.assign_task("bob2", "implementer", "More", "more")
+    else:
+        second_result = (
+            await call(
+                client,
+                "assign_task",
+                agent="bob2",
+                role="implementer",
+                title="More",
+                instructions="more",
+                event_id=second_event.id,
+            )
+        )["result"]
+        fetched = hub_store.get_task(second_result["id"])
+        assert fetched is not None
+        second_task = fetched
+    assert second_task.branch == first["branch"]
