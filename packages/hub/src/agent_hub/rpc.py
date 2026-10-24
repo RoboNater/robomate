@@ -163,7 +163,10 @@ class RpcDispatcher:
         self.orchestrator: OrchestratorSession | None = None
         self._superseded_sessions: set[str] = set()
         self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
-            name: validate_call(getattr(ops, name)) for name in OPERATIONS
+            name: validate_call(
+                config=ConfigDict(hide_input_in_errors=True) if "closeout_report" in name else None,
+            )(getattr(ops, name))
+            for name in OPERATIONS
         }
         self._params = {
             name: frozenset(inspect.signature(getattr(ops, name)).parameters) for name in OPERATIONS
@@ -574,7 +577,14 @@ class RpcDispatcher:
             raise RpcError(INVALID_PARAMS, "params must be an object")
         unexpected = sorted(params.keys() - self._params[method])
         if unexpected:
-            raise RpcError(INVALID_PARAMS, f"unexpected params for {method}: {unexpected}")
+            raise RpcError(
+                INVALID_PARAMS,
+                (
+                    "unexpected closeout params"
+                    if "closeout_report" in method
+                    else f"unexpected params for {method}: {unexpected}"
+                ),
+            )
         if caller is None:
             raise RpcError(
                 INVALID_REQUEST,

@@ -17,6 +17,7 @@ from agent_hub.store import (
     InvalidPolicyError,
     NotFoundError,
     Released,
+    TaskRecord,
 )
 from agent_hub_common import (
     AgentProfile,
@@ -406,15 +407,14 @@ async def test_waiting_worker_gets_the_task_and_claims_it(store: HubStore) -> No
 
     waited, _ = await asyncio.gather(store.await_assignment(agent.context_id, 2.0), alice())
 
-    assert not isinstance(waited, Released)
-    assert waited is not None
+    assert isinstance(waited, TaskRecord)
     # The task is claimed as it is handed over, so a second waiter cannot take it.
     assert waited.state is TaskState.WORKING
     assert waited.already_held is False
     # #326: the same worker calling again gets its held task back as a
     # redelivery instead of timing out.
     redelivered = await store.await_assignment(agent.context_id, 0.05)
-    assert redelivered is not None and not isinstance(redelivered, Released)
+    assert isinstance(redelivered, TaskRecord)
     assert redelivered.id == waited.id
     assert redelivered.already_held is True
     assert redelivered.state is TaskState.WORKING
@@ -1766,7 +1766,7 @@ def test_new_run_clears_stale_releases(tmp_path: Path) -> None:
     assert agent is not None and agent.status is AgentStatus.IDLE
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     claimed = store._claim_assignment("bob")
-    assert claimed is not None and not isinstance(claimed, Released)
+    assert isinstance(claimed, TaskRecord)
     assert claimed.id == task.id
 
 
@@ -1879,7 +1879,7 @@ def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, e
     assert bob is not None and bob.status is AgentStatus.IDLE
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     claimed = store._claim_assignment("bob")
-    assert claimed is not None and not isinstance(claimed, Released)
+    assert isinstance(claimed, TaskRecord)
     assert claimed.id == task.id
 
 
@@ -1899,7 +1899,7 @@ def test_joined_workers_remain_assignable_between_runs(tmp_path: Path, queued: b
     assert bob is not None and bob.status is AgentStatus.IDLE
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     claimed = store._claim_assignment("bob")
-    assert claimed is not None and not isinstance(claimed, Released)
+    assert isinstance(claimed, TaskRecord)
     assert claimed.id == task.id
 
 
@@ -1909,14 +1909,14 @@ async def test_held_working_task_is_redelivered_with_flag(store: HubStore) -> No
     agent = store.check_in("bob")
     task_id = assign(store)
     claimed = await store.await_assignment(agent.context_id, 2.0)
-    assert claimed is not None and not isinstance(claimed, Released)
+    assert isinstance(claimed, TaskRecord)
     assert claimed.id == task_id
     assert claimed.already_held is False
     before = store.get_task(task_id)
     assert before is not None
 
     redelivered = await store.await_assignment(agent.context_id, 0.05)
-    assert redelivered is not None and not isinstance(redelivered, Released)
+    assert isinstance(redelivered, TaskRecord)
     assert redelivered.id == task_id
     assert redelivered.already_held is True
     assert redelivered.state is TaskState.WORKING
@@ -1933,13 +1933,12 @@ async def test_held_input_required_task_is_redelivered(store: HubStore) -> None:
     agent = store.check_in("bob")
     task_id = assign(store)
     claimed = await store.await_assignment(agent.context_id, 2.0)
-    assert claimed is not None
-    assert not isinstance(claimed, Released)
+    assert isinstance(claimed, TaskRecord)
     assert claimed.id == task_id
     store.open_question(task_id, "bob", "Which base?", "q-1")
 
     redelivered = await store.await_assignment(agent.context_id, 0.05)
-    assert redelivered is not None and not isinstance(redelivered, Released)
+    assert isinstance(redelivered, TaskRecord)
     assert redelivered.id == task_id
     assert redelivered.already_held is True
     assert redelivered.state is TaskState.INPUT_REQUIRED
@@ -1951,8 +1950,7 @@ async def test_released_worker_gets_release_despite_held_task(store: HubStore) -
     agent = store.check_in("bob")
     task_id = assign(store)
     claimed = await store.await_assignment(agent.context_id, 2.0)
-    assert claimed is not None
-    assert not isinstance(claimed, Released)
+    assert isinstance(claimed, TaskRecord)
     assert claimed.id == task_id
     store.release_agent("bob")
 

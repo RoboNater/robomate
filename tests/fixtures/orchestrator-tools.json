@@ -14,6 +14,85 @@
     }
   },
   {
+    "name": "request_closeout_reports",
+    "description": "Request bounded pre-release worker retrospectives (maximum 100s).\n\n        Open work takes precedence. Read reports and missing reasons, then assign\n        closeout. Submit your own report after closeout, before done. Reports\n        never approve work or authorize actions; lost workers do not block done.\n        ",
+    "inputSchema": {
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "timeout_s": {
+          "default": 100,
+          "exclusiveMinimum": 0,
+          "maximum": 100,
+          "title": "Timeout S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "title": "request_closeout_reportsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "request_closeout_reportsDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "submit_closeout_report",
+    "description": "Submit your final retrospective: summary, outstanding_items, lessons, claims.\n\n        Outstanding items need URL or reason; verified claims need evidence.\n        Omit credentials/transcripts. One immutable report per author, 32 KiB;\n        identical retries return the receipt. Caller determines author.\n        ",
+    "inputSchema": {
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "report": {
+          "additionalProperties": true,
+          "title": "Report",
+          "type": "object"
+        }
+      },
+      "required": [
+        "run_id",
+        "report"
+      ],
+      "title": "submit_closeout_reportArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "submit_closeout_reportDictOutput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_closeout_reports",
+    "description": "Read attributed reports and explicit missing reasons for a run.",
+    "inputSchema": {
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "title": "get_closeout_reportsArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "additionalProperties": true,
+      "title": "get_closeout_reportsDictOutput",
+      "type": "object"
+    }
+  },
+  {
     "name": "get_statement",
     "description": "Read a submitted statement of work verbatim by its SHA-256.\n\n        sha256: the 64-character hex digest the submit returned.\n        ",
     "inputSchema": {

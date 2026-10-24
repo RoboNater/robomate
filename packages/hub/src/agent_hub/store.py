@@ -559,6 +559,7 @@ class HubStore:
     """SQLite-backed hub state, plus the waits that hold a worker's request."""
 
     path: Path
+    known_credentials: tuple[str, ...] = field(default=(), repr=False, kw_only=True)
     signals: Signals = field(default_factory=Signals)
     clock: Callable[[], datetime] = utcnow
     default_event_lease_s: float = DEFAULT_EVENT_LEASE_S
@@ -589,6 +590,28 @@ class HubStore:
 
     def _state_dir(self) -> Path:
         return self.state_dir if self.state_dir is not None else self.path.parent
+
+    def request_closeout_reports(
+        self, run_id: str, author: str, session: str, timeout_s: float = 100
+    ) -> dict[str, Any]:
+        from .closeout import request
+
+        self._detect_pause(self._now(), self.monotonic_clock())
+        return request(self, run_id, author, session, timeout_s)
+
+    def submit_closeout_report(
+        self, run_id: str, author: str, session: str, kind: str, report: Any
+    ) -> dict[str, Any]:
+        from .closeout import submit
+
+        self._detect_pause(self._now(), self.monotonic_clock())
+        return submit(self, run_id, author, session, kind, report)
+
+    def get_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        from .closeout import read
+
+        self._detect_pause(self._now(), self.monotonic_clock())
+        return read(self, run_id)
 
     # -- workflow -----------------------------------------------------------
 
@@ -712,6 +735,10 @@ class HubStore:
             " WHERE status = ? AND standing_role != 'orchestrator'",
             (AgentStatus.LOST.value, AgentStatus.RELEASED.value),
         )
+
+        from .closeout import remember
+
+        remember(self, connection)
 
     def initialize_workflow(
         self, goal: str = DEFAULT_GOAL, policy: Mapping[str, Any] | None = None
@@ -1478,6 +1505,36 @@ class HubStore:
                         rationale += f"; operator answered questions {_ids(answered)}"
                     if withdrawn:
                         rationale += f"; orchestrator withdrew questions {_ids(withdrawn)}"
+            from .closeout import finalize, shift
+
+            if status == WorkflowStatus.DONE:
+                finalize(connection, workflow_id, self._now_iso())
+            if row["status"] == "paused":
+                collection = connection.execute(
+                    "SELECT paused_at FROM closeout_collection WHERE workflow_id = ?",
+                    (workflow_id,),
+                ).fetchone()
+                if collection is not None and collection["paused_at"]:
+                    shift(
+                        connection,
+                        workflow_id,
+                        max(
+                            0,
+                            (
+                                self._now() - _parse_timestamp(collection["paused_at"])
+                            ).total_seconds(),
+                        ),
+                    )
+                    connection.execute(
+                        "UPDATE closeout_collection SET paused_at = NULL WHERE workflow_id = ?",
+                        (workflow_id,),
+                    )
+            if status == WorkflowStatus.PAUSED:
+                connection.execute(
+                    "UPDATE closeout_collection SET paused_at = ? WHERE workflow_id ="
+                    " ? AND finalized_at IS NULL",
+                    (self._now_iso(), workflow_id),
+                )
             connection.execute(
                 "UPDATE workflow SET status = ? WHERE id = ?", (status.value, workflow_id)
             )
@@ -2092,6 +2149,9 @@ class HubStore:
                     "reattached_task_id": reattached["task_id"] if reattached else None,
                 },
             )
+            from .closeout import remember
+
+            remember(self, connection)
             agent = replace(self._require_agent(connection, name), reattached_task=reattached)
             res: tuple[Any, bool]
             if (
@@ -2229,12 +2289,20 @@ class HubStore:
         """Mark an agent released so its next assignment wait returns release."""
 
         with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             agent = self._require_agent(connection, name)
             if agent.status == AgentStatus.RELEASED:
                 return agent
             connection.execute(
                 "UPDATE agent SET status = ? WHERE name = ?",
                 (AgentStatus.RELEASED.value, name),
+            )
+            connection.execute(
+                "UPDATE closeout_expected SET missing_reason = 'agent_released' WHERE author = ?"
+                " AND missing_reason IS NULL AND NOT EXISTS (SELECT 1 FROM agent_closeout_report r"
+                " WHERE r.workflow_id = closeout_expected.workflow_id AND r.author ="
+                " closeout_expected.author)",
+                (name,),
             )
             released = self._require_agent(connection, name)
         self.signals.notify(context_key(agent.context_id))
@@ -3176,7 +3244,7 @@ class HubStore:
 
     async def await_assignment(
         self, context_id: str, timeout_s: float
-    ) -> TaskRecord | Released | None:
+    ) -> TaskRecord | Released | dict[str, Any] | None:
         """Hold until this agent has a task or is released; None on timeout."""
 
         agent = self.agent_by_context(context_id)
@@ -3188,8 +3256,10 @@ class HubStore:
             timeout_s,
         )
 
-    def _claim_assignment(self, name: str) -> TaskRecord | Released | None:
+    def _claim_assignment(self, name: str) -> TaskRecord | Released | dict[str, Any] | None:
+        self._detect_pause(self._now(), self.monotonic_clock())
         with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             agent = self._require_agent(connection, name)
             if agent.status is AgentStatus.RELEASED:
                 return Released(agent=name)
@@ -3208,7 +3278,9 @@ class HubStore:
             # still exempts the surrounding wait.
             held_id = self._open_task_id(connection, agent.current_task_id)
             if held_id is None:
-                return None
+                from .closeout import pending
+
+                return pending(self, connection, name)
             held = self._require_task(connection, held_id)
             if held.assignee != name:
                 return None
@@ -3308,6 +3380,20 @@ class HubStore:
                     (to_iso(expires), shift_s, to_iso(now), row["id"]),
                 )
                 shifted += 1
+            from .closeout import shift
+
+            for collection in connection.execute(
+                "SELECT * FROM closeout_collection WHERE finalized_at IS NULL AND"
+                " paused_at IS NULL AND deadline > ?",
+                (to_iso(pause_start),),
+            ).fetchall():
+                created = _parse_timestamp(collection["requested_at"])
+                if not clock_jump or created <= pause_start:
+                    shift(
+                        connection,
+                        collection["workflow_id"],
+                        min(pause_s, max(0, (now - created).total_seconds())),
+                    )
             payload = {
                 "reason": "clock_jump" if clock_jump else "sweep_gap",
                 "previous_sweep_at": to_iso(previous[0]),
@@ -3539,6 +3625,10 @@ class HubStore:
                     f"UPDATE agent SET {', '.join(f'{key} = ?' for key in values)} WHERE name = ?",
                     (*values.values(), name),
                 )
+
+            from .closeout import remember
+
+            remember(self, connection)
 
     def note_orchestrator_session(self, actor: str, session: str) -> None:
         """The session `/rpc` just accepted as the current orchestrator."""
