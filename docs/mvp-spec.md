@@ -899,6 +899,16 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | `robomate inbox [--json]` | operator (CLI, not MCP) | **new** (#130): lists open questions (id, time, asking actor, question, options) from `hub.questions` |
 | `robomate answer <id> <text>` / `--option N` | operator (CLI, not MCP) | **new** (#130): answers one question through `hub.answer` with the operator credential and prints a confirmation; `robomate status` shows the open-question count |
 
+**Bridge compatibility (#215).** The additive wire version remains 1, but a
+pre-#215 worker bridge does not understand `closeout_requested`: it interprets
+that response as an assignment with an empty task ID. Repeated waits can
+redeliver it immediately until the bounded collection deadline (at most 100
+active seconds), after which its report is recorded as missing. The hub
+creates no task or report from that response. Operators should upgrade hub and bridges together and
+restart long-lived bridge processes when upgrading; workers do not perform
+that lifecycle action. Current bridges and mock consumers handle the response
+explicitly. Version 1 has no capability gate for mixed-version delivery.
+
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same
 route with an operator identity; `robomate abandon` and `robomate report` are operator-only.
