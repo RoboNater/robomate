@@ -142,7 +142,7 @@ def _bind(
         ports = (p for p in range(base, 65536) if p not in avoid)
     for candidate in ports:
         sock = socket.socket(family, socket.SOCK_STREAM)
-        if os.name != "nt":
+        if sys.platform != "win32":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, candidate))

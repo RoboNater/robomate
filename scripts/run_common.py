@@ -645,9 +645,6 @@ def parse_github_slug(repository: str, forge: str = "github") -> str | None:
     return f"{parts[0]}/{parts[1]}"
 
 
-parse_forge_slug = parse_github_slug
-
-
 def slug_clone_url(slug: str) -> str:
     """Clone URL for a bare ``owner/repo`` slug honoring gh's protocol.
 

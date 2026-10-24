@@ -741,8 +741,7 @@ async def test_the_mcp_tool_reports_the_gate_as_plain_json(tmp_path: Path) -> No
         await server.call_tool("check_merge_gate", {"pr_url": PR, "expected_head_sha": "abc"})
 
 
-@pytest.mark.parametrize("method", ["squash", "merge", "rebase"])
-async def test_merged_commit_comes_from_github_not_pr_head(method: str) -> None:
+async def test_merged_commit_comes_from_github_not_pr_head() -> None:
     # GitHub exposes the target commit for each method through mergeCommit;
     # a rebase merge reports the last rebased commit, not the old PR head.
     body = json.loads(view(pr_state="MERGED").stdout)
@@ -750,7 +749,7 @@ async def test_merged_commit_comes_from_github_not_pr_head(method: str) -> None:
     gh = FakeGh(view=GhResult(0, json.dumps(body), ""))
     merge_gate, _ = gate(gh)
     report = await merge_gate.check(PR, HEAD)
-    assert report.merged_sha == PUSHED != HEAD, method
+    assert report.merged_sha == PUSHED != HEAD
     assert "mergeCommit" in gh.calls[0][-1]
 
 
