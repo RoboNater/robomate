@@ -185,6 +185,7 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
         "report_progress",
         "ask_alice",
         "submit_result",
+        "submit_closeout_report",
         "get_operator_answer",
         "get_statement",
     }

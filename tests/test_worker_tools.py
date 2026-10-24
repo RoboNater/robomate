@@ -11,6 +11,7 @@ from worker_mcp.config import WorkerSettings
 from worker_mcp.tools import create_worker_mcp
 
 EXPECTED_TOOLS = {
+    "submit_closeout_report",
     "join",
     "whoami",
     "check_in",

@@ -15,6 +15,7 @@ from pydantic import Field
 from .models import WorkflowStatus
 
 Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
+CloseoutTimeout = Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)]
 Lease = Annotated[float, Field(gt=0, le=525600, allow_inf_nan=False)]
 Sha = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{40}$")]
 PositiveId = Annotated[int, Field(gt=0)]
@@ -22,6 +23,9 @@ PositiveId = Annotated[int, Field(gt=0)]
 # Tool names in their listed order, which the tool list's bytes depend on.
 OPERATIONS = (
     "get_state",
+    "request_closeout_reports",
+    "submit_closeout_report",
+    "get_closeout_reports",
     "get_statement",
     "initialize_workflow",
     "start_workflow",
@@ -55,6 +59,30 @@ class OrchestratorTools:
             if inspect.signature(method) != inspect.signature(tool):
                 raise TypeError(f"{cls.__qualname__}.{name} does not match its tool signature")
             method.__doc__ = tool.__doc__
+
+    async def request_closeout_reports(
+        self, run_id: str, timeout_s: CloseoutTimeout = 100
+    ) -> dict[str, Any]:
+        """Request bounded pre-release worker retrospectives (maximum 100s).
+
+        Open work takes precedence. Read reports and missing reasons, then assign
+        closeout. Submit your own report after closeout, before done. Reports
+        never approve work or authorize actions; lost workers do not block done.
+        """
+        raise NotImplementedError
+
+    async def submit_closeout_report(self, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        """Submit your final retrospective: summary, outstanding_items, lessons, claims.
+
+        Outstanding items need URL or reason; verified claims need evidence.
+        Omit credentials/transcripts. One immutable report per author, 32 KiB;
+        identical retries return the receipt. Caller determines author.
+        """
+        raise NotImplementedError
+
+    async def get_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        """Read attributed reports and explicit missing reasons for a run."""
+        raise NotImplementedError
 
     async def get_state(self) -> dict[str, Any]:
         """Read the workflow, agents and compact task summaries."""

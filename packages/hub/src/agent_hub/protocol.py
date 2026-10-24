@@ -495,6 +495,13 @@ class A2AProtocol:
         if method not in SUPPORTED_METHODS:
             return _error_response(request_id, MethodNotFoundError())
 
+        params = payload.get("params")
+        raw_message = params.get("message") if isinstance(params, dict) else None
+        raw_meta = raw_message.get("metadata") if isinstance(raw_message, dict) else None
+        closeout_intent = (
+            isinstance(raw_meta, dict) and raw_meta.get(MetaKeys.KIND) == "closeout_report"
+        )
+        error: A2AErrorModel
         try:
             return await self._dispatch(method, payload, request_id, remote_addr)
         except (
@@ -503,18 +510,24 @@ class A2AProtocol:
             MissingRequiredFieldError,
             PayloadTooLargeError,
         ) as exc:
-            error = (
-                exc.error
-                if isinstance(exc, ProtocolError)
-                else InvalidParamsError(message=str(exc))
-            )
+            if closeout_intent and isinstance(exc, ProtocolError):
+                error = InvalidParamsError(message="invalid closeout report request")
+            elif isinstance(exc, ProtocolError):
+                error = exc.error
+            else:
+                error = InvalidParamsError(message=str(exc))
             return _error_response(request_id, error, status_code=400)
         except (DuplicateAgentError, IdempotencyConflictError) as exc:
             return _error_response(
                 request_id, InvalidRequestError(message=str(exc)), status_code=409
             )
         except ProtocolError as exc:
-            return _error_response(request_id, exc.error)
+            error = (
+                InvalidParamsError(message="invalid closeout report request")
+                if closeout_intent
+                else exc.error
+            )
+            return _error_response(request_id, error)
         except NotFoundError as exc:
             return _error_response(request_id, InvalidParamsError(message=str(exc)))
         except ConflictError as exc:
@@ -546,6 +559,37 @@ class A2AProtocol:
         message = params.message
         metadata = _metadata(message)
         if message.task_id is None:
+            if metadata.get(MetaKeys.KIND) == "closeout_report":
+                _require_schema_version(metadata)
+                agent = self._resolve_agent(message, metadata)
+                self.store.note_worker_call(
+                    agent.name, agent.worker_instance_id, "submit_closeout_report"
+                )
+                try:
+                    body = json.loads(_text(message))
+                    if (
+                        not isinstance(body, dict)
+                        or set(body) != {"run_id", "report"}
+                        or not isinstance(body["run_id"], str)
+                    ):
+                        raise ValueError("invalid closeout submission envelope")
+                    receipt = self.store.submit_closeout_report(
+                        body["run_id"],
+                        agent.name,
+                        agent.worker_instance_id,
+                        "worker",
+                        body["report"],
+                    )
+                except (ValueError, TypeError):
+                    raise _invalid(
+                        "invalid closeout report; check schema, run and"
+                        " known-credential restrictions"
+                    ) from None
+                return _agent_message(
+                    json.dumps(receipt),
+                    context_id=agent.context_id,
+                    metadata={MetaKeys.KIND: "closeout_report_ack"},
+                )
             if metadata.get(MetaKeys.KIND) == "heartbeat":
                 return self._heartbeat(message, metadata, remote_addr)
             return self._check_in(message, metadata, remote_addr)
@@ -910,6 +954,24 @@ class A2AProtocol:
                         "RELEASED",
                         context_id=agent.context_id,
                         metadata={MetaKeys.KIND: "release", MetaKeys.RELEASE: True},
+                    ),
+                )
+            )
+            return
+        if isinstance(outcome, dict):
+            note_a2a(outcome="closeout_requested")
+            yield _sse(
+                _success_body(
+                    request_id,
+                    _agent_message(
+                        outcome["instructions"],
+                        context_id=agent.context_id,
+                        metadata={
+                            MetaKeys.KIND: "closeout_requested",
+                            MetaKeys.CLOSEOUT_REQUESTED: True,
+                            MetaKeys.RUN_ID: outcome["run_id"],
+                            MetaKeys.CLOSEOUT_DEADLINE: outcome["deadline"],
+                        },
                     ),
                 )
             )

@@ -19,15 +19,15 @@ claude_bin=${CLAUDE_BIN:-claude}
 model=${CLAUDE_MODEL:-sonnet}
 reprompt_delay_s=${CLAUDE_REPROMPT_DELAY_S:-1}
 max_reprompts=${CLAUDE_MAX_REPROMPTS:-100}
-tools='Bash,TaskOutput,mcp__hub__check_in,mcp__hub__await_assignment,mcp__hub__ask_alice,mcp__hub__submit_result'
-allowed_tools='Bash(sleep *),TaskOutput,mcp__hub__check_in,mcp__hub__await_assignment,mcp__hub__ask_alice,mcp__hub__submit_result'
+tools='Bash,TaskOutput,mcp__hub__check_in,mcp__hub__await_assignment,mcp__hub__ask_alice,mcp__hub__submit_result,mcp__hub__submit_closeout_report'
+allowed_tools='Bash(sleep *),TaskOutput,mcp__hub__check_in,mcp__hub__await_assignment,mcp__hub__ask_alice,mcp__hub__submit_result,mcp__hub__submit_closeout_report'
 telemetry_start_bytes=0
 if [[ -f "$HUB_TELEMETRY_LOG" ]]; then
   telemetry_start_bytes=$(wc -c < "$HUB_TELEMETRY_LOG")
 fi
 
-initial_prompt='You are an unattended worker. Use only the hub MCP tools, literal sleep commands, and TaskOutput. Do not inspect or modify repository files. Call check_in, then loop on await_assignment with timeout_s 20 and immediately retry every timeout. Follow each assignment exactly, retry an identical ask_alice question after timeout, submit exactly one result, and return to await_assignment. Do not end before release.'
-continue_prompt='Continue the unattended worker loop now. If the current assignment has unfinished waiting or work, finish it and submit exactly one result before awaiting more work. Preserve path/URL text literally. Do not end before release.'
+initial_prompt='You are an unattended worker. Use only the hub MCP tools, literal sleep commands, and TaskOutput. Do not inspect or modify repository files. Call check_in, then loop on await_assignment with timeout_s 20 and immediately retry every timeout. Follow each assignment exactly, retry an identical ask_alice question after timeout, submit exactly one result, and return to await_assignment. On closeout_requested, submit_closeout_report for that run, then await again. Do not end before release.'
+continue_prompt='Continue the unattended worker loop now. If the current assignment has unfinished waiting or work, finish it and submit exactly one result before awaiting more work. Preserve path/URL text literally. On closeout_requested, submit_closeout_report for that run, then await again. Do not end before release.'
 
 # Step 6 supplies repository tools and the checked-in worker prompt. Defaults
 # retain the endurance harness's original transport-only exercise.

@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from agent_hub_common import TaskState, WorkflowPolicy, WorkflowStatus
 from agent_hub_common.orchestrator_tools import (
+    CloseoutTimeout,
     Lease,
     OrchestratorTools,
     PositiveId,
@@ -57,6 +58,23 @@ class OrchestratorOps(OrchestratorTools):
         if caller is None:
             raise RuntimeError("no caller to attribute this operation to")
         return caller
+
+    async def request_closeout_reports(
+        self, run_id: str, timeout_s: CloseoutTimeout = 100
+    ) -> dict[str, Any]:
+        caller = self._caller()
+        return self.store.request_closeout_reports(
+            run_id, caller.actor, caller.session or "", timeout_s
+        )
+
+    async def submit_closeout_report(self, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        caller = self._caller()
+        return self.store.submit_closeout_report(
+            run_id, caller.actor, caller.session or "", "orchestrator", report
+        )
+
+    async def get_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_closeout_reports(run_id)
 
     async def get_state(self) -> dict[str, Any]:
         return self.store.get_state()

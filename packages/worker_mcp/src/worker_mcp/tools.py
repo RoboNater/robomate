@@ -154,7 +154,9 @@ def create_worker_mcp(
     async def await_assignment(timeout_s: Timeout | None = None) -> dict[str, Any]:
         """Poll the hub for the next task assignment.
 
-        Returns {task_id, role, instructions}, {release: true}, or {timeout: true}.
+        Returns {task_id, role, instructions}, {release: true}, {timeout: true},
+        or {closeout_requested: true, run_id, deadline, instructions}. On a
+        closeout request submit_closeout_report, then await again; do not exit.
         A review or rebase assignment also carries pr_head_sha, the head it is bound to.
         An implementer assignment carries branch (`robomate/<hub>/<agent>/<label>`)
         named in the run's first implementer assignment and reused afterwards, plus
@@ -171,6 +173,30 @@ def create_worker_mcp(
             "await_assignment",
             resolved.await_assignment(timeout_s),
             {"timeout_s": timeout_s},
+        )
+
+    @server.tool()
+    async def submit_closeout_report(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        """Submit one final AgentCloseoutReport before release, when requested.
+
+        Required fields: summary, outstanding_items (summary and URL or reason,
+        optional finding_id), lessons, claims (text, verification verified or
+        unverified, evidence required for verified). Empty lists are explicit.
+        Omit credentials and transcripts. Maximum 32 KiB; identical retries
+        return the same receipt, conflicting retries are rejected. Author is
+        inferred from your session. Then return to await_assignment.
+        """
+        resolved = await resolve()
+        if resolved.orchestrator is not None and resolved.orchestrator.joined:
+            return await resolved.orchestrator.call(
+                "submit_closeout_report", {"run_id": run_id, "report": report}
+            )
+        require_joined(resolved)
+        return await invoke(
+            resolved,
+            "submit_closeout_report",
+            resolved.submit_closeout_report(run_id, report),
+            {"run_id": run_id, "report": report},
         )
 
     @server.tool()
@@ -290,5 +316,7 @@ def create_worker_mcp(
             return forward
 
         for operation in OPERATIONS:
+            if operation == "submit_closeout_report":
+                continue  # The shared tool above dispatches by the joined role.
             server.add_tool(MethodType(forward_operation(operation), server))
     return server

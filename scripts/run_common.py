@@ -20,7 +20,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: The seven worker-mcp coordination tools every worker config must approve.
+#: The worker-mcp coordination tools every worker config must approve.
 TOOLS = [
     "check_in",
     "get_role_guide",
@@ -28,6 +28,7 @@ TOOLS = [
     "report_progress",
     "ask_alice",
     "submit_result",
+    "submit_closeout_report",
     "get_operator_answer",
     "get_statement",
 ]
