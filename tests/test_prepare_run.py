@@ -2449,8 +2449,8 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert lines[1].startswith("cd ")
     bash_tmp = PREPARE_RUN.git_bash_path(bob_tmp) if host == "nt" else str(bob_tmp)
     assert lines[2] == f"export TMPDIR={PREPARE_RUN.shell_word(bash_tmp)}"
-    # Git Bash hands native uv the Windows spelling, like TEMP/TMP.
-    expected_uv = PREPARE_RUN.shell_word(str(bob_tmp / "uv-cache"))
+    # Git Bash hands native uv the Windows spelling, like TEMP/TMP (#285).
+    expected_uv = PREPARE_RUN.shell_word((bob_tmp / "uv-cache").as_posix())
     assert lines[3] == f"export UV_CACHE_DIR={expected_uv}"
     assert (bob_tmp / "uv-cache").is_dir()
 
@@ -2507,9 +2507,11 @@ def test_codex_scripts_carry_isolated_uv_cache(
         assert uv_cache.is_dir()
         for kind in ("start", "resume"):
             body = (run_dir / f"{kind}-{name}.{SCRIPT_SUFFIX}").read_text()
-            assert f"UV_CACHE_DIR={run_dir / 'tmp' / name / 'uv-cache'}" in body or (
-                "UV_CACHE_DIR" in body and f"tmp/{name}/uv-cache" in body
-            )
+            # Host-agnostic: POSIX `export UV_CACHE_DIR=...` or PowerShell
+            # `$env:UV_CACHE_DIR = '...'`, with either slash style (#285).
+            normalized = body.replace("\\", "/")
+            assert "UV_CACHE_DIR" in body
+            assert f"tmp/{name}/uv-cache" in normalized
             assert "/tmp/bob-uv-cache" not in body and "/tmp/charlie-uv-cache" not in body
             assert "/tmp/bob-275-uv-cache" not in body
         prompt = run_dir / f"{name}.prompt.md"
@@ -2532,7 +2534,8 @@ def test_codex_temp_renderings_carry_uv_cache_for_all_hosts() -> None:
     assert any(
         "export UV_CACHE_DIR=C:/Users/Bob/runs/step7/tmp/bob/uv-cache" in line for line in resume
     )
-    # Local POSIX start and resume agree.
+    # Local start and resume agree on either host: POSIX `export` or PowerShell
+    # `$env:` when os.name is nt, with either slash style (#285).
     local_lines = PREPARE_RUN.launch_lines(
         "codex",
         Path("/srv/run/bob"),
@@ -2541,7 +2544,10 @@ def test_codex_temp_renderings_carry_uv_cache_for_all_hosts() -> None:
         Path("/srv/run/bob/.git"),
         tmp_dir=Path("/srv/run/tmp/bob"),
     )
-    assert "export UV_CACHE_DIR=/srv/run/tmp/bob/uv-cache" in local_lines
+    assert any(
+        "UV_CACHE_DIR" in line and "tmp/bob/uv-cache" in line.replace("\\", "/")
+        for line in local_lines
+    )
     posix_resume = PREPARE_RUN.resume_lines(
         "bob",
         "codex",
@@ -2552,7 +2558,10 @@ def test_codex_temp_renderings_carry_uv_cache_for_all_hosts() -> None:
         tmp_dir=Path("/srv/run/tmp/bob"),
         token_file="/srv/run/token",
     )
-    assert any("export UV_CACHE_DIR=/srv/run/tmp/bob/uv-cache" in line for line in posix_resume)
+    assert any(
+        "UV_CACHE_DIR" in line and "tmp/bob/uv-cache" in line.replace("\\", "/")
+        for line in posix_resume
+    )
     # PowerShell rendering agrees via agent_launch_lines (supervised workers).
     supervised = PREPARE_RUN.agent_launch_lines(
         "codex",
