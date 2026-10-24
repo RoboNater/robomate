@@ -470,7 +470,7 @@ and a non-null `merged_sha` before WRAP-UP. This records the forge's target
 commit (squash/merge commit or final fast-forward/rebased commit) in the hub.
 If a merged reading has `merged_sha == null`, re-read once; if it remains null,
 escalate before WRAP-UP (also on the already-merged recovery path).
-Log the reviewed SHA, any rebase head, merged SHA, review-comment URL, and every
+Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every
 check name/bucket. Never merge from a stale or unreadable gate.
 
 ## Escalation

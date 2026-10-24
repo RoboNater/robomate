@@ -156,7 +156,7 @@ To resume the existing workflow, use its original run directory, hub clone,
 goal (the same `--issue` or `--work-file` and roadmap selection), and policy
 options such as merge method, harnesses, capabilities, and CI setting.
 
-The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and eleven enabled tools; a Codex worker gets seven worker tools. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`.
+The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and the enabled tools listed in `ALICE_TOOLS` in `scripts/prepare-run.py`; a Codex worker gets the worker tools listed in `TOOLS` in `scripts/run_common.py`. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`.
 
 When automatic recovery stops, run `"$RUN_DIR/resume-alice.sh"`,
 `resume-bob.sh`, or `resume-charlie.sh` on that agent's host with no arguments
@@ -303,7 +303,7 @@ cd /absolute/path/to/bob-clone
 claude --strict-mcp-config --mcp-config /absolute/path/to/my-run/configs/bob.mcp.json
 ```
 
-For Charlie, copy [`runtimes/codex.config.toml`](../runtimes/codex.config.toml) into a private run-local `CODEX_HOME`. Its `[mcp_servers.robomate]` entry uses the same hub URL and token file path and identifies Charlie's own clone. Keep `tool_timeout_sec = 330` for long assignment waits and approve the seven coordination tools for unattended use. Give Codex access to its own `.git` directory, and feed the worker prompt through stdin:
+For Charlie, copy [`runtimes/codex.config.toml`](../runtimes/codex.config.toml) into a private run-local `CODEX_HOME`. Its `[mcp_servers.robomate]` entry uses the same hub URL and token file path and identifies Charlie's own clone. Keep `tool_timeout_sec = 330` for long assignment waits and approve the coordination tools listed in `TOOLS` in `scripts/run_common.py` (mirrored in `runtimes/codex.config.toml`) for unattended use. Give Codex access to its own `.git` directory, and feed the worker prompt through stdin:
 
 ```sh
 cd /absolute/path/to/charlie-clone
@@ -361,8 +361,8 @@ uv run --project /absolute/path/to/robomate robomate down
 Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository and state directory. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
 A stopped hub keeps its registry entry, so its name stays taken and its port stays
-reserved for its next `up`. When you no longer need a stopped hub in the list, release
-its name and port with (these are operator-only; agents never call them):
+reserved for its next `up`. When you no longer need a stopped hub in the list, remove
+the registry entry and release the port; keep the stored state (these are operator-only; agents never call them):
 
 ```sh
 uv run --project /absolute/path/to/robomate robomate forget <name | hub_id | checkout path>
@@ -776,7 +776,7 @@ If you prefer running both Bob and Charlie with Claude Code:
 | `check_merge_gate` reports `ci == no_workflows` and blocks | Repo has no GitHub Actions CI | Set `"allow_no_ci": true` in Alice's workflow policy if the repo has no automated checks. |
 | Codex worker fails with git permission errors | Codex protects `.git` directory | Launch Codex with `--add-dir "/path/to/clone/.git"` in addition to `--approve-for-me`. |
 | Codex worker fails with network errors | Sandbox disables network access | Add `[sandbox_workspace_write]\nnetwork_access = true` in Charlie's `CODEX_HOME/config.toml`. |
-| Codex worker hangs on MCP tool calls | Interactive approval prompt blocking | Add `approval_mode = "approve"` for all seven worker tools in `config.toml` (see the runtime template). |
+| Codex worker hangs on MCP tool calls | Interactive approval prompt blocking | Add `approval_mode = "approve"` for all worker tools in `config.toml` (see the runtime template; the full list is `TOOLS` in `scripts/run_common.py`). |
 | Hub port (`HUB_PORT`, default 8420) already in use | Stale hub listener, or another checkout's hub | Inspect the listener and stop it only if it is your run's. If it belongs to another checkout, leave it and start your hub with `robomate up --port 8521` before preparing from its repository. |
 | Hub or `uv` reports a configured path as missing, though the JSON looks correct | Unescaped Windows backslash in a `*.mcp.json` file | Use forward slashes (`C:/target/.robomate`) or escaped backslashes (`C:\\target\\.robomate`). Verify with `python -c "import json; print(json.load(open('configs/bob.mcp.json'))['mcpServers']['robomate']['env']['HUB_WORKSPACE'])"` — a value containing a newline or `r` where a drive letter should be means a `\n`/`\r` escape was parsed. Git Bash `/c/...` spellings also fail here; use a native Windows path. |
 | Alice restarts mid-workflow | Session dropped or restarted | Restart Alice pointing to the same running `robomate up` hub. Alice will call `get_state()`, reconcile with GitHub, and resume without re-running completed work. |

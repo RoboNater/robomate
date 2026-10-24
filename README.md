@@ -38,7 +38,7 @@ certification (M3); close-out and `robomate report` (M4).
   request open until there is something to do, so no agent polls or spins.
 - **Orchestrator (Alice)** plans from the statement of work, assigns tasks, and decides
   when to re-review, rebase, merge, or ask you.
-- **Implementer (Bob)** works on a branch in his own git worktree and opens the PR/MR.
+- **Implementer (Bob)** works on a branch in their own git worktree and opens the PR/MR.
 - **Reviewer (Charlie)** checks out the exact commit under review in a separate worktree,
   tests it, and posts findings.
 - **The hub** stores durable state in SQLite, serves each role's instructions, and tracks
@@ -50,7 +50,7 @@ certification (M3); close-out and `robomate report` (M4).
 - **Merge is bound to the approved commit.** Alice merges only when the reviewer approved
   the PR's current head, CI is green on that head, and the base is up to date. A push
   after approval, or a stale base, sends the work back through review or a rebase.
-- **The reviewer works independently.** Charlie reads the code from the forge in his own
+- **The reviewer works independently.** Charlie reads the code from the forge in their own
   workspace, never from Bob's files or summaries.
 - **Restarts are safe.** The hub, or any single agent, can restart mid-run without losing
   or repeating work.

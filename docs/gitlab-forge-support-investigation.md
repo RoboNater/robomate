@@ -13,8 +13,9 @@ This report documents the empirical investigation, API analysis, safety rail ver
 2. **Read-Only Gate Facts via `glab api`**:
    - `GitLabGate` reads required gate facts through standard `glab api` endpoints without requiring a dedicated hub forge token.
    - Authoritative head SHA, `diff_refs` (`base_sha`, `head_sha`, `start_sha`), `diverged_commits_count`, and `detailed_merge_status` are acquired through `GET projects/<group%2Fproject>/merge_requests/<iid>?include_diverged_commits_count=true`.
-   - CI pipeline and job facts are acquired through `GET projects/<group%2Fproject>/pipelines/<id>/jobs` and `GET projects/<group%2Fproject>/repository/commits/<sha>/statuses`, invoked with the `--paginate` CLI flag. Because `glab api --paginate` outputs multi-page results as concatenated JSON arrays (`[...][...]`), the adapter uses streaming array decoding (`_decode_json_arrays`) rather than a single `json.loads`.
-   - Pipeline jobs and commit status entries are deduplicated by `(name, pipeline_id)`, preventing double-counting while preserving distinct external checks that share a job name.
+    - CI pipeline and job facts are acquired through `GET projects/<group%2Fproject>/pipelines/<id>/jobs` and `GET projects/<group%2Fproject>/repository/commits/<sha>/statuses`, invoked with the `--paginate` CLI flag. Because `glab api --paginate` outputs multi-page results as concatenated JSON arrays (`[...][...]`), the adapter uses streaming array decoding (`_decode_json_arrays`) rather than a single `json.loads`.
+    - Since #78, the gate reads `pipelines?sha=<head>` and `repository/commits/<head>/statuses`; the current design is the M5 plan's [Gate selection and pipelines](development/implementation-plan-mvp-m5-gitlab.md#gate-selection-and-pipelines).
+    - Pipeline jobs and commit status entries are deduplicated by `(name, pipeline_id)`, preventing double-counting while preserving distinct external checks that share a job name.
    - Stale pipeline detection compares `head_pipeline.sha` to the MR head SHA; if stale, the gate unconditionally treats CI as `NO_CHECKS` to await the new pipeline run even if an external commit status exists.
    - `NO_CHECKS` (transient pending state) versus `NO_WORKFLOWS` (misconfiguration) is determined affirmatively by inspecting `.gitlab-ci.yml` file presence at the head commit, `ci_config_path`, and `auto_devops_enabled`.
 3. **Subprocess & Fail-Closed Error Semantics**:
@@ -71,6 +72,8 @@ To support self-hosted instances without hardcoded domain lists, forge detection
 ---
 
 ## 4. `glab api` Query Mapping for `GitLabGate`
+
+> Note: since #78, the gate reads `pipelines?sha=<head>` and `repository/commits/<head>/statuses`; the current design is the M5 plan's [Gate selection and pipelines](development/implementation-plan-mvp-m5-gitlab.md#gate-selection-and-pipelines).
 
 The table below contrasts GitHub's `gh` invocations with GitLab's `glab api` queries implemented in `GitLabGate`:
 

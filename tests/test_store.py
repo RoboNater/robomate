@@ -1694,7 +1694,7 @@ def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None
     assert completed["completed"] is not None
     assert completed["pr_url"] == "https://github.com/octo/sandbox/pull/7"
     assert completed["approved_sha"] is None
-    # merged_sha stays null until the hub records a merge commit (r1-2).
+    # no post-merge gate reading, so null; a PR head is never used.
     assert completed["merged_sha"] is None
     assert any(agent["name"] == "bob" for agent in completed["agents"])
 

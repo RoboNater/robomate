@@ -85,7 +85,7 @@ modules as errors, with targeted, documented exceptions (#127 / #123 option 3).
 `StarletteDeprecationWarning` inherits `UserWarning` and remains report-only.
 `ResourceWarning` is outside this policy (see #121). Any
 `filterwarnings` `ignore`, in config or a test marker, must be targeted and
-have a comment naming the issue that tracks it.
+have a comment naming the issue that tracks it. The module pattern matches the module the warning is attributed to through its `stacklevel`, not the module that emits it, so confirm a new exception with a temporary probe.
 
 Green CI is not the bar: it only covers what has tests. Before opening a PR,
 also **run every script and entry point the PR touches** at least once — `ruff`
