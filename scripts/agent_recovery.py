@@ -305,8 +305,11 @@ def _hub_evidence(
     for source in (status.get("tasks"), snapshot.get("tasks")):
         if isinstance(source, list):
             tasks.extend([t for t in source if isinstance(t, dict)])
-    assigned = any(
-        t.get("assignee") == agent and t.get("workflow_id") in (None, workflow_id) for t in tasks
+    # Open tasks span workflows (a task can outlive a done workflow), so a
+    # task counts only when the hub names its workflow and it is this one.
+    # Unknown membership fails closed (#299 item 4).
+    assigned = isinstance(workflow_id, str) and any(
+        t.get("assignee") == agent and t.get("workflow_id") == workflow_id for t in tasks
     )
     if agent_row is not None and assigned:
         return True, f"agent row and task assigned to {agent} on the hub workflow"

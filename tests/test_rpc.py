@@ -141,6 +141,7 @@ async def test_hub_status_is_compact_and_reports_open_work(
             "state": "input-required",
             "pr_url": None,
             "head_sha": None,
+            "workflow_id": task.workflow_id,
         }
     ]
     assert result["pending_questions"] == 1
@@ -251,6 +252,7 @@ async def test_hub_status_shows_known_review_pr_and_head(
             "state": "submitted",
             "pr_url": PR,
             "head_sha": HEAD,
+            "workflow_id": review.workflow_id,
         },
         {
             "id": unknown.id,
@@ -259,6 +261,7 @@ async def test_hub_status_shows_known_review_pr_and_head(
             "state": "submitted",
             "pr_url": None,
             "head_sha": "c" * 40,
+            "workflow_id": unknown.workflow_id,
         },
     ]
 

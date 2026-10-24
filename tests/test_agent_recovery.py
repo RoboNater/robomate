@@ -34,7 +34,9 @@ class RecoveryReader:
                 "hub_id": "hub-1",
                 "taken_at": "2026-10-09T12:00:00Z",
                 "workflow": {"id": "wf-1", "status": "active"},
-                "tasks": [{"id": "task-1", "assignee": "bob", "role": "reviewer"}],
+                "tasks": [
+                    {"id": "task-1", "assignee": "bob", "role": "reviewer", "workflow_id": "wf-1"}
+                ],
                 "deliveries": [{"event_id": 7, "delivery_id": "d", "attempt": 1}],
                 "queued_events": 2,
             },
@@ -992,3 +994,81 @@ def test_windows_shell_selection_prefers_msys_over_git_native_launcher(
     resolver = RECOVERY.bash_executable
     monkeypatch.setattr(RECOVERY, "bash_executable", lambda: resolver(windows=True))
     assert interactive.launch_command("harness", None, False, [], False)[0] == str(msys)
+
+
+def _detached(status: dict[str, Any], agent: str) -> dict[str, Any]:
+    """The predecessor has exited: its bridge no longer holds an instance."""
+
+    for entry in status["agents"]:
+        if entry["name"] == agent:
+            entry["activity"]["instance"] = None
+    return status
+
+
+def _skewed(status: dict[str, Any], snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    """Workflow created 2 minutes before the log's start: only the 300 s tolerance admits it.
+
+    Only `created` is moved (log times cannot lie in the future); the tasks and
+    agents stay as the real HubStore payloads report them.
+    """
+
+    for payload in (status, snapshot):
+        payload["workflow"]["created"] = "2026-10-08T10:58:00Z"
+    return [
+        _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+        _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+    ]
+
+
+def test_stale_task_from_earlier_workflow_is_not_evidence(
+    recovery_args: argparse.Namespace,
+    hub_store: HubStore,
+) -> None:
+    """#299 r1-1: an open task left on a done workflow never vouches for the live one."""
+
+    from agent_hub_common import WorkflowStatus
+
+    hub_store.check_in("bob")
+    stale = hub_store.assign_task("bob", "implementer", "Old", "old work")
+    hub_store.set_workflow_status(WorkflowStatus.DONE, "done", actor="alice", session="s-1")
+    live_id = hub_store.initialize_workflow("Live workflow goal", {})
+    assert stale.workflow_id != live_id
+    status = _detached(hub_store.status_summary(), "bob")
+    snapshot = hub_store.snapshot() | {"hub_id": "hub-1"}
+    # Both real payloads list the stale open task, naming its own workflow.
+    assert [(t["id"], t["workflow_id"]) for t in status["tasks"]] == [(stale.id, stale.workflow_id)]
+    assert [(t["id"], t["workflow_id"]) for t in snapshot["tasks"]] == [
+        (stale.id, stale.workflow_id)
+    ]
+    reader = RecoveryReader()
+    reader.state["hub.status"] = status
+    reader.state["hub.snapshot"] = snapshot
+    save_rows(recovery_args, _skewed(status, snapshot))
+    with pytest.raises(LAUNCHER.Stop, match="condition 3"):
+        RECOVERY.prepare(recovery_args, reader, "bob")
+    # Unknown membership (a hub without task workflow IDs) also fails closed.
+    for payload in (status, snapshot):
+        for task in payload["tasks"]:
+            task.pop("workflow_id")
+    with pytest.raises(LAUNCHER.Stop, match="condition 3"):
+        RECOVERY.prepare(recovery_args, reader, "bob")
+
+
+def test_task_on_live_workflow_is_evidence(
+    recovery_args: argparse.Namespace,
+    hub_store: HubStore,
+) -> None:
+    """#299 r1-1: a real open task on the live workflow keeps the positive path."""
+
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "implementer", "Live", "live work")
+    status = _detached(hub_store.status_summary(), "bob")
+    snapshot = hub_store.snapshot() | {"hub_id": "hub-1"}
+    assert task.workflow_id == status["workflow"]["id"]
+    reader = RecoveryReader()
+    reader.state["hub.status"] = status
+    reader.state["hub.snapshot"] = snapshot
+    save_rows(recovery_args, _skewed(status, snapshot))
+    _, text = RECOVERY.prepare(recovery_args, reader, "bob")
+    assert "task assigned to bob on the hub workflow" in text
+    assert "backward-clock tolerance" in text
