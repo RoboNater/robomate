@@ -717,6 +717,64 @@ recorded.
 | `followup_label` | label applied to every follow-up issue (default `robomate-followup`), so the operator triages them in the forge |
 | `closeout_steps` | list of steps passed verbatim to every close-out task, e.g. `"Update the roadmap issue with current status"` (#16: nothing about roadmaps is hard-coded) |
 
+**Per-agent retrospectives (#215).** After review/merge, before assigning the
+close-out task, Alice calls `request_closeout_reports(run_id, timeout_s=100)`.
+The bounded worker window is greater than zero and at most 100 seconds, using
+the hub's pause-aware clock: explicit workflow pauses suspend expiry (including
+across restart), and detected host pauses shift the deadline with task leases.
+Repeated requests retain the original deadline and expected-author set.
+The hub durably records participants at join and run activation, supplements
+pre-v27 history from task assignees, and snapshots them plus Alice at request.
+Lost participants remain expected. An open task takes precedence over a request.
+Otherwise `await_assignment` wakes with `{closeout_requested: true, run_id,
+deadline, instructions}`. The instructions repeat the report obligation and
+schema, so resume/compaction need not retain the kickoff prompt. After submitting,
+workers return to `await_assignment` and can receive the close-out task.
+
+Choose **early worker collection, one immutable final report**, for #218 r1-2.
+Stored worker reports carry `timing: collected_before_closeout`; they cannot
+claim the outcomes of the later close-out task. The later `CloseoutResult`
+remains the authoritative disposition record and the run report must show it
+beside the labelled retrospective (#216). Alice reads observations before
+assigning close-out and submits her own report (`timing: after_closeout`) after
+that task, before `done`. These timing labels describe protocol phases, not
+hub certification that a claim or a close-out step is true. Report observations
+do not automatically become required findings or issues. No amendment protocol
+is introduced.
+
+`AgentCloseoutReport` is a strict common-package model (extra fields forbidden):
+`summary` (nonblank text), `outstanding_items` (summary, optional `finding_id`,
+HTTPS forge issue/comment `url` or nonblank `reason`), `lessons` (nonblank texts),
+and `claims` (text, `verification: verified | unverified`, optional evidence,
+required for verified). All lists are explicit, may be empty, and are bounded
+to 100 entries; text is bounded to 8192 characters, URLs to 2048, finding IDs
+to 128. A finding ID must exist in this run's typed reviewer findings. Evidence
+is an attributed agent claim, never independently certified by the hub.
+
+Dedicated collection, expected-author and report tables (DB schema v27) retain
+run-keyed attribution, deadline, missing reason, report JSON, timing and receipt.
+Workers submit via A2A; Alice submits through her orchestrator bridge. The
+caller determines author and session: a payload cannot nominate an author.
+Only expected run members may submit. Reject workers after release/loss, all
+writes after finalization, and conflicting retries; identical retries before
+release/finalization return the original receipt without another report/event.
+Reports are at most 32 KiB serialized UTF-8 and A2A message parts at most 16 KiB;
+the worker bridge splits larger JSON across bounded text parts. Submission,
+receipt and event commit atomically under the same write lock as finalization
+and release. Existing MCP/A2A byte accounting includes these operations.
+Known loaded hub/operator credential values are rejected without echoing them
+in errors or logs; this does not detect all secrets. Omit credentials and raw
+transcripts. Reports are untrusted data and confer no operator authority.
+
+Expiry persists explicit worker missing reasons (`deadline_expired`,
+`worker_lost`, or `agent_released`); an early release records `agent_released`.
+Alice can still submit after the worker deadline, until finalization. `done`
+freezes collection and records remaining missing authors (`run_finalized`),
+serialized against submission. Missing reports never prevent release or done,
+and collection introduces no approval/merge gate. Operator abandonment uses
+the same finalization operation when that lifecycle operation lands. Report,
+status and export presentation, including safe rendering, remain #216.
+
 **The close-out task.** After MERGE (or after approval, with `deliver: pr`), the orchestrator
 assigns the run's implementer a `closeout` task (another implementer if that one is lost).
 The hub appends to the orchestrator's instructions, and stores on the task:
@@ -822,7 +880,9 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | Tool | Who | Change from PoC |
 |---|---|---|
 | `join`, `whoami` | any | **new**: only tools callable before `join`; worker `join` over A2A (`check_in` alias kept until M2 Step 11); `whoami` over `GET /whoami` (#238) |
-| `await_assignment`, `get_role_guide`, `report_progress` | worker | unchanged semantics; hold capped by `MAX_HOLD_DEFAULT_S` (100 s, #12) until M3 per-harness profiles |
+| `await_assignment`, `get_role_guide`, `report_progress` | worker | adds the durable `closeout_requested` response (§7.3); hold capped by `MAX_HOLD_DEFAULT_S` (100 s, #12) until M3 per-harness profiles |
+| `request_closeout_reports(run_id, timeout_s=100)`, `get_closeout_reports(run_id)` | orchestrator | **new** (#215): durable bounded pre-release collection; submitted reports and explicit missing reasons (§7.3) |
+| `submit_closeout_report(run_id, report)` | worker, orchestrator | **new** (#215): one strict retrospective per run/author; worker A2A submission, caller-derived attribution, identical-retry receipt (§7.3) |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
 | `ask_orchestrator` | worker | renamed from `ask_alice` (`ask_alice` alias kept until M2 Step 11; #238) |
 | `get_operator_answer(question_id)` | worker | **new** (#129): reads `hub.operator_answer`, so a worker can check an operator decision it is told of |
@@ -1136,7 +1196,7 @@ itself.
 | M7 | Denise: interactive doctor agent | Optional generated `start-denise.sh` / `.ps1` from standard-run preparation; harness/model/effort inheritance and overrides; short run-specific context with robomate and target-repository references; local guide, selected-run repair access and operator authority rules (§5.1); hub-independent recovery reports | The operator starts Denise only when needed, with no hand-assembled briefing, on Bash and native PowerShell. Diagnosis works with the hub down and with a separate target repository. Recorded acceptance covers a stopped hub, an agent returned to the shell, an attached/orphan predecessor, a pending question or pause, and preservation of uncommitted work; normal team scripts and orchestration remain usable |
 | M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no pasted launch prompts; Denise's separate context/profile/report files remain (§5.1). The same again from a second worktree's hub while the first runs |
 | M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; Devin CLI certified, or attempted and recorded; Devin Desktop (Devin Local) attempted via `join` and recorded; one real run with a non-Claude orchestrator |
-| M4 | Close-out and resilience | `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
+| M4 | Close-out and resilience | per-agent closeout report models, durable bounded collection before release (#215), `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: all-three and crashed-worker report collection survive restart with explicit missing reasons; report retries, identity/size/credential validation and pause-aware expiry; `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
