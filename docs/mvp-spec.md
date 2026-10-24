@@ -297,9 +297,9 @@ Liveness is checked by pid and `/healthz` (matching `hub_id`); an entry whose st
 location is gone is pruned. `robomate ls` lists the hubs with their name, owning checkout,
 repository, URL, live or stopped, agents joined, and phase. The operator credential,
 `operator-token` (mode 0600), lives in the same directory and never in a repository or a
-hub's state (#128). A stopped hub keeps its entry, and so its name and port, until the
+hub's state (#128). A stopped hub keeps its entry, and so its reserved port (and, for a legacy hub, its name), until the
 operator releases them with `robomate forget` (#159): forgetting removes the registry
-entry, freeing the name and the saved port for reuse, and deletes nothing. hub.db and
+entry and releases the port; keeps the stored state, and deletes nothing. hub.db and
 run reports are kept; hub.json keeps its identity and last address, records the
 released port, and clears pid/started_at. `robomate forget --all` forgets every stopped
 hub; a live hub is never forgotten (stop it first). If a sibling hub has since taken the

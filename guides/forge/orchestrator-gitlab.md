@@ -13,8 +13,7 @@ Then read the MR back from GitLab
 (`glab api --hostname <host> projects/<group%2Fproject>/merge_requests/<iid>`).
 Confirm `state == "merged"`. Record the merge commit SHA (`merge_commit_sha`) or
 squash commit SHA (`squash_commit_sha`) separately (`glab mr view` does not
-output these commit SHAs). Log the reviewed SHA, any rebase head, merged SHA,
-review-comment URL, and every check name/bucket. Never merge from a stale or
+output these commit SHAs). Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every check name/bucket. Never merge from a stale or
 unreadable gate.
 
 A `--sha` 409 conflict and a "Pipelines must succeed" refusal are the same safe

@@ -694,12 +694,14 @@ def _down_all(as_json: bool) -> None:
 
 
 def _forget(selectors: list[str], forget_all: bool, as_json: bool) -> None:
-    """Forget stopped hubs: drop their registry entries, freeing name and port (#159).
+    """Forget stopped hubs: remove the registry entry and release
+    the port; keep the stored state (#159).
 
     Nothing is deleted: hub.db and run reports stay. hub.json keeps its
     identity and last address, records the released port, and clears pid and
     started_at. A forgotten hub's next `up` takes the first free port and
-    says so. Live hubs are never forgotten; stop them first.
+    says so. Only a legacy hub's name becomes reusable.
+    Live hubs are never forgotten; stop them first.
     """
 
     if forget_all and selectors:
@@ -1664,7 +1666,10 @@ def main() -> None:
     listing.add_argument("--json", action="store_true")
     forget = commands.add_parser(
         "forget",
-        help="forget stopped hubs: release their names and ports, keeping their state",
+        help=(
+            "forget stopped hubs: remove the registry entry and "
+            "release the port; keep the stored state"
+        ),
     )
     forget.add_argument(
         "hubs",

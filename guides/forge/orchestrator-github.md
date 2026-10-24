@@ -19,8 +19,7 @@ gh pr merge <pr_url> --<merge_method> --delete-branch --match-head-commit <appro
 Read the PR back with the command above. Confirm `state == "MERGED"`, confirm
 the recorded head equals the approved head, and record `mergeCommit.oid`
 separately. A `--match-head-commit` refusal routes to the gate or RE-REVIEW.
-Log the reviewed SHA, any rebase head, merged SHA, review-comment URL, and
- every check name/bucket. Never merge from a stale or unreadable gate.
+Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every check name/bucket. Never merge from a stale or unreadable gate.
 
 For roadmap close-out, verify the update with
 `gh issue view <number> --repo <owner>/<repository>`.
