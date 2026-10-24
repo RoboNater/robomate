@@ -106,7 +106,7 @@ def test_operations_are_exactly_the_public_methods(cls: type) -> None:
     }
 
     assert public == set(OPERATIONS)
-    assert len(OPERATIONS) == 14
+    assert len(OPERATIONS) == 17
 
 
 def test_the_hub_implements_every_shared_tool() -> None:
@@ -154,6 +154,31 @@ async def working_task(store: HubStore, name: str) -> str:
 async def get_state(store: HubStore) -> dict[str, Any]:
     await working_task(store, "bob")
     return {}
+
+
+async def request_closeout_reports(store: HubStore) -> dict[str, Any]:
+    checked_in(store, "bob")
+    return {"run_id": store.get_state()["workflow"]["run_id"]}
+
+
+async def submit_closeout_report(store: HubStore) -> dict[str, Any]:
+    run_id = store.get_state()["workflow"]["run_id"]
+    store.request_closeout_reports(run_id, "alice", SESSION)
+    return {
+        "run_id": run_id,
+        "report": {
+            "summary": "Orchestrated.",
+            "outstanding_items": [],
+            "lessons": [],
+            "claims": [],
+        },
+    }
+
+
+async def get_closeout_reports(store: HubStore) -> dict[str, Any]:
+    args = await submit_closeout_report(store)
+    store.submit_closeout_report(args["run_id"], "alice", SESSION, "orchestrator", args["report"])
+    return {"run_id": args["run_id"]}
 
 
 async def get_statement(store: HubStore) -> dict[str, Any]:
@@ -290,6 +315,9 @@ OK, FAILS = False, True
 # once, and the failures check that /rpc carries the store's error text.
 CASES: list[tuple[str, Prepare, bool]] = [
     ("get_state", get_state, OK),
+    ("request_closeout_reports", request_closeout_reports, OK),
+    ("submit_closeout_report", submit_closeout_report, OK),
+    ("get_closeout_reports", get_closeout_reports, OK),
     ("get_statement", get_statement, OK),
     ("get_statement", get_statement_unknown, FAILS),
     ("initialize_workflow", initialize_workflow, OK),
@@ -332,6 +360,7 @@ def deterministic(hub_store: HubStore, monkeypatch: pytest.MonkeyPatch) -> Calla
         counter = count(1)
 
     monkeypatch.setattr("agent_hub.store.uuid4", lambda: UUID(int=next(counter)))
+    monkeypatch.setattr("agent_hub.closeout.uuid4", lambda: UUID(int=next(counter)))
     hub_store.clock = lambda: NOW
     return restart
 
