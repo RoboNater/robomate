@@ -1683,6 +1683,7 @@ def test_fresh_run_produces_every_file(
         "report_progress",
         "ask_alice",
         "submit_result",
+        "submit_closeout_report",
         "get_operator_answer",
         "get_statement",
     }

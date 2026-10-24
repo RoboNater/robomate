@@ -95,7 +95,14 @@ async def test_mock_worker_implements_task_end_to_end(tmp_path: Path) -> None:
                     break
                 await asyncio.sleep(0.01)
 
-            # Release bob
+            # #215: a report request is consumed before the final release.
+            run_id = store.get_state()["workflow"]["run_id"]
+            store.request_closeout_reports(run_id, "alice", "session")
+            for _ in range(100):
+                if "bob" in store.get_closeout_reports(run_id)["submitted"]:
+                    break
+                await asyncio.sleep(0.01)
+            assert "bob" in store.get_closeout_reports(run_id)["submitted"]
             store.release_agent("bob")
 
         worker_coro = mock_worker.run_worker(

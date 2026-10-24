@@ -3,9 +3,12 @@
 Investigation: [#97](https://github.com/RoboNater/robomate/issues/97).
 Decision: implement **a sibling artifact to `CloseoutResult` in M4**, collected
 before release, and include it in the §7.3 run report. Land the file-path fix
-now. This document specifies future work; it does not add hub tools or change
-the current release protocol. The [MVP spec](../mvp-spec.md) remains the design
-of record; the implementation will update §7.3, §8's tools and §13 together.
+now. The #215 implementation lands the hub collection contract described here;
+report/status/export presentation remains #216. Worker retrospectives are
+labelled `collected_before_closeout` (one immutable final report), with later
+authoritative `CloseoutResult` dispositions beside them. The
+[MVP spec](../mvp-spec.md) is the design of record; §7.3, §8's tools and §13
+now describe this collection contract together.
 
 ## Why a separate artifact
 
@@ -144,7 +147,7 @@ Known credential-value detection should reject submissions without echoing the
 secret, including in errors or logs; it cannot guarantee detection of every
 secret. Treat exports as sensitive run artifacts and review before sharing.
 
-## Interim change and counters
+## Interim change and counters (historical #218)
 
 Adopt the small `prepare-run.py` fix now: prompts name absolute
 `RUN_DIR/closeout/{alice,bob,charlie}.md` paths. Preparation creates a private
@@ -156,7 +159,7 @@ the report path belongs to the worker host's run directory. The operator must
 collect remote files separately until hub collection ships. Current timing
 stays after release; existing prompts and existing reports are not migrated.
 
-This PR changes no counters. Roadmap #2 currently records **DB v20 shipped;
+The interim PR changed no counters. At that time roadmap #2 recorded **DB v20 shipped;
 next v21**, and **wire `hub.schema_version` 1**. Future report persistence needs
 one DB migration; reserve the then-next value with Alice on #2 at implementation
 time, rather than claiming v21 now. Additive tools/results leave the wire
@@ -193,3 +196,15 @@ by a clean rerun and nested/symlink rejection), and
 `uv run --locked python scripts/prepare-run.py --help`. Full repository checks
 remain required. Proposed roadmap edits belong in the PR comment for review;
 do not alter roadmap completion/reservations as part of this investigation.
+
+## #215 isolated acceptance command
+
+`uv run --locked pytest tests/test_closeout.py -v` runs real MCP bridge and A2A
+client code against pytest-owned ASGI hub fixtures (no external lifecycle).
+It covers Alice plus two workers, a missing/crashed worker, restart retention,
+request wakeup and redelivery after context loss, task precedence, immutable
+retries, caller/run membership, finalization races, bounded parts/reports,
+known-credential errors, pause-aware expiry, and worker-report timing before
+the later close-out task. The task's existing result storage remains separate;
+`CloseoutResult` validation and run-report rendering belong to the remaining
+M4 issues. This test does not claim real harness or export acceptance (#216).

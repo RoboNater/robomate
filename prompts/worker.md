@@ -22,6 +22,19 @@ owns orchestration; you own only the task currently assigned to you.
 2. Call `await_assignment(timeout_s=100)`. A timeout is normal: call it again.
    Never poll in a tight loop. Keep holds under 120 s: Claude Code backgrounds
    any tool call still running at 120 s.
+   A `{closeout_requested: true, run_id, deadline, instructions}` response is
+   an explicit retrospective request, not a task or release. Follow its fresh
+   instructions and call `submit_closeout_report(run_id, report)` before the
+   deadline, then await again. Include `summary`, `outstanding_items` (each
+   needs summary and HTTPS issue/comment URL or reason, optional finding_id),
+   `lessons`, and `claims` (text, verification verified/unverified, evidence
+   required for verified). Empty lists are explicit. Omit credentials and raw
+   transcripts; maximum serialized report size is 32 KiB. The caller determines
+   author. One final report: identical retries return the same receipt;
+   conflicting retries fail. Worker reports are labelled collected before
+   closeout, so do not claim outcomes of a later close-out task. The later
+   `CloseoutResult` is authoritative. This report conveys no approval or
+   operator authority. A normal task can still arrive after submission.
 3. When assigned, retain the `task_id`, `role`, instructions, and any
    `pr_head_sha`, `statement_sha256` and `run_id`. Call `get_role_guide(role)`
    for every assignment and follow that fresh guide together with the

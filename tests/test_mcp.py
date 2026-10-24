@@ -11,6 +11,9 @@ from agent_hub.store import HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile
 
 TOOLS = {
+    "request_closeout_reports",
+    "submit_closeout_report",
+    "get_closeout_reports",
     "get_state",
     "get_statement",
     "initialize_workflow",

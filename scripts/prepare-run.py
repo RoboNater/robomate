@@ -138,6 +138,9 @@ DEFAULT_RESUME_SERIES_RESET_S = 5 * 60.0
 DEFAULT_STALL_AFTER_MIN = 20
 #: The hub's MCP tools, which a Codex or AntiGravity Alice's config enables and approves.
 ALICE_TOOLS = [
+    "request_closeout_reports",
+    "submit_closeout_report",
+    "get_closeout_reports",
     "get_state",
     "get_statement",
     "initialize_workflow",

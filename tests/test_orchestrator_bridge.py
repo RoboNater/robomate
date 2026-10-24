@@ -397,8 +397,8 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 15
-            assert len((await bob.list_tools()).tools) == 11
+            assert len((await alice.list_tools()).tools) == 18
+            assert len((await bob.list_tools()).tools) == 12
             created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
             assert created.structuredContent is not None
             checked = await bob.call_tool("check_in")
@@ -617,6 +617,20 @@ async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
             assert (await _call(server, "whoami"))["standing_role"] == "orchestrator"
             with pytest.raises(ToolError, match="worker role"):
                 await _call(server, "await_assignment", timeout_s=0)
+            run = await _call(server, "start_workflow", statement="Closeout static bridge")
+            await _call(server, "request_closeout_reports", run_id=run["run_id"])
+            receipt = await _call(
+                server,
+                "submit_closeout_report",
+                run_id=run["run_id"],
+                report={
+                    "summary": "Orchestrated.",
+                    "outstanding_items": [],
+                    "lessons": [],
+                    "claims": [],
+                },
+            )
+            assert receipt["author"] == "alice"
         finally:
             await client.close()
 

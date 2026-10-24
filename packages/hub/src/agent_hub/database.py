@@ -21,6 +21,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v27 is #215's durable closeout reports and collection/expected authors.
 # v26 is #315's run branch on `workflow` (`robomate/<hub>/<agent>/<label>`).
 # v25 is #244's agent workspace path and kind (`worktree` or `clone`).
 # v24 is #281's forge-reported `gate_reading.merged_sha`.
@@ -47,7 +48,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 class DatabaseVersionError(RuntimeError):
@@ -309,6 +310,33 @@ CREATE TABLE IF NOT EXISTS stall_episode (
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS closeout_collection (
+    workflow_id TEXT PRIMARY KEY REFERENCES workflow(id) ON DELETE CASCADE,
+    requested_at TEXT NOT NULL,
+    deadline TEXT NOT NULL,
+    paused_at TEXT,
+    finalized_at TEXT
+);
+CREATE TABLE IF NOT EXISTS closeout_expected (
+    workflow_id TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
+    author TEXT NOT NULL,
+    author_kind TEXT NOT NULL CHECK (author_kind IN ('worker', 'orchestrator')),
+    context_id TEXT,
+    missing_reason TEXT,
+    PRIMARY KEY (workflow_id, author)
+);
+CREATE TABLE IF NOT EXISTS agent_closeout_report (
+    workflow_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    report_id TEXT NOT NULL UNIQUE,
+    submitted_at TEXT NOT NULL,
+    session TEXT NOT NULL,
+    timing TEXT NOT NULL CHECK (timing IN ('collected_before_closeout', 'after_closeout')),
+    report_json TEXT NOT NULL,
+    PRIMARY KEY (workflow_id, author),
+    FOREIGN KEY (workflow_id, author) REFERENCES closeout_expected(workflow_id, author)
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_workflow_state ON task(workflow_id, state);
 CREATE INDEX IF NOT EXISTS idx_task_assignee ON task(assignee);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_source_event_id
@@ -419,6 +447,8 @@ def initialize_database(path: Path) -> None:
         _migrate_run_identity_and_queue(connection)
         _migrate_workspace_path_and_kind(connection)
         _migrate_workflow_branch(connection)
+        for table in ("closeout_collection", "closeout_expected", "agent_closeout_report"):
+            connection.execute(_canonical_tables()[table])
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The

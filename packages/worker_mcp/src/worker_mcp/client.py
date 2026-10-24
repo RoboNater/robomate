@@ -1000,6 +1000,42 @@ class WorkerHubClient:
             raise WorkerProtocolError(None, "hub.get_statement response was not a dict")
         return result
 
+    async def submit_closeout_report(self, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        """Submit a retrospective over A2A, splitting UTF-8 JSON into bounded parts."""
+        if not self.context_id:
+            raise RuntimeError("Worker has not checked in yet; call check_in first")
+        from agent_hub_common import MAX_MESSAGE_PART_BYTES, MAX_TYPED_RESULT_BYTES
+
+        report_json = json.dumps(report, ensure_ascii=False)
+        if len(report_json.encode("utf-8")) > MAX_TYPED_RESULT_BYTES:
+            raise ValueError("closeout report exceeds 32 KiB")
+        wire = json.dumps({"run_id": run_id, "report": report}, ensure_ascii=False)
+        # ensure_ascii accounts for escaping, including multi-byte characters.
+        # 1 KiB chunks leave room for JSON escaping (at most 12x for non-BMP).
+        parts = [{"kind": "text", "text": wire[i : i + 1024]} for i in range(0, len(wire), 1024)]
+        if any(
+            len(json.dumps(part, ensure_ascii=True).encode("utf-8")) > MAX_MESSAGE_PART_BYTES
+            for part in parts
+        ):
+            raise ValueError("closeout message part exceeds 16 KiB")
+        result = await self._post_rpc(
+            "message/send",
+            {
+                "message": {
+                    "messageId": uuid4().hex,
+                    "contextId": self.context_id,
+                    "role": "user",
+                    "parts": parts,
+                    "metadata": {
+                        MetaKeys.KIND: "closeout_report",
+                        MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+                        MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
+                    },
+                }
+            },
+        )
+        return dict(json.loads("".join(part.get("text", "") for part in result.get("parts", []))))
+
     async def await_assignment(self, timeout_s: float | None = None) -> dict[str, Any]:
         """Poll the hub for the next task assignment, holding until assigned or released."""
         if not self.context_id:
@@ -1021,6 +1057,13 @@ class WorkerHubClient:
         if not isinstance(result, dict):
             return {"timeout": True}
         metadata = result.get("metadata") or {}
+        if metadata.get(MetaKeys.CLOSEOUT_REQUESTED) is True:
+            return {
+                "closeout_requested": True,
+                "run_id": metadata[MetaKeys.RUN_ID],
+                "deadline": metadata[MetaKeys.CLOSEOUT_DEADLINE],
+                "instructions": "".join(part.get("text", "") for part in result.get("parts", [])),
+            }
         if metadata.get(MetaKeys.RELEASE) is True:
             return {"release": True}
         if metadata.get(MetaKeys.TIMEOUT) is True:
