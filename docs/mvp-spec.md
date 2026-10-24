@@ -656,8 +656,22 @@ permissions, which certification catches per harness.
   in the `statement` table (SHA-256 key, bytes, size, source, created; DB schema v22),
   and the workflow carries its `statement_sha256`.
 - Assignments carry `statement_sha256` and `run_id`; workers read the statement with
-  `get_statement(sha)` when they need it (#8, #9). Nothing paraphrases the operator's
-  text on its way to a worker.
+  `get_statement(sha)` on every assignment that carries it (#8, #9, #297). The assignment
+  text points to the requirements but does not replace them. Nothing paraphrases the
+  operator's text on its way to a worker.
+- **Statement precedence (#302).** When the statement modifies or conflicts with a
+  repository or role-guide procedure (validation commands or hosts, smoke runs, evidence,
+  PR contents, review scope or cadence), follow the statement for that specific instruction.
+  This rule grants no extra authority and adds no approval requirement for routine choices.
+  Keep compatible requirements in effect; a timing instruction for one action does not
+  postpone every action involving the same document. The statement cannot relax safeguards:
+  skipping review or CI, merging a head that is not the approved one, worker-guide
+  operator-only actions, or extra authority over agents, credentials or the run hub still
+  require the confirmed operator authorization of §7.4 and §12. Workers never perform
+  worker-guide operator-only actions; a conflict crossing a safeguard is blocked.
+  Record each replaced guide instruction and its replacement in the typed result's
+  `summary`, the review comment for a reviewer, and the closeout report. Alice follows
+  this rule for her own steps and preserves statement departures in assignment summaries.
 
 ### 7.2 Workflow states and sequencing
 - **Run identity.** Every workflow gets a `run_id` when it is created: `<UTC date YYYYMMDD>_<8 hex>`,
@@ -686,6 +700,16 @@ permissions, which certification catches per harness.
   (§4 discovery). Parallel work in one repository uses parallel hubs, one per checkout;
   there is no cross-hub scheduling (§6). `get_state` carries the queue (oldest first) and
   `robomate status` shows the run ID and queue length.
+- **Approved nonblocking findings (#302).** An approval whose every finding is
+  either an optional cosmetic item marked `optional, no follow-up` or explicitly
+  post-merge close-out only (no PR file change) gets no NONBLOCKING task. Proceed to the
+  merge gate on the approved head; Alice carries close-out findings into the CLOSE-OUT assignment
+  by ID. If any finding falls outside those classes, including a substantive PR change
+  or an answer needed before merge, assign a NONBLOCKING task covering all findings,
+  including cosmetic ones.
+  Reviewers reserve `optional, no follow-up` for cosmetic wording, formatting or line
+  wrapping, never acceptance, correctness, consistency or documentation-accuracy gaps;
+  they explicitly mark close-out-only findings `post-merge close-out only; no PR change`.
 - **Carried context between runs** is explicit and small: the previous run's summary
   (run ID, PR/MR, approved and merged SHAs) is available in `get_state`; nothing else carries over.
 - Policy additions (to PoC `WorkflowPolicy`):
