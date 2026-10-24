@@ -647,7 +647,7 @@ def test_null_log_refuses_when_created_outside_conversation_window(
 def test_null_log_refuses_on_hub_mismatch_and_missing_workflow(
     recovery_args: argparse.Namespace,
 ) -> None:
-    """#223 conditions 1-2: same hub, one workflow; explicit mismatch refused."""
+    """#223/#299 conditions 1-2: same hub, live workflow; disagreement or non-live refused."""
 
     save_rows(
         recovery_args,
@@ -665,16 +665,163 @@ def test_null_log_refuses_on_hub_mismatch_and_missing_workflow(
     no_workflow.state["hub.snapshot"]["workflow"] = None
     with pytest.raises(LAUNCHER.Stop, match="condition 2"):
         RECOVERY.prepare(recovery_args, no_workflow, "bob")
-    queued = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
-    queued.state["hub.status"]["queue"] = [{"workflow_id": "wf-2", "run_id": "run-2"}]
-    queued.state["hub.status"]["queue_length"] = 1
-    with pytest.raises(LAUNCHER.Stop, match="exactly one"):
-        RECOVERY.prepare(recovery_args, queued, "bob")
+    disagreed_id = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    disagreed_id.state["hub.snapshot"]["workflow"]["id"] = "wf-other"
+    with pytest.raises(LAUNCHER.Stop, match="condition 2"):
+        RECOVERY.prepare(recovery_args, disagreed_id, "bob")
+    disagreed_run = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    disagreed_run.state["hub.snapshot"]["workflow"]["run_id"] = "run-other"
+    with pytest.raises(LAUNCHER.Stop, match="condition 2"):
+        RECOVERY.prepare(recovery_args, disagreed_run, "bob")
+    non_live = _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z")
+    non_live.workflow("done")
+    with pytest.raises(LAUNCHER.Stop, match="condition 2"):
+        RECOVERY.prepare(recovery_args, non_live, "bob")
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z", run_id="run-old"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z", run_id="run-old"),
+        ],
+    )
+    with pytest.raises(LAUNCHER.Stop, match="condition 2"):
+        RECOVERY.prepare(
+            recovery_args, _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z"), "bob"
+        )
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+        ],
+    )
     recovery_args.workflow_id = "other"
     with pytest.raises(LAUNCHER.Stop, match="Conflicting|differs"):
         RECOVERY.prepare(
             recovery_args, _hub_with_created(RecoveryReader(), "2026-10-08T11:02:00Z"), "bob"
         )
+
+
+def test_done_live_and_queued_workflows_pick_live_one(
+    recovery_args: argparse.Namespace,
+    hub_store: HubStore,
+) -> None:
+    """#299 item 3: an earlier done workflow, a live one and a queued one picks the live one."""
+
+    from agent_hub_common import WorkflowStatus
+
+    hub_store.set_workflow_status(WorkflowStatus.DONE, "done", actor="alice", session="s-1")
+    live_id = hub_store.initialize_workflow("Live workflow goal", {})
+    queued_id = hub_store.start_workflow(
+        "Queued workflow goal", {}, source="cli", force_queued=True
+    )
+    assert live_id != queued_id
+    reader = RecoveryReader()
+    reader.state["hub.status"] = hub_store.status_summary()
+    reader.state["hub.snapshot"] = hub_store.snapshot() | {"hub_id": "hub-1"}
+    assert reader.state["hub.status"]["queue_length"] == 1
+    created = reader.state["hub.status"]["workflow"]["created"]
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp=created),
+            _null_row("exit", timestamp=created),
+        ],
+    )
+    conversation, text = RECOVERY.prepare(recovery_args, reader, "bob")
+    assert conversation == CODEX_ID
+    assert f"Workflow: {live_id} (active) (taken from hub" in text
+    assert f"Workflow: {queued_id}" not in text
+    logged = [json.loads(line) for line in recovery_args.sessions.read_text().splitlines()]
+    assert logged[-1]["event"] == "recovery" and logged[-1]["workflow_id"] == live_id
+
+
+def test_alice_hub_evidence_uses_orchestrator_activity_session(
+    recovery_args: argparse.Namespace,
+    hub_store: HubStore,
+) -> None:
+    """#299 item 1: Alice's session lives in status['orchestrator_activity']['session']."""
+
+    hub_store.note_orchestrator_session("alice", "alice-session-1")
+    reader = RecoveryReader()
+    status = hub_store.status_summary()
+    status["orchestrator_activity"]["holding"] = None
+    status["orchestrator_activity"]["heartbeat_age_s"] = None
+    snapshot = hub_store.snapshot() | {"hub_id": "hub-1"}
+    assert "orchestrator" not in status and "orchestrator" not in snapshot
+    assert status["orchestrator_activity"]["session"] == "alice-session-1"
+    status["workflow"]["created"] = "2026-10-08T10:58:00Z"
+    snapshot["workflow"]["created"] = "2026-10-08T10:58:00Z"
+    reader.state["hub.status"] = status
+    reader.state["hub.snapshot"] = snapshot
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", agent="alice", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", agent="alice", timestamp="2026-10-08T11:05:00Z"),
+        ],
+    )
+    _, text = RECOVERY.prepare(recovery_args, reader, "alice")
+    assert "orchestrator session on the hub workflow" in text
+    assert "backward-clock tolerance" in text
+    assert "on timing alone" not in text
+
+
+def test_trailing_resume_without_exit_leaves_conversation_window_open(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#299 item 2: start, exit, wait, resume with no exit leaves the window open."""
+
+    save_rows(
+        recovery_args,
+        [
+            _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+            _null_row("wait", timestamp="2026-10-08T11:05:00Z"),
+            _null_row("resume", timestamp="2026-10-08T11:06:00Z"),
+        ],
+    )
+    recovery_args.confirm_stopped = True
+    reader = _hub_with_created(RecoveryReader(), "2026-10-08T11:12:00Z")
+    _, text = RECOVERY.prepare(recovery_args, reader, "bob")
+    assert "wf-1" in text and "taken from hub" in text
+    assert "backward-clock tolerance" not in text
+
+
+def test_stale_agent_row_from_earlier_workflow_is_not_evidence(
+    recovery_args: argparse.Namespace,
+) -> None:
+    """#299 item 4: a worker row from an earlier workflow does not count as evidence."""
+
+    rows = [
+        _null_row("start", timestamp="2026-10-08T11:00:00Z"),
+        _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+    ]
+    stale_row = {
+        "name": "bob",
+        "standing_role": "implementer",
+        "status": "idle",
+        "alive": False,
+        "activity": {"instance": None},
+    }
+    for agent_entry in (
+        stale_row,
+        stale_row | {"checked_in": "2026-10-08T09:00:00Z"},
+    ):
+        save_rows(recovery_args, rows)
+        reader = _hub_with_created(RecoveryReader(), "2026-10-08T10:58:00Z")
+        reader.state["hub.status"]["agents"] = [agent_entry]
+        reader.state["hub.snapshot"]["tasks"] = []
+        with pytest.raises(LAUNCHER.Stop, match="condition 3"):
+            RECOVERY.prepare(recovery_args, reader, "bob")
+
+    save_rows(recovery_args, rows)
+    fresh = _hub_with_created(RecoveryReader(), "2026-10-08T10:58:00Z")
+    fresh.state["hub.status"]["agents"] = [stale_row | {"checked_in": "2026-10-08T11:00:00Z"}]
+    fresh.state["hub.snapshot"]["tasks"] = []
+    _, text = RECOVERY.prepare(recovery_args, fresh, "bob")
+    assert "agent row for bob on the hub workflow" in text
+    assert "backward-clock tolerance" in text
 
 
 def test_alice_log_with_late_workflow_id_uses_saved_pin(
@@ -749,7 +896,7 @@ def test_interrupted_stop_without_exit_recovers_with_confirm(
 def test_hub_status_and_snapshot_expose_created_without_version_bumps(
     hub_store: HubStore,
 ) -> None:
-    """#223: additive created field; no bump relative to main, wire stays 1."""
+    """#223: status and snapshot expose additive created field while wire version stays 1."""
 
     from agent_hub_common import SCHEMA_VERSION as WIRE_VERSION
 

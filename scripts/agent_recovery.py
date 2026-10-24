@@ -15,7 +15,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -184,7 +184,7 @@ def records(path: Path, agent: str, harness: str) -> list[dict[str, Any]]:
             or not isinstance(row.get("timestamp"), str)
             or any(
                 row.get(key) is not None and not isinstance(row[key], str)
-                for key in ("conversation_id", "hub_id", "workflow_id")
+                for key in ("conversation_id", "hub_id", "workflow_id", "run_id")
             )
         ):
             refuse(
@@ -237,44 +237,77 @@ def _parse_hub_time(value: Any) -> datetime | None:
 def _conversation_window(
     selected: list[dict[str, Any]],
 ) -> tuple[datetime | None, datetime | None]:
-    """First start and last exit/stop in the selected rows (#223 condition 3)."""
+    """First start and last exit/stop in the selected rows (#223 condition 3).
+
+    A trailing start/resume/manual_resume with no exit or stop after it leaves
+    the window open (the launcher died while the conversation was running).
+    """
 
     starts: list[datetime] = []
     ends: list[datetime] = []
+    open_window = False
     for row in selected:
+        event = row.get("event")
         stamp = _parse_hub_time(row.get("timestamp"))
-        if stamp is None:
-            continue
-        if row.get("event") in ("start", "resume", "manual_resume"):
-            starts.append(stamp)
-        if row.get("event") in ("exit", "stop"):
-            ends.append(stamp)
+        if event in ("start", "resume", "manual_resume"):
+            open_window = True
+            if stamp is not None:
+                starts.append(stamp)
+        elif event in ("exit", "stop"):
+            open_window = False
+            if stamp is not None:
+                ends.append(stamp)
     first = min(starts) if starts else None
-    last = max(ends) if ends else None
+    last = None if open_window or not ends else max(ends)
     return first, last
 
 
-def _hub_evidence(agent: str, status: dict[str, Any], snapshot: dict[str, Any]) -> tuple[bool, str]:
+def _hub_evidence(
+    agent: str,
+    status: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    created: datetime | None = None,
+) -> tuple[bool, str]:
     """Hub-side evidence that this conversation belonged to the workflow (#223 condition 4)."""
 
     if agent == "alice":
+        activity = status.get("orchestrator_activity")
+        if isinstance(activity, dict) and activity.get("session"):
+            return True, "orchestrator session on the hub workflow"
         orchestrator = status.get("orchestrator") or snapshot.get("orchestrator")
         if isinstance(orchestrator, dict) and orchestrator.get("session"):
             return True, "orchestrator session on the hub workflow"
-        activity = status.get("orchestrator_activity")
         if isinstance(activity, dict) and activity.get("holding") is not None:
             return True, "orchestrator holding on the hub workflow"
         return False, "no orchestrator session on the hub workflow"
+    workflow = snapshot.get("workflow") if isinstance(snapshot.get("workflow"), dict) else None
+    live_workflow = status.get("workflow") if isinstance(status.get("workflow"), dict) else None
+    if created is None:
+        raw_created = (workflow or {}).get("created") or (live_workflow or {}).get("created")
+        created = _parse_hub_time(raw_created)
+    workflow_id = (workflow or {}).get("id") or (live_workflow or {}).get("id")
+    tol = timedelta(seconds=HUB_WORKFLOW_TIME_TOLERANCE_S)
     agents = status.get("agents")
     agent_row = None
     if isinstance(agents, list):
         matches = [a for a in agents if isinstance(a, dict) and a.get("name") == agent]
-        agent_row = matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            candidate = matches[0]
+            checkin_at = _parse_hub_time(
+                candidate.get("checked_in")
+                or candidate.get("checked_in_at")
+                or candidate.get("joined_at")
+            )
+            if checkin_at is not None and created is not None and checkin_at >= created - tol:
+                agent_row = candidate
     tasks: list[dict[str, Any]] = []
     for source in (status.get("tasks"), snapshot.get("tasks")):
         if isinstance(source, list):
             tasks.extend([t for t in source if isinstance(t, dict)])
-    assigned = any(t.get("assignee") == agent for t in tasks)
+    assigned = any(
+        t.get("assignee") == agent and t.get("workflow_id") in (None, workflow_id) for t in tasks
+    )
     if agent_row is not None and assigned:
         return True, f"agent row and task assigned to {agent} on the hub workflow"
     if agent_row is not None:
@@ -511,16 +544,26 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
                 "Hub status and snapshot disagree on run_id (condition 2: matched by run_id). "
                 "Retry after it settles; an earlier done/queued workflow must not be picked.",
             )
-        queue = status.get("queue")
-        queue_len = status.get("queue_length")
-        if (isinstance(queue, list) and len(queue) > 0) or (
-            isinstance(queue_len, int) and queue_len > 0
+        if live_workflow.get("status") not in ("active", "escalated", "paused") or workflow.get(
+            "status"
+        ) not in ("active", "escalated", "paused"):
+            refuse(
+                "identity",
+                "The hub has no live workflow to take (condition 2: live workflow required; "
+                "earlier done or queued workflows are never candidates). Restore the original "
+                "hub state or supply --workflow-id explicitly.",
+            )
+        saved_runs = {
+            r["run_id"] for r in selected if isinstance(r.get("run_id"), str) and r["run_id"]
+        }
+        candidate_run = status_run if isinstance(status_run, str) else snap_run
+        if len(saved_runs) > 1 or (
+            saved_runs and (not isinstance(candidate_run, str) or candidate_run not in saved_runs)
         ):
             refuse(
                 "identity",
-                "The hub has more than one candidate workflow (condition 2: exactly one "
-                "candidate, earlier done/queued must not be picked). Supply --workflow-id "
-                "explicitly after independent verification.",
+                "The live workflow run_id differs from the saved log (condition 2: matched by "
+                "run_id). Supply --workflow-id explicitly after independent verification.",
             )
         created = _parse_hub_time(workflow.get("created") or live_workflow.get("created"))
         if created is None:
@@ -529,14 +572,12 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
                 "The hub workflow has no creation time (condition 3: time window needs "
                 "workflow created). Restore a compatible hub that exposes created and retry.",
             )
-        from datetime import timedelta as _timedelta
-
-        tol = _timedelta(seconds=HUB_WORKFLOW_TIME_TOLERANCE_S)
+        tol = timedelta(seconds=HUB_WORKFLOW_TIME_TOLERANCE_S)
         strict_ok = created >= first_start and (last_end is None or created <= last_end)
         tolerant_ok = created >= first_start - tol and (
             last_end is None or created <= last_end + tol
         )
-        evidence_present, evidence_detail = _hub_evidence(agent, status, snapshot)
+        evidence_present, evidence_detail = _hub_evidence(agent, status, snapshot, created=created)
         if not strict_ok and not (tolerant_ok and evidence_present):
             refuse(
                 "identity",

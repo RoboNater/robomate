@@ -3148,6 +3148,7 @@ class _StubHub(BaseHTTPRequestHandler):
     statuses: list[str] = []
     calls: list[tuple[str, str | None]] = []
     current_status = "active"
+    created: str | None = None
 
     def do_POST(self) -> None:  # noqa: N802 - the stdlib's name
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -3157,10 +3158,13 @@ class _StubHub(BaseHTTPRequestHandler):
         elif body["method"] == "hub.questions":
             result = {"questions": []}
         elif body["method"] == "hub.snapshot":
+            workflow: dict[str, Any] = {"id": "wf-stub", "status": self.current_status}
+            if self.created is not None:
+                workflow["created"] = self.created
             result = {
                 "hub_id": "abc",
                 "taken_at": "2026-10-10T00:00:00Z",
-                "workflow": {"id": "wf-stub", "status": self.current_status},
+                "workflow": workflow,
                 "tasks": [],
                 "deliveries": [],
                 "queued_events": 0,
@@ -3168,8 +3172,11 @@ class _StubHub(BaseHTTPRequestHandler):
         else:
             status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
             type(self).current_status = status
+            workflow = {"id": "wf-stub", "status": status, "headline": "h"}
+            if self.created is not None:
+                workflow["created"] = self.created
             result = {
-                "workflow": {"id": "wf-stub", "status": status, "headline": "h"},
+                "workflow": workflow,
                 "agents": [],
                 "orchestrator_activity": {"holding": None, "heartbeat_age_s": None},
             }
@@ -3187,6 +3194,7 @@ class _StubHub(BaseHTTPRequestHandler):
 def stub_hub(*statuses: str) -> Iterator[str]:
     _StubHub.statuses = list(statuses)
     _StubHub.calls = []
+    _StubHub.created = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -3338,6 +3346,58 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
             manual
             == f"Read {run_dir / f'resume-{agent}.prompt.md'} and follow the instructions in it"
         )
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
+@pytest.mark.parametrize("agent", ["alice", "bob"])
+def test_zero_argument_resume_script_recovers_null_workflow_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, agent: str
+) -> None:
+    """#223/#299 item 5: zero-arg resume-<agent> succeeds when log workflow_ids are null."""
+
+    base = tmp_path / "null-log"
+    base.mkdir()
+    bin_dir = base / "bin"
+    fake_cli(bin_dir, harness)
+    env = os.environ | {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_ARGV_LOG": str(base / "argv.jsonl"),
+        "FAKE_ID_LINE": FAKE_ID_LINES[harness],
+    }
+    statuses = (
+        ["active", "done", "escalated", "escalated", "done"]
+        if agent == "alice"
+        else ["active", "active", "done", "escalated", "escalated", "escalated", "done"]
+    )
+    with stub_hub(*statuses) as url:
+        run_dir, _ = prepare(
+            base,
+            monkeypatch,
+            test_hub_url=url,
+            **{
+                f"{agent}_harness": harness,
+                f"{agent}_model": "model-x",
+                f"{agent}_effort": "high" if harness not in ("opencode", "devin") else "",
+            },
+            max_resumes=3,
+            resume_delay_s=0,
+        )
+        run_script(run_dir / f"start-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
+        sessions_path = run_dir / f"{agent}-sessions.jsonl"
+        before_rows = [json.loads(line) for line in sessions_path.read_text().splitlines()]
+        for row in before_rows:
+            row["workflow_id"] = None
+        sessions_path.write_text(
+            "".join(json.dumps(row) + "\n" for row in before_rows), encoding="utf-8"
+        )
+        _StubHub.created = before_rows[0]["timestamp"]
+        stderr = run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
+    assert "taken from hub" in stderr
+    assert "taken from hub" in (run_dir / f"resume-{agent}.prompt.md").read_text(encoding="utf-8")
+    after_rows = [json.loads(line) for line in sessions_path.read_text().splitlines()]
+    new_rows = after_rows[len(before_rows) :]
+    assert [row["event"] for row in new_rows] == ["recovery", "manual_resume", "exit", "stop"]
+    assert all(row["workflow_id"] == "wf-stub" for row in new_rows)
 
 
 def test_no_auto_start_keeps_alice_interactive_without_the_launcher(
