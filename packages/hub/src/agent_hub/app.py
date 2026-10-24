@@ -167,6 +167,9 @@ def create_app(
                 resolved.database_path,
                 f", raw stream at {accounting.jsonl_path}" if accounting.jsonl_path else "",
             )
+        store.known_credentials = tuple(
+            value for value in (app.state.bearer_token, dispatcher.operator_token) if value
+        )
         if resolved.token is None:
             logger.info("Bearer token ready at %s", resolved.token_file)
         else:

@@ -88,6 +88,7 @@ class EventKind(StrEnum):
     HOST_PAUSED = "host_paused"
     # The operator submitted a statement of work; the hub queued a workflow (#241).
     WORK_SUBMITTED = "work_submitted"
+    CLOSEOUT_REPORT_SUBMITTED = "closeout_report_submitted"
 
 
 class TaskRole(StrEnum):
@@ -279,3 +280,57 @@ class AgentProfile:
     harness_source: ModelSource = ModelSource.UNKNOWN
     effort: str = UNKNOWN
     effort_source: ModelSource = ModelSource.UNKNOWN
+
+
+CloseoutText = Annotated[str, Field(min_length=1, max_length=8192, pattern=r"\S")]
+
+
+class CloseoutOutstandingItem(BaseModel):
+    """An observation, never an authoritative finding disposition."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    summary: CloseoutText
+    finding_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    url: Annotated[str, Field(max_length=2048)] | None = None
+    reason: CloseoutText | None = None
+
+    @model_validator(mode="after")
+    def destination(self) -> Self:
+        from urllib.parse import urlsplit
+
+        if self.url is not None:
+            parsed = urlsplit(self.url)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or re.search(r"/(?:issues|pull|merge_requests)/[0-9]+(?:/|$)", parsed.path) is None
+            ):
+                raise ValueError("url must be an absolute HTTPS issue or comment reference")
+        if self.url is None and self.reason is None:
+            raise ValueError("an outstanding item needs a URL or a reason")
+        return self
+
+
+class CloseoutClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    text: CloseoutText
+    verification: Literal["verified", "unverified"]
+    evidence: CloseoutText | None = None
+
+    @model_validator(mode="after")
+    def verified_evidence(self) -> Self:
+        if self.verification == "verified" and self.evidence is None:
+            raise ValueError("a verified claim requires evidence")
+        return self
+
+
+class AgentCloseoutReport(BaseModel):
+    """One final per-author retrospective; content is untrusted agent data."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    summary: CloseoutText
+    outstanding_items: Annotated[list[CloseoutOutstandingItem], Field(max_length=100)]
+    lessons: Annotated[list[CloseoutText], Field(max_length=100)]
+    claims: Annotated[list[CloseoutClaim], Field(max_length=100)]

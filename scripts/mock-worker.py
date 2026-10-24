@@ -482,6 +482,23 @@ def join_via_mcp(
         reader.join(timeout=5)
 
 
+async def _await_work(client: WorkerHubClient, timeout_s: float) -> dict[str, Any]:
+    """Consume retrospective requests without mistaking them for tasks/release."""
+    while True:
+        response = await client.await_assignment(timeout_s=timeout_s)
+        if response.get("closeout_requested") is not True:
+            return response
+        await client.submit_closeout_report(
+            str(response["run_id"]),
+            {
+                "summary": "Participated in the scripted mock-worker scenario.",
+                "outstanding_items": [],
+                "lessons": [],
+                "claims": [],
+            },
+        )
+
+
 async def run_worker(
     settings: WorkerSettings,
     *,
@@ -526,7 +543,7 @@ async def run_worker(
             logger.info("Checked in successfully: context_id=%s", checkin_res.get("context_id"))
 
         logger.info("Waiting for task assignment (timeout=%.1fs)...", timeout_s)
-        assignment = await client.await_assignment(timeout_s=timeout_s)
+        assignment = await _await_work(client, timeout_s)
         if assignment.get("timeout") is True:
             raise TimeoutError(f"No task assigned to {settings.agent_name!r} within {timeout_s}s")
         if assignment.get("release") is True:
@@ -591,7 +608,7 @@ async def run_worker(
         logger.info("Result submitted: status=%s", submit_res.get("status"))
 
         logger.info("Awaiting final release from Alice...")
-        release_res = await client.await_assignment(timeout_s=timeout_s)
+        release_res = await _await_work(client, timeout_s)
         if release_res.get("release") is True:
             logger.info("Worker %r received release. Work complete.", settings.agent_name)
         else:
@@ -640,7 +657,7 @@ async def _run_scenario_worker(
 
         review_count = 0
         while True:
-            assignment = await client.await_assignment(timeout_s=timeout_s)
+            assignment = await _await_work(client, timeout_s)
             if assignment.get("timeout") is True:
                 continue
             if assignment.get("release") is True:
