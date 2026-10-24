@@ -1054,9 +1054,10 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it(
         "high",
         token_file="C:/private/token",
     )
-    assert lines[:4] == [
+    assert lines[:5] == [
         "cd /c/Users/Bob/runs/step7/bob",
         "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob",
+        "export UV_CACHE_DIR=C:/Users/Bob/runs/step7/tmp/bob/uv-cache",
         "export TEMP=C:/Users/Bob/runs/step7/tmp/bob",
         "export TMP=C:/Users/Bob/runs/step7/tmp/bob",
     ]
@@ -1077,6 +1078,7 @@ def test_remote_codex_launch_uses_git_bash_only_where_the_shell_reads_it(
     assert interactive_command_lines(posix_lines, False) == [
         "cd /srv/run/charlie",
         "export TMPDIR=/srv/run/tmp/charlie",
+        "export UV_CACHE_DIR=/srv/run/tmp/charlie/uv-cache",
         "claude --permission-mode auto --strict-mcp-config "
         "--mcp-config /srv/run/configs/charlie.mcp.json "
         "--add-dir /srv/run",
@@ -2368,6 +2370,10 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
         assert agent_tmp.is_dir()
         if os.name != "nt":
             assert agent_tmp.stat().st_mode & 0o777 == 0o700
+        uv_cache = agent_tmp / "uv-cache"
+        assert uv_cache.is_dir()
+        if os.name != "nt":
+            assert uv_cache.stat().st_mode & 0o777 == 0o700
         script = (run_dir / f"start-{name}.{SCRIPT_SUFFIX}").read_text()
         lines = [
             line.strip()
@@ -2377,12 +2383,18 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
         assert lines[1].startswith("cd ")
         if host == "nt":
             tmp_quoted = PREPARE_RUN.shell_word(str(agent_tmp), powershell=True)
+            uv_quoted = PREPARE_RUN.shell_word(str(uv_cache), powershell=True)
             assert lines[0] == '$ErrorActionPreference = "Stop"'
-            assert lines[2:4] == [f"$env:TEMP = {tmp_quoted}", f"$env:TMP = {tmp_quoted}"]
+            assert lines[2:5] == [
+                f"$env:TEMP = {tmp_quoted}",
+                f"$env:TMP = {tmp_quoted}",
+                f"$env:UV_CACHE_DIR = {uv_quoted}",
+            ]
         else:
             assert lines[0] == "set -e"
             assert lines[2] == f"export TMPDIR={PREPARE_RUN.shell_word(str(agent_tmp))}"
-        assert len(lines) >= 4
+            assert lines[3] == f"export UV_CACHE_DIR={PREPARE_RUN.shell_word(str(uv_cache))}"
+        assert len(lines) >= 5
 
     # 2. Local PowerShell launch lines and start script
     monkeypatch.setattr(os, "name", "nt")
@@ -2408,9 +2420,11 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
         assert lines[0] == '$ErrorActionPreference = "Stop"'
         assert lines[1].startswith("cd ")
         tmp_quoted = PREPARE_RUN.shell_word(str(agent_tmp), powershell=True)
+        uv_quoted = PREPARE_RUN.shell_word(str(agent_tmp / "uv-cache"), powershell=True)
         assert lines[2] == f"$env:TEMP = {tmp_quoted}"
         assert lines[3] == f"$env:TMP = {tmp_quoted}"
-        assert len(lines) >= 5
+        assert lines[4] == f"$env:UV_CACHE_DIR = {uv_quoted}"
+        assert len(lines) >= 6
 
     # 3. Remote worker-only output on this host (Git Bash spellings on Windows)
     monkeypatch.setattr(os, "name", host)
@@ -2436,6 +2450,10 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert lines[1].startswith("cd ")
     bash_tmp = PREPARE_RUN.git_bash_path(bob_tmp) if host == "nt" else str(bob_tmp)
     assert lines[2] == f"export TMPDIR={PREPARE_RUN.shell_word(bash_tmp)}"
+    # Git Bash hands native uv the Windows spelling, like TEMP/TMP (#285).
+    expected_uv = PREPARE_RUN.shell_word((bob_tmp / "uv-cache").as_posix())
+    assert lines[3] == f"export UV_CACHE_DIR={expected_uv}"
+    assert (bob_tmp / "uv-cache").is_dir()
 
     # 4. Remote worker-only output on Windows host
     win_out = tmp_path / "win_bundle"
@@ -2468,8 +2486,111 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert win_lines[0] == "set -e"
     assert win_lines[1] == "cd /c/Users/Bob/runs/step7/bob"
     assert win_lines[2] == "export TMPDIR=/c/Users/Bob/runs/step7/tmp/bob"
-    assert win_lines[3] == "export TEMP=C:/Users/Bob/runs/step7/tmp/bob"
-    assert win_lines[4] == "export TMP=C:/Users/Bob/runs/step7/tmp/bob"
+    assert win_lines[3] == "export UV_CACHE_DIR=C:/Users/Bob/runs/step7/tmp/bob/uv-cache"
+    assert win_lines[4] == "export TEMP=C:/Users/Bob/runs/step7/tmp/bob"
+    assert win_lines[5] == "export TMP=C:/Users/Bob/runs/step7/tmp/bob"
+    assert (win_out / "tmp" / "bob" / "uv-cache").is_dir()
+
+
+def test_codex_scripts_carry_isolated_uv_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#285: generated Codex start/resume scripts export a per-agent uv cache.
+
+    The Codex sandbox leaves uv's default cache read-only, so every generated
+    script exports ``UV_CACHE_DIR=<RUN_DIR>/tmp/<agent>/uv-cache`` next to
+    ``TMPDIR`` instead of falling back to shared ``/tmp``. The directory is
+    created with the per-agent temp directory, keeping each worker isolated.
+    """
+    run_dir, _ = prepare(tmp_path, monkeypatch, bob_harness="codex", charlie_harness="codex")
+    for name in ("bob", "charlie"):
+        uv_cache = run_dir / "tmp" / name / "uv-cache"
+        assert uv_cache.is_dir()
+        for kind in ("start", "resume"):
+            body = (run_dir / f"{kind}-{name}.{SCRIPT_SUFFIX}").read_text()
+            # Host-agnostic: POSIX `export UV_CACHE_DIR=...` or PowerShell
+            # `$env:UV_CACHE_DIR = '...'`, with either slash style (#285).
+            normalized = body.replace("\\", "/")
+            assert "UV_CACHE_DIR" in body
+            assert f"tmp/{name}/uv-cache" in normalized
+            assert "/tmp/bob-uv-cache" not in body and "/tmp/charlie-uv-cache" not in body
+            assert "/tmp/bob-275-uv-cache" not in body
+        prompt = run_dir / f"{name}.prompt.md"
+        assert prompt.exists()
+
+
+def test_codex_temp_renderings_carry_uv_cache_for_all_hosts() -> None:
+    """#285: fresh start, resume and worker-only renderings agree on UV_CACHE_DIR."""
+    run = PureWindowsPath("C:/Users/Bob/runs/step7")
+    # Remote worker-only launch (Git Bash): native uv gets the Windows spelling.
+    lines = PREPARE_RUN.worker_launch(
+        "bob", "codex", run, run / "bob", token_file="C:/private/token"
+    )
+    assert "export UV_CACHE_DIR=C:/Users/Bob/runs/step7/tmp/bob/uv-cache" in lines
+    assert lines.index("export UV_CACHE_DIR=C:/Users/Bob/runs/step7/tmp/bob/uv-cache") == 2
+    # Remote worker-only resume agrees.
+    resume = PREPARE_RUN.worker_resume(
+        "bob", "codex", run, run / "bob", token_file="C:/private/token"
+    )
+    assert any(
+        "export UV_CACHE_DIR=C:/Users/Bob/runs/step7/tmp/bob/uv-cache" in line for line in resume
+    )
+    # Local start and resume agree on either host: POSIX `export` or PowerShell
+    # `$env:` when os.name is nt, with either slash style (#285).
+    local_lines = PREPARE_RUN.launch_lines(
+        "codex",
+        Path("/srv/run/bob"),
+        Path("/srv/run/configs/bob-codex"),
+        Path("/srv/run/bob.prompt.md"),
+        Path("/srv/run/bob/.git"),
+        tmp_dir=Path("/srv/run/tmp/bob"),
+    )
+    assert any(
+        "UV_CACHE_DIR" in line and "tmp/bob/uv-cache" in line.replace("\\", "/")
+        for line in local_lines
+    )
+    posix_resume = PREPARE_RUN.resume_lines(
+        "bob",
+        "codex",
+        Path("/srv/run/bob"),
+        Path("/srv/run/configs/bob-codex"),
+        Path("/srv/run/resume-bob.prompt.md"),
+        Path("/srv/run/bob/.git"),
+        tmp_dir=Path("/srv/run/tmp/bob"),
+        token_file="/srv/run/token",
+    )
+    assert any(
+        "UV_CACHE_DIR" in line and "tmp/bob/uv-cache" in line.replace("\\", "/")
+        for line in posix_resume
+    )
+    # PowerShell rendering agrees via agent_launch_lines (supervised workers).
+    supervised = PREPARE_RUN.agent_launch_lines(
+        "codex",
+        PurePosixPath("/srv/run/bob"),
+        PurePosixPath("/srv/run/configs/bob-codex"),
+        PurePosixPath("/srv/run/bob.prompt.md"),
+        "http://127.0.0.1:8420",
+        "token",
+        tmp_dir=PurePosixPath("/srv/run/tmp/bob"),
+        worker="bob",
+        git_dir=PurePosixPath("/srv/run/bob/.git"),
+        powershell=True,
+    )
+    assert any("$env:UV_CACHE_DIR =" in line for line in supervised)
+
+
+def test_pytest_worker_environment_keeps_uv_cache_before_budget() -> None:
+    """#285: the xdist budget line stays after TMPDIR and UV_CACHE_DIR."""
+    lines = [
+        "cd /srv/run/bob",
+        "export TMPDIR=/srv/run/tmp/bob",
+        "export UV_CACHE_DIR=/srv/run/tmp/bob/uv-cache",
+        "codex exec",
+    ]
+    out = PREPARE_RUN.pytest_worker_environment(lines, 3)
+    assert out[1].startswith("export TMPDIR=")
+    assert out[2].startswith("export UV_CACHE_DIR=")
+    assert out[3] == "export PYTEST_XDIST_AUTO_NUM_WORKERS=3"
 
 
 GL_ORIGIN = "git@gitlab-box.local:RoboNater/robomate-glab-sandbox.git"

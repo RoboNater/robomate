@@ -834,6 +834,32 @@ def auto_start_instruction(prompt: str, powershell: bool = False) -> str:
     return shell_word(f"Read {prompt} and follow the instructions in it", powershell)
 
 
+def uv_cache_dir(tmp_dir: PurePath) -> PurePath:
+    """Isolated per-agent uv cache next to TMPDIR (#285).
+
+    The Codex sandbox leaves uv's default cache (``~/.cache/uv``) read-only,
+    so every generated start/resume script exports this directory as
+    ``UV_CACHE_DIR`` beside ``TMPDIR``. It lives under the per-agent
+    ``RUN_DIR/tmp/<agent>`` directory, keeping each worker isolated without
+    writing to shared ``/tmp`` and without granting the sandbox access outside
+    the run directory. The same setting serves every harness uniformly: Claude
+    Code and OpenCode have no sandbox block today, but the isolated cache keeps
+    their behaviour identical and future-proof.
+    """
+    return tmp_dir / "uv-cache"
+
+
+def ensure_agent_tmp_dirs(agent_tmp: Path) -> None:
+    """Create the per-agent temp directory and its isolated uv cache (#285)."""
+    agent_tmp.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        agent_tmp.chmod(0o700)
+    uv_cache = agent_tmp / "uv-cache"
+    uv_cache.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        uv_cache.chmod(0o700)
+
+
 def model_flags(
     harness: str,
     model: str,
@@ -1169,13 +1195,20 @@ def launch_lines(
     )
     temp_lines = []
     if tmp_dir is not None:
+        # Keep tmp_dir's own flavour: PurePath() would follow a patched
+        # os.name in tests and turn POSIX forward slashes into backslashes.
+        uv_cache = str(tmp_dir / "uv-cache")
         if powershell:
             temp_lines = [
                 f"$env:TEMP = {shell_word(str(tmp_dir), powershell)}",
                 f"$env:TMP = {shell_word(str(tmp_dir), powershell)}",
+                f"$env:UV_CACHE_DIR = {shell_word(uv_cache, powershell)}",
             ]
         else:
-            temp_lines = [f"export TMPDIR={shell_word(str(tmp_dir), powershell)}"]
+            temp_lines = [
+                f"export TMPDIR={shell_word(str(tmp_dir), powershell)}",
+                f"export UV_CACHE_DIR={shell_word(uv_cache, powershell)}",
+            ]
     result = [f"cd {shell_word(str(workdir), powershell)}", *temp_lines, *lines]
     if not auto_start:
         return interactive_start_lines(result, harness, powershell=powershell)
@@ -1199,7 +1232,15 @@ def pytest_worker_environment(
         setting = f"export {variable}={workers}" if workers else f"unset {variable}"
     position = 1
     while position < len(lines) and lines[position].startswith(
-        ("export TMPDIR=", "export TEMP=", "export TMP=", "$env:TEMP =", "$env:TMP =")
+        (
+            "export TMPDIR=",
+            "export TEMP=",
+            "export TMP=",
+            "export UV_CACHE_DIR=",
+            "$env:TEMP =",
+            "$env:TMP =",
+            "$env:UV_CACHE_DIR =",
+        )
     ):
         position += 1
     return [*lines[:position], setting, *lines[position:]]
@@ -1628,12 +1669,15 @@ def ask_lines(
 
     config = launch_config_path(harness, run_dir / "configs", name, workdir)
     temp = run_dir / "tmp" / name
+    uv_cache = uv_cache_dir(temp)
     prefix = ["$ErrorActionPreference = 'Stop'" if powershell else "set -e"]
     prefix += [f"cd {shell_word(git_bash_path(workdir) if git_bash else str(workdir), powershell)}"]
     if powershell:
         prefix += [f"$env:{key} = {shell_word(spelling(temp), True)}" for key in ("TEMP", "TMP")]
+        prefix += [f"$env:UV_CACHE_DIR = {shell_word(spelling(uv_cache), True)}"]
     else:
         prefix += [f"export TMPDIR={shell_word(git_bash_path(temp) if git_bash else str(temp))}"]
+        prefix += [f"export UV_CACHE_DIR={shell_word(spelling(uv_cache))}"]
         if run_dir.drive or os.name == "nt":
             prefix += [f"export {key}={shell_word(spelling(temp))}" for key in ("TEMP", "TMP")]
     flags = model_flags(harness, model, "" if harness == "opencode" else effort, powershell, False)
@@ -1783,13 +1827,19 @@ def resume_lines(
         )
     temp_lines = []
     if tmp_dir is not None:
+        # Keep tmp_dir's own flavour (see launch_lines).
+        uv_cache = str(tmp_dir / "uv-cache")
         if powershell:
             temp_lines = [
                 f"$env:TEMP = {shell_word(str(tmp_dir), powershell)}",
                 f"$env:TMP = {shell_word(str(tmp_dir), powershell)}",
+                f"$env:UV_CACHE_DIR = {shell_word(uv_cache, powershell)}",
             ]
         else:
-            temp_lines = [f"export TMPDIR={shell_word(str(tmp_dir), powershell)}"]
+            temp_lines = [
+                f"export TMPDIR={shell_word(str(tmp_dir), powershell)}",
+                f"export UV_CACHE_DIR={shell_word(uv_cache, powershell)}",
+            ]
     return interactive_recovery_lines(
         name,
         harness,
@@ -2050,20 +2100,29 @@ def agent_launch_lines(
         lines = [f"{prefix} {command}" if prefix else command]
     temp_lines = []
     if tmp_dir is not None:
+        uv_cache = uv_cache_dir(tmp_dir)
         if powershell:
             temp_lines = [
                 f"$env:TEMP = {shell_word(spelling(tmp_dir), powershell)}",
                 f"$env:TMP = {shell_word(spelling(tmp_dir), powershell)}",
+                f"$env:UV_CACHE_DIR = {shell_word(spelling(uv_cache), powershell)}",
             ]
         elif git_bash:
-            temp_lines = [f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}"]
+            temp_lines = [
+                f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
+                # uv is a native program: hand it the Windows spelling, like TEMP/TMP.
+                f"export UV_CACHE_DIR={shell_word(spelling(uv_cache))}",
+            ]
             if isinstance(tmp_dir, PureWindowsPath):
                 temp_lines += [
                     f"export TEMP={shell_word(spelling(tmp_dir))}",
                     f"export TMP={shell_word(spelling(tmp_dir))}",
                 ]
         else:
-            temp_lines = [f"export TMPDIR={shell_word(spelling(tmp_dir), powershell)}"]
+            temp_lines = [
+                f"export TMPDIR={shell_word(spelling(tmp_dir), powershell)}",
+                f"export UV_CACHE_DIR={shell_word(spelling(uv_cache), powershell)}",
+            ]
     usage = recovery_arguments(powershell) if resume_prompt is not None else []
     directory = git_bash_path(workdir) if git_bash else str(workdir)
     return [
@@ -2185,18 +2244,24 @@ def worker_launch(
         title=title,
         powershell=powershell,
     )
+    uv_cache = (tmp_dir / "uv-cache").as_posix()
     if powershell:
         temp_lines = [
             f"$env:{key} = {shell_word(tmp_dir.as_posix(), True)}" for key in ("TEMP", "TMP")
         ]
+        temp_lines.append(f"$env:UV_CACHE_DIR = {shell_word(uv_cache, True)}")
     elif is_windows:
         temp_lines = [
             f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
+            f"export UV_CACHE_DIR={shell_word(uv_cache)}",
             f"export TEMP={shell_word(tmp_dir.as_posix())}",
             f"export TMP={shell_word(tmp_dir.as_posix())}",
         ]
     else:
-        temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
+        temp_lines = [
+            f"export TMPDIR={shell_word(tmp_dir.as_posix())}",
+            f"export UV_CACHE_DIR={shell_word(uv_cache)}",
+        ]
     directory = workspace.as_posix() if powershell else git_bash_path(workspace)
     result = [
         f"cd {shell_word(directory, powershell)}",
@@ -2299,18 +2364,24 @@ def worker_resume(
         lines = claude_resume(
             config, run_dir.as_posix(), prompt_arg, flags, auto_start, session_var, powershell
         )
+    uv_cache = (tmp_dir / "uv-cache").as_posix()
     if powershell:
         temp_lines = [
             f"$env:{key} = {shell_word(tmp_dir.as_posix(), True)}" for key in ("TEMP", "TMP")
         ]
+        temp_lines.append(f"$env:UV_CACHE_DIR = {shell_word(uv_cache, True)}")
     elif is_windows:
         temp_lines = [
             f"export TMPDIR={shell_word(git_bash_path(tmp_dir))}",
+            f"export UV_CACHE_DIR={shell_word(uv_cache)}",
             f"export TEMP={shell_word(tmp_dir.as_posix())}",
             f"export TMP={shell_word(tmp_dir.as_posix())}",
         ]
     else:
-        temp_lines = [f"export TMPDIR={shell_word(tmp_dir.as_posix())}"]
+        temp_lines = [
+            f"export TMPDIR={shell_word(tmp_dir.as_posix())}",
+            f"export UV_CACHE_DIR={shell_word(uv_cache)}",
+        ]
     directory = workspace.as_posix() if powershell else git_bash_path(workspace)
     return interactive_recovery_lines(
         name,
@@ -2456,9 +2527,7 @@ def render_worker_bundle(
     if os.name != "nt":
         tmp_parent.chmod(0o700)
     agent_tmp = tmp_parent / name
-    agent_tmp.mkdir(parents=True, mode=0o700, exist_ok=True)
-    if os.name != "nt":
-        agent_tmp.chmod(0o700)
+    ensure_agent_tmp_dirs(agent_tmp)
     env = worker_env(
         name,
         harness,
@@ -3050,10 +3119,7 @@ def prepare(
     if os.name != "nt":
         tmp_parent.chmod(0o700)
     for name in ("alice", *local):
-        agent_tmp = tmp_parent / name
-        agent_tmp.mkdir(mode=0o700, exist_ok=True)
-        if os.name != "nt":
-            agent_tmp.chmod(0o700)
+        ensure_agent_tmp_dirs(tmp_parent / name)
 
     models = {"bob": bob_model, "charlie": charlie_model}
     capabilities = {"bob": bob_capabilities, "charlie": charlie_capabilities}
