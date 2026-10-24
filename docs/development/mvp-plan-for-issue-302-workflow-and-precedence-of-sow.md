@@ -61,7 +61,8 @@ These are the complete edits made to `docs/mvp-spec.md` in stage 1:
 2. **§7.1, statement precedence bullet (B1–B6, P1, P4):** state that a
    statement's specific procedural change takes precedence, compatible
    requirements remain, timing does not postpone all actions on a document,
-   safeguards remain, every departure is recorded in result/reviewer comment/
+   safeguards remain, no extra authority or routine-choice approval requirement
+   is added, every departure is recorded in result/reviewer comment/
    closeout, and Alice preserves departures in summaries and follows them herself.
    Reference §7.4/§12 for confirmed operator authorization; retain the worker
    prohibition on operator-only actions and blocked outcome for safeguard conflicts.
@@ -153,10 +154,10 @@ In `guides/orchestrator.md`, `## REVIEW, ADDRESS, and RE-REVIEW`, replace the
 paragraph beginning `An approval with only nonblocking findings` through
 `that head.` with:
 
-> An approval gets no NONBLOCKING task only when every finding is either an
-> optional cosmetic item (wording, formatting or line wrapping, explicitly
-> marked `optional, no follow-up`) or an instruction for post-merge close-out
-> only (roadmap or other shared-body edits after merge, no PR file change).
+> An approval whose every finding is either an optional cosmetic item
+> (wording, formatting or line wrapping, explicitly marked `optional, no follow-up`)
+> or an instruction for post-merge close-out only (roadmap or other shared-body
+> edits after merge, no PR file change) gets no NONBLOCKING task.
 > Proceed to the merge gate on the approved head. Alice carries close-out-only
 > findings into the CLOSE-OUT assignment by ID.
 >
@@ -164,8 +165,8 @@ paragraph beginning `An approval with only nonblocking findings` through
 > change or an answer needed before merge, assign a NONBLOCKING task covering
 > all findings, including cosmetic ones. Fix a finding that is a small change
 > to files the PR already touches by default; a decline gives a reason for
-> each finding and Alice may
-> overrule it with a new NONBLOCKING task naming the finding (#297). A finding
+> each finding and Alice may overrule it with a new NONBLOCKING task naming
+> the finding (#297). A finding
 > the reviewer marks `optional, no follow-up` stays in the review comment and
 > is never filed. Handle findings now and trigger RE-REVIEW if the head
 > changes, or decline them. After a decline, give the reviewer a same-head

@@ -662,6 +662,7 @@ permissions, which certification catches per harness.
 - **Statement precedence (#302).** When the statement modifies or conflicts with a
   repository or role-guide procedure (validation commands or hosts, smoke runs, evidence,
   PR contents, review scope or cadence), follow the statement for that specific instruction.
+  This rule grants no extra authority and adds no approval requirement for routine choices.
   Keep compatible requirements in effect; a timing instruction for one action does not
   postpone every action involving the same document. The statement cannot relax safeguards:
   skipping review or CI, merging a head that is not the approved one, worker-guide
@@ -699,10 +700,10 @@ permissions, which certification catches per harness.
   (§4 discovery). Parallel work in one repository uses parallel hubs, one per checkout;
   there is no cross-hub scheduling (§6). `get_state` carries the queue (oldest first) and
   `robomate status` shows the run ID and queue length.
-- **Approved nonblocking findings (#302).** An approval gets no NONBLOCKING task only
-  when every finding is either an optional cosmetic item marked `optional, no follow-up`
-  or explicitly post-merge close-out only (no PR file change). Proceed to the merge gate
-  on the approved head; Alice carries close-out findings into the CLOSE-OUT assignment
+- **Approved nonblocking findings (#302).** An approval whose every finding is
+  either an optional cosmetic item marked `optional, no follow-up` or explicitly
+  post-merge close-out only (no PR file change) gets no NONBLOCKING task. Proceed to the
+  merge gate on the approved head; Alice carries close-out findings into the CLOSE-OUT assignment
   by ID. If any finding falls outside those classes, including a substantive PR change
   or an answer needed before merge, assign a NONBLOCKING task covering all findings,
   including cosmetic ones.
