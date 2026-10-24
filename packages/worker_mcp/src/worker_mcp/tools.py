@@ -156,6 +156,9 @@ def create_worker_mcp(
 
         Returns {task_id, role, instructions}, {release: true}, or {timeout: true}.
         A review or rebase assignment also carries pr_head_sha, the head it is bound to.
+        An implementer assignment carries branch (`robomate/<hub>/<agent>/<label>`)
+        named in the run's first implementer assignment and reused afterwards, plus
+        run_id and statement_sha256 for the run's identity and statement.
         A redelivery of a task you already hold carries already_held true: it is not
         new work, so continue it instead of starting over (#326).
         On timeout, call again.

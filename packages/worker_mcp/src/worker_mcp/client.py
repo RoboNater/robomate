@@ -1060,6 +1060,11 @@ class WorkerHubClient:
         statement_sha256 = metadata.get(MetaKeys.STATEMENT_SHA256)
         if isinstance(statement_sha256, str) and statement_sha256:
             assignment["statement_sha256"] = statement_sha256
+        # Named run branch (M2 Step 7c, #315): `robomate/<hub>/<agent>/<label>`
+        # named in the run's first implementer assignment and reused afterwards.
+        branch = metadata.get(MetaKeys.BRANCH)
+        if isinstance(branch, str) and branch:
+            assignment["branch"] = branch
         # Redelivery marker (#326): the hub returns the task the caller
         # already holds instead of timing out, flagged so the worker knows
         # it is not new work. Additive metadata; wire version stays 1.

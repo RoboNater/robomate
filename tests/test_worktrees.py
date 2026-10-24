@@ -552,7 +552,7 @@ def test_migration_from_v24_leaves_workspace_path_and_kind_null(
 
 def test_wire_schema_version_stays_1() -> None:
     assert WIRE_SCHEMA_VERSION == 1
-    assert SCHEMA_VERSION == 25
+    assert SCHEMA_VERSION == 26
 
 
 async def test_explicit_join_revalidates_identity_for_join_name(tmp_path: Path) -> None:
@@ -696,3 +696,136 @@ async def test_from_env_settings_join_honors_explicit_workspace(tmp_path: Path) 
     agent = store.agent_by_name("bob")
     assert agent is not None
     assert (agent.workspace_path, agent.workspace_kind) == (str(destination), "clone")
+
+
+# M2 Step 7c (#315): the hub names `robomate/<hub>/<agent>/<label>` in the
+# run's first implementer assignment, refuses an existing local or origin ref,
+# reuses it for later tasks, records it on the workflow, and namespaces two
+# hubs of one repository without collision.
+
+
+def test_branch_label_derivation_prefers_issue_number_and_slugifies() -> None:
+    from agent_hub.branches import derive_branch_label
+
+    assert derive_branch_label("Address issue `RoboNater/robomate#315`, merge it.") == "315"
+    assert derive_branch_label("Fix login") == "fix-login"
+    assert derive_branch_label("  ") != ""
+    # Reserved words (hub/agent name rules) fall back to a SHA prefix, so the
+    # hub never names a branch it would then refuse (r1-2).
+    for reserved in ("Token", "con", "State"):
+        label = derive_branch_label(reserved)
+        assert label not in ("token", "con", "state")
+        assert len(label) == 8
+
+
+def _branch_store(
+    tmp_path: Path, hub: str = "myhub", goal: str = "Address issue `o/r#42`"
+) -> tuple[HubStore, Path]:
+    repo = make_repo(tmp_path / f"branch-{hub}")
+    _, _, common = make_manager(repo, tmp_path, hub=hub)
+    path = tmp_path / f"{hub}.db"
+    initialize_database(path)
+    store = HubStore(path, hub_name=hub, git_common_dir=common)
+    store.initialize_workflow(goal)
+    store.check_in("bob", AgentProfile(), standing_role="implementer", worker_instance_id="i-bob")
+    store.check_in("bob2", AgentProfile(), standing_role="implementer", worker_instance_id="i-bob2")
+    return store, common
+
+
+def test_first_implementer_assignment_names_branch_and_reuses(tmp_path: Path) -> None:
+    store, _ = _branch_store(tmp_path, hub="myhub", goal="Address issue `o/r#42`, merge it.")
+    first = store.assign_task("bob", "implementer", "Build", "build it")
+    assert first.branch == "robomate/myhub/bob/42"
+    assert first.run_id is not None
+    state = store.get_state()
+    assert state["workflow"]["branch"] == "robomate/myhub/bob/42"
+    # Later tasks of the same run reuse the same branch, even for another agent.
+    second = store.assign_task("bob2", "implementer", "Build more", "more")
+    assert second.branch == first.branch
+    assert store.get_state()["workflow"]["branch"] == first.branch
+
+
+def test_reserved_word_statement_still_names_a_branch(tmp_path: Path) -> None:
+    """r1-2: a reserved-word slug falls back instead of failing every assignment."""
+
+    store, _ = _branch_store(tmp_path, hub="myhub", goal="Token")
+    task = store.assign_task("bob", "implementer", "Build", "build it")
+    assert task.branch is not None
+    assert task.branch.startswith("robomate/myhub/bob/")
+    assert task.branch.split("/")[-1] not in ("token", "con", "state")
+
+
+def test_existing_local_ref_is_refused(tmp_path: Path) -> None:
+    from agent_hub.store import ConflictError
+
+    store, common = _branch_store(tmp_path, hub="myhub", goal="Address issue `o/r#43`")
+    # Create the local branch ref the hub would name.
+    subprocess.run(
+        ["git", f"--git-dir={common}", "branch", "robomate/myhub/bob/43"],
+        check=True,
+        capture_output=True,
+        cwd=common.parent if common.name == ".git" else Path.cwd(),
+    )
+    with pytest.raises(ConflictError, match="already exists locally"):
+        store.assign_task("bob", "implementer", "Build", "build it")
+
+
+def test_existing_origin_ref_is_refused(tmp_path: Path) -> None:
+    from agent_hub.store import ConflictError
+
+    store, common = _branch_store(tmp_path, hub="myhub", goal="Address issue `o/r#44`")
+    cwd = common.parent if common.name == ".git" else Path.cwd()
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True, cwd=cwd
+    ).stdout.strip()
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={common}",
+            "update-ref",
+            "refs/remotes/origin/robomate/myhub/bob/44",
+            head,
+        ],
+        check=True,
+        capture_output=True,
+        cwd=cwd,
+    )
+    with pytest.raises(ConflictError, match="already exists on origin"):
+        store.assign_task("bob", "implementer", "Build", "build it")
+
+
+def test_two_hubs_name_branches_without_collision(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "two-hubs")
+    _, _, common = make_manager(repo, tmp_path, hub="repo")
+    first_path = tmp_path / "first.db"
+    second_path = tmp_path / "second.db"
+    for p in (first_path, second_path):
+        initialize_database(p)
+    first = HubStore(first_path, hub_name="repo", git_common_dir=common)
+    second = HubStore(second_path, hub_name="other", git_common_dir=common)
+    for s in (first, second):
+        s.initialize_workflow("Address issue `o/r#45`, merge it.")
+        s.check_in("bob", AgentProfile(), standing_role="implementer", worker_instance_id="i-b")
+    first_task = first.assign_task("bob", "implementer", "Build", "build")
+    second_task = second.assign_task("bob", "implementer", "Build", "build")
+    assert first_task.branch == "robomate/repo/bob/45"
+    assert second_task.branch == "robomate/other/bob/45"
+    assert first_task.branch != second_task.branch
+
+
+def test_migration_from_v25_leaves_branch_null(tmp_path: Path) -> None:
+    import sqlite3
+
+    fixture = Path(__file__).resolve().parent / "fixtures" / "schema_v25.sql"
+    path = tmp_path / "v25.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(fixture.read_text(encoding="utf-8"))
+        connection.execute(
+            "INSERT INTO workflow (id, run_id, goal, status, created)"
+            " VALUES ('wf', '20261022_deadbeef', 'Goal', 'active', '2026-10-22T00:00:00Z')"
+        )
+    initialize_database(path)
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        row = connection.execute("SELECT branch FROM workflow WHERE id = 'wf'").fetchone()
+        assert row["branch"] is None

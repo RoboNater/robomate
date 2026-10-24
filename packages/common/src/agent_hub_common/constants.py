@@ -72,4 +72,5 @@ class MetaKeys(StrEnum):
     DETACH = "hub.detach"
     RUN_ID = "hub.run_id"
     STATEMENT_SHA256 = "hub.statement_sha256"
+    BRANCH = "hub.branch"
     ALREADY_HELD = "hub.already_held"

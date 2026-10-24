@@ -267,6 +267,9 @@ class TaskRecord:
     run_id: str | None = None
     # The statement this run was started from, if any.
     statement_sha256: str | None = None
+    # The run's branch `robomate/<hub>/<agent>/<label>` (M2 Step 7c, #315);
+    # None until the first implementer assignment names it.
+    branch: str | None = None
     # Transient redelivery marker (#326): True only when `await_assignment`
     # returns a task the caller already holds. Never persisted; `_task()`
     # always reads False and `get_state()` omits it. Additive metadata, so
@@ -421,6 +424,7 @@ def _task(row: Row) -> TaskRecord:
         statement_sha256=str(row["statement_sha256"])
         if "statement_sha256" in keys and row["statement_sha256"] is not None
         else None,
+        branch=str(row["branch"]) if "branch" in keys and row["branch"] is not None else None,
     )
 
 
@@ -565,6 +569,14 @@ class HubStore:
     # Defaults to the database's parent, which is the state directory for
     # every layout except the `hub` entry point with a custom HUB_DB_PATH.
     state_dir: Path | None = None
+    # Branch naming context (M2 Step 7c, #315): the hub's name for
+    # `robomate/<hub>/<agent>/<label>`, and the git common directory whose
+    # refs decide whether a label is already taken. None for hubs without a
+    # repository context (test hubs, the `hub` entry point): no branch is
+    # named there; the first implementer assignment with a hub name records it
+    # and reuses it afterwards, with no ref check when the common dir is None.
+    hub_name: str | None = None
+    git_common_dir: Path | None = None
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
@@ -1128,7 +1140,7 @@ class HubStore:
                 workflow = live_dict
                 tasks = []
                 for row in connection.execute(
-                    "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                    "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
                     " FROM task JOIN workflow ON task.workflow_id = workflow.id"
                     # Durable insertion order (#209): `created` can step backwards.
                     " WHERE task.workflow_id = ? ORDER BY task.rowid",
@@ -1161,7 +1173,7 @@ class HubStore:
                     workflow = recent_dict
                     tasks = []
                     for row in connection.execute(
-                        "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                        "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
                         " FROM task JOIN workflow ON task.workflow_id = workflow.id"
                         # Durable insertion order (#209): `created` can step backwards.
                         " WHERE task.workflow_id = ? ORDER BY task.rowid",
@@ -2285,11 +2297,41 @@ class HubStore:
         with database(self.path) as connection:
             workflow_id = self._require_workflow(connection, "assign_task")
             workflow_row = connection.execute(
-                "SELECT run_id, statement_sha256 FROM workflow WHERE id = ?", (workflow_id,)
+                "SELECT run_id, statement_sha256, branch, goal FROM workflow WHERE id = ?",
+                (workflow_id,),
             ).fetchone()
             assert workflow_row is not None
             run_id = str(workflow_row["run_id"])
             statement_sha256 = workflow_row["statement_sha256"]
+            # Named branches (M2 Step 7c, #315): the hub names
+            # `robomate/<hub>/<agent>/<label>` in the run's first implementer
+            # assignment and later tasks of the run reuse it.
+            branch: str | None = None
+            try:
+                existing_branch = workflow_row["branch"]
+            except (KeyError, IndexError):
+                existing_branch = None
+            if existing_branch is not None:
+                branch = str(existing_branch)
+            elif role == TaskRole.IMPLEMENTER.value and self.hub_name is not None:
+                from .branches import (
+                    BranchError,
+                    branch_name,
+                    derive_branch_label,
+                    ensure_branch_available,
+                )
+
+                label = derive_branch_label(str(workflow_row["goal"] or ""))
+                try:
+                    candidate = branch_name(self.hub_name, agent, label)
+                    ensure_branch_available(self.git_common_dir, candidate)
+                except BranchError as exc:
+                    raise ConflictError(str(exc)) from exc
+                connection.execute(
+                    "UPDATE workflow SET branch = ? WHERE id = ?",
+                    (candidate, workflow_id),
+                )
+                branch = candidate
             assignment_metadata: dict[str, Any] = {
                 MetaKeys.KIND: "assignment",
                 MetaKeys.ROLE: role,
@@ -2298,6 +2340,8 @@ class HubStore:
             }
             if statement_sha256 is not None:
                 assignment_metadata[MetaKeys.STATEMENT_SHA256] = str(statement_sha256)
+            if branch is not None:
+                assignment_metadata[MetaKeys.BRANCH] = branch
             if head is not None:
                 assignment_metadata[MetaKeys.PR_HEAD_SHA] = head
             lease_cap_min = self._max_task_lease_min(connection, workflow_id)
@@ -2309,7 +2353,7 @@ class HubStore:
                 if source is None:
                     raise NotFoundError(f"unknown source event: {source_event_id}")
                 existing = connection.execute(
-                    "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                    "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
                     " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
                     " WHERE task.source_event_id = ?",
                     (source_event_id,),
@@ -2398,7 +2442,7 @@ class HubStore:
     def get_task(self, task_id: str) -> TaskRecord | None:
         with database(self.path) as connection:
             row = connection.execute(
-                "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
                 " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
                 " WHERE task.id = ?",
                 (task_id,),
@@ -2414,7 +2458,7 @@ class HubStore:
     def tasks(self) -> list[TaskRecord]:
         with database(self.path) as connection:
             rows = connection.execute(
-                "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+                "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
                 " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
                 # Durable insertion order (#209): `created` can step backwards.
                 " ORDER BY task.rowid"
@@ -2839,7 +2883,7 @@ class HubStore:
 
     def _require_task(self, connection: Connection, task_id: str) -> TaskRecord:
         row = connection.execute(
-            "SELECT task.*, workflow.run_id, workflow.statement_sha256"
+            "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
             " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
             " WHERE task.id = ?",
             (task_id,),

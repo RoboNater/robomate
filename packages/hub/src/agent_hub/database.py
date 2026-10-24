@@ -21,6 +21,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v26 is #315's run branch on `workflow` (`robomate/<hub>/<agent>/<label>`).
 # v25 is #244's agent workspace path and kind (`worktree` or `clone`).
 # v24 is #281's forge-reported `gate_reading.merged_sha`.
 # v23 is #241's `work_submitted` event kind for `robomate submit`.
@@ -46,7 +47,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 class DatabaseVersionError(RuntimeError):
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS workflow (
     status TEXT NOT NULL CHECK (status IN ({_sql_values(WorkflowStatus)})),
     policy_json TEXT NOT NULL DEFAULT '{{}}',
     statement_sha256 TEXT,
+    branch TEXT,
     created TEXT NOT NULL,
     FOREIGN KEY (statement_sha256) REFERENCES statement(sha256)
 );
@@ -416,6 +418,7 @@ def initialize_database(path: Path) -> None:
         _migrate_standing_role_and_join_profile(connection)
         _migrate_run_identity_and_queue(connection)
         _migrate_workspace_path_and_kind(connection)
+        _migrate_workflow_branch(connection)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -496,6 +499,18 @@ def _migrate_workspace_path_and_kind(connection: sqlite3.Connection) -> None:
     for name, spec in WORKSPACE_COLUMNS.items():
         if name not in columns:
             connection.execute(f"ALTER TABLE agent ADD COLUMN {name} {spec}")
+
+
+def _migrate_workflow_branch(connection: sqlite3.Connection) -> None:
+    """Add the run's branch on workflow (#315, v26).
+
+    The hub names `robomate/<hub>/<agent>/<label>` in the run's first
+    implementer assignment; later tasks reuse it. Rows written before v26
+    hold NULL, which is the truthful value for runs that never named one.
+    """
+
+    if "branch" not in _columns(connection, "workflow"):
+        connection.execute("ALTER TABLE workflow ADD COLUMN branch TEXT")
 
 
 def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:

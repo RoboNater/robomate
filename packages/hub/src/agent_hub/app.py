@@ -97,11 +97,19 @@ def create_app(
     )
     hub_id = str(hub_info["hub_id"]) if hub_info is not None else uuid.uuid4().hex
     card = build_agent_card(resolved.public_url)
+    # Branch naming context (M2 Step 7c, #315): the hub's name namespaces
+    # `robomate/<hub>/<agent>/<label>`, and the git common directory decides
+    # whether a label is already taken locally or on origin.
+    hub_name_for_branches = (
+        str(hub_info.get("name") or hub_info.get("hub_name") or "") if hub_info is not None else ""
+    ) or None
     store = HubStore(
         path=resolved.database_path,
         signals=Signals(),
         default_event_lease_s=resolved.event_lease_s,
         state_dir=resolved.state_dir,
+        hub_name=hub_name_for_branches,
+        git_common_dir=common_dir,
     )
     from .worktrees import WorktreeManager
 
