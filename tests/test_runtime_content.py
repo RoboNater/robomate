@@ -845,7 +845,21 @@ def test_statement_precedence_is_shared_and_preserves_safeguards() -> None:
 def test_nonblocking_exception_requires_every_finding_to_qualify() -> None:
     """#302 N/C: the union of two explicit classes, with substantive work retained."""
     orchestrator = read("guides/orchestrator.md")
+    reviewer = read("guides/reviewer.md")
     routing = section(orchestrator, "An approval whose every finding", "## REBASE")
+    # The only task-skipping instruction must be the qualified exception, not
+    # an unqualified rule added elsewhere in either guide (review r1-1).
+    assert normalize(orchestrator).count("gets no NONBLOCKING task") == 1
+    assert normalize(routing).count("gets no NONBLOCKING task") == 1
+    assert "gets no NONBLOCKING task" not in normalize(reviewer)
+    for text in (orchestrator, reviewer):
+        for broad_rule in (
+            "nonblocking findings need no nonblocking task",
+            "all nonblocking findings are skippable",
+            "all nonblocking items are skippable",
+            "nonblocking means skippable",
+        ):
+            assert broad_rule not in normalize(text).casefold()
     assert_fragments(
         routing,
         (
@@ -886,7 +900,7 @@ def test_nonblocking_exception_requires_every_finding_to_qualify() -> None:
         ),
     )
     assert_fragments(
-        read("guides/reviewer.md"),
+        reviewer,
         (
             (
                 "Use `optional, no follow-up` in a finding's typed `text` only for cosmetic "
