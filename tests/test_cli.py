@@ -2373,10 +2373,6 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
             {"repo_root": "/stale", "url": "http://127.0.0.1:1", "hub_id": "stale", "pid": 999999},
             env,
         )
-        await_registry(
-            env,
-            lambda found: any(e.get("hub_id") == "stale" for e in found) and live_registered(found),
-        )
         # #265: ls against two live hubs is read-only; run it in-process.
         result = _inproc_cli(monkeypatch, capsys, root, env, "ls")
         assert result.returncode == 0, result.stderr

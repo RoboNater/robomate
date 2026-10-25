@@ -32,11 +32,12 @@ from agent_hub.rpc import (
     RpcError,
     require_operator,
 )
+from agent_hub.signals import EVENT_KEY
 from agent_hub.store import DuplicateAgentError, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from fastapi import FastAPI
-from timing import LIVENESS_S
+from timing import LIVENESS_S, wait_until
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -746,11 +747,15 @@ async def test_a_github_hub_with_an_unsupported_origin_fails_the_gate_closed(
     assert text.startswith("the GitHub merge gate is unavailable: GitHub on HTTPS port 8443")
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_wait_for_event_holds_the_request_until_an_event_arrives(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     held = asyncio.create_task(call(client, "wait_for_event", timeout_s=LIVENESS_S))
-    await asyncio.sleep(0.1)
+    await wait_until(
+        lambda: bool(hub_store.signals._waiters.get(EVENT_KEY)),
+        "wait_for_event hold to register",
+    )
     assert not held.done()
 
     await check_in(client, "bob")
@@ -886,7 +891,7 @@ async def test_superseded_held_call_releases_event_it_received_after_takeover(
         SESSION_HEADER: "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5",
     }
     held = asyncio.create_task(call(client, "wait_for_event", old, timeout_s=0))
-    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(started.wait(), LIVENESS_S)
     assert "result" in await call(client, "join", new, name="alice", takeover=True)
     hub_store.check_in("bob", AgentProfile())
     resume.set()
@@ -1164,7 +1169,7 @@ async def test_wait_for_event_delivers_user_answered(
 ) -> None:
     hub_store.append_event(EventKind.USER_ANSWERED, {"question_id": 1, "answer": "merge"})
 
-    event = (await call(client, "wait_for_event", timeout_s=1))["result"]["event"]
+    event = (await call(client, "wait_for_event", timeout_s=LIVENESS_S))["result"]["event"]
     assert event["kind"] == "user_answered"
     assert event["payload"] == {"question_id": 1, "answer": "merge"}
 

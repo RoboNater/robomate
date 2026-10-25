@@ -293,15 +293,14 @@ class HubSettings:
                     "the raw stream is written only while accounting is on"
                 )
         detect_host_pauses = True
-        for name in ("HUB_DETECT_HOST_PAUSES", "HUB_HOST_PAUSE_DETECTION"):
-            if name in env:
-                raw_pause = env[name].strip().lower()
-                if not raw_pause:
-                    continue
+        if "HUB_DETECT_HOST_PAUSES" in env:
+            raw_pause = env["HUB_DETECT_HOST_PAUSES"].strip().lower()
+            if raw_pause:
                 if raw_pause not in _FLAG_VALUES:
-                    raise ConfigurationError(f"{name} must be 1/0, true/false, on/off or yes/no")
+                    raise ConfigurationError(
+                        "HUB_DETECT_HOST_PAUSES must be 1/0, true/false, on/off or yes/no"
+                    )
                 detect_host_pauses = _FLAG_VALUES[raw_pause]
-                break
         return cls(
             host=host,
             port=port,

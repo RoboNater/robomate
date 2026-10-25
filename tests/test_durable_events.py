@@ -33,10 +33,8 @@ mock_alice = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mock_alice)
 
 # Every recovery test here turns on one thing: a lease expiring while Alice is
-# gone. Both numbers live here so the next retune is one edit rather than nine,
-# and so a test that sleeps is visibly a timing-sensitive one.
+# gone.
 EVENT_LEASE_S = 1.0
-PAST_LEASE_S = EVENT_LEASE_S + 0.05
 # Bounds one whole mock Alice drive, check-in to release; a healthy one takes
 # well under a second. A fixed 5 s is the budget that timed out under load in
 # test_mock_alice (#231), so the drives here share this generous one.
@@ -451,7 +449,7 @@ async def test_mcp_wait_for_event_and_implicit_ack(store: HubStore) -> None:
     store.append_event(EventKind.AGENT_CHECKED_IN, {"agent": "bob"})
 
     # Wait for event via MCP
-    res1 = await call("wait_for_event", timeout_s=1.0)
+    res1 = await call("wait_for_event", timeout_s=LIVENESS_S)
     event1 = res1.get("event")
     assert event1 is not None
     assert event1["kind"] == "agent_checked_in"

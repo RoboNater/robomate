@@ -431,7 +431,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         max_wait_s=1.0,
         lost_after_s=ENDURANCE_LOST_AFTER_S,
         sweep_interval_s=0.02,
-        detect_host_pauses=False,
+        detect_host_pauses=True,
     )
     app = create_app(settings)
     # Mock Alice checks the heartbeat stamp moved across a monotonic sleep; a

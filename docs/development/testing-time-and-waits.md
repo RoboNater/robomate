@@ -64,7 +64,7 @@ from timing import LIVENESS_S, FrozenClock, wait_until
 | `@pytest.mark.real_clock` | Opt out of the default `frozen_clock` on `store` and `hub_store`. |
 | `ROBOMATE_TEST_DB_LATENCY_MS` | The slow-host probe; see below. |
 
-`frozen_clock` is installed by default on `store` and `hub_store` (Stage 2, #368). Tests that specifically verify real-time behaviors (such as background heartbeat timer intervals) opt out with `@pytest.mark.real_clock`. Test hub settings also default `detect_host_pauses=False` (`HUB_DETECT_HOST_PAUSES` / `HUB_HOST_PAUSE_DETECTION`); tests specifically exercising pause recovery enable it explicitly.
+`frozen_clock` is installed by default on `store` and `hub_store` (Stage 2, #368). Tests that specifically verify real-time behaviors (such as background heartbeat timer intervals) opt out with `@pytest.mark.real_clock`. Test hub settings also default `detect_host_pauses=False` (`HUB_DETECT_HOST_PAUSES`); tests specifically exercising pause recovery enable it explicitly.
 
 ### The two-clock rule
 

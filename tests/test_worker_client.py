@@ -358,6 +358,7 @@ async def test_report_progress_and_submit_result(
     assert stored_task is not None and stored_task.state == TaskState.COMPLETED
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_ask_alice_reply_and_retry_correlation(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
@@ -371,11 +372,13 @@ async def test_ask_alice_reply_and_retry_correlation(
 
     # 1. Ask question with answer
     async def answer() -> None:
-        for _ in range(100):
-            current = hub_store.get_task(task.id)
-            if current is not None and current.state == TaskState.INPUT_REQUIRED:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: (
+                (t := hub_store.get_task(task.id)) is not None
+                and t.state == TaskState.INPUT_REQUIRED
+            ),
+            "task to reach INPUT_REQUIRED",
+        )
         event = hub_store.next_event()
         assert event is not None and event.kind is EventKind.WORKER_QUESTION
         hub_store.reply(
@@ -384,7 +387,9 @@ async def test_ask_alice_reply_and_retry_correlation(
             message_id=event.payload["message_id"],
         )
 
-    ask_task = asyncio.create_task(worker.ask_alice(task.id, "Which database?", timeout_s=2.0))
+    ask_task = asyncio.create_task(
+        worker.ask_alice(task.id, "Which database?", timeout_s=LIVENESS_S)
+    )
     await asyncio.gather(answer(), ask_task)
     reply = ask_task.result()
     assert reply == {"reply": "Use SQLite for persistence."}
@@ -406,7 +411,7 @@ async def test_ask_alice_reply_and_retry_correlation(
     )
 
     # 3. Retry uses the saved message_id and picks up the answer
-    retry_res = await worker.ask_alice(task.id, "Second question?", timeout_s=2.0)
+    retry_res = await worker.ask_alice(task.id, "Second question?", timeout_s=LIVENESS_S)
     assert retry_res == {"reply": "The answer given in the gap."}
     assert task.id not in worker._pending_questions
 
@@ -421,6 +426,7 @@ async def test_ask_alice_reply_and_retry_correlation(
     assert msg_id_b != msg_id_a
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_ask_alice_manual_termination_override(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
@@ -431,14 +437,18 @@ async def test_ask_alice_manual_termination_override(
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Instructions")
 
     async def cancel_task() -> None:
-        for _ in range(100):
-            current = hub_store.get_task(task.id)
-            if current is not None and current.state == TaskState.INPUT_REQUIRED:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: (
+                (t := hub_store.get_task(task.id)) is not None
+                and t.state == TaskState.INPUT_REQUIRED
+            ),
+            "task to reach INPUT_REQUIRED",
+        )
         hub_store.set_task_state(task.id, TaskState.CANCELED, "Task aborted by user")
 
-    ask_task = asyncio.create_task(worker.ask_alice(task.id, "How to proceed?", timeout_s=2.0))
+    ask_task = asyncio.create_task(
+        worker.ask_alice(task.id, "How to proceed?", timeout_s=LIVENESS_S)
+    )
     await asyncio.gather(cancel_task(), ask_task)
 
     res = ask_task.result()
@@ -448,6 +458,7 @@ async def test_ask_alice_manual_termination_override(
     assert task.id not in worker._pending_questions
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_ask_alice_cancellation_without_result_summary(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
@@ -458,14 +469,18 @@ async def test_ask_alice_cancellation_without_result_summary(
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Instructions")
 
     async def cancel_task() -> None:
-        for _ in range(100):
-            current = hub_store.get_task(task.id)
-            if current is not None and current.state == TaskState.INPUT_REQUIRED:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: (
+                (t := hub_store.get_task(task.id)) is not None
+                and t.state == TaskState.INPUT_REQUIRED
+            ),
+            "task to reach INPUT_REQUIRED",
+        )
         hub_store.cancel_task(task.id)
 
-    ask_task = asyncio.create_task(worker.ask_alice(task.id, "How to proceed?", timeout_s=2.0))
+    ask_task = asyncio.create_task(
+        worker.ask_alice(task.id, "How to proceed?", timeout_s=LIVENESS_S)
+    )
     await asyncio.gather(cancel_task(), ask_task)
 
     res = ask_task.result()

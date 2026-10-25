@@ -17,7 +17,7 @@ from agent_hub_common import (
 )
 from conftest import BASE_URL, TOKEN, check_in, message, rpc, sse_results
 from fastapi import FastAPI
-from timing import wait_until
+from timing import LIVENESS_S, wait_until
 
 
 async def post(
@@ -1031,14 +1031,14 @@ async def test_manual_override_returns_terminal_task_to_question_stream(
             ),
         )
     )
-    while True:
-        task = hub_store.get_task(task_id)
-        assert task is not None
-        if task.state == TaskState.INPUT_REQUIRED:
-            break
-        await asyncio.sleep(0)
+    await wait_until(
+        lambda: (
+            (t := hub_store.get_task(task_id)) is not None and t.state == TaskState.INPUT_REQUIRED
+        ),
+        "task to reach INPUT_REQUIRED",
+    )
     hub_store.set_task_state(task_id, state, "Superseded")
-    result = sse_results(await asyncio.wait_for(pending, 1))[0]
+    result = sse_results(await asyncio.wait_for(pending, LIVENESS_S))[0]
     assert result["kind"] == "task"
     assert result["status"]["state"] == state.value
     assert result["status"]["message"]["parts"][0]["text"] == "Superseded"

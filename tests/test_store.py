@@ -1391,36 +1391,38 @@ def test_worker_liveness_across_consecutive_pauses_and_pre_pause_checkin(
     host pauses, or when its check-in predates the first pause, provided it
     heartbeats during resume grace."""
     store, clocks = pause_store
-    # Worker "bob" checked in during pause_store setup (before any pause).
+    lost_after_s = 2.0
     task = store.assign_task("bob", "implementer", "Fix issue", "Instructions", lease_min=10)
+    store.check_in("dan", worker_instance_id="dan-1")
+    assert store.sweep(lost_after_s) == []  # Establish baseline with lost_after_s=2.0
 
-    # First pause: 2 hours of sleep, 5 seconds monotonic.
-    clocks.step(7200, monotonic_seconds=5)
-    events = store.sweep(180)
-    assert [e.kind for e in events] == [EventKind.HOST_PAUSED]
+    # The five consecutive sweep gaps logged in #354.
+    gaps = [10.359, 9.469, 2.625, 9.718, 3.657]
+    for gap in gaps:
+        clocks.step(gap)
+        events = store.sweep(lost_after_s)
+        assert [e.kind for e in events] == [EventKind.HOST_PAUSED]
+        assert events[0].payload["reason"] == "sweep_gap"
+        assert events[0].payload["grace_s"] == lost_after_s
+
+        # Worker heartbeats 0.5 s after detection, inside the 2.0 s grace window.
+        clocks.step(0.5)
+        assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=60)
+        assert store.sweep(lost_after_s) == []
+
+    # Step past the last grace window (0.5 s already passed + 1.6 s = 2.1 s > 2.0 s grace).
+    # Bob heartbeated 1.6 s ago (< 2.0 s lost_after_s).
+    # Dan has been silent since before the first pause (> 35 s).
+    clocks.step(1.6)
+    events = store.sweep(lost_after_s)
+    assert [e.kind for e in events] == [EventKind.AGENT_LOST]
+    assert events[0].payload["agent"] == "dan"
+
     bob = store.agent_by_name("bob")
     assert bob is not None and bob.status == AgentStatus.BUSY
 
-    # Consecutive pause before grace expires: another 1 hour sleep, 5 seconds monotonic.
-    clocks.step(3600, monotonic_seconds=5)
-    events2 = store.sweep(180)
-    assert [e.kind for e in events2] == [EventKind.HOST_PAUSED]
-    # Still during grace: bob must NOT be lost despite check-in predating both pauses.
-    bob = store.agent_by_name("bob")
-    assert bob is not None and bob.status == AgentStatus.BUSY
-
-    # Worker wakes up and heartbeats during grace (10s after second pause).
-    clocks.step(10)
-    assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=60)
-    assert store.sweep(180) == []
-
-    # Regular periodic heartbeats after grace keeps worker live.
-    clocks.step(60)
-    assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=60)
-    clocks.step(60)
-    assert store.sweep(180) == []
-    bob = store.agent_by_name("bob")
-    assert bob is not None and bob.status == AgentStatus.BUSY
+    dan = store.agent_by_name("dan")
+    assert dan is not None and dan.status == AgentStatus.LOST
 
 
 @pytest.mark.parametrize("bad_name", ["Feature.B", "state", "token", "con", "-bob", ""])
