@@ -45,6 +45,10 @@ members = ["packages/*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    # #367: override fields of conftest's test HubSettings for one test.
+    "hub_settings(**fields): override fields of the test hub's HubSettings",
+]
 filterwarnings = [
     # #127 / #123 option 3: fail DW/PDW from all modules, with targeted exceptions.
     'error::DeprecationWarning',

@@ -27,6 +27,7 @@ from agent_hub_common import (
 from conftest import BASE_URL, TOKEN
 from fastapi import FastAPI
 from pydantic import ValidationError
+from timing import LIVENESS_S, FrozenClock, wait_until
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
@@ -53,14 +54,36 @@ def bridge_for(app: FastAPI) -> OrchestratorBridge:
     return bridge
 
 
+def holding(store: HubStore, name: str) -> bool:
+    """Whether `name`'s await_assignment hold is parked in the hub."""
+
+    agent = store.agent_by_name(name)
+    record = None if agent is None else store.activity.worker(name, agent.worker_instance_id)
+    return record is not None and any(
+        hold.kind == "await_assignment" for hold in record.holds.values()
+    )
+
+
+# The closeout window. It runs on the frozen clock, so it ends only when the
+# test advances past it; its length is part of the scenario, not a budget.
+WINDOW_S = 100
+
+
 @pytest.mark.parametrize("crash", [False, True])
+# Holds are bounded by LIVENESS_S, so lift the test hub's 1 s ceiling (#367).
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_isolated_collection_scenario(
     app: FastAPI,
     hub_store: HubStore,
     settings: HubSettings,
+    frozen_clock: FrozenClock,
     crash: bool,
 ) -> None:
-    """All three reports, then one crash; closeout ordering and restart retention."""
+    """All three reports, then one crash; closeout ordering and restart retention.
+
+    Every hub deadline runs on `frozen_clock`; real time only bounds the waits
+    (#367, docs/development/testing-time-and-waits.md).
+    """
     async with app.router.lifespan_context(app):
         bridge = bridge_for(app)
         alice = create_orchestrator_mcp(bridge)
@@ -84,9 +107,14 @@ async def test_isolated_collection_scenario(
                 assert (await call(server, "await_assignment", timeout_s=0))["task_id"] == task.id
                 hub_store.submit_result(task.id, name, TaskState.COMPLETED, "Work completed")
             run_id = hub_store.get_state()["workflow"]["run_id"]
-            pending = asyncio.create_task(call(servers[0], "await_assignment", timeout_s=0.8))
-            await asyncio.sleep(0.01)
-            requested = await call(alice, "request_closeout_reports", run_id=run_id, timeout_s=1)
+            pending = asyncio.create_task(
+                call(servers[0], "await_assignment", timeout_s=LIVENESS_S)
+            )
+            # The request must wake a parked hold, not race its first poll.
+            await wait_until(lambda: holding(hub_store, "bob"), "bob's hold is parked")
+            requested = await call(
+                alice, "request_closeout_reports", run_id=run_id, timeout_s=WINDOW_S
+            )
             delivery = await pending
             assert delivery["closeout_requested"] is True and delivery["run_id"] == run_id
             assert "submit_closeout_report" in delivery["instructions"]
@@ -112,12 +140,12 @@ async def test_isolated_collection_scenario(
                     servers[1], "submit_closeout_report", run_id=run_id, report=report("Reviewed.")
                 )
             else:
-                # A crashed bridge sends no report. Sweep the isolated fixture
-                # after advancing its clock; retain the lost participant.
-                now = hub_store._now()
-                hub_store.clock = lambda: now + timedelta(seconds=1.1)
+                # A crashed bridge sends no report. Advance past the window
+                # and the loss grace; bob heartbeats and charlie, silent, is
+                # lost. The first sweep has no baseline, so no host pause.
+                frozen_clock.advance(max(WINDOW_S, settings.lost_after_s) + 1)
                 await workers[0].heartbeat()
-                hub_store.sweep(0.5)
+                hub_store.sweep(settings.lost_after_s)
             closeout = hub_store.assign_task("bob", "closeout", "Close out", "Route observations")
             if closeout:
                 assert (await call(servers[0], "await_assignment", timeout_s=0))[
@@ -152,6 +180,7 @@ async def test_isolated_collection_scenario(
                     await worker._external_client.aclose()
             await bridge.close()
     restarted = create_app(settings)
+    frozen_clock.install(restarted.state.store)
     async with restarted.router.lifespan_context(restarted):
         new_bridge = bridge_for(restarted)
         try:
