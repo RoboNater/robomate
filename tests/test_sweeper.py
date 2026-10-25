@@ -1,10 +1,10 @@
-import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from agent_hub.store import EventRecord, HubStore
 from agent_hub.sweeper import start_sweeper, stop_sweeper
 from agent_hub_common import EventKind
+from timing import LIVENESS_S, wait_until
 
 
 async def drain(store: HubStore) -> None:
@@ -21,7 +21,7 @@ async def test_the_loop_reports_an_overdue_lease_without_being_asked(
 
     sweeper = start_sweeper(store, interval_s=0.01, lost_after_s=3600)
     try:
-        event = await store.wait_for_event(2.0)
+        event = await store.wait_for_event(LIVENESS_S)
     finally:
         await stop_sweeper(sweeper)
 
@@ -46,8 +46,7 @@ async def test_a_failing_sweep_does_not_stop_the_loop() -> None:
 
     sweeper = start_sweeper(cast(HubStore, flaky), interval_s=0.01, lost_after_s=3600)
     try:
-        while len(flaky.calls) < 3:
-            await asyncio.sleep(0.01)
+        await wait_until(lambda: len(flaky.calls) >= 3, "flaky sweeper to record 3 calls")
     finally:
         await stop_sweeper(sweeper)
 
@@ -79,8 +78,13 @@ async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(store: H
     sweeper = start_sweeper(store, interval_s=0.01, lost_after_s=180)
     try:
         # Waiting polls the inbox, so detection can precede the loop itself.
-        event = await store.wait_for_event(2.0)
-        await asyncio.sleep(0.05)
+        event = await store.wait_for_event(LIVENESS_S)
+        await wait_until(
+            lambda: (
+                (t := store.get_task(task.id)) is not None and t.lease_expires != task.lease_expires
+            ),
+            "sweeper to extend task lease",
+        )
     finally:
         await stop_sweeper(sweeper)
 

@@ -449,7 +449,11 @@ async def test_ask_alice_manual_termination_override(
     ask_task = asyncio.create_task(
         worker.ask_alice(task.id, "How to proceed?", timeout_s=LIVENESS_S)
     )
+    started = asyncio.get_running_loop().time()
     await asyncio.gather(cancel_task(), ask_task)
+    elapsed = asyncio.get_running_loop().time() - started
+    # Ensure termination unblocks await_reply immediately rather than waiting out LIVENESS_S.
+    assert elapsed < 10.0
 
     res = ask_task.result()
     assert res.get("task_ended") is True
@@ -481,7 +485,11 @@ async def test_ask_alice_cancellation_without_result_summary(
     ask_task = asyncio.create_task(
         worker.ask_alice(task.id, "How to proceed?", timeout_s=LIVENESS_S)
     )
+    started = asyncio.get_running_loop().time()
     await asyncio.gather(cancel_task(), ask_task)
+    elapsed = asyncio.get_running_loop().time() - started
+    # Ensure termination unblocks await_reply immediately rather than waiting out LIVENESS_S.
+    assert elapsed < 10.0
 
     res = ask_task.result()
     assert res.get("task_ended") is True

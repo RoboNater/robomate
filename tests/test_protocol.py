@@ -1012,6 +1012,7 @@ async def test_a_non_numeric_timeout_is_rejected(client: httpx.AsyncClient) -> N
     assert body["error"]["code"] == -32602
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 @pytest.mark.parametrize("state", [TaskState.CANCELED, TaskState.FAILED])
 async def test_manual_override_returns_terminal_task_to_question_stream(
     client: httpx.AsyncClient, hub_store: HubStore, state: TaskState
@@ -1026,7 +1027,7 @@ async def test_manual_override_returns_terminal_task_to_question_stream(
                     "Which?",
                     context_id=context_id,
                     task_id=task_id,
-                    metadata={MetaKeys.KIND: "question"},
+                    metadata={MetaKeys.KIND: "question", MetaKeys.TIMEOUT_S: LIVENESS_S},
                 ),
             ),
         )

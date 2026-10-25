@@ -753,7 +753,7 @@ async def test_wait_for_event_holds_the_request_until_an_event_arrives(
 ) -> None:
     held = asyncio.create_task(call(client, "wait_for_event", timeout_s=LIVENESS_S))
     await wait_until(
-        lambda: bool(hub_store.signals._waiters.get(EVENT_KEY)),
+        lambda: hub_store.signals.waiting(EVENT_KEY) > 0,
         "wait_for_event hold to register",
     )
     assert not held.done()
