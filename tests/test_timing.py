@@ -1,6 +1,7 @@
 """The shared time and wait tools in tests/timing.py (#367)."""
 
 import asyncio
+import sqlite3
 from datetime import timedelta
 from time import monotonic
 
@@ -98,13 +99,27 @@ def test_db_latency_setting_parses(monkeypatch: pytest.MonkeyPatch) -> None:
             db_latency_s()
 
 
-def test_db_latency_delays_each_transaction(store: HubStore) -> None:
-    connect = hub_database.connect
+def test_db_latency_sleeps_before_each_transaction(
+    store: HubStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Count the sleeps rather than time them: a real-time lower bound is itself
+    # flaky (Windows timer granularity). Start from an unpatched connect,
+    # whatever the session's probe setting.
+    monkeypatch.setattr(hub_database, "connect", sqlite3.connect)
+    slept: list[float] = []
+    monkeypatch.setattr("time.sleep", slept.append)
+
+    def transaction() -> None:
+        with hub_database.database(store.path):
+            pass
+
     with db_latency(0):
-        assert hub_database.connect is connect
+        assert hub_database.connect is sqlite3.connect
+        transaction()
+    assert slept == []
     with db_latency(0.05):
-        assert hub_database.connect is not connect
-        started = monotonic()
-        store.get_state()
-        assert monotonic() - started >= 0.05
-    assert hub_database.connect is connect
+        assert hub_database.connect is not sqlite3.connect
+        transaction()
+        transaction()
+    assert slept == [0.05, 0.05]
+    assert hub_database.connect is sqlite3.connect
