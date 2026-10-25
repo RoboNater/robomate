@@ -1,5 +1,6 @@
 """The shared time and wait tools in tests/timing.py (#367)."""
 
+import asyncio
 from datetime import timedelta
 from time import monotonic
 
@@ -52,6 +53,16 @@ def test_large_advance_records_no_host_pause(store: HubStore, frozen_clock: Froz
     moved = frozen_clock()
     store.clock = lambda: moved + timedelta(seconds=advance_s)
     assert [event.kind for event in store.sweep(LOST_AFTER_S)] == [EventKind.HOST_PAUSED]
+
+
+async def test_holds_time_out_in_real_time_on_a_frozen_clock(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    agent = store.check_in("bob", worker_instance_id="bob-instance")
+    started = monotonic()
+    assert await asyncio.wait_for(store.await_assignment(agent.context_id, 0.2), LIVENESS_S) is None
+    assert 0.2 <= monotonic() - started < LIVENESS_S
+    assert frozen_clock.elapsed == 0
 
 
 async def test_wait_until_returns_the_condition_or_fails_naming_it() -> None:
