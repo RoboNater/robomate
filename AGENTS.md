@@ -116,8 +116,9 @@ Time in tests ([policy](docs/development/testing-time-and-waits.md)): put any
 deadline the hub enforces on the `frozen_clock` fixture and pass it with
 `advance`, never by moving only the wall clock; wait for conditions with
 `wait_until`, not `sleep`; bound waits only by `LIVENESS_S`, never a short
-literal. A timing flake is fixed only once it has been reproduced with
-`ROBOMATE_TEST_DB_LATENCY_MS` and passes under it.
+literal. A timing flake is fixed only once it has been reproduced (with
+`ROBOMATE_TEST_DB_LATENCY_MS` for an in-process hub; the doc gives the route
+for a subprocess hub) and passes under the same conditions.
 
 ## Invariants
 
