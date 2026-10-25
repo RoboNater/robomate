@@ -21,6 +21,7 @@ from agent_hub import main
 from agent_hub.rpc_errors import OPERATOR_REQUIRED
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
 from conftest import reserve_port_block
+from timing import LIVENESS_S
 
 
 def test_hub_entry_point_escapes_unencodable_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,7 +120,7 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
         },
     )
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + LIVENESS_S  # a hang bound, not a budget (#372)
         while True:
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=0.2) as r:
@@ -207,7 +208,7 @@ def test_hub_entry_point_keeps_its_token_in_a_directory_of_its_own(tmp_path: Pat
         },
     )
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + LIVENESS_S  # a hang bound, not a budget (#372)
         while not token_file.is_file() or not token_file.read_text().strip():
             assert process.poll() is None and time.monotonic() < deadline, (
                 process.stderr.read().decode() if process.stderr else "timed out"

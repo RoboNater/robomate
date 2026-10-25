@@ -21,6 +21,7 @@ from agent_hub_common import (
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.clock import utcnow_iso
 from agent_hub_common.discovery import repository_dir
+from agent_hub_common.startup import stage
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -137,7 +138,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        stage("lifespan entered")
         initialize_database(resolved.database_path)
+        stage("database ready")
         # Silence is measured from here at the earliest: a restarted hub knows
         # nothing of the calls and holds before it (#144).
         store.activity.mark_started(store.clock())
@@ -175,6 +178,7 @@ def create_app(
         else:
             logger.info("Bearer token loaded from HUB_TOKEN")
         sweeper = start_sweeper(store, resolved.sweep_interval_s, resolved.lost_after_s)
+        stage("lifespan ready")
         try:
             yield
         finally:
