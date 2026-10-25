@@ -14,6 +14,7 @@ from typing import Any
 
 import uvicorn
 from agent_hub_common import HubSettings
+from agent_hub_common.startup import stage
 from agent_hub_common.stdio import escape_unencodable_output
 
 from .app import create_app
@@ -40,6 +41,7 @@ async def serve_http(
     app = create_app(
         settings, hub_info=hub_info, shutdown=lambda: setattr(server, "should_exit", True)
     )
+    stage("app created")
     server = HubServer(
         uvicorn.Config(
             app,
@@ -51,6 +53,7 @@ async def serve_http(
             proxy_headers=False,
         )
     )
+    stage("server configured")
     serving = asyncio.create_task(server.serve(sockets=sockets))
     try:
         deadline = time.monotonic() + _START_TIMEOUT_S

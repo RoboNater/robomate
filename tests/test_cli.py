@@ -17,7 +17,7 @@ import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -49,16 +49,19 @@ from agent_hub_common.registry import (
     register,
     registry_path,
 )
+from agent_hub_common.startup import PREFIX as STAGE_PREFIX
 from conftest import reserve_port_block
 from robomate.cli import _bind
+from timing import LIVENESS_S, wait_until_sync
 
 CLI = str(Path(sys.executable).with_name("robomate.exe" if sys.platform == "win32" else "robomate"))
 
 
 # #270: allow two 5 s registry locks, a 15 s live-PID health probe, and
-# two 15 s RPCs (answer --option). Add the same 30 s loaded-Windows startup
-# margin as await_hub: 10 + 15 + 30 + 30 = 85 s.
-CLI_COMMAND_TIMEOUT_S = 10 + HEALTHZ_LIVE_PID_TIMEOUT_S + 2 * cli._RPC_TIMEOUT_S + 30
+# two 15 s RPCs (answer --option), plus LIVENESS_S for the process's own
+# startup on a loaded host, as await_hub (#372): 10 + 15 + 30 + 60 = 115 s.
+# A hang bound, not a budget.
+CLI_COMMAND_TIMEOUT_S = 10 + HEALTHZ_LIVE_PID_TIMEOUT_S + 2 * cli._RPC_TIMEOUT_S + LIVENESS_S
 # After down/terminate, allow scheduling and the launcher to reap its child.
 PROCESS_EXIT_TIMEOUT_S = 30.0
 
@@ -238,6 +241,8 @@ def _start_logged(root: Path, env: dict[str, str], argv: list[str]) -> subproces
         )
     process._stdout_log = stdout_path  # type: ignore[attr-defined]
     process._stderr_log = stderr_path  # type: ignore[attr-defined]
+    # Read beside the first stage marker's wall time (#372).
+    process._launched_at = datetime.now(UTC)  # type: ignore[attr-defined]
     return process
 
 
@@ -257,29 +262,42 @@ def _hub_stderr(process: subprocess.Popen[str]) -> str:
     return process.stderr.read()
 
 
-# `robomate up` takes about 3 s to record itself on a native Windows desktop,
-# mostly importing robomate.cli. Loaded hosted Windows runners have run past
-# the earlier 10 s budget with the hub still alive and nothing on stderr
-# (#197), so allow 30 s before calling it a failure.
-HUB_START_TIMEOUT_S = 30.0
-
-
 def _startup_diagnostics(root: Path, process: subprocess.Popen[str], elapsed: float) -> str:
-    """What a startup failure needs: process state, hub.json and the hub's output."""
+    """What a startup failure needs: process state, hub.json, stages reached, the hub's output.
+
+    `robomate up` marks each startup stage on stderr with its wall time (#372).
+    Against the launch time, the first marker shows how long the interpreter
+    and imports took; no marker at all means the process never got that far.
+    """
 
     returncode = process.poll()
     state = "still running" if returncode is None else f"exited with {returncode}"
+    launched = getattr(process, "_launched_at", None)
+    stderr = _hub_stderr(process)
+    stages = [line for line in stderr.splitlines() if line.startswith(STAGE_PREFIX)]
+    listed = "".join(f"{line}\n" for line in stages)
     return (
         f"after {elapsed:.1f}s the `robomate up` process (pid {process.pid}) is {state}\n"
+        f"launched at {launched.isoformat(timespec='milliseconds') if launched else '?'}\n"
+        f"last startup stage: {stages[-1] if stages else 'none'}\n"
         f"hub.json: {read_hub(root)!r}\n"
+        f"--- startup stages ---\n{listed}"
         f"--- hub stdout ---\n{_hub_stdout(process)}\n"
-        f"--- hub stderr ---\n{_hub_stderr(process)}"
+        f"--- hub stderr ---\n{stderr}"
     )
 
 
 def await_hub(
-    root: Path, process: subprocess.Popen[str], timeout_s: float = HUB_START_TIMEOUT_S
+    root: Path, process: subprocess.Popen[str], timeout_s: float = LIVENESS_S
 ) -> dict[str, object]:
+    """Wait until the hub records its pid in hub.json, which `started()` writes.
+
+    `timeout_s` is a hang bound, not a budget (#372, timing policy): a passing
+    start never comes near it, so it costs time only when startup is already
+    failing. The diagnostics, not the bound, explain a failure, through the
+    stage markers; that is why this loop is its own, not `wait_until_sync`.
+    """
+
     started = time.monotonic()
     while (elapsed := time.monotonic() - started) < timeout_s:
         data = read_hub(root)
@@ -303,7 +321,7 @@ def await_hub(
 def await_registry(
     env: dict[str, str],
     matches: Callable[[list[dict[str, Any]]], bool],
-    timeout_s: float = 10.0,
+    timeout_s: float = LIVENESS_S,
 ) -> list[dict[str, Any]]:
     """Poll hubs.json until its entries satisfy `matches`, and return them (#180).
 
@@ -334,7 +352,9 @@ def await_registry(
         time.sleep(0.05)
 
 
-def await_hub_stdout(process: subprocess.Popen[str], needle: str, timeout_s: float = 10.0) -> str:
+def await_hub_stdout(
+    process: subprocess.Popen[str], needle: str, timeout_s: float = LIVENESS_S
+) -> str:
     """Poll a hub's stdout log until `needle` appears (#327 signature 3).
 
     `await_hub` returns on hub.json, which `started()` writes before the
@@ -399,6 +419,8 @@ def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> Non
 # Stands in for a hub that is alive but never records itself in hub.json.
 _SILENT_HUB = (
     "import sys, time; print('hub stdout so far', flush=True); "
+    f"print({STAGE_PREFIX!r} + 'registered at 2026-01-01T00:00:00.000+00:00 (+0.100 s)', "
+    "file=sys.stderr); "
     "print('hub stderr so far', file=sys.stderr, flush=True); time.sleep(60)"
 )
 
@@ -409,18 +431,59 @@ def test_await_hub_timeout_reports_the_hub_output(
     root, env = repository
     process = _start_logged(root, env, [sys.executable, "-c", _SILENT_HUB])
     try:
-        deadline = time.monotonic() + 10
-        while "so far" not in _hub_stderr(process) and time.monotonic() < deadline:
-            time.sleep(0.05)
+        wait_until_sync(lambda: "so far" in _hub_stderr(process), "the stand-in hub has printed")
         with pytest.raises(AssertionError, match="hub did not start") as caught:
             await_hub(root, process, timeout_s=0.2)
         message = str(caught.value)
         assert f"(pid {process.pid}) is still running" in message
         assert "hub.json: None" in message
         assert "hub stdout so far" in message and "hub stderr so far" in message
+        assert re.search(r"^launched at \d{4}-\d\d-\d\dT", message, re.MULTILINE)
+        assert f"last startup stage: {STAGE_PREFIX}registered at " in message
     finally:
         process.terminate()
         process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+
+def test_startup_stages_reach_the_diagnostics_of_a_failed_up(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#372: a startup that fails names on stderr every stage it reached, in order.
+
+    Holding the machine registry's lock makes `robomate up` fail at the
+    register step, once its lock wait gives up, after it wrote the identity.
+    The test asserts which stages appear and in what order, never how long
+    one took (timing policy, rule 5).
+    """
+
+    root, env = repository
+    lock = registry_path(env).with_name("registry.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+    process = start(root, env)
+    try:
+        with pytest.raises(AssertionError, match="hub exited early") as caught:
+            await_hub(root, process)
+    finally:
+        lock.unlink()
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+    message = str(caught.value)
+    listed = message.split("--- startup stages ---\n", 1)[1].split("--- hub stdout ---", 1)[0]
+    stages = [re.sub(r" at \S+ \(\+[\d.]+ s\)$", "", line) for line in listed.splitlines()]
+    assert stages == [
+        f"{STAGE_PREFIX}{name}"
+        for name in (
+            "command started",
+            "repository resolved",
+            "checkout lock held",
+            "previous hub checked",
+            "identity written",
+        )
+    ]
+    assert f"last startup stage: {STAGE_PREFIX}identity written at " in message
+    assert "timed out waiting for registry lock" in message
 
 
 def _failed_down(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -549,15 +612,8 @@ def test_up_redirected_output_escapes_unencodable_checkout(
         info = await_hub(root, process)
         # Startup metadata is written before the path output; wait for the last
         # flushed line to establish that startup printing has finished.
-        output_path = Path(process._stdout_log)  # type: ignore[attr-defined]
-        for _ in range(200):
-            output = output_path.read_bytes().decode("cp1252")
-            if "ROBOMATE_TOKEN_FILE=" in output:
-                break
-            assert process.poll() is None, _hub_stderr(process)
-            time.sleep(0.05)
-        else:
-            raise AssertionError("startup output did not finish")
+        await_hub_stdout(process, "ROBOMATE_TOKEN_FILE=")
+        output = Path(process._stdout_log).read_bytes().decode("cp1252")  # type: ignore[attr-defined]
         expected = str(root).encode("cp1252", errors="backslashreplace").decode("cp1252")
         assert f"Hub checkout: {expected}" in output
         assert "\\u2192" in output and "\\u0101" in output
@@ -650,7 +706,7 @@ def test_two_hubs_in_one_repository(
         # #327 signature 3: under `-n auto` load a just-started hub can miss
         # one /healthz probe and read as stopped. Poll until both read live,
         # capturing the registry entry and health at the moment of listing.
-        deadline = time.monotonic() + 30.0
+        deadline = time.monotonic() + LIVENESS_S
         listing = None
         last_diagnostics = ""
         while True:
@@ -1362,7 +1418,7 @@ def test_concurrent_up_only_starts_one_hub(repository: tuple[Path, dict[str, str
     processes = [start(root, env), start(root, env)]
     try:
         started = time.monotonic()
-        while (elapsed := time.monotonic() - started) < HUB_START_TIMEOUT_S:
+        while (elapsed := time.monotonic() - started) < LIVENESS_S:
             states = [process.poll() is None for process in processes]
             if sum(states) == 1 and read_hub(root):
                 break
@@ -2702,11 +2758,7 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
             again = await_hub(wt_a, hub_a)
             assert again["hub_id"] == a["hub_id"] and again["name"] == "wt-a"
             assert int(str(again["port"])) not in (int(str(b["port"])), int(str(c["port"])))
-            for _ in range(200):
-                out = _hub_stdout(hub_a)
-                if "previously used port" in out:
-                    break
-                time.sleep(0.05)
+            out = await_hub_stdout(hub_a, "previously used port")
             assert f"previously used port {a['port']}" in out
             assert "port was released" in out and str(again["port"]) in out
         finally:
@@ -2751,11 +2803,7 @@ def test_forget_all_only_forgets_stopped_hubs(
         try:
             back = await_hub(wt_a, restarted)
             assert back["port"] == stopped_info["port"]
-            for _ in range(200):
-                out = _hub_stdout(restarted)
-                if "first free port" in out:
-                    break
-                time.sleep(0.05)
+            out = await_hub_stdout(restarted, "first free port")
             assert "was released; it was still the first free port" in out
             cleared = read_hub(wt_a)
             assert cleared is not None and cleared.get("released_port") is None
@@ -2836,11 +2884,7 @@ def test_forgotten_hub_can_be_renamed_and_pinned(
         hub_a = start(wt_a, env, "--name", "wt-a2")
         renamed = await_hub(wt_a, hub_a)
         assert renamed["name"] == "wt-a2"
-        for _ in range(200):
-            out = _hub_stdout(hub_a)
-            if "previously used port" in out:
-                break
-            time.sleep(0.05)
+        out = await_hub_stdout(hub_a, "previously used port")
         assert f"previously used port {a['port']}" in out
         stop(wt_a, env, hub_a)
         # r2-2: forget again, then pin with --port while the marker is present:
@@ -3299,7 +3343,7 @@ def test_cli_timeout_reports_elapsed_and_partial_output(monkeypatch: pytest.Monk
     with pytest.raises(AssertionError, match="timed out after") as caught:
         _run_cli([CLI, "status"], text=True, capture_output=True)
     message = str(caught.value)
-    assert "budget 85s" in message
+    assert f"budget {CLI_COMMAND_TIMEOUT_S:g}s" in message
     assert "partial out" in message and "partial err" in message
 
 
