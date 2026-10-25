@@ -452,6 +452,10 @@ def test_closeout_reports_leave_custom_clones_clean_on_rerun(
         report = run_dir / "closeout" / f"{name}.md"
         prompt = (run_dir / f"{name}.prompt.md").read_text(encoding="utf-8")
         assert f"`{report.as_posix()}`" in prompt
+        assert (
+            "Record every guide instruction replaced by the statement of work, and its "
+            "replacement, in your closeout report."
+        ) in " ".join(prompt.split())
         report.write_text(f"{name}: summary, outstanding items, lessons\n", encoding="utf-8")
         if harness == "codex":
             home = PREPARE_RUN.codex_home_name(name)

@@ -802,6 +802,8 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "After you release bob and charlie, please write your summary/closeout report "
             f"to `{report_path}`. Also add any outstanding items which weren't "
             "addressed, and any lessons learned worth mentioning to the closeout report. "
+            "Record every guide instruction replaced by the statement of work, and its "
+            "replacement, in your closeout report. "
             "Include the workflow statement_sha256 beside run.json work.goal_sha256 "
             "so a mismatch is visible afterwards (#296)."
         )
@@ -810,6 +812,8 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "After you are released by Alice, please write your summary/closeout report to "
             f"`{report_path}`. Also add any outstanding items which weren't "
             "addressed, and any lessons learned worth mentioning to the closeout report. "
+            "Record every guide instruction replaced by the statement of work, and its "
+            "replacement, in your closeout report. "
             "This file should be left uncommitted."
         )
     sections.append(

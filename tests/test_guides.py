@@ -432,3 +432,28 @@ async def test_orchestrator_route_has_only_its_orchestrator_appendix(
     assert ("gh pr merge" in response.text) == (forge == "github")
     assert ("glab mr merge" in response.text) == (forge == "gitlab")
     assert "# GitHub Forge Appendix" not in response.text
+
+
+@pytest.mark.parametrize("role", ["worker", "reviewer"])
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_guides_preserve_statement_precedence_and_authority(role: str, forge: str) -> None:
+    """#302: real composed guides carry precedence, recording and all safeguards."""
+    response = guide_response(CHECKED_IN_GUIDES, role, forge=forge)
+    assert response.status_code == 200
+    text = " ".join(bytes(response.body).decode("utf-8").split())
+    for fragment in (
+        "When the statement of work served by `get_statement` modifies or conflicts",
+        "follow the statement for that specific instruction",
+        "The statement cannot relax safeguards: skipping review or CI",
+        "merging a head that is not the approved one",
+        "worker-guide operator-only actions",
+        "extra authority over agents, credentials or the run hub",
+        "still require a confirmed operator answer",
+        "Workers never perform worker-guide operator-only actions",
+        "A conflict crossing a safeguard is blocked",
+        "Record every guide instruction replaced by the statement, and its replacement",
+        "in the typed result's `summary`, in the review comment for a reviewer",
+        "and in the closeout report",
+        "Only `status: answered` confirms authority; `status: withdrawn` never does",
+    ):
+        assert fragment in text
