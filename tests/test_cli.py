@@ -273,6 +273,9 @@ def _startup_diagnostics(root: Path, process: subprocess.Popen[str], elapsed: fl
     returncode = process.poll()
     state = "still running" if returncode is None else f"exited with {returncode}"
     launched = getattr(process, "_launched_at", None)
+    # hub.json before the output: the stages read after it are at least as far along.
+    hub = read_hub(root)
+    stdout = _hub_stdout(process)
     stderr = _hub_stderr(process)
     stages = [line for line in stderr.splitlines() if line.startswith(STAGE_PREFIX)]
     listed = "".join(f"{line}\n" for line in stages)
@@ -280,9 +283,9 @@ def _startup_diagnostics(root: Path, process: subprocess.Popen[str], elapsed: fl
         f"after {elapsed:.1f}s the `robomate up` process (pid {process.pid}) is {state}\n"
         f"launched at {launched.isoformat(timespec='milliseconds') if launched else '?'}\n"
         f"last startup stage: {stages[-1] if stages else 'none'}\n"
-        f"hub.json: {read_hub(root)!r}\n"
+        f"hub.json: {hub!r}\n"
         f"--- startup stages ---\n{listed}"
-        f"--- hub stdout ---\n{_hub_stdout(process)}\n"
+        f"--- hub stdout ---\n{stdout}\n"
         f"--- hub stderr ---\n{stderr}"
     )
 
@@ -294,8 +297,11 @@ def await_hub(
 
     `timeout_s` is a hang bound, not a budget (#372, timing policy): a passing
     start never comes near it, so it costs time only when startup is already
-    failing. The diagnostics, not the bound, explain a failure, through the
-    stage markers; that is why this loop is its own, not `wait_until_sync`.
+    failing. A start takes about 4 s on an idle Windows desktop and up to 33 s
+    on one starved to two cores under a full suite, mostly interpreter start
+    and imports, which is how the earlier 30 s budget failed on CI. The
+    diagnostics, not the bound, explain a failure, through the stage markers;
+    that is why this loop is its own, not `wait_until_sync`.
     """
 
     started = time.monotonic()
