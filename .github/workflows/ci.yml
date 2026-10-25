@@ -49,3 +49,18 @@ jobs:
       - run: uv run --locked pytest -n auto
       - run: uv run --locked python scripts/dependency-licenses.py --check
       - run: uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/
+
+  # #368: Slow-host regression probe on Linux, with 50 ms DB latency (#365 stage 2).
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          # The minimum in pyproject.toml's required-version (#181).
+          version: "0.12.18"
+          enable-cache: true
+      - run: uv sync --locked --all-packages --dev
+      - run: uv run --locked pytest -n auto
+        env:
+          ROBOMATE_TEST_DB_LATENCY_MS: "50"

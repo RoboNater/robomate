@@ -19,6 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 from conftest import SESSION, check_in, message, rpc
+from timing import wait_until
 
 SESSION_2 = "0b9d2f4e-1c3a-4e5f-8a7b-6c5d4e3f2a1b"
 
@@ -146,7 +147,10 @@ async def test_cancelling_a_held_wait_clears_the_hold(hub: HubStore) -> None:
             await hub.await_assignment(agent.context_id, 100)
 
     task = asyncio.create_task(wait())
-    await asyncio.sleep(0.05)
+    await wait_until(
+        lambda: bool((w := hub.activity.worker("bob", instance)) and w.holds),
+        "hold to be registered",
+    )
     assert hub.activity.worker("bob", instance).holds  # type: ignore[union-attr]
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

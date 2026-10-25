@@ -48,6 +48,8 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     # #367: override fields of conftest's test HubSettings for one test.
     "hub_settings(**fields): override fields of the test hub's HubSettings",
+    # #368: opt out of conftest's default frozen_clock on store and hub_store.
+    "real_clock: opt out of conftest's default frozen_clock on store and hub_store",
 ]
 filterwarnings = [
     # #127 / #123 option 3: fail DW/PDW from all modules, with targeted exceptions.

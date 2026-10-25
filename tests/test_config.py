@@ -310,3 +310,16 @@ def test_call_accounting_settings_are_validated(
 ) -> None:
     with pytest.raises(ConfigurationError, match=message):
         HubSettings.from_env({"HUB_STATE_DIR": str(tmp_path), **env})
+
+
+def test_detect_host_pauses_defaults_to_true_and_respects_env(tmp_path: Path) -> None:
+    base = {"HUB_STATE_DIR": str(tmp_path)}
+    assert HubSettings.from_env(base).detect_host_pauses is True
+    var = "HUB_DETECT_HOST_PAUSES"
+    for value in ("1", "true", "ON", "yes"):
+        assert HubSettings.from_env({**base, var: value}).detect_host_pauses is True
+    for value in ("0", "false", "off", "no"):
+        assert HubSettings.from_env({**base, var: value}).detect_host_pauses is False
+    assert HubSettings.from_env({**base, var: ""}).detect_host_pauses is True
+    with pytest.raises(ConfigurationError, match=f"{var} must be"):
+        HubSettings.from_env({**base, var: "invalid"})

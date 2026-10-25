@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from agent_hub.database import database
+from agent_hub.signals import EVENT_KEY
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
 from agent_hub_common.accounting import CallRecord
@@ -25,6 +26,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.fastmcp.exceptions import ToolError
 from packaging.requirements import Requirement
+from timing import LIVENESS_S, wait_until
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 from worker_mcp.orchestrator import (
@@ -225,6 +227,7 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
         await bridge.close()
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_worker_task_survives_orchestrator_session_restart(
     app: FastAPI, hub_store: HubStore
 ) -> None:
@@ -281,7 +284,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
                     await _call(
                         old,
                         "wait_for_event",
-                        timeout_s=2,
+                        timeout_s=LIVENESS_S,
                         ack=checked_in["delivery_id"],
                     )
                 )["event"]
@@ -307,7 +310,11 @@ async def test_worker_task_survives_orchestrator_session_restart(
                     assert (await pending) == {"timeout": True}
                     pending = asyncio.create_task(
                         _call(
-                            worker, "ask_alice", task_id=task["id"], question="Which?", timeout_s=5
+                            worker,
+                            "ask_alice",
+                            task_id=task["id"],
+                            question="Which?",
+                            timeout_s=LIVENESS_S,
                         )
                     )
                     await _call(
@@ -435,7 +442,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             question = await alice.call_tool(
                 "wait_for_event",
                 {
-                    "timeout_s": 2,
+                    "timeout_s": LIVENESS_S,
                     "ack": checkin["delivery_id"],
                 },
             )
@@ -500,6 +507,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         stop(repo, env, hub)
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
     app: FastAPI, hub_store: HubStore
 ) -> None:
@@ -532,8 +540,11 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
                 assert unanswered["status"] == "unanswered" and unanswered["answer"] is None
 
                 # Alice is already holding when the operator answers.
-                waiting = asyncio.create_task(_call(alice, "wait_for_event", timeout_s=2))
-                await asyncio.sleep(0.05)
+                waiting = asyncio.create_task(_call(alice, "wait_for_event", timeout_s=LIVENESS_S))
+                await wait_until(
+                    lambda: hub_store.signals.waiting(EVENT_KEY) > 0,
+                    "Alice to hold on wait_for_event",
+                )
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url=BASE_URL
                 ) as operator:

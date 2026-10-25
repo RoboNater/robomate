@@ -92,6 +92,7 @@ MAX_CHECK_NAME_CHARS = 256
 CLOCK_JUMP_TOLERANCE_S = 5.0
 
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED)
+_TERMINAL_REPLY = object()
 OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
 # A hub runs one live workflow at a time; `queued` waits behind it (M2 Step 3).
 LIVE_STATUSES = (WorkflowStatus.ACTIVE, WorkflowStatus.PAUSED, WorkflowStatus.ESCALATED)
@@ -578,6 +579,7 @@ class HubStore:
     # and reuses it afterwards, with no ref check when the common dir is None.
     hub_name: str | None = None
     git_common_dir: Path | None = None
+    detect_host_pauses: bool = True
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
@@ -3300,13 +3302,23 @@ class HubStore:
     async def await_reply(
         self, task_id: str, after_message_id: int, timeout_s: float
     ) -> MessageRecord | None:
-        """Hold until Alice answers the question at `after_message_id`."""
+        """Hold until Alice answers the question at `after_message_id` or task ends."""
 
-        return await self._wait_for(
+        def poll() -> MessageRecord | object | None:
+            reply = self.pending_reply(task_id, after_message_id)
+            if reply is not None:
+                return reply
+            task = self.get_task(task_id)
+            if task is not None and task.state in TERMINAL_STATES:
+                return _TERMINAL_REPLY
+            return None
+
+        result = await self._wait_for(
             task_key(task_id),
-            lambda: self.pending_reply(task_id, after_message_id),
+            poll,
             timeout_s,
         )
+        return result if isinstance(result, MessageRecord) else None
 
     async def wait_for_event(
         self,
@@ -3340,6 +3352,8 @@ class HubStore:
         No baseline survives a process restart (restart reconciliation is #18).
         """
 
+        if not self.detect_host_pauses:
+            return None
         previous = self._sweep_sample
         lost_after_s = self._sweep_lost_after_s
         if previous is None or lost_after_s is None or lost_after_s <= 0:

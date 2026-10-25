@@ -198,6 +198,9 @@ class HubSettings:
     # (#128). The hub only reads it; None, or a file that does not exist,
     # leaves every operator-only method refused.
     operator_token_file: Path | None = None
+    # Host pause detection (#19, #205, #368): detects wall/monotonic discontinuities
+    # and grants a resume grace period before expiring leases or marking agents lost.
+    detect_host_pauses: bool = True
 
     def bounded_wait(self, requested: float | None) -> float:
         """Clamp a caller-requested hold to the configured ceiling."""
@@ -289,6 +292,15 @@ class HubSettings:
                     "HUB_CALL_LOG_JSONL requires HUB_CALL_ACCOUNTING=1; "
                     "the raw stream is written only while accounting is on"
                 )
+        detect_host_pauses = True
+        if "HUB_DETECT_HOST_PAUSES" in env:
+            raw_pause = env["HUB_DETECT_HOST_PAUSES"].strip().lower()
+            if raw_pause:
+                if raw_pause not in _FLAG_VALUES:
+                    raise ConfigurationError(
+                        "HUB_DETECT_HOST_PAUSES must be 1/0, true/false, on/off or yes/no"
+                    )
+                detect_host_pauses = _FLAG_VALUES[raw_pause]
         return cls(
             host=host,
             port=port,
@@ -308,4 +320,5 @@ class HubSettings:
             call_accounting=_FLAG_VALUES[raw_accounting],
             call_log_jsonl=call_log_jsonl,
             operator_token_file=operator_token_path(env),
+            detect_host_pauses=detect_host_pauses,
         )

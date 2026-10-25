@@ -2349,6 +2349,26 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
     try:
         first_info = await_hub(root, first)
         second_info = await_hub(other, second)
+
+        # #320, #350, #368: await_hub returns as soon as healthz answers, but
+        # the initial registration in hubs.json has url=None and pid=None; the
+        # live registration (url, port, pid) happens in the started callback.
+        # Wait until both hubs have their final live registry entries before
+        # adding the stale entry and running ls.
+        def live_registered(found: list[dict[str, Any]]) -> bool:
+            by_id = {e.get("hub_id"): e for e in found}
+            e1 = by_id.get(first_info["hub_id"])
+            e2 = by_id.get(second_info["hub_id"])
+            return bool(
+                e1
+                and e1.get("url") == first_info["url"]
+                and e1.get("pid")
+                and e2
+                and e2.get("url") == second_info["url"]
+                and e2.get("pid")
+            )
+
+        await_registry(env, live_registered)
         register(
             {"repo_root": "/stale", "url": "http://127.0.0.1:1", "hub_id": "stale", "pid": 999999},
             env,

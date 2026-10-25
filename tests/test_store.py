@@ -10,6 +10,7 @@ from sqlite3 import Connection
 import pytest
 from agent_hub import store as store_module
 from agent_hub.database import database, initialize_database
+from agent_hub.signals import EVENT_KEY, context_key, task_key
 from agent_hub.store import (
     ConflictError,
     DuplicateAgentError,
@@ -33,6 +34,7 @@ from agent_hub_common import (
     to_iso,
     utcnow,
 )
+from timing import LIVENESS_S, wait_until
 
 CLAUDE = AgentProfile(
     harness="claude-code",
@@ -402,10 +404,13 @@ async def test_waiting_worker_gets_the_task_and_claims_it(store: HubStore) -> No
     agent = store.check_in("bob")
 
     async def alice() -> None:
-        await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: store.signals.waiting(context_key(agent.context_id)) > 0,
+            "waiter to register",
+        )
         assign(store)
 
-    waited, _ = await asyncio.gather(store.await_assignment(agent.context_id, 2.0), alice())
+    waited, _ = await asyncio.gather(store.await_assignment(agent.context_id, LIVENESS_S), alice())
 
     assert isinstance(waited, TaskRecord)
     # The task is claimed as it is handed over, so a second waiter cannot take it.
@@ -413,7 +418,7 @@ async def test_waiting_worker_gets_the_task_and_claims_it(store: HubStore) -> No
     assert waited.already_held is False
     # #326: the same worker calling again gets its held task back as a
     # redelivery instead of timing out.
-    redelivered = await store.await_assignment(agent.context_id, 0.05)
+    redelivered = await store.await_assignment(agent.context_id, LIVENESS_S)
     assert isinstance(redelivered, TaskRecord)
     assert redelivered.id == waited.id
     assert redelivered.already_held is True
@@ -424,10 +429,13 @@ async def test_waiting_worker_is_released_while_it_waits(store: HubStore) -> Non
     agent = store.check_in("bob")
 
     async def alice() -> None:
-        await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: store.signals.waiting(context_key(agent.context_id)) > 0,
+            "waiter to register",
+        )
         store.release_agent("bob")
 
-    waited, _ = await asyncio.gather(store.await_assignment(agent.context_id, 2.0), alice())
+    waited, _ = await asyncio.gather(store.await_assignment(agent.context_id, LIVENESS_S), alice())
 
     assert waited == Released(agent="bob")
 
@@ -464,10 +472,13 @@ async def test_a_question_parks_the_task_until_alice_replies(store: HubStore) ->
     parked = store.get_task(task_id)
 
     async def alice() -> None:
-        await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: store.signals.waiting(task_key(task_id)) > 0,
+            "waiter to register",
+        )
         store.reply(task_id, "main", message_id=question_id)
 
-    reply, _ = await asyncio.gather(store.await_reply(task_id, question_id, 2.0), alice())
+    reply, _ = await asyncio.gather(store.await_reply(task_id, question_id, LIVENESS_S), alice())
 
     resumed = store.get_task(task_id)
     assert parked is not None and parked.state is TaskState.INPUT_REQUIRED
@@ -601,10 +612,13 @@ def test_events_are_consumed_once_and_in_order(store: HubStore) -> None:
 
 async def test_waiting_for_an_event_returns_as_soon_as_one_is_queued(store: HubStore) -> None:
     async def worker() -> None:
-        await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: store.signals.waiting(EVENT_KEY) > 0,
+            "waiter to register",
+        )
         store.check_in("bob")
 
-    event, _ = await asyncio.gather(store.wait_for_event(2.0), worker())
+    event, _ = await asyncio.gather(store.wait_for_event(LIVENESS_S), worker())
 
     assert event is not None and event.kind is EventKind.AGENT_CHECKED_IN
 
@@ -1188,6 +1202,7 @@ class PauseClocks(FakeClock):
 
 @pytest.fixture
 def pause_store(store: HubStore) -> tuple[HubStore, PauseClocks]:
+    store.detect_host_pauses = True
     clocks = PauseClocks()
     store.clock = clocks
     store.monotonic_clock = clocks.monotonic
@@ -1381,6 +1396,47 @@ def test_repeated_pause_restarts_monotonic_grace(
     assert store.sweep(180) == []
     clocks.step(1)
     assert [e.kind for e in store.sweep(180)] == [EventKind.AGENT_LOST]
+
+
+def test_worker_liveness_across_consecutive_pauses_and_pre_pause_checkin(
+    pause_store: tuple[HubStore, PauseClocks],
+) -> None:
+    """#354, #368: verify store never marks a live worker lost across consecutive
+    host pauses, or when its check-in predates the first pause, provided it
+    heartbeats during resume grace."""
+    store, clocks = pause_store
+    lost_after_s = 2.0
+    task = store.assign_task("bob", "implementer", "Fix issue", "Instructions", lease_min=10)
+    store.check_in("dan", worker_instance_id="dan-1")
+    assert store.sweep(lost_after_s) == []  # Establish baseline with lost_after_s=2.0
+
+    # The five consecutive sweep gaps logged in #354.
+    gaps = [10.359, 9.469, 2.625, 9.718, 3.657]
+    for gap in gaps:
+        clocks.step(gap)
+        events = store.sweep(lost_after_s)
+        assert [e.kind for e in events] == [EventKind.HOST_PAUSED]
+        assert events[0].payload["reason"] == "sweep_gap"
+        assert events[0].payload["grace_s"] == lost_after_s
+
+        # Worker heartbeats 0.5 s after detection, inside the 2.0 s grace window.
+        clocks.step(0.5)
+        assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=60)
+        assert store.sweep(lost_after_s) == []
+
+    # Step past the last grace window (0.5 s already passed + 1.6 s = 2.1 s > 2.0 s grace).
+    # Bob heartbeated 1.6 s ago (< 2.0 s lost_after_s).
+    # Dan has been silent since before the first pause (> 35 s).
+    clocks.step(1.6)
+    events = store.sweep(lost_after_s)
+    assert [e.kind for e in events] == [EventKind.AGENT_LOST]
+    assert events[0].payload["agent"] == "dan"
+
+    bob = store.agent_by_name("bob")
+    assert bob is not None and bob.status == AgentStatus.BUSY
+
+    dan = store.agent_by_name("dan")
+    assert dan is not None and dan.status == AgentStatus.LOST
 
 
 @pytest.mark.parametrize("bad_name", ["Feature.B", "state", "token", "con", "-bob", ""])

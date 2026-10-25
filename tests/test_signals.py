@@ -2,6 +2,7 @@ import asyncio
 from threading import Thread
 
 from agent_hub.signals import EVENT_KEY, Signals, context_key, task_key
+from timing import LIVENESS_S
 
 
 def test_keys_are_distinct_per_subject() -> None:
@@ -16,7 +17,7 @@ async def test_notify_wakes_a_subscriber() -> None:
     with signals.subscribe("k") as woken:
         assert signals.waiting("k") == 1
         signals.notify("k")
-        await asyncio.wait_for(woken.wait(), 1)
+        await asyncio.wait_for(woken.wait(), LIVENESS_S)
 
     assert signals.waiting("k") == 0
 
@@ -27,7 +28,7 @@ async def test_notification_before_the_wait_is_not_lost() -> None:
     with signals.subscribe("k") as woken:
         # Subscribing first is what makes the read-then-wait sequence safe.
         signals.notify("k")
-        await asyncio.wait_for(woken.wait(), 1)
+        await asyncio.wait_for(woken.wait(), LIVENESS_S)
 
 
 async def test_notify_without_subscribers_is_a_no_op() -> None:
@@ -44,5 +45,5 @@ async def test_notify_from_another_thread_reaches_the_owning_loop() -> None:
     with signals.subscribe("k") as woken:
         writer = Thread(target=signals.notify, args=("k",))
         writer.start()
-        await asyncio.wait_for(woken.wait(), 1)
+        await asyncio.wait_for(woken.wait(), LIVENESS_S)
         writer.join()

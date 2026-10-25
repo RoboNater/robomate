@@ -46,6 +46,7 @@ def test_frozen_clock_installs_on_the_apps_store(
 
 
 def test_large_advance_records_no_host_pause(store: HubStore, frozen_clock: FrozenClock) -> None:
+    store.detect_host_pauses = True
     store.sweep(LOST_AFTER_S)
     # Well past the jump tolerance, inside the sweep's loss window.
     advance_s = CLOCK_JUMP_TOLERANCE_S * 6

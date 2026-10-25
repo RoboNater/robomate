@@ -19,6 +19,7 @@ from agent_hub_common import AgentProfile, EventKind, HubSettings, TaskState, Wo
 from agent_hub_common.discovery import DiscoveryError, local_hub
 from conftest import BASE_URL, TOKEN, MonotonicClock, closed_port_url, record_local_hub
 from mcp import ClientSession
+from timing import LIVENESS_S, FrozenClock
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 
@@ -263,7 +264,7 @@ def test_verify_endurance_telemetry_rejects_only_approximate_long_work(
 
 
 # Generous upper bound for one full task; a healthy run takes well under a second.
-FULL_TASK_TIMEOUT_S = 20.0
+FULL_TASK_TIMEOUT_S = LIVENESS_S
 
 
 @pytest.mark.parametrize(
@@ -300,6 +301,7 @@ async def test_mock_alice_drives_worker_through_full_task(
         max_wait_s=1.0,
         lost_after_s=60.0,
         sweep_interval_s=3600.0,
+        detect_host_pauses=False,
     )
     app = create_app(settings)
     store = app.state.store
@@ -339,7 +341,7 @@ async def test_mock_alice_drives_worker_through_full_task(
             await worker.check_in(["python"])
 
             # 2. Wait for assignment
-            assignment = await until_answered(lambda: worker.await_assignment(timeout_s=2.0))
+            assignment = await until_answered(lambda: worker.await_assignment(timeout_s=LIVENESS_S))
             assert assignment.get("task_id")
             task_id = assignment["task_id"]
             assert assignment["role"] == "implementer"
@@ -350,7 +352,7 @@ async def test_mock_alice_drives_worker_through_full_task(
 
             # 4. Ask a question and receive answer
             q_res = await until_answered(
-                lambda: worker.ask_alice(task_id, "Confirm design?", timeout_s=2.0)
+                lambda: worker.ask_alice(task_id, "Confirm design?", timeout_s=LIVENESS_S)
             )
             assert "Approved" in q_res.get("reply", "")
 
@@ -364,7 +366,7 @@ async def test_mock_alice_drives_worker_through_full_task(
             assert res["status"] == "completed"
 
             # 6. Await assignment again -> should receive release
-            rel = await until_answered(lambda: worker.await_assignment(timeout_s=2.0))
+            rel = await until_answered(lambda: worker.await_assignment(timeout_s=LIVENESS_S))
             assert rel == {"release": True}
 
         async with alice_backend(backend_kind, store) as backend:
@@ -429,6 +431,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         max_wait_s=1.0,
         lost_after_s=ENDURANCE_LOST_AFTER_S,
         sweep_interval_s=0.02,
+        detect_host_pauses=True,
     )
     app = create_app(settings)
     # Mock Alice checks the heartbeat stamp moved across a monotonic sleep; a
@@ -826,9 +829,15 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
 ) -> None:
     db_path = tmp_path / f"hub_crash_{backend_kind}_{crash_at}.db"
     initialize_database(db_path)
-    clock = MonotonicClock()
+    clock = FrozenClock()
     event_lease_s = 60.0
-    store = HubStore(db_path, clock=clock, default_event_lease_s=event_lease_s)
+    store = HubStore(
+        db_path,
+        clock=clock,
+        monotonic_clock=clock.monotonic,
+        default_event_lease_s=event_lease_s,
+        detect_host_pauses=False,
+    )
     # Each drive bounds a whole task, from check-in to release: the shared
     # full-task budget, not a fixed 5 s, which timed out on a loaded Windows
     # runner (#231). Each worker hold below can span the rest of the crashed

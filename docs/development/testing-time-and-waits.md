@@ -55,15 +55,16 @@ from timing import LIVENESS_S, FrozenClock, wait_until
 
 | Tool | What it does |
 |---|---|
-| `frozen_clock` fixture | A `FrozenClock`, installed on this test's `app` / `hub_store` and `store`. Both store clocks stand still until `frozen_clock.advance(seconds)`. Opt in by naming it as a test argument. |
+| `frozen_clock` fixture | A `FrozenClock`, installed by default on this test's `app` / `hub_store` and `store`. Both store clocks stand still until `frozen_clock.advance(seconds)`. Explicit opt-out with `@pytest.mark.real_clock`. |
 | `frozen_clock.install(store)` | Drive another store's clocks from the same clock, such as a restarted app's: `frozen_clock.install(restarted.state.store)`. |
 | `await wait_until(condition, what)` | Re-reads `condition()` every 10 ms, yielding to the event loop, and returns its value once it is truthy. After `LIVENESS_S` it fails with `timed out after 60 s waiting until <what>`. Write `what` so that sentence reads well. |
 | `wait_until_sync(condition, what)` | The same for synchronous tests, such as ones that drive a subprocess hub. |
 | `LIVENESS_S` | 60 s: the hang bound for waits and for holds such as `await_assignment(timeout_s=LIVENESS_S)`. |
 | `@pytest.mark.hub_settings(field=value)` | Overrides fields of the test hub's `HubSettings`. The test hub caps every hold at `max_wait_s=1.0`, so a test whose hold must last until a condition holds lifts it with `@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)`. |
+| `@pytest.mark.real_clock` | Opt out of the default `frozen_clock` on `store` and `hub_store`. |
 | `ROBOMATE_TEST_DB_LATENCY_MS` | The slow-host probe; see below. |
 
-`frozen_clock` is opt-in for now. Stage 2 (#368) makes it the default.
+`frozen_clock` is installed by default on `store` and `hub_store` (Stage 2, #368). Tests that specifically verify real-time behaviors (such as background heartbeat timer intervals) opt out with `@pytest.mark.real_clock`. Test hub settings also default `detect_host_pauses=False` (`HUB_DETECT_HOST_PAUSES`); tests specifically exercising pause recovery enable it explicitly.
 
 ### The two-clock rule
 

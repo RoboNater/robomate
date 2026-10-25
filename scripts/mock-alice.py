@@ -542,11 +542,7 @@ class DirectStoreBackend:
         return self.store.get_state()
 
     async def wait_for_event(self, timeout_s: float, ack: str | None = None) -> dict[str, Any]:
-        # Direct database mode may be observing another process, whose Signals
-        # registry cannot wake this store instance. The shared driver reconciles
-        # state after an empty slice, so 50 ms deliberately polls SQLite at up to
-        # 20 Hz; that tradeoff is acceptable for this reference harness.
-        event = await self.store.wait_for_event(timeout_s=min(timeout_s, 0.05), ack=ack)
+        event = await self.store.wait_for_event(timeout_s=timeout_s, ack=ack)
         return {"event": None if event is None else asdict(event)}
 
     async def assign_task(
