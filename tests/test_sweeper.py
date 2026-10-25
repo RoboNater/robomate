@@ -63,6 +63,7 @@ async def test_stopping_the_loop_leaves_no_task_running(store: HubStore) -> None
 
 
 async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(store: HubStore) -> None:
+    store.detect_host_pauses = True
     wall = [datetime(2026, 10, 12, tzinfo=UTC)]
     mono = [100.0]
     store.clock = lambda: wall[0]

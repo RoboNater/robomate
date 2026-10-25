@@ -36,6 +36,7 @@ from agent_hub.store import DuplicateAgentError, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from fastapi import FastAPI
+from timing import LIVENESS_S
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -748,13 +749,13 @@ async def test_a_github_hub_with_an_unsupported_origin_fails_the_gate_closed(
 async def test_wait_for_event_holds_the_request_until_an_event_arrives(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    held = asyncio.create_task(call(client, "wait_for_event", timeout_s=5))
+    held = asyncio.create_task(call(client, "wait_for_event", timeout_s=LIVENESS_S))
     await asyncio.sleep(0.1)
     assert not held.done()
 
     await check_in(client, "bob")
 
-    body = await asyncio.wait_for(held, 2)
+    body = await asyncio.wait_for(held, LIVENESS_S)
     event = body["result"]["event"]
     assert event["kind"] == "agent_checked_in"
     assert event["payload"]["agent"] == "bob"

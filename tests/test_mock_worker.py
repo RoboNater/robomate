@@ -22,6 +22,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 from conftest import BASE_URL, TOKEN, reserve_port_block
+from timing import LIVENESS_S, wait_until
 from worker_mcp.config import WorkerSettings
 
 script_path = Path(__file__).resolve().parents[1] / "scripts" / "mock-worker.py"
@@ -53,6 +54,7 @@ async def test_mock_worker_implements_task_end_to_end(tmp_path: Path) -> None:
         max_wait_s=1.0,
         lost_after_s=60.0,
         sweep_interval_s=3600.0,
+        detect_host_pauses=False,
     )
     app = create_app(settings)
     store = app.state.store
@@ -79,36 +81,31 @@ async def test_mock_worker_implements_task_end_to_end(tmp_path: Path) -> None:
 
         async def orchestrator() -> None:
             # Wait for bob to check in
-            for _ in range(100):
-                ag = store.agent_by_name("bob")
-                if ag is not None:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(lambda: store.agent_by_name("bob") is not None, "bob to check in")
 
             # Assign task
             task = store.assign_task("bob", "implementer", "Implement feature", "Write code")
 
             # Wait for task completion
-            for _ in range(100):
-                t = store.get_task(task.id)
-                if t is not None and t.state == TaskState.COMPLETED:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(
+                lambda: bool((t := store.get_task(task.id)) and t.state == TaskState.COMPLETED),
+                "task to complete",
+            )
 
             # #215: a report request is consumed before the final release.
             run_id = store.get_state()["workflow"]["run_id"]
             store.request_closeout_reports(run_id, "alice", "session")
-            for _ in range(100):
-                if "bob" in store.get_closeout_reports(run_id)["submitted"]:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(
+                lambda: "bob" in store.get_closeout_reports(run_id)["submitted"],
+                "bob to submit closeout report",
+            )
             assert "bob" in store.get_closeout_reports(run_id)["submitted"]
             store.release_agent("bob")
 
         worker_coro = mock_worker.run_worker(
             worker_settings,
             http_client=http_client,
-            timeout_s=5.0,
+            timeout_s=LIVENESS_S,
         )
 
         orch_task = asyncio.create_task(orchestrator())
@@ -143,6 +140,7 @@ async def test_mock_worker_reviewer_task(tmp_path: Path) -> None:
         max_wait_s=1.0,
         lost_after_s=60.0,
         sweep_interval_s=3600.0,
+        detect_host_pauses=False,
     )
     app = create_app(settings)
     store = app.state.store
@@ -168,28 +166,25 @@ async def test_mock_worker_reviewer_task(tmp_path: Path) -> None:
     ):
 
         async def orchestrator() -> None:
-            for _ in range(100):
-                ag = store.agent_by_name("charlie")
-                if ag is not None:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(
+                lambda: store.agent_by_name("charlie") is not None, "charlie to check in"
+            )
 
             task = store.assign_task(
                 "charlie", "reviewer", "Review PR", "Review diff", pr_head_sha="a" * 40
             )
 
-            for _ in range(100):
-                t = store.get_task(task.id)
-                if t is not None and t.state == TaskState.COMPLETED:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(
+                lambda: bool((t := store.get_task(task.id)) and t.state == TaskState.COMPLETED),
+                "review task to complete",
+            )
 
             store.release_agent("charlie")
 
         worker_coro = mock_worker.run_worker(
             worker_settings,
             http_client=http_client,
-            timeout_s=5.0,
+            timeout_s=LIVENESS_S,
         )
 
         orch_task = asyncio.create_task(orchestrator())
@@ -259,6 +254,7 @@ async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> 
         max_wait_s=1.0,
         lost_after_s=60.0,
         sweep_interval_s=3600.0,
+        detect_host_pauses=False,
     )
     app = create_app(settings)
     store = app.state.store
@@ -284,24 +280,19 @@ async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> 
     ):
 
         async def orchestrator() -> None:
-            for _ in range(100):
-                ag = store.agent_by_name("bob")
-                if ag is not None:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(lambda: store.agent_by_name("bob") is not None, "bob to check in")
 
             task = store.assign_task("bob", "implementer", "Implement feature", "Write code")
-            for _ in range(100):
-                t = store.get_task(task.id)
-                if t is not None and t.state == TaskState.COMPLETED:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(
+                lambda: bool((t := store.get_task(task.id)) and t.state == TaskState.COMPLETED),
+                "implementer task to complete",
+            )
             store.release_agent("bob")
 
         worker_coro = mock_worker.run_worker(
             worker_settings,
             http_client=http_client,
-            timeout_s=5.0,
+            timeout_s=LIVENESS_S,
             join_role="implementer",
         )
         _, worker_res = await asyncio.gather(orchestrator(), worker_coro)

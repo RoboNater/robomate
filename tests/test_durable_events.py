@@ -21,7 +21,8 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
-from conftest import BASE_URL, TOKEN, MonotonicClock
+from conftest import BASE_URL, TOKEN
+from timing import LIVENESS_S, FrozenClock
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 
@@ -39,7 +40,7 @@ PAST_LEASE_S = EVENT_LEASE_S + 0.05
 # Bounds one whole mock Alice drive, check-in to release; a healthy one takes
 # well under a second. A fixed 5 s is the budget that timed out under load in
 # test_mock_alice (#231), so the drives here share this generous one.
-DRIVE_TIMEOUT_S = 20.0
+DRIVE_TIMEOUT_S = LIVENESS_S
 
 
 @pytest.fixture
@@ -110,13 +111,13 @@ async def run_worker_lifecycle(client: WorkerHubClient, *, ask: bool = False) ->
 
     await client.check_in(["python"])
     while True:
-        assignment = await client.await_assignment(timeout_s=5.0)
+        assignment = await client.await_assignment(timeout_s=LIVENESS_S)
         if not assignment.get("timeout"):
             break
     task_id = assignment["task_id"]
     if ask:
         while True:
-            answer = await client.ask_alice(task_id, "Should I proceed?", timeout_s=5.0)
+            answer = await client.ask_alice(task_id, "Should I proceed?", timeout_s=LIVENESS_S)
             if not answer.get("timeout"):
                 break
         assert "Approved" in answer.get("reply", "")
@@ -129,7 +130,7 @@ async def run_worker_lifecycle(client: WorkerHubClient, *, ask: bool = False) ->
         artifacts=[{"name": "pr", "url": "https://github.com/repo/pull/1"}],
     )
     while True:
-        released = await client.await_assignment(timeout_s=5.0)
+        released = await client.await_assignment(timeout_s=LIVENESS_S)
         if not released.get("timeout"):
             break
     assert released == {"release": True}
@@ -487,6 +488,7 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
     client: httpx.AsyncClient,
     hub_store: HubStore,
     worker: WorkerSettings,
+    frozen_clock: FrozenClock,
 ) -> None:
     """Alice dies at each point in handling an event; the work still completes.
 
@@ -495,7 +497,6 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
     twice — one task, one assignment decision, one reply.
     """
 
-    hub_store.clock = MonotonicClock()
     worker_client = WorkerHubClient(worker, http_client=client)
     worker_task = asyncio.create_task(run_worker_lifecycle(worker_client, ask=asks))
 
@@ -509,7 +510,7 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
         )
 
     # Nobody acked, so the lease has to lapse before the event comes back.
-    await asyncio.sleep(PAST_LEASE_S)
+    frozen_clock.advance(EVENT_LEASE_S + 0.1)
 
     result = await mock_alice.drive_one_task(
         store=hub_store,

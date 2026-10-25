@@ -17,6 +17,7 @@ from agent_hub_common import (
 )
 from conftest import BASE_URL, TOKEN, check_in, message, rpc, sse_results
 from fastapi import FastAPI
+from timing import wait_until
 
 
 async def post(
@@ -415,7 +416,12 @@ async def test_next_holds_until_alice_assigns(
     order: list[str] = []
 
     async def alice() -> str:
-        await asyncio.sleep(0.02)
+        await wait_until(
+            lambda: bool(
+                (w := hub_store.activity.worker("bob", "test-worker-instance")) and w.holds
+            ),
+            "worker to hold on NEXT",
+        )
         order.append("assigned")
         return hub_store.assign_task("bob", "implementer", "Fix #1", "Open a PR").id
 

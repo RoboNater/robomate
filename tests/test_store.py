@@ -1188,6 +1188,7 @@ class PauseClocks(FakeClock):
 
 @pytest.fixture
 def pause_store(store: HubStore) -> tuple[HubStore, PauseClocks]:
+    store.detect_host_pauses = True
     clocks = PauseClocks()
     store.clock = clocks
     store.monotonic_clock = clocks.monotonic
@@ -1381,6 +1382,45 @@ def test_repeated_pause_restarts_monotonic_grace(
     assert store.sweep(180) == []
     clocks.step(1)
     assert [e.kind for e in store.sweep(180)] == [EventKind.AGENT_LOST]
+
+
+def test_worker_liveness_across_consecutive_pauses_and_pre_pause_checkin(
+    pause_store: tuple[HubStore, PauseClocks],
+) -> None:
+    """#354, #368: verify store never marks a live worker lost across consecutive
+    host pauses, or when its check-in predates the first pause, provided it
+    heartbeats during resume grace."""
+    store, clocks = pause_store
+    # Worker "bob" checked in during pause_store setup (before any pause).
+    task = store.assign_task("bob", "implementer", "Fix issue", "Instructions", lease_min=10)
+
+    # First pause: 2 hours of sleep, 5 seconds monotonic.
+    clocks.step(7200, monotonic_seconds=5)
+    events = store.sweep(180)
+    assert [e.kind for e in events] == [EventKind.HOST_PAUSED]
+    bob = store.agent_by_name("bob")
+    assert bob is not None and bob.status == AgentStatus.BUSY
+
+    # Consecutive pause before grace expires: another 1 hour sleep, 5 seconds monotonic.
+    clocks.step(3600, monotonic_seconds=5)
+    events2 = store.sweep(180)
+    assert [e.kind for e in events2] == [EventKind.HOST_PAUSED]
+    # Still during grace: bob must NOT be lost despite check-in predating both pauses.
+    bob = store.agent_by_name("bob")
+    assert bob is not None and bob.status == AgentStatus.BUSY
+
+    # Worker wakes up and heartbeats during grace (10s after second pause).
+    clocks.step(10)
+    assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=60)
+    assert store.sweep(180) == []
+
+    # Regular periodic heartbeats after grace keeps worker live.
+    clocks.step(60)
+    assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=60)
+    clocks.step(60)
+    assert store.sweep(180) == []
+    bob = store.agent_by_name("bob")
+    assert bob is not None and bob.status == AgentStatus.BUSY
 
 
 @pytest.mark.parametrize("bad_name", ["Feature.B", "state", "token", "con", "-bob", ""])

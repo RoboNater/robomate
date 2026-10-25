@@ -374,6 +374,7 @@ def test_unassigned_lost_participant_and_sequential_runs(store: HubStore) -> Non
 
 
 def test_host_pause_shifts_deadline_before_expiry(store: HubStore) -> None:
+    store.detect_host_pauses = True
     now = store._now()
     mono = store.monotonic_clock()
     store.clock = lambda: now

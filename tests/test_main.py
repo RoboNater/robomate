@@ -53,6 +53,7 @@ def _request(
     method: str,
     params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
+    timeout: float = LIVENESS_S,
 ) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
@@ -65,7 +66,7 @@ def _request(
             **(headers or {}),
         },
     )
-    with urllib.request.urlopen(request, timeout=2) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return cast(dict[str, Any], json.load(response))
 
 
@@ -158,7 +159,7 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
                 "X-Forwarded-For": "203.0.113.7",
             },
         )
-        with urllib.request.urlopen(request, timeout=2) as response:
+        with urllib.request.urlopen(request, timeout=LIVENESS_S) as response:
             assert "result" in json.load(response)
         rpc_url = f"http://127.0.0.1:{port}/rpc"
         refused = _request(rpc_url, "test-token", "hub.shutdown")
@@ -167,7 +168,7 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
         assert _request(rpc_url, "test-token", "hub.shutdown", headers=operator)["result"] == {
             "stopping": True
         }
-        process.wait(timeout=5)
+        process.wait(timeout=LIVENESS_S)
         assert process.returncode == 0
         assert process.stdout is not None and process.stdout.read() == b""
         with sqlite3.connect(tmp_path / "hub.db") as connection:
@@ -178,7 +179,7 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=5)
+            process.wait(timeout=LIVENESS_S)
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
@@ -231,11 +232,11 @@ def test_hub_entry_point_keeps_its_token_in_a_directory_of_its_own(tmp_path: Pat
             assert token_file.parent.stat().st_mode & 0o777 == 0o700
         operator = {"X-Robomate-Operator": "operator-secret"}
         _request(rpc_url, token, "hub.shutdown", headers=operator)
-        process.wait(timeout=5)
+        process.wait(timeout=LIVENESS_S)
     finally:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=5)
+            process.wait(timeout=LIVENESS_S)
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()

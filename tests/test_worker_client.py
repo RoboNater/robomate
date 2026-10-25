@@ -19,6 +19,7 @@ from agent_hub_common import (
     TaskState,
 )
 from conftest import BASE_URL, TOKEN
+from timing import LIVENESS_S, wait_until
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
 
@@ -63,6 +64,9 @@ def test_worker_instance_id_is_generated_once_per_client_startup(
     assert first.worker_instance_id != second.worker_instance_id
 
 
+# #368: tests the client background timer advancing the hub store's heartbeat stamp
+# across real time (asyncio.sleep).
+@pytest.mark.real_clock
 async def test_background_heartbeat_runs_without_llm_tool_calls(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
@@ -299,10 +303,15 @@ async def test_await_assignment_and_release(
 
     # Assignment wake-up
     async def assign() -> None:
-        await asyncio.sleep(0.02)
+        await wait_until(
+            lambda: bool(
+                (w := hub_store.activity.worker("bob", worker.worker_instance_id)) and w.holds
+            ),
+            "worker to hold on await_assignment",
+        )
         hub_store.assign_task("bob", "implementer", "Fix issue #42", "Write code and tests")
 
-    assignment_task = asyncio.create_task(worker.await_assignment(timeout_s=2.0))
+    assignment_task = asyncio.create_task(worker.await_assignment(timeout_s=LIVENESS_S))
     await asyncio.gather(assign(), assignment_task)
 
     assignment = assignment_task.result()
@@ -312,7 +321,7 @@ async def test_await_assignment_and_release(
 
     # Release
     hub_store.release_agent("bob")
-    release_res = await worker.await_assignment(timeout_s=2.0)
+    release_res = await worker.await_assignment(timeout_s=LIVENESS_S)
     assert release_res == {"release": True}
 
 

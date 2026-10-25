@@ -578,6 +578,7 @@ class HubStore:
     # and reuses it afterwards, with no ref check when the common dir is None.
     hub_name: str | None = None
     git_common_dir: Path | None = None
+    detect_host_pauses: bool = True
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
@@ -3340,6 +3341,8 @@ class HubStore:
         No baseline survives a process restart (restart reconciliation is #18).
         """
 
+        if not self.detect_host_pauses:
+            return None
         previous = self._sweep_sample
         lost_after_s = self._sweep_lost_after_s
         if previous is None or lost_after_s is None or lost_after_s <= 0:

@@ -111,6 +111,7 @@ def create_app(
         state_dir=resolved.state_dir,
         hub_name=hub_name_for_branches,
         git_common_dir=common_dir,
+        detect_host_pauses=resolved.detect_host_pauses,
     )
     from .worktrees import WorktreeManager
 

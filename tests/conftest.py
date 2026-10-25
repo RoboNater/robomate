@@ -113,22 +113,33 @@ def settings(tmp_path: Path, request: pytest.FixtureRequest) -> HubSettings:
         max_wait_s=TEST_MAX_WAIT_S,
         lost_after_s=60.0,
         sweep_interval_s=3600.0,
+        detect_host_pauses=False,
     )
     marker = request.node.get_closest_marker("hub_settings")
     return replace(resolved, **marker.kwargs) if marker else resolved
 
 
 @pytest.fixture
-def store(settings: HubSettings) -> HubStore:
+def store(settings: HubSettings, request: pytest.FixtureRequest) -> HubStore:
     initialize_database(settings.database_path)
-    hub_store = HubStore(path=settings.database_path)
+    hub_store = HubStore(
+        path=settings.database_path,
+        detect_host_pauses=settings.detect_host_pauses,
+    )
     hub_store.initialize_workflow()
+    if not request.node.get_closest_marker("real_clock"):
+        clock = request.getfixturevalue("frozen_clock")
+        clock.install(hub_store)
     return hub_store
 
 
 @pytest.fixture
-def app(settings: HubSettings) -> FastAPI:
-    return create_app(settings)
+def app(settings: HubSettings, request: pytest.FixtureRequest) -> FastAPI:
+    application = create_app(settings)
+    if not request.node.get_closest_marker("real_clock"):
+        clock = request.getfixturevalue("frozen_clock")
+        clock.install(cast(HubStore, application.state.store))
+    return application
 
 
 @pytest.fixture
@@ -143,19 +154,16 @@ def hub_store(app: FastAPI) -> HubStore:
 
 @pytest.fixture
 def frozen_clock(request: pytest.FixtureRequest) -> FrozenClock:
-    """Opt-in frozen clock, installed on this test's `app`/`hub_store` and `store`.
+    """Frozen clock, installed by default on `store` and `app` / `hub_store`.
 
-    Hub deadlines then move only by `frozen_clock.advance(seconds)`. Install it
-    on any other store the test builds, such as a restarted app's, with
-    `frozen_clock.install(...)`. See docs/development/testing-time-and-waits.md.
+    Opt out for tests that explicitly verify real-time behaviors with
+    `@pytest.mark.real_clock`. Hub deadlines then move only by
+    `frozen_clock.advance(seconds)`. Install it on any other store the test
+    builds, such as a restarted app's, with `frozen_clock.install(...)`. See
+    docs/development/testing-time-and-waits.md.
     """
 
-    clock = FrozenClock()
-    if "app" in request.fixturenames:
-        clock.install(cast(HubStore, request.getfixturevalue("app").state.store))
-    if "store" in request.fixturenames:
-        clock.install(request.getfixturevalue("store"))
-    return clock
+    return FrozenClock()
 
 
 @pytest_asyncio.fixture
