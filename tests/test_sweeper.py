@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
+import pytest
 from agent_hub.store import EventRecord, HubStore
 from agent_hub.sweeper import start_sweeper, stop_sweeper
 from agent_hub_common import EventKind
@@ -61,7 +62,9 @@ async def test_stopping_the_loop_leaves_no_task_running(store: HubStore) -> None
     assert sweeper.cancelled()
 
 
-async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(store: HubStore) -> None:
+async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(
+    store: HubStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store.detect_host_pauses = True
     wall = [datetime(2026, 10, 12, tzinfo=UTC)]
     mono = [100.0]
@@ -75,16 +78,20 @@ async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(store: H
     wall[0] += timedelta(hours=4)
     mono[0] += 10
 
+    sweeps: list[float] = []
+    real_sweep = HubStore.sweep
+
+    def counted(self: HubStore, lost_after_s: float) -> list[EventRecord]:
+        sweeps.append(lost_after_s)
+        return real_sweep(self, lost_after_s)
+
+    monkeypatch.setattr(HubStore, "sweep", counted)  # HubStore uses slots
     sweeper = start_sweeper(store, interval_s=0.01, lost_after_s=180)
     try:
         # Waiting polls the inbox, so detection can precede the loop itself.
         event = await store.wait_for_event(LIVENESS_S)
-        await wait_until(
-            lambda: (
-                (t := store.get_task(task.id)) is not None and t.lease_expires != task.lease_expires
-            ),
-            "sweeper to extend task lease",
-        )
+        after = len(sweeps)
+        await wait_until(lambda: len(sweeps) >= after + 3, "three sweeps after the pause")
     finally:
         await stop_sweeper(sweeper)
 
