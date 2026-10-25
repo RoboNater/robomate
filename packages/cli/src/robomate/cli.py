@@ -87,6 +87,8 @@ from agent_hub_common.registry import (
     forget as forget_entry,
 )
 from agent_hub_common.relocation import relocate_hub, relocation_targets
+from agent_hub_common.startup import stage
+from agent_hub_common.startup import stages as startup_stages
 from agent_hub_common.stdio import escape_unencodable_output
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
@@ -258,15 +260,21 @@ def _hub_lock(state: Path) -> Iterator[None]:
 
 async def _up(args: argparse.Namespace) -> None:
     escape_unencodable_output()
-    repo = resolve_repository(Path.cwd(), probe_cli=args.forge is None)
-    if args.forge:
-        repo = replace(repo, forge=args.forge)
-    if args.name is not None:
-        validate_hub_name(args.name)
-    placement = plan_hub_placement(repo, args.name)
-    create_hub_dirs(placement)
-    with _hub_lock(placement.state_dir):
-        await _run_up(args, repo, placement)
+    # Always on (#372): a startup that stalls names on stderr the last stage
+    # it reached, in CI diagnostics and in an operator's terminal alike.
+    with startup_stages():
+        stage("command started")
+        repo = resolve_repository(Path.cwd(), probe_cli=args.forge is None)
+        stage("repository resolved")
+        if args.forge:
+            repo = replace(repo, forge=args.forge)
+        if args.name is not None:
+            validate_hub_name(args.name)
+        placement = plan_hub_placement(repo, args.name)
+        create_hub_dirs(placement)
+        with _hub_lock(placement.state_dir):
+            stage("checkout lock held")
+            await _run_up(args, repo, placement)
 
 
 def _hub_name(requested: str | None, recorded: object, checkout: Path) -> str:
@@ -310,6 +318,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
                 f"hub at {old['url']} {health.describe()}; recorded pid {old_pid} is alive. "
                 "Wait for it, or stop it with robomate down"
             )
+    stage("previous hub checked")
     hub_id = str(old.get("hub_id") or uuid.uuid4().hex)
     # A hub forgotten with `robomate forget` (#159) carries an explicit
     # `released_port` marker in hub.json: its port counts as released, so the
@@ -409,6 +418,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
     # it is set the startup entry claims no port, so the released port is
     # reusable by a sibling hub at once.
     write_hub_json(directory, old | identity)
+    stage("identity written")
     try:
         register(
             entry
@@ -428,6 +438,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         else:
             (git_dir / BINDING_FILENAME).unlink(missing_ok=True)
         raise
+    stage("registered")
     if args.port is not None:
         requested_port = args.port
         released_port = None
@@ -440,6 +451,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         for item in hub_entries()
         if item.get("hub_id") != hub_id and (port := _entry_port(item)) is not None
     )
+    stage("registry listed")
     # Validate the operator-token path before binding (#192): an unsafe path
     # inside the repository or hub state is refused with the token-path
     # diagnostic even when the saved or requested port is occupied. Binding
@@ -448,6 +460,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
     sock, port = _bind(
         args.bind, int(requested_port) if requested_port is not None else None, taken
     )
+    stage(f"socket bound to port {port}")
     # Worktrees for `up --agents` are created here, after `hub.json`/registry
     # claim and a successful port bind, so a refused name (RegistryError above)
     # never leaves locked worktrees bound to an unrecorded hub_id (r1-2).
@@ -469,6 +482,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         for agent in up_agents:
             _up_path, _ = _up_manager.ensure(agent)
             print(str(_up_path), flush=True)
+        stage("agent worktrees ready")
     overlay = dict(os.environ)
     overlay.update(
         {
@@ -485,8 +499,11 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         overlay["HUB_PUBLIC_URL"] = args.public_url
     try:
         settings = HubSettings.from_env(overlay)
+        stage("settings resolved")
         load_or_create_token(settings.token, settings.token_file)
+        stage("token ready")
         _provision_operator_token(settings, repo, placement)
+        stage("operator token provisioned")
         info: dict[str, Any] = {
             **identity,
             "origin": repo.origin,
@@ -500,8 +517,12 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         }
 
         def started() -> None:
+            stage("serving")
+            # No marker between these two: the gap stays as short as it was,
+            # since `ls` can read the registry in it (#350). hub.json shows it.
             write_hub_json(directory, info)
             register(entry | {"url": settings.public_url, "port": port, "pid": os.getpid()})
+            stage("registered live")
             print(f"Hub {name} running at {settings.public_url}", flush=True)
             if released_port is not None and released_port != port:
                 print(

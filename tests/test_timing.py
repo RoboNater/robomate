@@ -30,6 +30,8 @@ def test_frozen_clock_stands_still_and_advance_moves_both_clocks(
     assert (store._now(), store.monotonic_clock()) == (wall, mono)
     frozen_clock.advance(30)
     assert store._now() - wall == timedelta(seconds=30)
+    # Approximate: the clock adds to the real monotonic reading at its creation,
+    # and `(start + 30) - start` is not exactly 30.0 for every float start (#375).
     assert store.monotonic_clock() - mono == pytest.approx(30)
     with pytest.raises(ValueError):
         frozen_clock.advance(-1)

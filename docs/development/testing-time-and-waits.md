@@ -106,10 +106,10 @@ test needs (a `/healthz` answer, a registry entry, a file), bounded by
 subprocess hub either.
 
 A helper whose failure message carries diagnostics, such as `await_hub` in
-`tests/test_cli.py`, which prints the process state, `hub.json` and the
-hub's output, may keep its own polling loop instead of `wait_until_sync`.
-The rule still applies to its bound: `LIVENESS_S`, never a fixed budget
-(#372 brings `await_hub` into line).
+`tests/test_cli.py`, which prints the process state, `hub.json`, the
+startup stages `robomate up` marks on stderr and the hub's output, may keep
+its own polling loop instead of `wait_until_sync`. The rule still applies to
+its bound: `LIVENESS_S`, never a fixed budget (#372).
 
 ## Reproduce first: the slow-host probe, or the failing host
 
