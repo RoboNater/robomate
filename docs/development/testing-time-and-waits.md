@@ -27,6 +27,14 @@ only moves the failure to a slower day (#260).
 4. **No fixed short literals as hang guards.** A `timeout_s=0.8` hold or a
    `wait_for(..., 2)` that exists only so a broken test doesn't hang is a
    budget in disguise. Use `LIVENESS_S`.
+5. **Count, don't time.** Don't assert that something took at least or at
+   most some real duration. Even a lower bound can fail: on Windows CI a
+   50 ms `time.sleep` measured 46 ms on `time.monotonic()` (#367). To show
+   that a delay or a wait happened, record the calls, for example by
+   patching `time.sleep`, as `tests/test_timing.py` does for the probe. The
+   one safe case is a bound read on the same `time.monotonic()` that the
+   code under test uses for its own deadline, as when that file checks how
+   long `wait_until` waited before it failed.
 
 A `timeout_s=0` hold is not a wait: it reads the current state and returns
 at once, so it is fine.
@@ -92,11 +100,19 @@ test needs (a `/healthz` answer, a registry entry, a file), bounded by
 `LIVENESS_S`, and don't assert on how long it took. The probe doesn't reach a
 subprocess hub either.
 
-## Reproduce first: the slow-host probe
+A helper whose failure message carries diagnostics, such as `await_hub` in
+`tests/test_cli.py`, which prints the process state, `hub.json` and the
+hub's output, may keep its own polling loop instead of `wait_until_sync`.
+The rule still applies to its bound: `LIVENESS_S`, never a fixed budget
+(#372 brings `await_hub` into line).
 
-A timing flake is **not fixed until it has been reproduced with the probe,
-and the repaired test passes under it**. A fix that was never seen failing
-locally is a guess.
+## Reproduce first: the slow-host probe, or the failing host
+
+A timing flake is **not fixed until it has been reproduced, and the
+repaired test passes under the same conditions**. A fix that was never seen
+failing is a guess. For an in-process hub, reproduce it with the probe
+described here. For a hub in a subprocess, which the probe can't reach, see
+[Reproducing a subprocess-hub flake](#reproducing-a-subprocess-hub-flake).
 
 The probe adds latency before each hub SQLite transaction in the test
 process. It replaces `agent_hub.database.connect`, which
@@ -129,6 +145,30 @@ matches the CI history is which tests fail. To repair a flaky test:
    ```sh
    for i in $(seq 10); do ROBOMATE_TEST_DB_LATENCY_MS=100 uv run --locked pytest tests/test_closeout.py -q || break; done
    ```
+
+### Reproducing a subprocess-hub flake
+
+A hub started by `robomate up` or the `hub` entry point runs in another
+process, so the probe adds nothing there. Reproduce the failure under the
+conditions that produce it, in one or more of these ways:
+
+- **Native Windows under load.** Run the test in a loop while a full
+  `uv run --locked pytest -n auto` suite runs alongside it, or run two full
+  suites at once, each in its own clone, as #365's acceptance does.
+- **A CI recurrence that names the cause.** A failure message that only says
+  "did not start" or "assert False" shows that the flake exists, not why.
+  First make the failure say where the time went: the process state, the
+  files and registry entries the test waits for, and the stage the
+  subprocess reached. Then the next recurrence is evidence.
+- **A controlled delay at the stage the evidence names.** Delaying that one
+  step shows that the repaired test waits for the condition rather than for
+  a duration. A test-only hook like this must be off by default, as the
+  probe is, and the PR must name it.
+
+The fix is done when the PR names the cause from that evidence and shows the
+repaired test passing under the same conditions. A run of local passes alone
+is not enough on a host where the test rarely fails. #350 failed 0 times in
+60 local runs on Linux while Linux CI kept hitting it.
 
 ## Worked example: `test_isolated_collection_scenario`
 
