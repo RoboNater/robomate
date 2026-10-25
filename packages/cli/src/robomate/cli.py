@@ -518,8 +518,9 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
 
         def started() -> None:
             stage("serving")
+            # No marker between these two: the gap stays as short as it was,
+            # since `ls` can read the registry in it (#350). hub.json shows it.
             write_hub_json(directory, info)
-            stage("hub.json recorded")
             register(entry | {"url": settings.public_url, "port": port, "pid": os.getpid()})
             stage("registered live")
             print(f"Hub {name} running at {settings.public_url}", flush=True)
