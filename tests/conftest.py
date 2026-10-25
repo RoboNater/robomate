@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,7 @@ from agent_hub.store import HubStore
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
 from agent_hub_common.discovery import legacy_state_dir, write_hub_json
 from fastapi import FastAPI
+from timing import FrozenClock, db_latency, db_latency_s
 
 TOKEN = "test-token"
 BASE_URL = "http://hub.test"
@@ -62,6 +64,19 @@ class MonotonicClock:
         self.start += timedelta(seconds=seconds)
 
 
+def pytest_report_header() -> str:
+    latency_s = db_latency_s()
+    return f"db latency probe: {latency_s * 1000:g} ms" if latency_s else "db latency probe: off"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def db_latency_probe() -> Iterator[None]:
+    """The slow-host probe, on only when ROBOMATE_TEST_DB_LATENCY_MS is set (#367)."""
+
+    with db_latency(db_latency_s()):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def isolated_machine_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """#264: inherited worker credentials must never select the run's hub/state.
@@ -82,8 +97,10 @@ def isolated_machine_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.fixture
-def settings(tmp_path: Path) -> HubSettings:
-    return HubSettings(
+def settings(tmp_path: Path, request: pytest.FixtureRequest) -> HubSettings:
+    """Test hub settings; `@pytest.mark.hub_settings(field=value)` overrides fields."""
+
+    resolved = HubSettings(
         host="127.0.0.1",
         port=8420,
         public_url="http://hub.example:8420",
@@ -97,6 +114,8 @@ def settings(tmp_path: Path) -> HubSettings:
         lost_after_s=60.0,
         sweep_interval_s=3600.0,
     )
+    marker = request.node.get_closest_marker("hub_settings")
+    return replace(resolved, **marker.kwargs) if marker else resolved
 
 
 @pytest.fixture
@@ -120,6 +139,23 @@ def hub_store(app: FastAPI) -> HubStore:
     initialize_database(store.path)
     store.initialize_workflow()
     return store
+
+
+@pytest.fixture
+def frozen_clock(request: pytest.FixtureRequest) -> FrozenClock:
+    """Opt-in frozen clock, installed on this test's `app`/`hub_store` and `store`.
+
+    Hub deadlines then move only by `frozen_clock.advance(seconds)`. Install it
+    on any other store the test builds, such as a restarted app's, with
+    `frozen_clock.install(...)`. See docs/development/testing-time-and-waits.md.
+    """
+
+    clock = FrozenClock()
+    if "app" in request.fixturenames:
+        clock.install(cast(HubStore, request.getfixturevalue("app").state.store))
+    if "store" in request.fixturenames:
+        clock.install(request.getfixturevalue("store"))
+    return clock
 
 
 @pytest_asyncio.fixture
