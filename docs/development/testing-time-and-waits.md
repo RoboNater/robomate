@@ -32,9 +32,14 @@ only moves the failure to a slower day (#260).
    50 ms `time.sleep` measured 46 ms on `time.monotonic()` (#367). To show
    that a delay or a wait happened, record the calls, for example by
    patching `time.sleep`, as `tests/test_timing.py` does for the probe. The
-   one safe case is a bound read on the same `time.monotonic()` that the
-   code under test uses for its own deadline, as when that file checks how
-   long `wait_until` waited before it failed.
+   one exception is a lower bound on a timeout that the code under test
+   enforces by checking its deadline against the same `time.monotonic()`
+   the test reads, as `wait_until` and the hub's holds do. That file asserts
+   that `wait_until` waited at least its timeout before failing. Timing a
+   requested `time.sleep` doesn't qualify, because nothing checks a deadline
+   there; that was #367's mistake. An upper bound is never safe, not even
+   on the same clock: the process or event loop can resume well after the
+   deadline. Any upper bound stays the `LIVENESS_S` hang guard.
 
 A `timeout_s=0` hold is not a wait: it reads the current state and returns
 at once, so it is fine.
