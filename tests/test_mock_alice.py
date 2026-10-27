@@ -6,6 +6,7 @@ import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
@@ -17,9 +18,10 @@ from agent_hub.mcp import create_mcp
 from agent_hub.store import EventRecord, HubStore, TaskRecord
 from agent_hub_common import AgentProfile, EventKind, HubSettings, TaskState, WorkflowStatus
 from agent_hub_common.discovery import DiscoveryError, local_hub
-from conftest import BASE_URL, TOKEN, MonotonicClock, closed_port_url, record_local_hub
+from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub
 from mcp import ClientSession
-from timing import LIVENESS_S, FrozenClock
+from timing import LIVENESS_S, FrozenClock, wait_until
+from worker_mcp import client as worker_client
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 
@@ -401,21 +403,17 @@ async def test_mock_alice_drives_worker_through_full_task(
             assert any("Assigned task" in d["summary"] for d in decisions)
 
 
-# The scaled endurance scenario keeps the production shape — one work interval
-# outlives lost-after while heartbeats keep the worker live — in seconds, not
-# minutes. Hub sweeper, worker heartbeat and mock Alice share one event loop, so
-# a stall of the loop under full-suite load delays the heartbeat until the
-# sweep that follows it; lost-after must dwarf both the heartbeat interval and
-# any plausible stall, or the sweep declares the worker lost (#95).
-ENDURANCE_HEARTBEAT_S = 0.05
+# Virtual seconds: one work interval outlives lost-after while the real worker
+# heartbeat loop keeps it live. Host latency never consumes the loss window.
+ENDURANCE_HEARTBEAT_S = 0.5
 ENDURANCE_LOST_AFTER_S = 2.0
 ENDURANCE_LONG_WORK_S = 2.5
 
 
 async def test_mock_alice_drives_scaled_endurance_scenario(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
 ) -> None:
-    assert ENDURANCE_LONG_WORK_S > ENDURANCE_LOST_AFTER_S >= 40 * ENDURANCE_HEARTBEAT_S
+    assert ENDURANCE_LONG_WORK_S > ENDURANCE_LOST_AFTER_S > ENDURANCE_HEARTBEAT_S
     db_path = tmp_path / "endurance.db"
     initialize_database(db_path)
     settings = HubSettings(
@@ -434,10 +432,27 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         detect_host_pauses=True,
     )
     app = create_app(settings)
-    # Mock Alice checks the heartbeat stamp moved across a monotonic sleep; a
-    # wall clock stepped back by more than that sleep would hold it still.
     store: HubStore = app.state.store
-    store.clock = MonotonicClock()
+    frozen_clock.install(store)
+    # Alice measures the long work interval on the same clock as hub liveness.
+    monkeypatch.setattr(mock_alice, "monotonic", frozen_clock.monotonic)
+
+    heartbeat_waiting = asyncio.Event()
+    heartbeat_tick = asyncio.Event()
+
+    async def heartbeat_sleep(delay: float) -> None:
+        # Patch only the worker module's asyncio reference. The hub's sweeper
+        # and hold timeouts keep their ordinary event-loop scheduling.
+        if delay != ENDURANCE_HEARTBEAT_S:
+            await asyncio.sleep(delay)
+            return
+        heartbeat_waiting.set()
+        await heartbeat_tick.wait()
+        heartbeat_tick.clear()
+
+    monkeypatch.setattr(
+        worker_client, "asyncio", SimpleNamespace(**{**vars(asyncio), "sleep": heartbeat_sleep})
+    )
     worker_settings = WorkerSettings(
         hub_url=BASE_URL,
         token=TOKEN,
@@ -499,7 +514,22 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
                             question_timed_out.set()
                         assert "Approved" in reply.get("reply", "")
                     elif observed["cycles"] == 2:
-                        await asyncio.sleep(ENDURANCE_LONG_WORK_S)
+                        # Establish a sweep baseline, then cross the loss
+                        # deadline in small steps without triggering pause
+                        # grace. A missing heartbeat must lose the worker.
+                        assert store.sweep(ENDURANCE_LOST_AFTER_S) == []
+                        until = frozen_clock.elapsed + ENDURANCE_LONG_WORK_S
+                        while frozen_clock.elapsed < until:
+                            await wait_until(heartbeat_waiting.is_set, "heartbeat timer is parked")
+                            heartbeat_waiting.clear()
+                            frozen_clock.advance(ENDURANCE_HEARTBEAT_S)
+                            heartbeat_tick.set()
+                            # The next sleep starts only after the heartbeat
+                            # request has finished, even on a loaded host.
+                            await wait_until(
+                                heartbeat_waiting.is_set, "heartbeat tick has finished"
+                            )
+                            assert store.sweep(ENDURANCE_LOST_AFTER_S) == []
 
                     await worker.submit_result(
                         task_id,
@@ -511,9 +541,9 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
                         },
                     )
 
-        # Three cycle budgets bound the whole scenario. Start Alice only once
+        # Bound hangs in the whole scenario. Start Alice only once
         # an actual assignment timeout has occurred, rather than racing sleeps.
-        async with asyncio.timeout(3 * FULL_TASK_TIMEOUT_S):
+        async with asyncio.timeout(LIVENESS_S):
             async with asyncio.TaskGroup() as group:
                 group.create_task(run_worker())
                 await assignment_timed_out.wait()
