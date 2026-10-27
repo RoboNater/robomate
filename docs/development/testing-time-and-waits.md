@@ -96,6 +96,87 @@ hold: its timeout still runs out in real time
 `tests/test_timing.py`). Give a hold that should end when a condition holds
 `LIVENESS_S`, not a short budget.
 
+How long a hold lasts depends on how the test reaches it:
+
+| Hold | Its length |
+|---|---|
+| Over HTTP or MCP, with a timeout (`metadata.timeout_s`) | The timeout, capped at the test hub's `max_wait_s`: `TEST_MAX_WAIT_S`, 1.0 s. |
+| Over HTTP or MCP, without one | `default_wait_s`: `TEST_WAIT_S`, 0.2 s. |
+| Directly on the store: `store.await_assignment`, `await_reply`, `wait_for_event` | Exactly `timeout_s`. Neither the cap nor the default applies. |
+
+Both settings are applied by `HubSettings.bounded_wait`, which only the
+protocol layer calls (`_timeout`, for every `message/stream` hold). The store
+takes its `timeout_s` as given. A request that omits the timeout reaches
+`bounded_wait(None)`; a raw A2A call can do that, but `WorkerHubClient` always
+sends one, falling back to its own `default_wait_s`.
+
+So an implicit hold is a 0.2 s budget in disguise. A test that sends a
+`message/stream` question or `NEXT` with no `timeout_s` and then does the work
+the hold is waiting for passes on a fast host only. It was
+`test_manual_override_returns_terminal_task_to_question_stream` (#379 r2-2),
+which failed 3 of 3 under the 100 ms probe once `await_reply` did one more
+transaction per poll. A hold meant to last until a condition holds therefore
+passes `timeout_s=LIVENESS_S`, and over HTTP or MCP also lifts the cap with
+`@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)`. Without the marker, the
+hold still ends after 1 s. Directly on the store, passing `timeout_s=LIVENESS_S`
+is enough.
+
+**No `elapsed < N` as a fast-fail.** A test that holds for `LIVENESS_S` and
+expects to be woken early may be tempted to assert `elapsed < 10.0` to prove
+the hold didn't run out. That is an upper bound on real time, which rule 5
+rules out: a loaded host can take longer than `N` and still be correct, and
+`N` is a budget in disguise. It is also redundant. A hold that ran out returns
+a timeout, so asserting the result you expect (`task_ended`, the terminal
+state, the answer text) already fails when the wake-up was missed; the failure
+costs `LIVENESS_S`, which rule 2 accepts. The two `elapsed < 10.0` assertions
+in `tests/test_worker_client.py` (#379 r2-1) predate this rule; don't copy
+them, and drop them when touching those tests.
+
+### Wait for the behaviour, not a side effect that precedes it
+
+A condition wait returns as soon as its condition is true. If the condition
+is something the code under test does *before* the behaviour the test is
+about, possibly in the same transaction, the wait can return before the
+behaviour has run, and the test then passes without having exercised it.
+
+`test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls`
+(`tests/test_sweeper.py`) is the example (#379 r3-1). It used to
+`sleep(0.05)`; the first repair waited until the task's lease had moved.
+`_detect_pause` shifts the lease in the same transaction that queues
+`HOST_PAUSED`, so that wait was already satisfied before the sweeper loop had
+swept even once. With the grace suppression removed from `HubStore.sweep`, the
+old test failed 3 of 3 and the repaired one passed 3 of 3.
+
+The behaviour there is "the loop keeps sweeping inside the grace period and
+nothing expires", so the test waits for sweeps, by counting them:
+
+```python
+sweeps: list[float] = []
+real_sweep = HubStore.sweep
+
+
+def counted(self: HubStore, lost_after_s: float) -> list[EventRecord]:
+    sweeps.append(lost_after_s)
+    return real_sweep(self, lost_after_s)
+
+
+monkeypatch.setattr(HubStore, "sweep", counted)  # HubStore uses slots
+sweeper = start_sweeper(store, interval_s=0.01, lost_after_s=180)
+...
+after = len(sweeps)
+await wait_until(lambda: len(sweeps) >= after + 3, "three sweeps after the pause")
+```
+
+The patch goes on the class: `HubStore` is a `@dataclass(slots=True)`, so
+`monkeypatch.setattr(store, "sweep", ...)` fails with `AttributeError`. Count after the event that starts
+the interval you care about (`after`), so sweeps that happened earlier don't
+satisfy the wait. Then assert on the outcome, here that the lease was shifted, the
+agent stayed `busy` and no stall episode opened.
+
+To find the right condition, ask what the test would see if the code under
+test did nothing from now on. If the wait would still return, it isn't waiting
+for the behaviour.
+
 ### Tests that start a hub as a subprocess
 
 Tests that run `robomate up`, `ls` or the `hub` entry point in another
@@ -151,6 +232,18 @@ matches the CI history is which tests fail. To repair a flaky test:
    ```sh
    for i in $(seq 10); do ROBOMATE_TEST_DB_LATENCY_MS=100 uv run --locked pytest tests/test_closeout.py -q || break; done
    ```
+5. Passing is half the check when the test's point is that something does
+   **not** happen: no loss, no expiry, no event. Such a test passes just as
+   well if it never reaches the case it guards. Break the code that protects
+   against it in a scratch copy of the checkout (remove the heartbeat, the
+   grace suppression in `HubStore.sweep`, the expiry guard), run the test, and
+   confirm it fails. If it still passes, it is vacuous: change what it waits
+   for or counts (see [Wait for the behaviour](#wait-for-the-behaviour-not-a-side-effect-that-precedes-it))
+   until the mutation fails it. Name the mutation, and the failure it
+   produced, in the PR. Reading the test doesn't substitute: the first #354
+   liveness test passed with every heartbeat removed, because all its sweeps
+   fell inside the first pause's grace (#379 r1-1), and only deleting the
+   heartbeats showed it.
 
 ### Reproducing a subprocess-hub flake
 
