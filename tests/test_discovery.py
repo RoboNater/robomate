@@ -196,7 +196,9 @@ def test_discovery_prefers_explicit_then_repo(
     url = healthz("repo-id")
     write_hub_json(legacy_state_dir(repository), {"url": url, "hub_id": "repo-id"})
     (repository / ".robomate/token").write_text("repo-token\n")
-    assert discover(repository, {}) == HubEndpoint(url, "repo-token")
+    assert discover(repository, {}) == HubEndpoint(
+        url, "repo-token", repository / ".robomate/token"
+    )
     assert discover(
         repository,
         {"ROBOMATE_HUB_URL": "http://explicit:8421/", "ROBOMATE_TOKEN": "explicit-token"},
@@ -214,7 +216,9 @@ def test_discover_checks_the_local_hub_identity_before_use(
     write_hub_json(
         legacy_state_dir(repository), {"url": matching, "hub_id": "expected-hub", "name": "repo"}
     )
-    assert discover(repository, {}) == HubEndpoint(matching, "repo-token")
+    assert discover(repository, {}) == HubEndpoint(
+        matching, "repo-token", repository / ".robomate/token"
+    )
 
     other = healthz("different-hub")
     write_hub_json(
@@ -287,13 +291,15 @@ def test_hub_selector_by_name_hub_id_or_checkout(repository: Path, tmp_path: Pat
         hub = find_hub(repository, explicit, selector=selector)
         assert isinstance(hub, LocalHub)
         assert (hub.checkout, hub.hub_id, hub.name) == (worktree, "id-b", "wt-b")
-        assert hub.endpoint() == HubEndpoint("http://wt-b:8420", "wt-b-token")
+        assert hub.endpoint() == HubEndpoint("http://wt-b:8420", "wt-b-token", hub.token_file)
     # Without a selector the explicit URL comes first, then the owned hub.
     assert find_hub(worktree, explicit) == HubEndpoint("http://explicit:1", "t")
     for checkout, name in ((worktree, "wt-b"), (repository, "repo")):
         owned = find_hub(checkout, env)
         assert isinstance(owned, LocalHub) and owned.checkout == checkout
-        assert owned.endpoint() == HubEndpoint(f"http://{name}:8420", f"{name}-token")
+        assert owned.endpoint() == HubEndpoint(
+            f"http://{name}:8420", f"{name}-token", owned.token_file
+        )
     with pytest.raises(DiscoveryError, match="no registered hub has that name"):
         find_hub(repository, env, selector="missing")
     plain = tmp_path / "plain"
@@ -470,7 +476,9 @@ def test_discover_waits_for_a_busy_hub_and_names_a_silent_one(
     write_hub_json(
         legacy_state_dir(repository), {"url": slow, "hub_id": "expected-hub", "name": "repo"}
     )
-    assert discover(repository, {}) == HubEndpoint(slow, "repo-token")
+    assert discover(repository, {}) == HubEndpoint(
+        slow, "repo-token", repository / ".robomate/token"
+    )
 
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_TIMEOUT_S", 0.2)
     monkeypatch.setattr("agent_hub_common.registry.HEALTHZ_LIVE_PID_TIMEOUT_S", 0.4)
@@ -811,7 +819,7 @@ def test_discovery_follows_an_agent_binding_to_the_hub_and_its_token(
         hub = find_hub(cwd, layers)
         assert isinstance(hub, LocalHub)
         assert (hub.checkout, hub.state_dir, hub.token_file) == (repository, state, token)
-        assert hub.endpoint() == HubEndpoint("http://team:8420", "team-token")
+        assert hub.endpoint() == HubEndpoint("http://team:8420", "team-token", token)
     # A worktree with no binding reaches nothing, however many bound ones are beside it.
     # That error lists the live hubs, so it reads the machine registry: only the
     # test's own (#243 r1-2), never the operator's.

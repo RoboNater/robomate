@@ -504,7 +504,12 @@ class WorkerHubClient:
             ):
                 await self._client.aclose()
                 self._client = None
-            self.settings = replace(self.settings, hub_url=endpoint.url, token=endpoint.token)
+            self.settings = replace(
+                self.settings,
+                hub_url=endpoint.url,
+                token=endpoint.token,
+                token_file=endpoint.token_file,
+            )
         elif not self.settings.hub_url and self._external_client is not None:
             self.settings = replace(
                 self.settings, hub_url=str(self._external_client.base_url).rstrip("/")
@@ -945,8 +950,19 @@ class WorkerHubClient:
                             "default_branch": who_data.get("default_branch"),
                         }
             except Exception as exc:
-                return {"joined": False, "hub": None, "discovery_error": str(exc)}
-            return {"joined": False, "hub": hub_summary}
+                return {
+                    "joined": False,
+                    "hub": None,
+                    "discovery_error": str(exc),
+                    "token_file": str(self.settings.token_file)
+                    if self.settings.token_file
+                    else None,
+                }
+            return {
+                "joined": False,
+                "hub": hub_summary,
+                "token_file": str(self.settings.token_file) if self.settings.token_file else None,
+            }
 
         await self._bind_hub()
         headers = {AGENT_HEADER: self.settings.agent_name} if self.settings.agent_name else None
@@ -962,6 +978,7 @@ class WorkerHubClient:
             "standing_role": self.standing_role.value if self.standing_role is not None else None,
             "context_id": self.context_id,
             "worker_instance_id": self.worker_instance_id,
+            "token_file": str(self.settings.token_file) if self.settings.token_file else None,
         }
 
     async def get_role_guide(self, role: str) -> str:

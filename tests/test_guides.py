@@ -8,6 +8,7 @@ import httpx
 import pytest
 from agent_hub.guides import guide_response
 from agent_hub_common import HubSettings, RebaseResult, TaskRole
+from agent_hub_common.discovery import HubEndpoint
 from conftest import BASE_URL, TOKEN
 from fastapi import FastAPI, HTTPException
 from worker_mcp.client import WorkerHubClient
@@ -177,6 +178,100 @@ def test_only_a_role_slug_names_a_guide(guides: Path, role: str) -> None:
 
 
 CHECKED_IN_GUIDES = Path(__file__).resolve().parents[1] / "guides"
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_worker_boundaries_and_git_hygiene(forge: str) -> None:
+    """Step 7d: check the actual served contract, including its prohibitions."""
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "worker", forge=forge).body).decode("utf-8").split()
+    )
+    for fragment in (
+        "Never read the hub's state or token directory",
+        "the bridge, not the agent, reads it",
+        "fresh `origin/<default>` or the assigned SHA",
+        "uncommitted changes",
+        "report `blocked`",
+        "cannot lock ref",
+        "after a short wait",
+        "never delete a `.lock` file",
+        "Never change git config",
+        "outside the worktree",
+        "harness's own temporary directory",
+        "never in the worktree or `closeout/`",
+        "git switch --no-track -c <branch> origin/<default>",
+        "git push origin <branch>",
+        "without `-u`",
+        "Never delete branches, local or remote",
+    ):
+        assert fragment in text
+
+
+def test_linux_grants_and_spec_common_directory_clarification() -> None:
+    """Step 7d's measured grants must not regress to a broad common-dir grant."""
+    root = CHECKED_IN_GUIDES.parent
+    guide = (root / "docs/user-guide.md").read_text(encoding="utf-8")
+    for fragment in (
+        "Claude Code 2.1.312",
+        "Codex 0.164.0",
+        '"allowedDomains": ["github.com", "api.github.com"]',
+        '"denyRead": ["<root>/<hub>/token"]',
+        "network_access = true",
+        '"<common>/worktrees/<agent>"',
+        '"<common>/objects"',
+        '"<common>/refs"',
+        '"<common>/logs"',
+        "uv cache dir",
+        "Never grant `<common>` itself",
+        "guide-only",
+        "robomate certify",
+        "deny network-outbound api.github.com:443",
+    ):
+        assert fragment in guide
+    assert "--add-dir" not in guide
+    spec = (root / "docs/mvp-spec.md").read_text(encoding="utf-8")
+    for section in (spec.split("## 6.", 1)[1].split("## 7.", 1)[0], spec.split("## 12.", 1)[1]):
+        assert "git rev-parse --git-common-dir" in section
+        assert "linked worktree's `.git` file" in section
+
+
+@pytest.mark.parametrize("source", ["explicit-file", "discovered-file", "inline-token"])
+async def test_bridge_whoami_names_its_token_file_without_exposing_the_token(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+    guides: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    """Report the bridge's actual source before and after join; never the secret."""
+    token_file = tmp_path / "bridge-token"
+    token_file.write_text(TOKEN, encoding="utf-8")
+    env = {"ROBOMATE_HUB_URL": BASE_URL, "ROBOMATE_TOKEN_FILE": str(token_file)}
+    if source == "inline-token":
+        env["ROBOMATE_TOKEN"] = TOKEN
+    settings = WorkerSettings.unjoined(environ=env)
+    if source == "discovered-file":
+        monkeypatch.setattr(
+            "worker_mcp.client.discover", lambda *a, **kw: HubEndpoint(BASE_URL, TOKEN, token_file)
+        )
+    expected = None if source == "inline-token" else str(token_file)
+    async with WorkerHubClient(settings, http_client=client) as worker:
+        before = await worker.whoami()
+        assert before["token_file"] == expected
+        assert TOKEN not in str(before)
+        await worker.join(
+            name="bob", role="worker", hub="test" if source == "discovered-file" else None
+        )
+        after = await worker.whoami()
+        assert after["joined"] is True
+        assert after["token_file"] == expected
+        assert TOKEN not in str(after)
+
+
+def test_discovered_settings_preserve_token_file_provenance(tmp_path: Path) -> None:
+    endpoint = HubEndpoint(BASE_URL, TOKEN, tmp_path / "bridge-token")
+    settings = WorkerSettings.from_discovered(endpoint, agent_name="bob", environ={})
+    assert settings.token_file == endpoint.token_file
 
 
 async def test_local_doctor_guide_is_not_served_to_workers(settings: HubSettings) -> None:
@@ -405,6 +500,10 @@ def test_served_implementer_guide_names_the_run_branch() -> None:
         assert "robomate/<hub>/<agent>/<label>" in served
         assert "hub.branch" in served or "hub names" in served
         assert "later tasks" in served and "reuse" in served
+        assert "git switch --no-track -c <branch> origin/<default>" in served
+        assert "git push origin <branch>" in served
+        assert "without `-u`" in served
+        assert "Never delete branches, local or remote" in served
 
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])

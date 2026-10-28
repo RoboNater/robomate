@@ -33,8 +33,9 @@ the approved changes unchanged. If you are unsure whether a file counts, list it
    merge it into the change-request branch (`git merge origin/main`) or rebase
    onto it. A merge keeps the approved commits intact and needs no force-push,
    so prefer it. If you do rebase, push with
-   `git push --force-with-lease=<branch>:<pr_head_sha>` so that a push you
-   have not seen makes yours fail.
+   `git push --force-with-lease=<branch>:<pr_head_sha> origin <branch>` so that
+   a push you have not seen makes yours fail. For a merge, use
+   `git push origin <branch>` without `-u`. Never delete branches, local or remote.
 3. **Resolve conflicts, and only conflicts.** Keep the intent of both sides.
    Do not refactor, rename, reformat or fix anything else, however tempting it
    is: every extra change is code no reviewer has read. If a resolution needs a

@@ -303,18 +303,101 @@ cd /absolute/path/to/bob-clone
 claude --strict-mcp-config --mcp-config /absolute/path/to/my-run/configs/bob.mcp.json
 ```
 
-For Charlie, copy [`runtimes/codex.config.toml`](../runtimes/codex.config.toml) into a private run-local `CODEX_HOME`. Its `[mcp_servers.robomate]` entry uses the same hub URL and token file path and identifies Charlie's own clone. Keep `tool_timeout_sec = 330` for long assignment waits and approve the coordination tools listed in `TOOLS` in `scripts/run_common.py` (mirrored in `runtimes/codex.config.toml`) for unattended use. Give Codex access to its own `.git` directory, and feed the worker prompt through stdin:
+For Charlie, copy [`runtimes/codex.config.toml`](../runtimes/codex.config.toml) into a private run-local `CODEX_HOME`. Its `[mcp_servers.robomate]` entry uses the same hub URL and token file path and identifies Charlie's own clone. Keep `tool_timeout_sec = 330` for long assignment waits and approve the coordination tools listed in `TOOLS` in `scripts/run_common.py` (mirrored in `runtimes/codex.config.toml`) for unattended use. Apply the Linux sandbox grants below, and feed the worker prompt through stdin:
 
 ```sh
 cd /absolute/path/to/charlie-clone
 CODEX_HOME=/absolute/path/to/my-run/configs/codex codex exec -C . \
-  --add-dir /absolute/path/to/charlie-clone/.git --approve-for-me - \
+  --approve-for-me - \
   < /absolute/path/to/my-run/charlie.prompt.md
 ```
 
 The manual route uses [`prompts/alice.md`](../prompts/alice.md) for Alice and [`prompts/worker.md`](../prompts/worker.md) for each worker. Install the [`alice-orchestrator`](../skills/alice-orchestrator/SKILL.md) skill in Alice's runtime and the [`worker`](../skills/worker/SKILL.md) skill in a Claude worker's runtime. The generated run directory does these steps for you and keeps every config outside the clones.
 
 The bridge finds its hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, or else the hub of the checkout it starts in, once that hub's `/healthz` reports the hub ID recorded for it. It never attaches to another hub, even the only one on the machine: anywhere else it returns the list of live hubs as a tool error. The generated configs set the explicit values.
+
+## Linux sandbox grants
+
+These grants were measured for **Claude Code 2.1.312** and **Codex 0.164.0**
+in the #316 run. Harness sandboxes change often; M3's `robomate certify`
+(§9.3) re-measures them, including branch creation, commit and push. They
+are static per repository and agent, not per run. Keep the prepared route's
+run-local configuration when using prepared clones; joined agents can put
+these grants in their harness's user configuration.
+
+For a generated worktree, run `git rev-parse --git-common-dir` there to find
+`<common>`; resolve a relative result against that working directory. A
+linked worktree's `.git` is a file, not the common directory. With a hub on
+the main checkout, `<common>` is that main checkout's `.git` directory.
+Prepared full clones use their own common directory (normally `<clone>/.git`);
+Codex needs its `objects`, `refs` and `logs` roots but no `worktrees/<agent>`
+root in that layout. The four-root example below is for generated worktrees.
+
+**Claude Code 2.1.312 (Linux).** Add these settings (substitute the actual
+hub token directory) to the harness settings used for the session:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "network": {
+      "allowedDomains": ["github.com", "api.github.com"]
+    },
+    "filesystem": {
+      "denyRead": ["<root>/<hub>/token"]
+    }
+  }
+}
+```
+
+No filesystem write grant is needed for a linked worktree: Claude Code makes
+the common directory writable and protects `config` and `hooks/` itself.
+Both hosts are needed: in this run Alice's first `gh` command with only
+`github.com` allowed was denied with `deny network-outbound api.github.com:443`
+and `Post https://api.github.com/graphql: not in this command's allowed_domains`;
+the same command succeeded after allowing `api.github.com`.
+
+The token `denyRead` was measured by the operator on 2.1.312: an empty tmpfs
+hides the directory inside the Bash sandbox, so opening the token fails with
+`No such file or directory`. The MCP bridge runs outside that sandbox and
+still reads it; this run's Claude Code agents joined with the deny configured.
+Operator-typed `!` shell commands run outside the sandbox and cannot measure
+these restrictions. Agents never open the token themselves.
+
+**Codex 0.164.0 (Linux).** In the session's `config.toml` (the run-local
+`CODEX_HOME/config.toml` for prepared runs), use `workspace-write` and:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = [
+  "<common>/worktrees/<agent>",
+  "<common>/objects",
+  "<common>/refs",
+  "<common>/logs",
+  "<uv-cache>",
+]
+```
+
+Replace `<uv-cache>` with the absolute path printed by `uv cache dir`
+(normally `~/.cache/uv` on Linux). The cache is a fifth root needed for this
+repository's `uv run` checks: without it the operator measured `Could not
+acquire lock` / `Read-only file system (os error 30)` under that cache.
+The worktree itself and the harness's temporary directory are already writable.
+Never grant `<common>` itself: that opens shared `config` and `hooks/` while
+Codex still protects the worktree's own gitdir inside it. Grant the four
+specific git paths above instead. For Codex the token boundary is guide-only:
+no read-deny was found. The worker guide forbids reading the hub's state or
+token directory; a writable-root grant does not enforce that read boundary.
+
+On both harnesses, create branches with
+`git switch --no-track -c <branch> origin/<default>` and push with
+`git push origin <branch>` without `-u`, because upstream tracking writes
+protected git config. Agents never delete branches, local or remote; Codex
+cannot take `packed-refs.lock` under the narrow grant. Branch cleanup is an
+operator action (Step 8's `robomate clean`).
 
 ## Answering escalations
 
@@ -774,8 +857,8 @@ If you prefer running both Bob and Charlie with Claude Code:
 | Alice escalates: "no valid reviewer pair" | Policy constraints violated | If both workers run the same runtime (e.g. Claude Code), ensure `"reviewer_harness_differs": false` in Alice's policy. |
 | Alice `assign_task` fails with `409 Conflict` | Worker busy or duplicate event ID | Worker already has an open task, or `event_id` was already assigned. Call `get_state()` to inspect active tasks before retrying. |
 | `check_merge_gate` reports `ci == no_workflows` and blocks | Repo has no GitHub Actions CI | Set `"allow_no_ci": true` in Alice's workflow policy if the repo has no automated checks. |
-| Codex worker fails with git permission errors | Codex protects `.git` directory | Launch Codex with `--add-dir "/path/to/clone/.git"` in addition to `--approve-for-me`. |
-| Codex worker fails with network errors | Sandbox disables network access | Add `[sandbox_workspace_write]\nnetwork_access = true` in Charlie's `CODEX_HOME/config.toml`. |
+| Codex worker fails with git permission errors | Common-directory writes are outside the sandbox grant | Apply the versioned [Linux sandbox grants](#linux-sandbox-grants): specific git roots plus the uv cache; never grant the whole common directory. Create with `--no-track`, push without `-u`. |
+| Worker fails with network errors | Sandbox network grant is missing | Apply the [Linux sandbox grants](#linux-sandbox-grants): Codex needs `network_access = true`; Claude Code needs both `github.com` and `api.github.com`. |
 | Codex worker hangs on MCP tool calls | Interactive approval prompt blocking | Add `approval_mode = "approve"` for all worker tools in `config.toml` (see the runtime template; the full list is `TOOLS` in `scripts/run_common.py`). |
 | Hub port (`HUB_PORT`, default 8420) already in use | Stale hub listener, or another checkout's hub | Inspect the listener and stop it only if it is your run's. If it belongs to another checkout, leave it and start your hub with `robomate up --port 8521` before preparing from its repository. |
 | Hub or `uv` reports a configured path as missing, though the JSON looks correct | Unescaped Windows backslash in a `*.mcp.json` file | Use forward slashes (`C:/target/.robomate`) or escaped backslashes (`C:\\target\\.robomate`). Verify with `python -c "import json; print(json.load(open('configs/bob.mcp.json'))['mcpServers']['robomate']['env']['HUB_WORKSPACE'])"` — a value containing a newline or `r` where a drive letter should be means a `\n`/`\r` escape was parsed. Git Bash `/c/...` spellings also fail here; use a native Windows path. |

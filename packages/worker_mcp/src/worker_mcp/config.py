@@ -78,6 +78,7 @@ class WorkerSettings:
     workspace: Path | None = None
     cwd: Path | None = None
     environ: Mapping[str, str] | None = field(default=None, compare=False)
+    token_file: Path | None = None
 
     @classmethod
     def from_discovered(
@@ -101,7 +102,7 @@ class WorkerSettings:
             env["AGENT_NAME"] = agent_name
         if harness is not None and not env_had_harness:
             env["HUB_HARNESS"] = harness
-        settings = cls.from_env(env)
+        settings = replace(cls.from_env(env), token_file=endpoint.token_file)
         if settings.profile.harness != UNKNOWN:
             source = ModelSource.ENV if env_had_harness else ModelSource.INSTALL
             return replace(
@@ -144,9 +145,11 @@ class WorkerSettings:
         raw_hub_url = (env.get("HUB_URL") or env.get("ROBOMATE_HUB_URL") or "").strip().rstrip("/")
         raw_token = (env.get("HUB_TOKEN") or env.get("ROBOMATE_TOKEN") or "").strip()
         raw_token_file = env.get("ROBOMATE_TOKEN_FILE", "").strip()
+        token_file = None
         if not raw_token and raw_token_file:
+            token_file = Path(raw_token_file).expanduser().resolve()
             with suppress(OSError):
-                raw_token = Path(raw_token_file).expanduser().read_text(encoding="utf-8").strip()
+                raw_token = token_file.read_text(encoding="utf-8").strip()
         raw_agent_name = (env.get("AGENT_NAME") or env.get("ROBOMATE_AGENT_NAME") or "").strip()
         return cls(
             hub_url=raw_hub_url,
@@ -160,6 +163,7 @@ class WorkerSettings:
             telemetry_log=telemetry_log,
             cwd=cwd,
             environ=env,
+            token_file=token_file,
         )
 
     @classmethod
