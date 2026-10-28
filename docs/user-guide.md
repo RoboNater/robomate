@@ -329,9 +329,10 @@ For a generated worktree, run `git rev-parse --git-common-dir` there to find
 `<common>`; resolve a relative result against that working directory. A
 linked worktree's `.git` is a file, not the common directory. With a hub on
 the main checkout, `<common>` is that main checkout's `.git` directory.
-Prepared full clones use their own common directory (normally `<clone>/.git`);
-Codex needs its `objects`, `refs` and `logs` roots but no `worktrees/<agent>`
-root in that layout. The four-root example below is for generated worktrees.
+The four-root example below is for generated linked worktrees. Prepared full
+clones have a different git layout; their sandbox grants were not measured
+in this run. Keep their run-local MCP configuration, but do not assume the
+linked-worktree git roots cover a full clone.
 
 **Claude Code 2.1.312 (Linux).** Add these settings (substitute the actual
 hub token directory) to the harness settings used for the session:
