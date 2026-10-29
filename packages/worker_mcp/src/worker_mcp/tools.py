@@ -277,6 +277,8 @@ def create_worker_mcp(
         Assignments carry statement_sha256; call this when you need the text.
         """
         resolved = await resolve()
+        if resolved.orchestrator is not None and resolved.orchestrator.joined:
+            return await resolved.orchestrator.call("get_statement", {"sha256": sha256})
         require_joined(resolved, allow_preconfigured=True)
         return await invoke(
             resolved,
@@ -316,7 +318,7 @@ def create_worker_mcp(
             return forward
 
         for operation in OPERATIONS:
-            if operation == "submit_closeout_report":
+            if operation in {"submit_closeout_report", "get_statement"}:
                 continue  # The shared tool above dispatches by the joined role.
             server.add_tool(MethodType(forward_operation(operation), server))
     return server
