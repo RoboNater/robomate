@@ -409,6 +409,7 @@ async def test_a_malformed_profile_is_refused(
     assert hub_store.agent_by_name("bob") is None
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_next_holds_until_alice_assigns(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
@@ -427,7 +428,15 @@ async def test_next_holds_until_alice_assigns(
 
     async def worker() -> httpx.Response:
         response = await client.post(
-            "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
+            "/a2a",
+            json=rpc(
+                "message/stream",
+                message(
+                    "NEXT",
+                    context_id=context_id,
+                    metadata={MetaKeys.TIMEOUT_S: LIVENESS_S},
+                ),
+            ),
         )
         order.append("received")
         return response
