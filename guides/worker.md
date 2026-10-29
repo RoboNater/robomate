@@ -60,6 +60,35 @@ await_assignment -> get_role_guide -> do work -> submit_result -> repeat
 
 If a task call says the task is already finished, call `await_assignment`, which returns any task you still hold (#326).
 
+## Workspace boundaries and git hygiene
+
+Never read the hub's state or token directory, including legacy `.robomate/`.
+This rule binds the agent and every tool it runs. `whoami` names the token
+file: the bridge, not the agent, reads it on the agent's behalf. Never open
+that file yourself, even to test a sandbox boundary.
+
+Start every task from fresh `origin/<default>` or the assigned SHA. Check
+`git status --porcelain --untracked-files=no` before changing anything; on
+uncommitted changes to tracked files, report `blocked`, never discard them.
+Untracked harness files are not uncommitted work. Fetch with `git fetch origin` before
+selecting the task's starting point. Initial implementation starts from the
+fresh default branch; later tasks of the same run reuse the assigned work
+branch and verify its current head from the forge. Reviewers and the
+orchestrator use `git switch --detach <assigned-sha>`.
+
+Create the assigned implementation branch with
+`git switch --no-track -c <branch> origin/<default>` and push with
+`git push origin <branch>` without `-u`. Never change git config, including
+upstream tracking settings. Never delete branches, local or remote; branch
+cleanup belongs to the operator. If git reports `cannot lock ref`, retry the
+same command after a short wait; never delete a `.lock` file. If contention
+persists, report `blocked` with the command and error.
+
+Keep scratch outside the worktree. Validation scratch, temporary checkouts,
+and validation TEMP belong in the harness's own temporary directory, never
+in the worktree or `closeout/`. Normal repository setup and check caches
+(such as `.venv` and `.pytest_cache`) remain in their usual locations.
+
 ## Waiting
 
 <!-- Headless turn end: #115. -->

@@ -15,8 +15,10 @@ change request, or merge it.
    read the statement verbatim with `get_statement(sha)` (#9, #297). The
    assignment text points to the requirements but does not replace them.
 2. Confirm the repository, base branch, and current branch before editing. For
-   initial implementation, create or use the issue branch named by the
-   assignment (`hub.branch`, `robomate/<hub>/<agent>/<label>`): the hub names it
+   initial implementation, fetch with `git fetch origin`, then create the
+   issue branch with `git switch --no-track -c <branch> origin/<default>`,
+   using the branch named by the assignment (`hub.branch`,
+   `robomate/<hub>/<agent>/<label>`): the hub names it
    in the run's first implementer assignment, with `<label>` derived from the
    statement (issue number or a slug) and validated like a name, and later tasks
    of the same run reuse it. The hub refuses a label whose ref already exists
@@ -50,7 +52,8 @@ are actively validating or waiting. Keep `agent_stalled` diagnostic only.
 Do not wait for forge CI before `submit_result`: Alice's merge gate checks CI
 anyway, so submit once the work is ready. If you wait for CI anyway, report
 progress when the wait starts and keep the same cadence while waiting.
-6. Push the branch and create or update the change request. For a new change
+6. Push with `git push origin <branch>` without `-u` and create or update the
+   change request. Never delete branches, local or remote. For a new change
    request, use your forge CLI's create command (see the forge appendix) and
    include the issue-closing reference requested by the assignment. Read the
    current change-request head back from the forge (see the forge appendix);

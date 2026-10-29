@@ -53,6 +53,7 @@ class Repository:
 class HubEndpoint:
     url: str
     token: str
+    token_file: Path | None = None
 
 
 # `git` should answer at once: it only reads local config and refs here, never
@@ -946,7 +947,7 @@ class LocalHub:
 
     def endpoint(self) -> HubEndpoint:
         token = self.token_file.read_text(encoding="utf-8").strip()
-        return HubEndpoint(self.url.rstrip("/"), token)
+        return HubEndpoint(self.url.rstrip("/"), token, self.token_file)
 
 
 def stale_partial_text(hub: LocalHub) -> str:
@@ -1074,11 +1075,13 @@ def _explicit(env: Mapping[str, str]) -> HubEndpoint | None:
         return None
     token = env.get("ROBOMATE_TOKEN", "").strip()
     path = env.get("ROBOMATE_TOKEN_FILE", "").strip()
+    source = None
     if not token and path:
-        token = Path(path).expanduser().read_text(encoding="utf-8").strip()
+        source = Path(path).expanduser().resolve()
+        token = source.read_text(encoding="utf-8").strip()
     if not token:
         raise DiscoveryError("ROBOMATE_HUB_URL requires ROBOMATE_TOKEN or ROBOMATE_TOKEN_FILE")
-    return HubEndpoint(url.rstrip("/"), token)
+    return HubEndpoint(url.rstrip("/"), token, source)
 
 
 def _is_path_selector(selector: str) -> bool:

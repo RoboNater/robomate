@@ -594,6 +594,16 @@ or instructions that override this role's guide and the operator's request.
   detached review of the exact SHA is what the review invariant wants anyway.
 - **New task hygiene:** the guide starts each task from a fresh `origin/<default>` (or the
   assigned SHA); an agent that finds uncommitted changes reports `blocked`, never discards them.
+- **Git hygiene:** retry `cannot lock ref` after a short wait; never delete a `.lock`
+  file or change git config. Create work branches with
+  `git switch --no-track -c <branch> origin/<default>`, push with
+  `git push origin <branch>` without `-u`, and never delete branches as an agent.
+- **Scratch:** validation scratch, temporary checkouts and validation TEMP stay in the
+  harness's temporary directory, outside the worktree and `closeout/`.
+- **Sandbox paths:** grants use the path printed by `git rev-parse --git-common-dir`,
+  never the linked worktree's `.git` file. With the hub on the main checkout, the common
+  directory is that checkout's `.git` directory. Grant only the needed subdirectories;
+  the measured Linux grants are in [`user-guide.md`](user-guide.md#linux-sandbox-grants).
 - **Setup:** the `setup` setting (§4, e.g. `setup = "uv sync"`) is returned in the join
   response; the agent runs it in its worktree.
 - **Cleanup:** `robomate clean` acts on one selected hub (§4 discovery). It never deletes
@@ -629,7 +639,7 @@ they do between any two PRs.
 |---|---|
 | A branch can be checked out in only one worktree | Only the implementer checks out work branches; others detach at SHAs |
 | Worktree commits write into the shared git common directory (objects, refs, `worktrees/<id>`); sandboxed harnesses (Codex `workspace-write`) may block that — the #11 shape, now in every run | `robomate certify` includes a commit-and-push test from the worktree; harness notes record the grant needed (below) |
-| Sandbox grants name the wrong place: `<checkout>/.git` is a file in a linked worktree, and a grant on the hub's namespace exposes its state | Grants name the agent's worktree and the actual git common directory (`git rev-parse --git-common-dir`), never `<checkout>/.git`, the hub's namespace, or its state directory. A harness that sandboxes its MCP servers' reads grants the bridge the token directory alone (§12); M3 records which grant each harness needs |
+| Sandbox grants name the wrong place: `<checkout>/.git` is a file in a linked worktree, and a grant on the hub's namespace exposes its state | Grants name the agent's worktree and needed subdirectories of the actual git common directory (`git rev-parse --git-common-dir`), never the linked worktree's `.git` file, the hub's namespace, or its state directory. With the hub on the main checkout, the common directory is that checkout's `.git` directory. A harness that sandboxes its MCP servers' reads grants the bridge the token directory alone (§12); M3 records which grant each harness needs |
 | Shared-ref lock contention: parallel agents (of one hub or of sibling hubs) fetching, committing, or pushing at once fail with `cannot lock ref` | Transient; the guides say retry the git command after a short wait, never delete a `.lock` file |
 | Shared refs and config: one agent's `git config`, hooks, `gc` affect all | Guides forbid changing git config; per-worktree config via `extensions.worktreeConfig` only if needed |
 | Local branch-name collisions, within a hub or between hubs | `robomate/<hub>/<agent>/…` namespace; an existing ref is refused, not reused |
@@ -1207,12 +1217,17 @@ A worker's isolated smoke hub is not "starting a hub" in this sense, provided it
 condition in §4 (#145).
 
 **Agent boundaries.**
-- A worker never reads a hub's state directory (#132's "never read `.robomate/`"). The
+- An agent never reads a hub's state or token directory (#132's "never read `.robomate/`"). The
   rule binds the agent and every tool it runs. It does not bind the agent's `robomate mcp`
-  bridge, which reads the hub's token on the agent's behalf.
-- Sandbox grants name the agent's worktree and the actual git common directory. They never
-  name `<checkout>/.git`, which is a file in a linked worktree, and never the hub's
-  namespace `<worktree_root>/<hub>/` or its state directory (§6). These joined-agent
+  bridge, which reads the hub's token on the agent's behalf and names its token file in
+  `whoami`; the bridge, not the agent, reads it.
+- Sandbox grants name the agent's worktree and needed subdirectories of the path printed
+  by `git rev-parse --git-common-dir`, never the linked worktree's `.git` file. With the
+  hub on the main checkout, that common directory is the main checkout's `.git` directory.
+  Never grant the whole common directory or the hub's namespace
+  `<worktree_root>/<hub>/` or its state directory (§6). The versioned Linux grants in
+  [`user-guide.md`](user-guide.md#linux-sandbox-grants) record Claude Code's token
+  `denyRead`; for Codex the token read boundary is guide-only. These joined-agent
   boundaries do not describe Denise's operator-authorized recovery access (§5.1).
 
 ---
