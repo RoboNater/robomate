@@ -190,6 +190,8 @@ def test_served_worker_boundaries_and_git_hygiene(forge: str) -> None:
         "Never read the hub's state or token directory",
         "the bridge, not the agent, reads it",
         "fresh `origin/<default>` or the assigned SHA",
+        "git status --porcelain --untracked-files=no",
+        "Untracked harness files are not uncommitted work",
         "uncommitted changes",
         "report `blocked`",
         "cannot lock ref",
@@ -205,6 +207,22 @@ def test_served_worker_boundaries_and_git_hygiene(forge: str) -> None:
         "Never delete branches, local or remote",
     ):
         assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_rebase_guide_preserves_branch_push_rules(forge: str) -> None:
+    """Decision 1 also applies when an existing branch is rebased or merged."""
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "rebase", forge=forge).body).decode("utf-8").split()
+    )
+    assert all(
+        fragment in text
+        for fragment in (
+            "git push --force-with-lease=<branch>:<pr_head_sha> origin <branch>",
+            "git push origin <branch>` without `-u`",
+            "Never delete branches, local or remote",
+        )
+    )
 
 
 def test_linux_grants_and_spec_common_directory_clarification() -> None:

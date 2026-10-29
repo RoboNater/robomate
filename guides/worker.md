@@ -68,8 +68,9 @@ file: the bridge, not the agent, reads it on the agent's behalf. Never open
 that file yourself, even to test a sandbox boundary.
 
 Start every task from fresh `origin/<default>` or the assigned SHA. Check
-`git status --porcelain` before changing anything; on uncommitted changes,
-report `blocked`, never discard them. Fetch with `git fetch origin` before
+`git status --porcelain --untracked-files=no` before changing anything; on
+uncommitted changes to tracked files, report `blocked`, never discard them.
+Untracked harness files are not uncommitted work. Fetch with `git fetch origin` before
 selecting the task's starting point. Initial implementation starts from the
 fresh default branch; later tasks of the same run reuse the assigned work
 branch and verify its current head from the forge. Reviewers and the
