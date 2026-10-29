@@ -1,10 +1,18 @@
+import hashlib
 import json
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from agent_hub_common import ImplementerResult, RebaseResult
+from agent_hub_common.orchestrator_tools import OPERATIONS
+from conftest import BASE_URL, TOKEN
+from fastapi import FastAPI
+from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
@@ -24,6 +32,65 @@ EXPECTED_TOOLS = {
     "get_operator_answer",
     "get_statement",
 }
+
+
+async def test_combined_mcp_registers_every_tool_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    registrations: list[str] = []
+    add_tool = FastMCP.add_tool
+
+    def record_tool(server: FastMCP, fn: Callable[..., Any], **kwargs: Any) -> None:
+        registrations.append(kwargs.get("name") or fn.__name__)
+        add_tool(server, fn, **kwargs)
+
+    monkeypatch.setattr(FastMCP, "add_tool", record_tool)
+    client = WorkerHubClient(WorkerSettings.unjoined(environ={}))
+    server = create_worker_mcp(client, include_orchestrator=True)
+
+    # A new overlapping name must get an explicit role-dispatching implementation.
+    assert EXPECTED_TOOLS.intersection(OPERATIONS) == {"submit_closeout_report", "get_statement"}
+    expected = EXPECTED_TOOLS.union(OPERATIONS)
+    assert Counter(registrations) == Counter(dict.fromkeys(expected, 1))
+    assert {tool.name for tool in await server.list_tools()} == expected
+    assert "Tool already exists" not in caplog.text
+
+
+@pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+async def test_combined_mcp_get_statement_for_orchestrator_and_worker(app: FastAPI) -> None:
+    statement = "Read caf\u00e9 requirements.\r\nKeep this trailing newline.\r\n"
+    raw = statement.encode("utf-8")
+    sha256 = hashlib.sha256(raw).hexdigest()
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        alice = WorkerHubClient(WorkerSettings.unjoined(environ={}), http)
+        bob = WorkerHubClient(WorkerSettings.unjoined(environ={}), http)
+        try:
+            orchestrator = create_worker_mcp(alice, include_orchestrator=True)
+            worker = create_worker_mcp(bob, include_orchestrator=True)
+            await orchestrator.call_tool("join", {"name": "alice", "role": "orchestrator"})
+            await orchestrator.call_tool("start_workflow", {"statement": statement})
+            await worker.call_tool("join", {"name": "bob", "role": "implementer"})
+
+            for server in (orchestrator, worker):
+                result = await server.call_tool("get_statement", {"sha256": sha256})
+                assert isinstance(result, tuple)
+                stored = result[1]
+                assert stored["sha256"] == sha256
+                assert stored["statement"].encode("utf-8") == raw
+                assert stored["size"] == len(raw)
+                with pytest.raises(ToolError, match="unknown statement"):
+                    await server.call_tool("get_statement", {"sha256": "0" * 64})
+        finally:
+            await alice.close()
+            await bob.close()
 
 
 async def test_worker_mcp_tools_list_and_dispatch() -> None:
