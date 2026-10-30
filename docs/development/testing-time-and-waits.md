@@ -119,7 +119,7 @@ transaction per poll. A hold meant to last until a condition holds therefore
 passes `timeout_s=LIVENESS_S`, and over HTTP or MCP also lifts the cap with
 `@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)`. Without the marker, the
 hold still ends after 1 s. Directly on the store, passing `timeout_s=LIVENESS_S`
-is enough.
+is enough. An audit of implicit holds must search the parsed code (for example with Python's `ast` module), not a single line, so calls written across several lines are included.
 
 **No `elapsed < N` as a fast-fail.** A test that holds for `LIVENESS_S` and
 expects to be woken early may be tempted to assert `elapsed < 10.0` to prove
