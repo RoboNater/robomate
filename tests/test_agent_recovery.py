@@ -843,8 +843,19 @@ def test_alice_log_with_late_workflow_id_uses_saved_pin(
     assert "taken from hub" not in text
 
 
+@pytest.mark.parametrize(
+    ("end", "created"),
+    [
+        ("2026-10-08T11:05:00Z", "2026-10-08T10:58:00Z"),
+        # #398: a step during the launch leaves its end before its start.
+        ("2026-10-08T10:59:58Z", "2026-10-08T11:00:00Z"),
+    ],
+    ids=["created-before-start", "end-before-start"],
+)
 def test_backward_clock_tolerated_only_with_hub_evidence(
     recovery_args: argparse.Namespace,
+    end: str,
+    created: str,
 ) -> None:
     """#223/#209: prefer hub-side evidence over a tight timestamp comparison."""
 
@@ -852,20 +863,20 @@ def test_backward_clock_tolerated_only_with_hub_evidence(
         recovery_args,
         [
             _null_row("start", timestamp="2026-10-08T11:00:00Z"),
-            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+            _null_row("exit", timestamp=end),
         ],
     )
-    skewed = _hub_with_created(RecoveryReader(), "2026-10-08T10:58:00Z")
+    skewed = _hub_with_created(RecoveryReader(), created)
     _, text = RECOVERY.prepare(recovery_args, skewed, "bob")
     assert "backward-clock tolerance" in text and "taken from hub" in text
     save_rows(
         recovery_args,
         [
             _null_row("start", timestamp="2026-10-08T11:00:00Z"),
-            _null_row("exit", timestamp="2026-10-08T11:05:00Z"),
+            _null_row("exit", timestamp=end),
         ],
     )
-    lonely = _hub_with_created(RecoveryReader(), "2026-10-08T10:58:00Z")
+    lonely = _hub_with_created(RecoveryReader(), created)
     lonely.state["hub.status"]["agents"] = []
     lonely.state["hub.snapshot"]["tasks"] = []
     with pytest.raises(LAUNCHER.Stop, match="condition 3"):
