@@ -517,6 +517,7 @@ async def test_progress_is_acknowledged_and_queued_for_alice(
     assert event.payload["note"] == "branch pushed"
 
 
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_a_question_holds_until_alice_replies(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
@@ -525,7 +526,7 @@ async def test_a_question_holds_until_alice_replies(
         pass
 
     async def alice() -> None:
-        event = await hub_store.wait_for_event(2.0)
+        event = await hub_store.wait_for_event(LIVENESS_S)
         assert event is not None and event.kind is EventKind.WORKER_QUESTION
         hub_store.reply(event.payload["task_id"], "main", message_id=event.payload["message_id"])
 
@@ -538,7 +539,7 @@ async def test_a_question_holds_until_alice_replies(
                     "Which base branch?",
                     context_id=context_id,
                     task_id=task_id,
-                    metadata={MetaKeys.KIND: "question"},
+                    metadata={MetaKeys.KIND: "question", MetaKeys.TIMEOUT_S: LIVENESS_S},
                 ),
             ),
         )
