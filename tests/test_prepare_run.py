@@ -3527,15 +3527,25 @@ def test_zero_argument_resume_script_recovers_null_workflow_log(
                     row["timestamp"] = end
                     if "exited_at" in row:
                         row["exited_at"] = end
-        for row in before_rows:
+        # This test fabricates a timing-only workflow match: the stub has no
+        # task/session evidence to justify backward-clock tolerance. Give that
+        # fixture an ordered historical timeline, independent of real launcher
+        # wall-clock steps (#398). Recovery's clock guards have their own tests.
+        fixture_start = datetime(2026, 10, 10, tzinfo=UTC)
+        for index, row in enumerate(before_rows):
             row["workflow_id"] = None
+            row["timestamp"] = (fixture_start + timedelta(seconds=index)).isoformat()
+            if "exited_at" in row:
+                row["exited_at"] = row["timestamp"]
         sessions_path.write_text(
             "".join(json.dumps(row) + "\n" for row in before_rows), encoding="utf-8"
         )
         _StubHub.created = before_rows[0]["timestamp"]
         stderr = run_script(run_dir / f"resume-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
     assert "taken from hub" in stderr
-    assert "taken from hub" in (run_dir / f"resume-{agent}.prompt.md").read_text(encoding="utf-8")
+    prompt = (run_dir / f"resume-{agent}.prompt.md").read_text(encoding="utf-8")
+    assert "taken from hub on timing alone" in prompt
+    assert "backward-clock tolerance" not in prompt
     after_rows = [json.loads(line) for line in sessions_path.read_text().splitlines()]
     new_rows = after_rows[len(before_rows) :]
     assert [row["event"] for row in new_rows] == ["recovery", "manual_resume", "exit", "stop"]
