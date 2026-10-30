@@ -413,6 +413,12 @@ ENDURANCE_LONG_WORK_S = 2.5
 async def test_mock_alice_drives_scaled_endurance_scenario(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
 ) -> None:
+    # This base made the old (start + elapsed) subtraction round short.
+    frozen_clock.monotonic_start = 1.9817403483677638
+    assert (
+        frozen_clock.monotonic_start + ENDURANCE_LONG_WORK_S - frozen_clock.monotonic_start
+        < ENDURANCE_LONG_WORK_S
+    )
     assert ENDURANCE_LONG_WORK_S > ENDURANCE_LOST_AFTER_S > ENDURANCE_HEARTBEAT_S
     db_path = tmp_path / "endurance.db"
     initialize_database(db_path)
@@ -434,8 +440,8 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
     app = create_app(settings)
     store: HubStore = app.state.store
     frozen_clock.install(store)
-    # Alice measures the long work interval on the same clock as hub liveness.
-    monkeypatch.setattr(mock_alice, "monotonic", frozen_clock.monotonic)
+    # Use the same elapsed time as hub liveness without subtracting a float base.
+    monkeypatch.setattr(mock_alice, "monotonic", lambda: frozen_clock.elapsed)
 
     heartbeat_waiting = asyncio.Event()
     heartbeat_tick = asyncio.Event()
