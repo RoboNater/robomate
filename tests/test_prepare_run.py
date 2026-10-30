@@ -18,6 +18,7 @@ import time
 import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -3476,8 +3477,13 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
 @pytest.mark.parametrize("agent", ["alice", "bob"])
+@pytest.mark.parametrize("backward_clock", [False, True], ids=["steady", "backward-2s"])
 def test_zero_argument_resume_script_recovers_null_workflow_log(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, agent: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    agent: str,
+    backward_clock: bool,
 ) -> None:
     """#223/#299 item 5: zero-arg resume-<agent> succeeds when log workflow_ids are null."""
 
@@ -3511,6 +3517,16 @@ def test_zero_argument_resume_script_recovers_null_workflow_log(
         run_script(run_dir / f"start-{agent}.{SCRIPT_SUFFIX}", bin_dir, env)
         sessions_path = run_dir / f"{agent}-sessions.jsonl"
         before_rows = [json.loads(line) for line in sessions_path.read_text().splitlines()]
+        if backward_clock:
+            # #398: force the reported wall-clock step in the real launcher's
+            # output before the resume subprocess reads it. No host clock changes.
+            start = datetime.fromisoformat(before_rows[0]["timestamp"])
+            end = (start - timedelta(seconds=2)).isoformat()
+            for row in before_rows:
+                if row["event"] in ("exit", "stop"):
+                    row["timestamp"] = end
+                    if "exited_at" in row:
+                        row["exited_at"] = end
         for row in before_rows:
             row["workflow_id"] = None
         sessions_path.write_text(
