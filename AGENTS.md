@@ -16,8 +16,21 @@ are the shared vocabulary in issues and commits, and §13 orders the milestones.
 [`docs/poc-spec.md`](docs/poc-spec.md) is the frozen PoC design, in force where
 the MVP spec doesn't change it.
 
-- **Roadmap: #2.** Milestone status, and reservations of shared counters (DB
-  schema version, wire `hub.schema_version`). Take a counter's value from there.
+- **Roadmap: #2.** Triage maintains milestone status and sequencing; ordinary
+  agent runs do no roadmap decision, adjudication or completion edit. The PR's
+  `Closes #N` reference closes the issue; triage reflects it on its next pass.
+- **Reservations: #409.** Shared counters (DB schema version, wire
+  `hub.schema_version`) live here. Only a run using a counter reads or edits it.
+  Before writing code that uses a value, Alice claims it or explicitly assigns
+  that claim to the implementer, using the shared-body procedure: for example,
+  `v28 reserved for #N (in progress); next is v29`. Re-fetch immediately before
+  writing; if the snapshot changed, rebuild from the fresh body and choose an
+  unclaimed value. Reading the next value or logging it in the hub is not a
+  claim. The reviewer checks the code uses the claimed value and that the next
+  value excludes all in-flight claims. After merge, close out only this claim
+  as `shipped for #N (PR #M)`; release an unused claim if abandoned or dropped,
+  without rewinding the next value over other claims. No new counter is needed
+  for ordinary work.
 - **Lessons learned: #3** (earlier: [`docs/poc-lessons.md`](docs/poc-lessons.md)). **Minor nits: #4.**
 - **GitLab:** supported as of M5 ([plan](docs/development/implementation-plan-mvp-m5-gitlab.md)).
   Read #69 (test instance and sandbox) before any GitLab work or regression run.
@@ -145,7 +158,7 @@ for a subprocess hub) and passes under the same conditions.
   process serves HTTP only and must also be stopped when a test starts it.
   A worker never starts or stops the run's hub or any agent; the only hub it
   starts by hand is the isolated smoke run under Validation (#145).
-- **Edit a shared issue or PR body (roadmap #2 above all) so that a failure
+- **Edit a shared issue or PR body (including reservations #409) so that a failure
   writes nothing.** Follow the [shared-body procedure](docs/development/editing-shared-bodies.md):
   snapshot into a unique temporary directory, decode JSON and write the body
   string as UTF-8 without a BOM or added newline, and replace only anchored text.
@@ -166,6 +179,6 @@ separately. An issue that changes behaviour names, under Tests, the commands a
 reviewer will run to see it work — not only the properties that must hold — so
 the implementer runs the same thing first. Never commit directly to `main`.
 When explicitly asked to commit or open a PR for an issue, reference it with
-`Closes #N`. Only merge/delete the branch or update issue #2 when the task
-explicitly includes that action; wait for CI before merging and use squash
-merge.
+`Closes #N`. Only merge/delete the branch when the task explicitly includes
+that action; wait for CI before merging and use squash merge. Agent runs do not update
+roadmap #2; triage owns it. Counter claims and their close-out use #409 as above.

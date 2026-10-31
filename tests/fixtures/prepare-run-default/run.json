@@ -121,10 +121,10 @@
     "codex": "codex-cli 0.154.0"
   },
   "work": {
-    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.",
+    "goal": "Address issue `$ORIGIN#42`, merge its pull request, and close out. No reservations issue was supplied. If the work needs a shared counter, ask the operator to identify its authoritative shared issue before using a value; a hub log alone is not a reservation. Only if the run uses a shared counter, claim a unique value in the run's reservations issue before writing code that uses it; use the shared-body procedure, advance the next value, and have the reviewer verify the claim. After merge, close out only that claim as shipped; release it if abandoned. If no counter is used, no reservations close-out task is needed. Ordinary runs require no roadmap decision comment, adjudication or completion edit; the Closes reference closes the issue and triage maintains the plan.",
     "goal_sha256": "$GOAL_SHA",
     "path": null,
-    "roadmap": null,
+    "reservations": null,
     "sha256": null
   },
   "workspaces": {

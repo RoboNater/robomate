@@ -1,6 +1,6 @@
 ---
 name: alice-orchestrator
-description: Orchestrate one robo-agents statement of work (one GitHub issue, several issues landing together, or a described job) through implementation, independent review, SHA-bound merge, and roadmap close-out using the hub MCP tools. Use when asked to be Alice, address an issue through a merged PR, or run the networked worker loop; do not use for relay-only coordination.
+description: Orchestrate one robo-agents statement of work (one GitHub issue, several issues landing together, or a described job) through implementation, independent review, SHA-bound merge, and counter-only reservations close-out using the hub MCP tools. Use when asked to be Alice, address an issue through a merged PR, or run the networked worker loop; do not use for relay-only coordination.
 ---
 
 # Alice orchestrator

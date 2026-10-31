@@ -120,7 +120,7 @@ def test_role_guides_define_independent_typed_work() -> None:
             "Commit coherent increments",
             "resolved_finding_ids",
             "disputed_finding_ids",
-            "roadmap issue's completion status",
+            "mark only its claim shipped",
             "ImplementerResult",
             "That read can lag a push",
         ),
@@ -171,6 +171,35 @@ def test_role_guides_define_independent_typed_work() -> None:
         assert "mr merge" not in appendix
 
 
+def test_counter_claim_lifecycle_replaces_ordinary_roadmap_work() -> None:
+    orchestrator = read("guides/orchestrator.md")
+    assert_fragments(
+        orchestrator,
+        (
+            "merely supplying a target does not require a read or edit",
+            "before any code uses the value",
+            "v28 reserved for #N (in progress); next is v29",
+            "if another run changed the snapshot, rebuild and choose an unclaimed value",
+            "Reuse this work's existing claim unchanged on resume",
+            "never invent a target or rely on a hub log alone",
+            "Before merging a counter-using change, verify the reviewed code uses the value",
+            "Verify the shared issue directly",
+            "If the shipped value, next value or claim is wrong or missing",
+            "release its unused claim without rewinding over other claims",
+            "Legacy prepared runs keep their durable goals",
+        ),
+    )
+    assert "ROADMAP-CORRECTION" not in orchestrator
+    for path in ("guides/implementer.md", "guides/reviewer.md"):
+        guide = read(path)
+        assert "reservations issue" in guide
+        assert "in-flight" in guide
+        assert "Ordinary runs" in guide
+    for path in ("guides/forge/orchestrator-github.md", "guides/forge/orchestrator-gitlab.md"):
+        assert "reservations" in read(path)
+        assert "roadmap" not in read(path)
+
+
 def test_alice_prompt_uses_the_validated_default_policy() -> None:
     prompt = read("prompts/alice.md")
     match = re.search(r"```json\n(?P<policy>.*?)\n```", prompt, flags=re.DOTALL)
@@ -178,12 +207,13 @@ def test_alice_prompt_uses_the_validated_default_policy() -> None:
     assert json.loads(match.group("policy")) == WorkflowPolicy().model_dump(mode="json")
     assert prompt.index("get_state") < prompt.index("initialize_workflow")
     assert "first mutating workflow call" in prompt
-    assert "<roadmap-owner>/<roadmap-repository>#<roadmap-issue>" in prompt
-    assert "throwaway run with no roadmap target" in prompt
+    assert "<reservations-owner>/<reservations-repository>#<reservations-issue>" in prompt
+    assert "No reservations issue was supplied" in prompt
     assert "roadmap issue `#2`" not in prompt
     durable_goal = section(prompt, "Goal:", "Forge comment identity account:")
-    assert "<roadmap-owner>/<roadmap-repository>#<roadmap-issue>" in durable_goal
-    assert "no roadmap edit" in durable_goal
+    assert "<reservations-owner>/<reservations-repository>#<reservations-issue>" in durable_goal
+    assert "no roadmap edit" not in durable_goal
+    assert "If no counter is used, no reservations close-out task is needed" in durable_goal
     assert "Forge: <forge> (host: <host>, project: <project>)." in prompt
 
     skill = read("guides/orchestrator.md")
@@ -251,7 +281,7 @@ def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
             "no policy-valid worker",
             "worker question not answered by trusted inputs",
             "release both selected workers",
-            "update that issue's status",
+            "mark only its claim shipped",
             "neither `lost` nor `released`",
             "Closes <issue owner>/<issue repository>#<issue>",
             "open a follow-up issue",
@@ -314,7 +344,7 @@ def test_alice_skill_documents_resume_and_redelivery_guards() -> None:
         "RETRY for <failed task id>",
         "REVIEW-COMMENT-CORRECTION for <review task id>",
         "CLOSE-OUT for <merged sha7>",
-        "ROADMAP-CORRECTION for <close-out task id>",
+        "RESERVATION-CORRECTION for <close-out task id>",
     ):
         assert f"`{title_form}`" in skill
 
@@ -329,8 +359,8 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
             "The goal is a statement of work",
             "Read every issue the statement names",
             "acceptance criteria from the statement text, those issues",
-            "or any named issue may touch",
-            "carried unresolved to close-out",
+            "Only if the work needs a shared monotonic counter",
+            "before any code uses the value",
             "record the failure with `log_decision`",
             "`work-label:<label>`",
             "ask the operator to split it into one run per PR",
@@ -344,7 +374,7 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
         wrap_up,
         (
             "listing every issue the statement names and every PR",
-            "if it cannot be resolved",
+            "Only when the run used a counter",
         ),
     )
 
@@ -807,22 +837,12 @@ def test_statement_precedence_is_shared_and_preserves_safeguards() -> None:
                 ),
                 "the summary must not silently restore guide defaults",
                 "reserve the next DB schema version at pickup, before writing it into code",
-                "Reserve early, implement and review with the reserved version",
-                (
-                    "mark the version shipped and the issue complete after merge according to "
-                    "the adjudicated roadmap decision"
-                ),
-                (
-                    "Do not turn that post-merge instruction into a prohibition on all "
-                    "pre-merge roadmap edits"
-                ),
-                (
-                    "If the statement explicitly prohibits all pre-merge roadmap edits, "
-                    "clarify the conflict"
-                ),
+                "then implement and review with that value",
+                "marking a counter shipped after merge does not postpone its claim",
+                "If the statement prohibits all pre-merge reservation edits, clarify the conflict",
                 "before using a schema number and record the decision",
                 "Reading the next available number does not reserve it",
-                "This example grants workers no additional roadmap authority",
+                "This example grants workers no additional authority",
             ),
         )
         # The existing confirmed-answer and external-data policy remains alongside it.
@@ -868,7 +888,7 @@ def test_nonblocking_exception_requires_every_finding_to_qualify() -> None:
                 "explicitly marked `optional, no follow-up`)"
             ),
             (
-                "or an instruction for post-merge close-out only (roadmap or other shared-body "
+                "or an instruction for post-merge close-out only (reservation or other shared-body "
                 "edits after merge, no PR file change) gets no NONBLOCKING task"
             ),
             "Proceed to the merge gate on the approved head",

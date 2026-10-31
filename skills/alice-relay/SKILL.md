@@ -34,7 +34,20 @@ The `State` line exists so the human can resume after days away. Keep it current
 
 Use these templates nearly verbatim; they are the house style and the workers are used to them. Substitute only the bracketed parts.
 
-Before emitting **KICKOFF**, inspect the issue and roadmap text the human has supplied for shared, monotonic counters the issue may touch (for example, a database schema version, migration number, wire `schema_version`, or event kind). If the available text does not establish whether a counter is involved, ask the human to confirm. For every counter involved, verify that the roadmap reserves a value unique among in-flight issues. If one is missing, give the human a proposed roadmap comment in the form `Reservation: [counter] [value] = #[issue]` and wait for confirmation that it was posted. Append the reserved value to Bob's kickoff prompt only when the issue text does not already name it.
+Before emitting **KICKOFF**, inspect the issue text supplied by the human for shared
+monotonic counters (database schema, migration number, wire `schema_version` or
+similar). Only if the work uses a counter, read the supplied text of the run's
+reservations issue and verify a unique claim for this work. If no target is
+supplied, ask the human to identify the authoritative shared issue before code
+uses a value. If a claim is missing, propose an anchored body edit such as
+`v28 reserved for #N (in progress); next is v29`, using the shared-body procedure;
+wait for confirmation it was written and re-read. A comment or hub log alone
+is not a claim. Reuse an existing claim unchanged and check other in-flight
+claims. Append the target and reserved value to Bob's kickoff prompt only when
+the issue text omits them. Charlie independently verifies the claim and code.
+Ordinary runs require no roadmap decision comment, adjudication or completion
+edit: `Closes` closes the issue and triage maintains the plan. Supplying a
+reservations target alone adds no close-out work.
 
 **KICKOFF** — start of the issue. Awaiting Bob.
 ```
@@ -70,12 +83,12 @@ The developer responded on the PR without new commits. Please review their respo
 
 **NON-BLOCKING** — Charlie says ready-to-merge but lists non-blocking items. Awaiting Bob. Give Bob the choice; don't make it for him.
 ```
-The reviewer responded to your most recent commit [sha] and stated the PR is ready to merge, with non-blocking comments. You may address them now (then we will review again) or decline and the reviewer will file an issue. If no changes are needed, close out any remaining open PR threads and merge, then update the roadmap in issue #[roadmap] with current status, including any reservation line.
+The reviewer responded to your most recent commit [sha] and stated the PR is ready to merge, with non-blocking comments. You may address them now (then we will review again) or decline and the reviewer will file an issue. If no changes are needed, close out any remaining open PR threads and merge. Only if this run used a counter, mark its claim shipped in the run's reservations issue with the shared-body procedure; preserve the next value and other claims.
 ```
 
 **CLOSE-OUT** — Charlie approved or said ready-to-merge with nothing outstanding. Awaiting Bob.
 ```
-The reviewer responded to your most recent commit [sha] and stated the PR is ready to merge. Please close out any remaining open PR threads and merge, then update the roadmap in issue #[roadmap] with current status, including any reservation line.
+The reviewer responded to your most recent commit [sha] and stated the PR is ready to merge. Please close out any remaining open PR threads and merge. Only if this run used a counter, mark its claim shipped in the run's reservations issue with the shared-body procedure; preserve the next value and other claims.
 ```
 
 **REBASE** — an approved PR conflicts with or is behind its base. Awaiting Bob.
@@ -87,7 +100,7 @@ If Bob reports no hand-edited files, return to close-out at the new head. If he
 reports any, send Charlie a focused re-review naming those files and the
 resolution summary. That re-review does not increment `round`.
 
-**DONE** — Bob confirms the merge and roadmap update. No prompt. Tell the human the issue is closed and, if you know the agreed order, name the next issue.
+**DONE** — Bob confirms the merge and, only if a counter was used, its claim close-out. No prompt. Tell the human the issue is closed and, if you know the agreed order, name the next issue.
 
 ## Reading the pasted replies
 
@@ -104,7 +117,7 @@ These come from real failures. Each is one extra sentence appended to the next p
 - Charlie says "ready" in chat but didn't post on the PR → append: `Please post that assessment as a comment on the PR.`
 - Bob cites a commit hash the human says doesn't exist on origin → append: `Confirm the commit hash exists on origin (e.g. git ls-remote) before citing it, and correct the PR comment if needed.`
 - Bob mentions an out-of-scope finding but no issue → append: `Please open an issue for the out-of-scope item if you haven't, and reference it in the PR.`
-- Bob merged without updating the roadmap → send only: `Please update the roadmap in issue #[roadmap] with current status.`
+- A counter-using run merged without closing its claim → send only: `Please mark this run's claim shipped in the reservations issue #[reservations], preserve the next value and other claims, and verify the edit.`
 
 ## Rails — when to stop and ask the human
 
@@ -132,7 +145,9 @@ accepted. Phrase it so the human can approve the recommendation in one word.
 - Treat an intermediate commit as the PR head when Bob reports several; use his
   final/newest reported head SHA. If the human says it is not on origin, send
   the correction above.
-- Edit roadmap completion status. Bob owns that close-out; you only verify it
-  from his pasted reply and send the one-line correction above when it is
-  missing. Alice edits the roadmap only for reservations and sequencing.
+- Assign roadmap completion edits or require a roadmap decision/adjudication.
+  Triage maintains the plan. Only counter-using runs close out their claims;
+  verify that edit from Bob's pasted reply and send the correction above if
+  missing. Release unused claims if abandoned or dropped, without rewinding the
+  next value over other claims. Explicit legacy goals retain their obligations.
 - Run the loop for more than one issue at a time. If the human wants a second issue in parallel, ask them to start a second Alice.

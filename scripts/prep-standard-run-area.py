@@ -28,7 +28,7 @@ DEFAULTS: dict[str, str | int | bool] = {
     "issue": 0,
     "work_file": "",
     "account": "",
-    "roadmap": "",
+    "reservations": "",
     "forge": "github",
     "alice_harness": "claude",
     "alice_model": "",
@@ -85,6 +85,8 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
         config = args.config.expanduser().resolve()
         with config.open("rb") as stream:
             loaded = tomllib.load(stream)
+        if "roadmap" in loaded:
+            raise ValueError("roadmap was renamed to reservations in standard-run TOML")
         if unknown := loaded.keys() - DEFAULTS.keys():
             raise ValueError(f"unknown config keys: {', '.join(sorted(unknown))}")
         for key, value in loaded.items():
@@ -230,8 +232,8 @@ def prepare(values: dict[str, Any], *, yes: bool, source_config: Path | None = N
         command += ["--issue", str(values["issue"])]
     else:
         command += ["--work-file", values["work_file"]]
-    if values["roadmap"]:
-        command += ["--roadmap", values["roadmap"]]
+    if values["reservations"]:
+        command += ["--reservations", values["reservations"]]
     if source_config is not None:
         command += ["--source-config", str(source_config.expanduser().resolve())]
     for name in ("alice", "bob", "charlie", "denise"):
@@ -249,7 +251,10 @@ def prepare(values: dict[str, Any], *, yes: bool, source_config: Path | None = N
 
 def main(argv: list[str] | None = None) -> None:
     cli = parser()
-    args = cli.parse_args(argv)
+    arguments = sys.argv[1:] if argv is None else argv
+    if any(arg == "--roadmap" or arg.startswith("--roadmap=") for arg in arguments):
+        cli.error("--roadmap was renamed to --reservations")
+    args = cli.parse_args(arguments)
     try:
         if args.generate_default_config:
             write_config(args.generate_default_config, DEFAULTS)
