@@ -193,6 +193,40 @@ startup stages `robomate up` marks on stderr and the hub's output, may keep
 its own polling loop instead of `wait_until_sync`. The rule still applies to
 its bound: `LIVENESS_S`, never a fixed budget (#372).
 
+## In CI and review
+
+CI runs the full suite under the probe twice on Linux: `probe` at 50 ms and `probe-100` at
+100 ms. Both become required when #365 closes (`test` and `windows` are
+already required). A reviewer also runs each added or changed test file once
+at 250 ms, because 250 ms catches what 100 ms misses: the real-time deadline
+that #380 fixed passed at 100 ms and failed every time at 250 ms.
+
+```sh
+ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest <each added or changed test file>
+```
+
+Run without `-q` so the `db latency probe: 250 ms` header shows. A test that
+keeps its deadlines on the frozen clock should pass at any latency, so a
+failure at 250 ms is either a real-time dependency, which you fix by the
+rules above, or a wait that hits `LIVENESS_S` from the sheer number of
+transactions. Tell them apart by the failure message, and report a
+`LIVENESS_S` timeout rather than raising the bound.
+
+A full suite at 250 ms is too slow to require. Baseline on main at
+`3e204e85a4efe440d20201b390261f9259c8d67a`: `ROBOMATE_TEST_DB_LATENCY_MS=250
+uv run --locked pytest -n auto` without `-q` showed `db latency probe:
+250 ms` and `1 failed, 2495 passed, 35 skipped in 1229.42s`, with the
+failure `tests/test_mock_alice.py::test_mock_alice_drives_scaled_endurance_scenario`
+(`TimeoutError`), reported here and not fixed in #392. That failure is
+intermittent with signature `TimeoutError` from
+`tests/test_mock_alice.py::test_mock_alice_drives_scaled_endurance_scenario`
+under the 250 ms probe: on the PR head the reviewer ran the same file at
+250 ms (37 passed) and the full suite at 250 ms (2496 passed, 35 skipped)
+with no failure. It is tracked in #412. This does not narrow the AGENTS.md
+rule: a 250 ms failure in a touched test still blocks the PR as a timing
+defect; when the failure matches this signature, report it on #412 with the
+command and failure lines.
+
 ## Reproduce first: the slow-host probe, or the failing host
 
 A timing flake is **not fixed until it has been reproduced, and the
@@ -227,10 +261,12 @@ matches the CI history is which tests fail. To repair a flaky test:
    guard with `LIVENESS_S`. Change the test, not production code; if
    production code must change, say why in the PR (AGENTS.md).
 4. Run it under the probe at 50 and 100 ms ten times each, stopping at the
-   first failure, and report the count:
+   first failure, then once at 250 ms without `-q`, and report the count:
 
    ```sh
    for i in $(seq 10); do ROBOMATE_TEST_DB_LATENCY_MS=100 uv run --locked pytest tests/test_closeout.py -q || break; done
+   # Only if the loops above passed:
+   ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_closeout.py
    ```
 5. Passing is half the check when the test's point is that something does
    **not** happen: no loss, no expiry, no event. Such a test passes just as

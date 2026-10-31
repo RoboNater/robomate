@@ -80,7 +80,7 @@ points still run. See the role guides for details.
 `-n auto` respects each run's `PYTEST_XDIST_AUTO_NUM_WORKERS`. Set
 `pytest_workers` in the standard-run TOML or `--pytest-workers N` when preparing
 (0 means CPU count); generated launch and resume scripts carry the setting.
-CI uses the runner's CPU count and keeps both required checks.
+CI uses the runner's CPU count and keeps `test` and `windows` required; `probe` (50 ms) and `probe-100` (100 ms) become required when #365 closes.
 
 Don't pipe a check through `tail` or `head` to shorten it: the pipeline
 returns the last command's exit status, so a failing suite looks green. Use
@@ -129,7 +129,7 @@ Time in tests ([policy](docs/development/testing-time-and-waits.md)): put any
 deadline the hub enforces on the `frozen_clock` fixture and pass it with
 `advance`, never by moving only the wall clock; wait for conditions with
 `wait_until`, not `sleep`; bound waits only by `LIVENESS_S`, never a short
-literal. A timing flake is fixed only once it has been reproduced (with
+literal. A reviewer runs each added or changed test file once at `ROBOMATE_TEST_DB_LATENCY_MS=250` without `-q` so the probe header shows. A failure there in a touched test blocks the PR as a timing defect (see [policy](docs/development/testing-time-and-waits.md)). A timing flake is fixed only once it has been reproduced (with
 `ROBOMATE_TEST_DB_LATENCY_MS` for an in-process hub; the doc gives the route
 for a subprocess hub) and passes under the same conditions.
 
