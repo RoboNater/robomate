@@ -191,7 +191,7 @@ def test_counter_claim_lifecycle_replaces_ordinary_roadmap_work() -> None:
     )
     assert "ROADMAP-CORRECTION" not in orchestrator
     for path in ("guides/implementer.md", "guides/reviewer.md"):
-        guide = read(path)
+        guide = normalize(read(path))
         assert "reservations issue" in guide
         assert "in-flight" in guide
         assert "Ordinary runs" in guide
