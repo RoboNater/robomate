@@ -218,11 +218,14 @@ uv run --locked pytest -n auto` without `-q` showed `db latency probe:
 250 ms` and `1 failed, 2495 passed, 35 skipped in 1229.42s`, with the
 failure `tests/test_mock_alice.py::test_mock_alice_drives_scaled_endurance_scenario`
 (`TimeoutError`), reported here and not fixed in #392. That failure is
-intermittent: on the PR head the reviewer ran the same file at 250 ms
-(37 passed) and the full suite at 250 ms (2496 passed, 35 skipped) with no
-failure. There is no open issue for it; a 250 ms failure in a touched test
-that matches this intermittent signature should be reported, not treated as
-a blocking timing defect without reproduction.
+intermittent with signature `TimeoutError` from
+`tests/test_mock_alice.py::test_mock_alice_drives_scaled_endurance_scenario`
+under the 250 ms probe: on the PR head the reviewer ran the same file at
+250 ms (37 passed) and the full suite at 250 ms (2496 passed, 35 skipped)
+with no failure. It is tracked in #412. This does not narrow the AGENTS.md
+rule: a 250 ms failure in a touched test still blocks the PR as a timing
+defect; when the failure matches this signature, report it on #412 with the
+command and failure lines.
 
 ## Reproduce first: the slow-host probe, or the failing host
 
