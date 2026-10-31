@@ -26,10 +26,12 @@ change request, or merge it.
    of the same run, check out the existing branch. For an address task,
    check out the existing change-request
    branch and verify its current head from the forge (see the forge appendix).
-3. Check the roadmap reservation named in the assignment before changing any
-   shared monotonic counter. Use that value exactly. If the assignment omits a
-   counter the issue needs, or the reservation conflicts, ask Alice before
-   editing.
+3. Before changing any shared monotonic counter, check the claim in the run's
+   reservations issue and use that value exactly. Alice claims it or explicitly
+   assigns you the claim edit, using the shared-body procedure and advancing the
+   next value before code uses it. A hub log alone is not a claim. If a needed
+   counter or target is missing, unclaimed or conflicting, ask Alice before
+   using it. Re-read after a stale snapshot; never reuse an in-flight value.
 4. Make the smallest change that satisfies the issue. Do not add scope or mix
    unrelated cleanup into the change request. Commit coherent increments as
    you go.
@@ -78,12 +80,17 @@ change.
 
 ## Close-out
 
-Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) for roadmap edits.
+Ordinary runs require no roadmap decision comment, adjudication or completion
+edit: the PR's `Closes` reference closes the issue and triage maintains the plan.
+A supplied reservations target alone creates no close-out work.
 
-Only perform close-out when Alice assigns it after merge. Update the roadmap
-issue's completion status and any reservation line as instructed, verify the
-change on the forge, and report the merged change-request URL and final SHA.
-Alice, not the implementer, releases workers and marks the hub workflow done.
+Only perform close-out when Alice assigns it after merge. If the run used a
+counter, use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) to mark only its claim shipped in the run's
+reservations issue, retaining the next value and other in-flight claims. Release
+an unused claim if the change is abandoned or drops the counter; do not rewind
+over other claims. Verify the change on the forge and report the merged
+change-request URL and final SHA. Other explicitly required close-out work and
+follow-ups still apply. Alice releases workers and marks the hub workflow done.
 
 ## Submit `ImplementerResult`
 

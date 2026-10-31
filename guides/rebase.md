@@ -44,8 +44,9 @@ the approved changes unchanged. If you are unsure whether a file counts, list it
 4. **Look for the conflicts git cannot see.** Two branches can merge cleanly
    and still be wrong together. Most often they both claim the same shared
    counter: database schema version, migration number, wire `schema_version`,
-   event kind. Take the value reserved for this issue in the roadmap's
-   **Reservations** section. Any file you edit for this is a conflict file.
+   event kind. Take the value claimed for this issue in the run's
+   reservations issue; ask Alice if the claim is missing or conflicts. Any file
+   you edit for this is a conflict file.
 5. **Validate the combined change.** Run the affected tests and non-pytest
    repository checks. With no hand resolutions, rely on CI for the full suite
    on the new head. With hand resolutions, also run the full suite locally:

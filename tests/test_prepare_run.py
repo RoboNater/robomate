@@ -965,18 +965,29 @@ def test_codex_login_status_skips_warning_preamble(monkeypatch: pytest.MonkeyPat
     assert PREPARE_RUN.codex_login_status(Path("/tmp/home")) == "Logged in using ChatGPT"
 
 
-def test_roadmap_passes_non_bare_numbers_through_verbatim() -> None:
+@pytest.mark.parametrize("flag", ["--roadmap", "--roadmap=acme/app#2"])
+def test_removed_roadmap_flag_names_its_replacement(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flag: str
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["prepare-run.py", flag])
+    with pytest.raises(SystemExit) as error:
+        PREPARE_RUN.main()
+    assert error.value.code == 2
+    assert "--roadmap was renamed to --reservations" in capsys.readouterr().err
+
+
+def test_reservations_passes_non_bare_numbers_through_verbatim() -> None:
     """Only a bare N or #N resolves against the target repo (#34)."""
     slug = "test-org/test-repo"
     repository = "git@github.com:test-org/test-repo.git"
-    assert PREPARE_RUN.resolve_roadmap("other-org/other-repo#7", slug, repository) == (
+    assert PREPARE_RUN.resolve_reservations("other-org/other-repo#7", slug, repository) == (
         "other-org/other-repo#7"
     )
     # Surrounding whitespace is not stripped: " 2 " is not a bare number.
-    assert PREPARE_RUN.resolve_roadmap(" 2 ", slug, repository) == " 2 "
-    assert PREPARE_RUN.resolve_roadmap("2", slug, repository) == "test-org/test-repo#2"
+    assert PREPARE_RUN.resolve_reservations(" 2 ", slug, repository) == " 2 "
+    assert PREPARE_RUN.resolve_reservations("2", slug, repository) == "test-org/test-repo#2"
     with pytest.raises(ValueError, match="must not be empty"):
-        PREPARE_RUN.resolve_roadmap("   ", slug, repository)
+        PREPARE_RUN.resolve_reservations("   ", slug, repository)
 
 
 @pytest.mark.parametrize(
@@ -988,7 +999,7 @@ def test_roadmap_passes_non_bare_numbers_through_verbatim() -> None:
     ],
 )
 @pytest.mark.parametrize(
-    "roadmap,expected_roadmap,has_roadmap_instructions",
+    "reservations,expected_reservations,has_reservations_instructions",
     [
         (None, None, False),
         ("2", "test-org/test-repo#2", True),
@@ -996,15 +1007,15 @@ def test_roadmap_passes_non_bare_numbers_through_verbatim() -> None:
         ("other-org/other-repo#7", "other-org/other-repo#7", True),
     ],
 )
-def test_render_goal_roadmap_combinations(
+def test_render_goal_reservations_combinations(
     kind: str,
     kwargs: dict[str, object],
     check: str,
-    roadmap: str | None,
-    expected_roadmap: str | None,
-    has_roadmap_instructions: bool,
+    reservations: str | None,
+    expected_reservations: str | None,
+    has_reservations_instructions: bool,
 ) -> None:
-    """Each {--issue, --work-file, neither} x {no roadmap, N, #N, OWNER/REPO#N} goal (#34)."""
+    """Each {--issue, --work-file, neither} x {no reservations, N, #N, OWNER/REPO#N} goal (#34)."""
     slug = "test-org/test-repo"
     repository = "git@github.com:test-org/test-repo.git"
     goal = PREPARE_RUN.render_goal(
@@ -1012,22 +1023,29 @@ def test_render_goal_roadmap_combinations(
         repository,
         kwargs.get("issue"),
         kwargs.get("work"),
-        roadmap,
+        reservations,
     )
     assert check in goal
-    if not has_roadmap_instructions:
-        assert "no roadmap edit" in goal
-        assert "should make a decision on what roadmap" not in goal
-        assert PREPARE_RUN.resolve_roadmap(roadmap, slug, repository) is None
+    assert "no roadmap edit" not in goal
+    assert "make a decision on what roadmap" not in goal
+    assert "PR comment" not in goal
+    assert "Only if the run uses a shared counter" in goal
+    assert "before writing code that uses it" in goal
+    assert "If no counter is used, no reservations close-out task is needed" in goal
+    if not has_reservations_instructions:
+        assert "No reservations issue was supplied" in goal
+        assert "ask the operator" in goal
+        assert PREPARE_RUN.resolve_reservations(reservations, slug, repository) is None
     else:
-        assert "no roadmap edit" not in goal
-        assert "should make a decision on what roadmap" in goal
-        assert f"({expected_roadmap})" in goal
-        assert PREPARE_RUN.resolve_roadmap(roadmap, slug, repository) == expected_roadmap
+        assert f"({expected_reservations})" in goal
+        assert (
+            PREPARE_RUN.resolve_reservations(reservations, slug, repository)
+            == expected_reservations
+        )
     # Bare numbers render against the target repo; other values pass through verbatim.
-    if roadmap in ("2", "#2"):
+    if reservations in ("2", "#2"):
         assert "(test-org/test-repo#2)" in goal
-    if roadmap == "other-org/other-repo#7":
+    if reservations == "other-org/other-repo#7":
         assert "(other-org/other-repo#7)" in goal
 
 
@@ -1104,52 +1122,108 @@ def test_work_file_becomes_the_goal_and_manifest_entry(
     work_file.write_bytes(statement.encode())
     run_dir, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file)
     goal = manifest["work"]["goal"]
-    assert goal.startswith(statement.strip()) and "no roadmap edit" in goal
+    assert goal.startswith(statement.strip()) and "No reservations issue was supplied" in goal
     assert manifest["issue"] is None
     assert manifest["work"] == {
         "goal": goal,
         "path": str(work_file.resolve()),
         "sha256": hashlib.sha256(statement.encode()).hexdigest(),
         "goal_sha256": hashlib.sha256(goal.encode()).hexdigest(),
-        "roadmap": None,
+        "reservations": None,
     }
     assert json.loads((run_dir / "run.json").read_text())["work"] == manifest["work"]
 
 
-def test_issue_goal_defaults_to_no_roadmap_edit(
+def test_issue_goal_defaults_to_no_reservations_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     goal = manifest["work"]["goal"]
-    assert goal == (
-        f"Address issue `{tmp_path / 'origin'}#42`, merge its pull request, "
-        "and close out with no roadmap edit; record the merge only in the "
-        "workflow summary."
+    assert goal.startswith(
+        f"Address issue `{tmp_path / 'origin'}#42`, merge its pull request, and close out."
     )
+    assert "No reservations issue was supplied" in goal
+    assert "no roadmap edit" not in goal
     assert goal in (run_dir / "alice.prompt.md").read_text()
-    assert manifest["work"]["roadmap"] is None
+    assert manifest["work"]["reservations"] is None
 
 
-def test_prepare_records_the_rendered_roadmap_in_run_json(
+def test_prepare_records_the_rendered_reservations_in_run_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_dir, manifest = prepare(tmp_path, monkeypatch, roadmap="2")
-    assert manifest["work"]["roadmap"] == f"{tmp_path / 'origin'}#2"
+    run_dir, manifest = prepare(tmp_path, monkeypatch, reservations="2")
+    assert manifest["work"]["reservations"] == f"{tmp_path / 'origin'}#2"
     assert f"({tmp_path / 'origin'}#2)" in manifest["work"]["goal"]
     assert json.loads((run_dir / "run.json").read_text())["work"] == manifest["work"]
 
 
-def test_work_file_with_roadmap_appends_bob_instructions(
+def test_work_file_with_reservations_appends_counter_instructions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     work_file = tmp_path / "sow.md"
     work_file.write_text("Address two issues together.\n")
-    _, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file, roadmap="5")
-    assert manifest["work"]["roadmap"] == f"{tmp_path / 'origin'}#5"
-    assert "should make a decision on what roadmap" in manifest["work"]["goal"]
+    _, manifest = prepare(tmp_path, monkeypatch, issue=None, work_file=work_file, reservations="5")
+    assert manifest["work"]["reservations"] == f"{tmp_path / 'origin'}#5"
+    assert "Only if the run uses a shared counter" in manifest["work"]["goal"]
+
+
+@pytest.mark.parametrize("reservations", [None, "409"])
+def test_cli_generates_runs_with_conditional_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reservations: str | None
+) -> None:
+    """Exercise the entry point and saved artifacts with and without a target (#408)."""
+    source = origin(tmp_path)
+    target = running_hub(tmp_path, monkeypatch)
+    run_dir = tmp_path / "generated"
+    args = [
+        "prepare-run.py",
+        "--repository",
+        str(source),
+        "--hub-repo",
+        str(target),
+        "--run-dir",
+        str(run_dir),
+        "--issue",
+        "42",
+        "--account",
+        "tester",
+    ]
+    if reservations is not None:
+        args += ["--reservations", reservations]
+    monkeypatch.setattr(sys, "argv", args)
+    PREPARE_RUN.main()
+    manifest = json.loads((run_dir / "run.json").read_text())
+    work = manifest["work"]
+    assert "roadmap" not in work
+    expected = f"{source}#409" if reservations else None
+    assert work["reservations"] == expected
+    assert work["goal"] in (run_dir / "alice.prompt.md").read_text()
+    assert "If no counter is used, no reservations close-out task is needed" in work["goal"]
+    assert "make a decision on what roadmap" not in work["goal"]
+    if expected:
+        assert expected in work["goal"]
+    else:
+        assert "No reservations issue was supplied" in work["goal"]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "Change the production DB schema for acme/app#42.",
+        "This is a throwaway run, but it changes a shared production wire schema counter.",
+    ],
+)
+def test_missing_target_never_forbids_a_needed_counter_claim(statement: str) -> None:
+    goal = PREPARE_RUN.render_goal("acme/app", "acme/app", None, statement)
+    assert goal.startswith(statement)
+    assert "No reservations issue was supplied" in goal
+    assert "ask the operator" in goal
+    assert "before using a value" in goal
+    assert "a hub log alone is not a reservation" in goal
+    assert "no roadmap edit" not in goal
 
 
 def test_work_file_with_issue_fails_actionably(
@@ -1490,7 +1564,7 @@ def test_worker_only_refuses_hub_flags(tmp_path: Path, monkeypatch: pytest.Monke
     token = tmp_path / "token"
     token.write_text("secret\n")
     token.chmod(0o600)
-    for extra in (["--issue", "42"], ["--roadmap", "2"], ["--hub-port", "8521"]):
+    for extra in (["--issue", "42"], ["--reservations", "2"], ["--hub-port", "8521"]):
         monkeypatch.setattr(
             sys,
             "argv",

@@ -39,15 +39,14 @@ Fresh prepared runs may still start with `get_state` through their configured br
 ## KICKOFF and PLAN
 
 <!-- Initialization contract: spec §4.2, §5 PLAN; Step 5A PR #64 and #65.
-     Statement of work, one PR per run: #101. Roadmap kickoff is conditional: #34. -->
+     Statement of work, one PR per run: #101. Counter-only reservations: #408. -->
 
 1. Parse the initial operator prompt into an exact `goal` and `policy`. The goal
    is a statement of work: it identifies one repository, the work (every
    repository-qualified issue it names, or a described job naming none), the
-   required outcome, and either a repository-qualified roadmap target, a
-   supplied roadmap target carried unresolved for close-out resolution, or an
-   explicit statement that this throwaway run has no roadmap target. Never infer
-   issue `#2` in the implementation repository. Do not add scope. One run
+   required outcome, and any supplied reservations target. Record when no
+   reservations issue was supplied. Never infer issue `#2` or another target
+   in the implementation repository. Do not add scope. One run
    delivers one PR: if the work needs more than one PR, do not initialize;
    ask the operator to split it into one run per PR.
 2. Call `get_state` before taking action.
@@ -76,29 +75,32 @@ Fresh prepared runs may still start with `get_state` through their configured br
       (#297); the assignment text points to the requirements but does not
       replace them. `get_statement` returns bytes verbatim. Nothing paraphrases
       the operator's text on its way to a worker.
-3. Read every issue the statement names directly using the orchestrator forge appendix, and, when
-   the goal names a repository-qualified roadmap target, the roadmap too. A
-   supplied roadmap target that is not repository-qualified is carried
-   unresolved to close-out instead of read as an issue. If the roadmap read
-   fails, record the failure with `log_decision` and carry it to close-out;
-   the run still has a roadmap target. Write concise
-   acceptance criteria from the statement text, those issues, and
+3. Read every issue the statement names as work directly using the orchestrator
+   forge appendix. Read the run's reservations issue only if the work needs a
+   shared counter; merely supplying a target does not require a read or edit.
+   Write concise acceptance criteria from the statement text, those issues, and
    repository instructions. Fix the work label: the
    `<owner/repository#number>` of the only named issue, or else a short label
    (at most 60 characters) from the statement's own title or first line. Record
    the plan, including `work-label:<label>`, with `log_decision` before
    assigning work; on resume, reuse the recorded label.
-4. For every shared monotonic counter the statement or any named issue may
-   touch: database schema, migration, wire schema, event kind, or similar —
-   when the goal names a repository-qualified roadmap target, inspect the
-   roadmap Reservations section first and use an existing reservation unchanged.
-   Otherwise choose a value that does not overlap an in-flight issue and record
-   `summary="reservation:<counter>"` with `log_decision`; include the value in
-   the implementer assignment when the statement and its issues do not already
-   name it. When the goal states this throwaway run has no roadmap target,
-   there is no roadmap issue to read or update; the `log_decision` record and
-   the implementer assignment carry the reservation. If uniqueness cannot be
-   established, escalate instead of guessing.
+4. Only if the work needs a shared monotonic counter (database schema,
+   migration, wire schema, event kind or similar), resolve and read the run's
+   authoritative reservations issue before assigning a value. If no target was
+   supplied, cannot be resolved, or cannot be read, record the failure with
+   `log_decision` and ask the operator to identify the authoritative shared
+   issue before any code uses the value; never invent a target or rely on a hub
+   log alone. Claim a unique value with the shared-body procedure, or explicitly
+   assign that claim edit to the implementer before code uses it. For example:
+   `v28 reserved for #N (in progress); next is v29`. Re-fetch immediately before
+   writing; if another run changed the snapshot, rebuild and choose an unclaimed
+   value. Reuse this work's existing claim unchanged on resume, and check other
+   in-flight claims. Record `summary="reservation:<counter>"` with `log_decision`
+   and include the target, claim and value in the assignment. If the implementer
+   discovers a counter later, claim it through this same path before using it.
+   If uniqueness cannot be established, escalate instead of guessing.
+   Ordinary runs do no roadmap decision comment, adjudication or completion
+   edit; `Closes` closes the issue and triage reflects it in the plan.
 5. Route every step only the operator can do to `ask_user`, never to a worker
    assignment (#132, from #99). These are: starting or stopping the run's hub
    or any agent; launching agent harnesses; acting or speaking for the
@@ -198,7 +200,7 @@ Use these stable title forms for every task-producing route:
 | Retry after lost/expired work | `RETRY for <failed task id>` |
 | Missing review comment | `REVIEW-COMMENT-CORRECTION for <review task id>` |
 | Post-merge close-out | `CLOSE-OUT for <merged sha7>` |
-| Missing roadmap update | `ROADMAP-CORRECTION for <close-out task id>` |
+| Missing counter close-out update | `RESERVATION-CORRECTION for <close-out task id>` |
 
 For review titles, first search by the stable
 `REVIEW for <source task id> @ <head sha7>` portion. If it exists, route that
@@ -402,7 +404,7 @@ Apply `max_review_rounds` (default 3) exactly:
 
 An approval whose every finding is either an optional cosmetic item
 (wording, formatting or line wrapping, explicitly marked `optional, no follow-up`)
-or an instruction for post-merge close-out only (roadmap or other shared-body
+or an instruction for post-merge close-out only (reservation or other shared-body
 edits after merge, no PR file change) gets no NONBLOCKING task.
 Proceed to the merge gate on the approved head. Alice carries close-out-only
 findings into the CLOSE-OUT assignment by ID.
@@ -441,6 +443,11 @@ REBASE after the next gate reading.
 `mergeable == "unknown"` is pending, not a rebase trigger; call the gate again.
 
 ## MERGE
+
+Before merging a counter-using change, verify the reviewed code uses the value
+claimed for this work in the run's reservations issue, with the next value
+excluding all in-flight claims. Resolve missing or conflicting claims before
+merge; a planned post-merge update cannot substitute for the claim.
 
 <!-- Merge invariant and gate integration: spec §4.2 `check_merge_gate`, §5 MERGE. -->
 
@@ -564,16 +571,12 @@ reviewer, and in the closeout report. Alice follows the same rule for her
 own steps and preserves the statement's departures from worker guides when
 summarizing assignments; the summary must not silently restore guide defaults.
 
-For example, a statement saying to update roadmap completion after merge
-can coexist with a requirement to reserve the next DB schema version at
-pickup, before writing it into code. Reserve early, implement and review
-with the reserved version, then mark the version shipped and the issue
-complete after merge according to the adjudicated roadmap decision. Do not
-turn that post-merge instruction into a prohibition on all pre-merge roadmap
-edits. If the statement explicitly prohibits all pre-merge roadmap edits,
-clarify the conflict through the normal question path before using a schema
+For example, marking a counter shipped after merge does not postpone its
+claim: reserve the next DB schema version at pickup, before writing it into
+code, then implement and review with that value. If the statement prohibits
+all pre-merge reservation edits, clarify the conflict before using a schema
 number and record the decision. Reading the next available number does not
-reserve it. This example grants workers no additional roadmap authority.
+reserve it. This example grants workers no additional authority.
 
 A reviewer judges the change against the task's requirements; no operator
 question id is needed for the task's own scope, including scope stated in an
@@ -618,8 +621,7 @@ quote it as a task requirement, not as operator authorization.
 
 Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) when editing shared issue or PR bodies.
 
-<!-- Ownership and closure: spec §5 WRAP-UP, roadmap issue #2, and #42.
-     Unresolved supplied roadmap targets: #34. -->
+<!-- Ownership and closure: spec §5 WRAP-UP, #42; counter-only target: #408. -->
 
 The post-merge gate records `merged_sha` for the completed manifest and previous
 run summary; it creates no hub event. Source `CLOSE-OUT for <merged sha7>`
@@ -681,28 +683,28 @@ Identical retries return the same receipt; different reports are rejected.
 Your report may arrive after the worker deadline, until run finalization.
 Missing reports are recorded explicitly, not reconstructed for another author.
 
-After a verified merge, follow the close-out target from the durable goal. When
-it names a repository-qualified roadmap issue, assign the implementer a
-close-out task to update that issue's status and any reservation line. Include
-the merged PR URL and final SHA. Alice does not edit ordinary completion status
-herself; she edits the roadmap only for reservations and sequencing.
+Ordinary runs require no roadmap decision, adjudication, post-merge completion
+edit or roadmap CLOSE-OUT task. The PR's `Closes` reference closes the issue;
+triage maintains the plan. A supplied reservations target alone adds no task.
+Collect retrospectives as above even when no close-out task is needed. Other
+explicit close-out requirements and follow-up findings still apply; use the
+source-event routes above when such a task is needed.
 
-Verify the update directly with
-the orchestrator forge appendix's issue-read command. If it is missing, send one
-correction task naming that same repository-qualified issue and verify again.
-Source `ROADMAP-CORRECTION for <close-out task id>` from that CLOSE-OUT task's
-`task_completed` event, using its stable event `id` as `event_id`. Do not reuse
-the event that sourced CLOSE-OUT. Inspect existing tasks first so a replay
-routes the original correction instead of assigning another.
-When the goal names a supplied roadmap target, first resolve it to an
-`owner/repository#number` when it is not repository-qualified already, then
-read that issue directly: if it resolves to a readable issue, proceed as above
-against the resolved issue; if it cannot be resolved, do not invent an
-issue — record the supplied value and the failed read in the workflow summary,
-citing the recorded kickoff failure as context when present, and escalate with
-a concrete operator question naming them.
-When the goal explicitly says a throwaway run has no roadmap target, do not
-invent or edit an issue; record close-out only in the workflow summary.
+Only when the run used a counter, assign the implementer a CLOSE-OUT task after
+verified merge to mark only its claim shipped in the run's reservations issue.
+Include the target, claimed value, merged PR URL and final SHA. Preserve the next
+value and every other in-flight claim. If a counter was dropped or the run is
+abandoned, release its unused claim without rewinding over other claims.
+Verify the shared issue directly with the forge appendix's issue-read command.
+If the shipped value, next value or claim is wrong or missing, send one
+`RESERVATION-CORRECTION for <close-out task id>` task, then verify again. Source
+it from that CLOSE-OUT task's `task_completed` event, using its stable event
+`id` as `event_id`; do not reuse the event that sourced CLOSE-OUT. Inspect tasks
+first so replay routes the original correction rather than duplicating it.
+
+Legacy prepared runs keep their durable goals, including an explicit roadmap
+obligation: follow that statement under the precedence rule instead of silently
+replacing it with these new defaults.
 
 When no task remains active, release both selected workers, set workflow status
 to `done`, and report a compact summary listing every issue the statement

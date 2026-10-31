@@ -152,9 +152,12 @@ issue, use a fresh checkout: clone the target again into the next run directory,
 or add a linked worktree, start `robomate up` there, and pass that checkout as
 `--hub-repo`. The previous hub can keep running beside it. Preparation
 refuses a hub that already has a workflow and reports its stored goal and status.
-To resume the existing workflow, use its original run directory, hub clone,
-goal (the same `--issue` or `--work-file` and roadmap selection), and policy
-options such as merge method, harnesses, capabilities, and CI setting.
+To resume the existing workflow, use its generated `resume-<agent>.sh` (or
+`.ps1`) script from the original run directory on that agent's host. It reads
+the saved manifest and conversation metadata while retaining the durable goal
+and policy. Do not rerun `prepare-run.py` to resume: even the same issue or work
+file can render a different goal after a generator update. This also applies
+to older manifests containing `work.roadmap`; keep their saved goal unchanged.
 
 The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and the enabled tools listed in `ALICE_TOOLS` in `scripts/prepare-run.py`; a Codex worker gets the worker tools listed in `TOOLS` in `scripts/run_common.py`. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`.
 
@@ -181,7 +184,15 @@ Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s 
 
 For a Codex Alice, the generated `start-alice.sh` uses `codex exec -C . --skip-git-repo-check` because `alice-runtime/` is outside a git checkout. Interactive `--no-auto-start` launches omit that exec-only flag. `--bob-provider`, `--charlie-provider`, and capability flags override the worker profiles used by Alice's pairing policy.
 
-For work spanning several issues in **one PR**, use `--work-file /absolute/path/to/statement.md` instead of `--issue`. Name every issue with `owner/repo#number` and state the acceptance criteria. Use one run per PR. `--roadmap` is optional and asks Bob to propose any roadmap updates in the PR, then make approved updates after merge. `--alice-harness`, `--bob-harness`, and `--charlie-harness` select Claude Code or Codex; model and effort flags pass through to the launchers. `--no-auto-start` launches interactive sessions and leaves you to give each agent its rendered prompt.
+For work spanning several issues in **one PR**, use `--work-file /absolute/path/to/statement.md` instead of `--issue`. Name every issue with `owner/repo#number` and state the acceptance criteria. Use one run per PR. `--reservations` optionally names the shared-counter issue. Ordinary runs do no
+roadmap decision, adjudication or completion edit; the PR's `Closes` reference
+closes the issue and triage maintains the plan. Only counter-using runs claim a
+value before code uses it, advance the next value, and close out that claim
+after merge. If no reservations issue was supplied and a counter is needed,
+Alice asks for its authoritative shared issue before using a value. `--roadmap`
+now fails with an error naming `--reservations`; rename `roadmap` to
+`reservations` in standard-run TOML too. Old `run.json` files still load and
+resume with their original goals; do not regenerate the goal to resume. `--alice-harness`, `--bob-harness`, and `--charlie-harness` select Claude Code or Codex; model and effort flags pass through to the launchers. `--no-auto-start` launches interactive sessions and leaves you to give each agent its rendered prompt.
 
 ### Standard run helper (until M2)
 
@@ -201,7 +212,7 @@ the Python helper; paths and arguments containing spaces are preserved:
 ```sh
 scripts/prep-standard-run.sh --repository git@github.com:your-org/your-repo.git \
   --run-parent-dir ~/working --run-dir 01-issue-42 --issue 42 --account your-user \
-  --roadmap 2 --bob-harness codex --bob-model your-model --bob-effort medium
+  --reservations 409 --bob-harness codex --bob-model your-model --bob-effort medium
 
 scripts/prep-standard-run.sh --repository git@github.com:your-org/your-repo.git \
   --run-dir /absolute/path/to/02-work --work-file ./statement.md --account your-user
@@ -241,7 +252,7 @@ run_parent_dir = "~/working"
 run_dir = "01-issue-42"
 issue = 42
 account = "your-user"
-roadmap = "2"
+reservations = "409"
 forge = "github"
 bob_harness = "codex"
 bob_model = "your-model"
@@ -732,9 +743,16 @@ $env:CODEX_HOME = "C:\my-run\configs\codex"; codex login status
 
 ## Workflow policy parameters
 
-- `Goal` (driven by `--roadmap`; default: no roadmap update required):
-  - Standard throwaway run: `Address issue <owner>/<repo>#<number>, merge its pull request, and close out with no roadmap edit; record the merge only in the workflow summary.`
-  - Roadmap-tracked run (`--roadmap 2`, `--roadmap #2`, or `--roadmap other-org/other-repo#7`): `Address issue <owner>/<repo>#<number>, merge its pull request, and close out. The implementer bob should make a decision on what roadmap (<roadmap>) updates are necessary, if any, when they open the PR and include it as a PR comment so it can be reviewed. After the merge the implementer bob should update the roadmap per the adjudicated PR if necessary. Make sure you include that in bob's initial tasking.` A bare `N` or `#N` renders as `<target repo>#N`; any other value renders verbatim. For `--work-file`, the statement of work is followed by the same close-out: the throwaway `close out with no roadmap edit; record the merge only in the workflow summary` by default, or `close out.` plus the same bob roadmap instructions when `--roadmap` is given.
+- `Goal` includes the issue or statement of work and explicitly says when no
+  reservations issue was supplied. `--reservations N`, `#N`, or `OWNER/REPO#N`
+  supplies a counter target; bare numbers resolve against the target repository,
+  while other values pass through verbatim for resolution before claiming.
+  Ordinary runs require no roadmap decision comment, adjudication or completion
+  edit and no reservations close-out task. Counter-using runs claim a unique
+  value in the shared issue before code uses it, advance the next value, have
+  it independently reviewed, and close out only that claim after merge.
+  If no target is available, Alice asks the operator before using a counter;
+  logging it only in the hub never establishes a shared claim.
 - `GitHub comment identity account`: Your GitHub username (used in comments like `Implementation agent bob on behalf of <username>`).
 - `allow_no_ci`: Set to `false` if your repo runs CI (GitHub Actions). Set to `true` if your repository has no automated CI workflows configured so the merge gate will not block on missing workflows.
 - `reviewer_harness_differs`:
@@ -820,7 +838,11 @@ Once Alice receives the kickoff prompt, she executes the autonomous orchestratio
    ```
 9. **Wrap-Up**:
    - Alice logs the final merge details via `log_decision`.
-   - If the goal names a roadmap target, bob has already posted a proposed decision on what roadmap updates are necessary as a PR comment when opening the PR; after the merge Alice assigns a `CLOSE-OUT for <merged sha7>` task to Bob to update that issue's checkboxes and reservations per the adjudicated decision. For throwaway runs with no roadmap target, close-out is recorded solely in the workflow summary.
+   - Ordinary runs do no roadmap work; triage reflects issue closure. Only when
+     the run used a counter does Alice assign `CLOSE-OUT for <merged sha7>` to
+     mark that claim shipped in the run's reservations issue, preserving the
+     next value and other claims. Other explicit close-out work and follow-ups
+     still apply. Old prepared runs retain their original goal obligations.
    - Alice releases Bob and Charlie via `release_agent()`.
    - Alice marks workflow status as `done` via `set_workflow_status()`.
    - Workers observe `release: true` on their next `await_assignment()` and exit.
