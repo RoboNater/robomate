@@ -582,8 +582,9 @@ it. This PR changes no spec text.
 
 The plan claims **no schema version number**. Four steps each need one new DB version,
 and each takes it the way M5 and AGENTS.md require: when the step issue is picked up, it
-reserves the then-next value on #2's Reservations block and only then writes the number
-into code or text. The steps below say "the step's reserved DB version" for that reason.
+claims the then-next value in reservations issue #409, advances the next value using
+the shared-body procedure, and only then writes the number into code or text. The steps
+below say "the step's reserved DB version" for that reason.
 
 | Counter | Step | Change |
 |---|---|---|
@@ -594,14 +595,14 @@ into code or text. The steps below say "the step's reserved DB version" for that
 | Wire `hub.schema_version` | — | No change: `join` is a new operation, check-in and assignment responses gain fields additively, and no typed result changes shape (§3, §7.3) |
 
 Steps 2, 4–6, 7b, 7d and 8–11 expect no DB change. A step that finds it needs one reserves the
-then-next value on #2 before editing (AGENTS.md). #215 (M4) does the same.
+then-next value in #409 before editing (AGENTS.md). #215 (M4) does the same.
 
 **Landing order.** Migrations are linear, so DB steps merge in the order of their
 reserved values. Steps 7a and 7c merge after Steps 1 and 3 anyway (see [Steps](#steps)); only
 Steps 1 and 3 can be ready in either order. Steps 7a and 7c each reserve their own
-version on #2 at pickup, in that order: 7a first, then 7c. If the step with the higher value is ready to
-merge first, the two swap their values on #2, and rename them in their branches, before
-either merges.
+version in #409 at pickup, in that order: 7a first, then 7c. If the step with the higher
+value is ready to merge first, the two swap their claims in #409 with the shared-body
+procedure, and rename them in their branches, before either merges.
 
 ## Steps
 
@@ -1249,7 +1250,7 @@ run exposed. Fixes of more than a few lines get their own issue.
 | Risk | Mitigation |
 |---|---|
 | A step breaks prepared runs, which robomate is built with until Step 11 | Aliases and `--role` kept through Step 10; each step's tests include the prepared-run path; Step 11 is the only removal |
-| Two DB steps in flight at once take migration numbers out of order | Reservations by step; swap on #2 before merging (Reservations) |
+| Two DB steps in flight at once take migration numbers out of order | Reservations by step in #409; swap claims before merging (Reservations) |
 | An IDE starts MCP servers outside the open folder, so discovery finds no binding | `join(hub=)`, and the join response says where the bridge runs; one IDE join recorded in Step 12 |
 | Codex's sandbox blocks writes to the git common directory from a worktree (#11 shape) | Step 7d records the Linux grants for Claude Code and Codex; static per repository; Windows Codex and other harnesses in M3 |
 | `gh pr merge --delete-branch` reports failure after a successful merge | Remote-only delete (Step 8), verified live |
@@ -1271,7 +1272,7 @@ run exposed. Fixes of more than a few lines get their own issue.
   "Inherit from #181" line moves to M3 with `robomate install` (above). #93 and #96 are
   added under M2 with Step 4.
 - **Reservations:** none made by this plan. Steps 1, 3, 7a and 7c each reserve one DB version
-  on #2 when they are picked up ([Reservations](#reservations)). Wire `hub.schema_version`
+  in #409 when they are picked up ([Reservations](#reservations)). Wire `hub.schema_version`
   stays 1.
 - The interim issues outside the M2 section (#188, #189, #190, #219, #220, #222, #223,
   #232) keep their tracks; their issues get a comment with the disposition above when the

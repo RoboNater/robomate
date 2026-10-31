@@ -152,9 +152,12 @@ issue, use a fresh checkout: clone the target again into the next run directory,
 or add a linked worktree, start `robomate up` there, and pass that checkout as
 `--hub-repo`. The previous hub can keep running beside it. Preparation
 refuses a hub that already has a workflow and reports its stored goal and status.
-To resume the existing workflow, use its original run directory, hub clone,
-goal (the same `--issue` or `--work-file` and reservations selection), and policy
-options such as merge method, harnesses, capabilities, and CI setting.
+To resume the existing workflow, use its generated `resume-<agent>.sh` (or
+`.ps1`) script from the original run directory on that agent's host. It reads
+the saved manifest and conversation metadata while retaining the durable goal
+and policy. Do not rerun `prepare-run.py` to resume: even the same issue or work
+file can render a different goal after a generator update. This also applies
+to older manifests containing `work.roadmap`; keep their saved goal unchanged.
 
 The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and the enabled tools listed in `ALICE_TOOLS` in `scripts/prepare-run.py`; a Codex worker gets the worker tools listed in `TOOLS` in `scripts/run_common.py`. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`.
 
