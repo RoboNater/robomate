@@ -141,6 +141,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stage("lifespan entered")
         initialize_database(resolved.database_path)
+        store.retry_closeout_exports()
         stage("database ready")
         # Silence is measured from here at the earliest: a restarted hub knows
         # nothing of the calls and holds before it (#144).

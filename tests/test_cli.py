@@ -4113,3 +4113,93 @@ def test_up_with_agents_creates_worktrees_ahead_of_join(
     finally:
         if process.poll() is None:
             stop(root, env, process)
+
+
+@pytest.mark.parametrize("finalized", [False, True])
+def test_status_closeout_collection(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    finalized: bool,
+) -> None:
+    """The CLI renders metadata only for current and most recent runs (#356)."""
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    initialize_database(directory / "hub.db")
+    seed = HubStore(directory / "hub.db")
+    seed.initialize_workflow("Closeout status")
+    worker = seed.check_in("bob", worker_instance_id="bob-instance")
+    run_id = seed.get_state()["workflow"]["run_id"]
+    seed.request_closeout_reports(run_id, "alice", "alice-session", 100)
+    seed.submit_closeout_report(
+        run_id,
+        "bob",
+        worker.worker_instance_id,
+        "worker",
+        {
+            "summary": "private retrospective contents",
+            "outstanding_items": [],
+            "lessons": [],
+            "claims": [],
+        },
+    )
+    if finalized:
+        seed.set_workflow_status(
+            WorkflowStatus.DONE, "Done", actor="alice", session="alice-session"
+        )
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        result = _inproc_cli(monkeypatch, capsys, root, env, "status")
+        assert result.returncode == 0, result.stderr
+        assert f"Closeout: {'finalized' if finalized else 'collecting'} (1/2)" in result.stdout
+        assert "Submitted: bob (collected_before_closeout)" in result.stdout
+        assert (
+            f"Missing: alice ({'run_finalized' if finalized else 'awaiting_report'})"
+            in result.stdout
+        )
+        assert "Deadline:" in result.stdout
+        as_json = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+        assert as_json.returncode == 0, as_json.stderr
+        metadata = json.loads(as_json.stdout)["closeout"]
+        assert metadata["expected_count"] == 2 and metadata["submitted_count"] == 1
+        assert metadata["submitted"] == [{"author": "bob", "timing": "collected_before_closeout"}]
+        assert "private retrospective contents" not in result.stdout + as_json.stdout
+    finally:
+        stop(root, env, process)
+
+
+def test_status_retains_export_failure_from_previous_queued_run(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    initialize_database(directory / "hub.db")
+    seed = HubStore(directory / "hub.db")
+    seed.initialize_workflow("First run")
+    failed_run = seed.get_state()["workflow"]["run_id"]
+    seed.request_closeout_reports(failed_run, "alice", "alice-session", 100)
+    seed.start_workflow("Queued run")
+    # Persist an obstruction so the startup retry also fails in the test hub.
+    (directory / "runs" / failed_run / "closeout").write_text("blocked", encoding="utf-8")
+    seed.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session="alice-session")
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        result = _inproc_cli(monkeypatch, capsys, root, env, "status")
+        assert result.returncode == 0, result.stderr
+        assert f"Closeout export error: {failed_run} FileExistsError" in result.stdout
+        as_json = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+        assert as_json.returncode == 0, as_json.stderr
+        status = json.loads(as_json.stdout)
+        assert status["run_id"] != failed_run
+        assert status["closeout"]["export_error"] is None
+        assert status["closeout_export_errors"] == [
+            {"run_id": failed_run, "error": "FileExistsError"}
+        ]
+    finally:
+        stop(root, env, process)

@@ -584,6 +584,18 @@ class HubStore:
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
 
+    closeout_export_errors: dict[str, str] = field(default_factory=dict, init=False)
+
+    def retry_closeout_exports(self) -> None:
+        from .closeout_export import export_run
+
+        with database(self.path) as connection:
+            runs = connection.execute(
+                "SELECT run_id FROM workflow WHERE status = 'done'"
+            ).fetchall()
+        for run in runs:
+            export_run(self, str(run["run_id"]))
+
     def _now(self) -> datetime:
         return self.clock()
 
@@ -1262,6 +1274,9 @@ class HubStore:
         with database(self.path) as connection:
             connection.execute("BEGIN")
             workflow = self._require_live_or_recent(connection)
+            from .closeout_export import status_projection
+
+            closeout = status_projection(self, connection, workflow, now)
             queue = self._queued_summaries(connection)
             assessment = self._assess(connection, now)
             agents = [
@@ -1353,6 +1368,11 @@ class HubStore:
                 "statement_sha256": workflow["statement_sha256"],
             },
             "run_id": None if workflow is None else workflow["run_id"],
+            "closeout": closeout,
+            "closeout_export_errors": [
+                {"run_id": run_id, "error": error}
+                for run_id, error in sorted(self.closeout_export_errors.items())
+            ],
             "queue_length": len(queue),
             "queue": queue,
             "agents": agents,
@@ -1586,6 +1606,9 @@ class HubStore:
         # commits, so a crash between the two cannot leave a half-written
         # database row behind a completed manifest.
         if done_row is not None:
+            from .closeout_export import export_run
+
+            export_run(self, str(done_row["run_id"]))
             self._write_manifest(done_row)
         if activated_row is not None:
             self._write_manifest(activated_row)
