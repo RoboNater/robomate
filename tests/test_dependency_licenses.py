@@ -51,6 +51,8 @@ def download(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str], Mock, Moc
         TimeoutError("timed out"),
         urllib.error.URLError("transport error"),
         http.client.IncompleteRead(b"partial", 10),
+        http.client.BadStatusLine("garbled status"),
+        http.client.LineTooLong("status line"),
         *[
             urllib.error.HTTPError(
                 "https://example.invalid/artifact.whl", code, "busy", email.message.Message(), None
@@ -87,19 +89,24 @@ def test_download_retries_transient_failure(
     assert (tmp_path / AUDIT.digest(b"artifact")).read_bytes() == b"artifact"
 
 
+@pytest.mark.parametrize(
+    "error",
+    [http.client.IncompleteRead(b"partial", 10), http.client.BadStatusLine("garbled status")],
+)
 def test_download_gives_up_after_limit(
     tmp_path: Path,
     download: tuple[dict[str, str], Mock, Mock],
     capsys: pytest.CaptureFixture[str],
+    error: Exception,
 ) -> None:
     artifact, opener, sleep = download
-    opener.side_effect = http.client.IncompleteRead(b"partial", 10)
+    opener.side_effect = error
     with pytest.raises(OSError) as caught:
         AUDIT.artifact_bytes(artifact, tmp_path)
     assert opener.call_count == 3
     assert artifact["url"] in str(caught.value)
     assert "3 attempts" in str(caught.value)
-    assert isinstance(caught.value.__cause__, http.client.IncompleteRead)
+    assert caught.value.__cause__ is error
     assert sleep.call_count == 2
     assert len(capsys.readouterr().err.splitlines()) == 2
     assert not list(tmp_path.iterdir())
@@ -119,7 +126,7 @@ def test_download_does_not_retry_other_client_errors(
     with pytest.raises(OSError) as caught:
         AUDIT.artifact_bytes(artifact, tmp_path)
     assert artifact["url"] in str(caught.value)
-    assert "1 attempt" in str(caught.value)
+    assert "after 1 attempt:" in str(caught.value)
     opener.assert_called_once()
     sleep.assert_not_called()
     assert capsys.readouterr().err == ""

@@ -160,14 +160,14 @@ def artifact_bytes(artifact: dict[str, Any], cache: Path) -> bytes:
                 with urllib.request.urlopen(artifact["url"], timeout=60) as response:
                     data = response.read()
                 break
-            except (OSError, http.client.IncompleteRead) as exc:
+            except (OSError, http.client.HTTPException) as exc:
                 retryable = not isinstance(exc, urllib.error.HTTPError) or (
                     exc.code == 429 or 500 <= exc.code < 600
                 )
                 if not retryable or attempt == attempts:
                     raise OSError(
                         f"artifact download failed: {artifact['url']} "
-                        f"after {attempt} attempts: {exc}"
+                        f"after {attempt} {'attempt' if attempt == 1 else 'attempts'}: {exc}"
                     ) from exc
                 print(
                     f"Retrying artifact download: {artifact['url']} "
