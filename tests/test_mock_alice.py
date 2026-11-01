@@ -434,7 +434,10 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         default_wait_s=0.1,
         max_wait_s=1.0,
         lost_after_s=ENDURANCE_LOST_AFTER_S,
-        sweep_interval_s=0.02,
+        # The long-work path sweeps at each frozen-clock step below. Keep the
+        # periodic loop parked so it adds no incidental transactions to the
+        # scenario's LIVENESS_S hang guard under the slow-host probe (#412).
+        sweep_interval_s=LIVENESS_S,
         detect_host_pauses=True,
     )
     app = create_app(settings)
