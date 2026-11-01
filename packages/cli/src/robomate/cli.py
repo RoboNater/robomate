@@ -1200,8 +1200,12 @@ def _status(as_json: bool, selector: str | None) -> None:
             print(f"  Submitted: {report['author']} ({report['timing']})")
         for missing in closeout["missing"]:
             print(f"  Missing: {missing['author']} ({missing['reason']})")
-        if closeout.get("export_error"):
+        if "closeout_export_errors" not in status and closeout.get("export_error"):
             print(f"  Export error: {closeout['export_error']}; retry on hub restart")
+    for failure in status.get("closeout_export_errors", []):
+        print(
+            f"Closeout export error: {failure['run_id']} {failure['error']}; retry on hub restart"
+        )
     # Queued runs (M2 Step 3): the sequential queue behind the live run.
     # Step 4 shows each queued statement and its SHA-256 (mvp-spec §7.1).
     queue_length = status.get("queue_length")

@@ -1369,6 +1369,10 @@ class HubStore:
             },
             "run_id": None if workflow is None else workflow["run_id"],
             "closeout": closeout,
+            "closeout_export_errors": [
+                {"run_id": run_id, "error": error}
+                for run_id, error in sorted(self.closeout_export_errors.items())
+            ],
             "queue_length": len(queue),
             "queue": queue,
             "agents": agents,

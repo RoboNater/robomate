@@ -458,7 +458,11 @@ run: not requested, collecting with a deadline, or finalized; submitted/expected
 counts; submitted authors and timing labels; and missing authors and reasons.
 It shows no retrospective text and changes no collection state. In `status --json`,
 these are the additive `closeout.state`, `deadline`, `submitted_count`,
-`expected_count`, `submitted`, `missing` and `export_error` fields.
+`expected_count`, `submitted`, `missing` and `export_error` fields. The per-run
+`export_error` covers only the displayed run. The top-level
+`closeout_export_errors` list contains `{run_id, error}` for every outstanding
+export failure, so failures stay visible when a queued or newly started run
+becomes current. Each successful retry removes its run from that list.
 
 Once a run reaches done, read `<state_dir>/runs/<run_id>/closeout/index.json` for
 the expected-author list, missing reasons and submitted report receipts/filenames.

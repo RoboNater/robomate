@@ -814,9 +814,14 @@ status and export presentation are described below (#356); the run-report append
 current run (or the most recent run when none is live). The additive `closeout`
 object has `state` (`not_requested`, `collecting`, `finalized`), `deadline`,
 `submitted_count`, `expected_count`, `submitted` (author and timing), `missing`
-(author and reason), and `export_error` (null or the exception class of the last
-failed export). No report text appears. This is a pure read: it neither consumes
-events nor persists expiry; pending expiry is projected without a state change.
+(author and reason), and `export_error` (null or the exception class of the
+outstanding export failure for the displayed run). The top-level
+`closeout_export_errors` list
+contains `{run_id, error}` for every outstanding export failure, including
+completed runs hidden by an active or newly activated queued run; successful
+retry removes that run's entry. No report text appears. This is a pure read:
+it neither consumes events nor persists expiry; pending expiry is projected
+without a state change.
 
 After committing `done`, the hub writes each submitted retrospective beside the
 manifest, in `runs/<run_id>/closeout/report-<ordinal>.md`. Ordinals use only ASCII

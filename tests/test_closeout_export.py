@@ -390,3 +390,40 @@ def test_atomic_replacement_failure_preserves_existing_export(
     store.retry_closeout_exports()
     assert store.status_summary()["closeout"]["export_error"] is None
     assert {p.name: p.read_bytes() for p in directory.iterdir()} == original
+
+
+async def test_failed_export_stays_visible_after_queued_run_activation(
+    app: FastAPI,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub import closeout_export
+
+    async with app.router.lifespan_context(app):
+        failed_run = prepare(hub_store)
+        submit(hub_store, failed_run, "bob", report())
+        hub_store.start_workflow("Queued run")
+        with monkeypatch.context() as patch:
+
+            def fail(*args: Any) -> None:
+                raise PermissionError("test export failure")
+
+            patch.setattr(closeout_export, "atomic_write", fail)
+            done(hub_store)
+        status = hub_store.status_summary()
+        assert status["run_id"] != failed_run
+        assert status["workflow"]["status"] == "active"
+        assert status["closeout"]["export_error"] is None
+        assert status["closeout_export_errors"] == [
+            {"run_id": failed_run, "error": "PermissionError"}
+        ]
+        with database(hub_store.path) as connection:
+            before = list(connection.iterdump())
+        assert (
+            hub_store.status_summary()["closeout_export_errors"] == status["closeout_export_errors"]
+        )
+        with database(hub_store.path) as connection:
+            assert list(connection.iterdump()) == before
+        hub_store.retry_closeout_exports()
+        assert hub_store.status_summary()["closeout_export_errors"] == []
+        assert (export_dir(hub_store, failed_run) / "index.json").is_file()

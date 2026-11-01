@@ -4168,3 +4168,38 @@ def test_status_closeout_collection(
         assert "private retrospective contents" not in result.stdout + as_json.stdout
     finally:
         stop(root, env, process)
+
+
+def test_status_retains_export_failure_from_previous_queued_run(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, env = repository
+    directory = root / ".robomate"
+    directory.mkdir()
+    initialize_database(directory / "hub.db")
+    seed = HubStore(directory / "hub.db")
+    seed.initialize_workflow("First run")
+    failed_run = seed.get_state()["workflow"]["run_id"]
+    seed.request_closeout_reports(failed_run, "alice", "alice-session", 100)
+    seed.start_workflow("Queued run")
+    # Persist an obstruction so the startup retry also fails in the test hub.
+    (directory / "runs" / failed_run / "closeout").write_text("blocked", encoding="utf-8")
+    seed.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session="alice-session")
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        result = _inproc_cli(monkeypatch, capsys, root, env, "status")
+        assert result.returncode == 0, result.stderr
+        assert f"Closeout export error: {failed_run} FileExistsError" in result.stdout
+        as_json = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
+        assert as_json.returncode == 0, as_json.stderr
+        status = json.loads(as_json.stdout)
+        assert status["run_id"] != failed_run
+        assert status["closeout"]["export_error"] is None
+        assert status["closeout_export_errors"] == [
+            {"run_id": failed_run, "error": "FileExistsError"}
+        ]
+    finally:
+        stop(root, env, process)
