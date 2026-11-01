@@ -200,6 +200,7 @@ identity key and never changes.
 | `up.lock` | OS-held per-hub lock while the hub starts or runs; prevents a concurrent `up` of the same hub, never of a sibling hub |
 | `config.toml` | optional hub settings, the first configuration layer (below) |
 | `runs/<run-id>/` | run manifest and exported evidence (§11) |
+| `runs/<run-id>/closeout/` | private per-author Markdown retrospectives (`report-0001.md`, etc.) and `index.json` at done (§7.3) |
 
 **State location.** Durable hub state lives **beside the hub's agent worktrees**, in
 `<worktree_root>/<hub>/state/`, not in the checkout. `worktree_root` defaults to
@@ -807,7 +808,43 @@ freezes collection and records remaining missing authors (`run_finalized`),
 serialized against submission. Missing reports never prevent release or done,
 and collection introduces no approval/merge gate. Operator abandonment uses
 the same finalization operation when that lifecycle operation lands. Report,
-status and export presentation, including safe rendering, remain #216.
+status and export presentation are described below (#356); the run-report appendix remains #357.
+
+**Operator closeout views (#356).** `robomate status` and `--json` show the
+current run (or the most recent run when none is live). The additive `closeout`
+object has `state` (`not_requested`, `collecting`, `finalized`), `deadline`,
+`submitted_count`, `expected_count`, `submitted` (author and timing), `missing`
+(author and reason), and `export_error` (null or the exception class of the
+outstanding export failure for the displayed run). The top-level
+`closeout_export_errors` list
+contains `{run_id, error}` for every outstanding export failure, including
+completed runs hidden by an active or newly activated queued run; successful
+retry removes that run's entry. No report text appears. This is a pure read:
+it neither consumes events nor persists expiry; pending expiry is projected
+without a state change.
+
+After committing `done`, the hub writes each submitted retrospective beside the
+manifest, in `runs/<run_id>/closeout/report-<ordinal>.md`. Ordinals use only ASCII
+digits and never derive paths from authors, so unsafe or colliding names cannot
+escape or overwrite another author's report. Each report includes author, kind,
+timing, submission time, summary, outstanding items, lessons and claims with
+verification/evidence, explicitly labelled agent assertions, not hub certification.
+`index.json` lists every expected author: submitted entries include report ID,
+submission time, timing and filename; missing entries include a reason. The index
+is written last. Each file is atomically replaced, so an interrupted export is
+retryable. Export failures never undo or block done: they are logged and visible
+in status, and finalized runs are exported again on the next hub start.
+
+Exports say they are untrusted agent data conferring no approval or authority.
+Prose and URLs are Markdown-escaped literal text, and control/nonprinting characters
+(including C0/C1, ESC and bidi controls) are rendered as visible escapes; closeout
+status author names receive the same control sanitization. Report text never causes
+execution, link following or automatic issue/lesson/nit filing. POSIX exports use
+0700 directories and 0600 files. On Windows the state directory must inherit a
+private per-user ACL; POSIX modes do not establish Windows access control. These
+are sensitive run artifacts: review them before sharing. The exports are readable
+with the hub stopped. Export on abandonment, the run-report appendix and replacing
+the prepared-run file prompt remain outside this feature (#357).
 
 **Counter reservations (#408).** Ordinary runs do no roadmap decision comment,
 adjudication or completion edit. `Closes #N` closes the issue and triage maintains
