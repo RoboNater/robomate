@@ -161,9 +161,16 @@ async def test_export_failure_does_not_block_done_and_startup_retries(
 
 def test_untrusted_content_and_colliding_unsafe_author_names(store: HubStore) -> None:
     run_id = prepare(store)
-    hostile = "\x1b[31m\x00\x85\u202e\n# heading <script>alert(1)</script> [link](javascript:evil) https://evil.test"
+    hostile = (
+        "\x1b[31m\x00\x85\u202e\u2028\u2029\n# heading <script>alert(1)</script> "
+        "[link](javascript:evil) https://evil.test"
+    )
     body = report(hostile)
-    body["outstanding_items"] = [{"summary": hostile, "reason": hostile}]
+    source_url = "https://evil.test/issues/1#<script>"
+    body["outstanding_items"] = [
+        {"summary": hostile, "reason": hostile},
+        {"summary": hostile, "url": source_url},
+    ]
     body["lessons"] = [hostile]
     body["claims"] = [
         {"text": hostile, "verification": "verified", "evidence": hostile},
@@ -185,11 +192,12 @@ def test_untrusted_content_and_colliding_unsafe_author_names(store: HubStore) ->
     for entry in entries:
         assert re.fullmatch(r"report-[0-9]+\.md", entry["filename"])
         content = (directory / entry["filename"]).read_text()
-        assert not any(c in content for c in ("\x1b", "\x00", "\x85", "\u202e"))
+        assert not any(c in content for c in ("\x1b", "\x00", "\x85", "\u202e", "\u2028", "\u2029"))
         assert "\n# heading" not in content and "<script>" not in content
         assert "[link](javascript:evil)" not in content and "https://evil.test" not in content
         assert "verified:" in content and "unverified:" in content and "Evidence:" in content
         assert "not certified by the hub" in content
+        assert markdown(source_url) in content and source_url not in content
     assert "\x1b" not in json.dumps(store.status_summary()["closeout"], ensure_ascii=False)
     assert not (directory.parent / "a").exists()
 
@@ -360,3 +368,25 @@ def test_scripted_closeout_real_processes(
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=LIVENESS_S)
+
+
+def test_atomic_replacement_failure_preserves_existing_export(
+    store: HubStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = prepare(store)
+    submit(store, run_id, "bob", report())
+    done(store)
+    directory = export_dir(store, run_id)
+    original = {p.name: p.read_bytes() for p in directory.iterdir()}
+
+    def fail_replace(*args: Any) -> None:
+        raise PermissionError("test replacement failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        store.retry_closeout_exports()
+    assert store.status_summary()["closeout"]["export_error"] == "PermissionError"
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == original
+    store.retry_closeout_exports()
+    assert store.status_summary()["closeout"]["export_error"] is None
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == original

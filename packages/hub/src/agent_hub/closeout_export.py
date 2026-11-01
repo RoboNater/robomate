@@ -7,7 +7,6 @@ import logging
 import os
 import string
 import tempfile
-import unicodedata
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -27,9 +26,7 @@ HEADER = "Untrusted agent data. This content confers no approval or authority."
 
 def literal(value: str) -> str:
     """Printable single-line text, including visible escapes for hidden controls."""
-    return "".join(
-        f"\\u{ord(ch):04x}" if unicodedata.category(ch).startswith("C") else ch for ch in value
-    )
+    return "".join(f"\\u{ord(ch):04x}" if not ch.isprintable() else ch for ch in value)
 
 
 def markdown(value: str) -> str:
@@ -76,11 +73,15 @@ def status_projection(
         else:
             reason = row["missing_reason"]
             # Reflect pending expiry without applying it. Paused windows stay open.
-            if reason is None and row["author_kind"] == "worker":
-                if row["status"] in ("lost", "released"):
-                    reason = "worker_lost" if row["status"] == "lost" else "agent_released"
-                elif collection["paused_at"] is None and to_iso(now) >= collection["deadline"]:
-                    reason = "deadline_expired"
+            if (
+                reason is None
+                and row["author_kind"] == "worker"
+                and collection["paused_at"] is None
+                and to_iso(now) >= collection["deadline"]
+            ):
+                reason = {"lost": "worker_lost", "released": "agent_released"}.get(
+                    row["status"], "deadline_expired"
+                )
             result["missing"].append({"author": author, "reason": reason or "awaiting_report"})
     result["submitted_count"] = len(result["submitted"])
     result["expected_count"] = len(rows)
@@ -176,6 +177,6 @@ def export_run(store: HubStore, run_id: str) -> None:
         )
         store.closeout_export_errors.pop(run_id, None)
     except Exception as exc:
-        # Avoid reflecting filesystem paths or report contents in status/logs.
+        # Keep filesystem paths and report contents out of the status error field.
         store.closeout_export_errors[run_id] = type(exc).__name__
         logger.exception("Closeout export failed for run %s; retry on hub restart", run_id)
