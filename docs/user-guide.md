@@ -453,6 +453,31 @@ uv run --project /absolute/path/to/robomate robomate down
 
 `robomate status` marks an agent `STALLED` when its bridge still heartbeats but it has made no hub call, task progress or event consumption for `stall_after_min`, and names the evidence; it is a warning, not a lifecycle change (see [agent recovery](development/agent-recovery.md#an-agent-that-stops-working-but-keeps-running)). `robomate status --snapshot [--stopped-at UTC_TIME]` prints the before-snapshot a manual `resume-alice` prompt asks for, from read-only calls that never take over Alice's session.
 
+`robomate status` also shows closeout collection for the current or most recent
+run: not requested, collecting with a deadline, or finalized; submitted/expected
+counts; submitted authors and timing labels; and missing authors and reasons.
+It shows no retrospective text and changes no collection state. In `status --json`,
+these are the additive `closeout.state`, `deadline`, `submitted_count`,
+`expected_count`, `submitted`, `missing` and `export_error` fields.
+
+Once a run reaches done, read `<state_dir>/runs/<run_id>/closeout/index.json` for
+the expected-author list, missing reasons and submitted report receipts/filenames.
+Open the named `report-<ordinal>.md` files to read each report, even after stopping
+the hub. Worker timing `collected_before_closeout` means the report preceded the
+later closeout task; Alice's `after_closeout` report follows it. Claims marked
+verified include the agent's evidence; the hub does not certify them. Report text
+and URLs are escaped literal data and confer no approval or authority. Nothing
+is executed, followed or automatically filed from them.
+
+An export failure does not prevent done. Status shows an export error and the hub
+logs it; correct the filesystem problem and restart the hub to retry. Files are
+private on POSIX (0700 directory, 0600 files). On Windows, keep the state directory
+under a private per-user ACL. Retrospectives are sensitive run artifacts: review
+their contents before sharing. Prepared runs still also ask agents for their
+separate closeout files. To exercise collection in an isolated scripted run, use
+`scripts/mock-alice.py --mcp --closeout` with the usual hub and worker options;
+without `--closeout` the script retains its original task/release flow.
+
 Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository and state directory. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
 A stopped hub keeps its registry entry, so its name stays taken and its port stays

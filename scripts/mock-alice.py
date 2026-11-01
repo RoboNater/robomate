@@ -520,6 +520,14 @@ class AliceBackend(Protocol):
 
     async def set_workflow_status(self, status: str, summary: str) -> dict[str, Any]: ...
 
+    async def request_closeout_reports(self, run_id: str) -> dict[str, Any]: ...
+
+    async def get_closeout_reports(self, run_id: str) -> dict[str, Any]: ...
+
+    async def submit_closeout_report(
+        self, run_id: str, report: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
     async def log_decision(
         self, summary: str, rationale: str, key: str | None
     ) -> dict[str, Any]: ...
@@ -582,6 +590,17 @@ class DirectStoreBackend:
             WorkflowStatus(status), summary, actor="mock-alice", session=None
         )
         return {"ok": True}
+
+    async def request_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        return self.store.request_closeout_reports(run_id, "mock-alice", "mock-session", 100)
+
+    async def get_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_closeout_reports(run_id)
+
+    async def submit_closeout_report(self, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        return self.store.submit_closeout_report(
+            run_id, "mock-alice", "mock-session", "orchestrator", report
+        )
 
     async def log_decision(self, summary: str, rationale: str, key: str | None) -> dict[str, Any]:
         return {
@@ -650,6 +669,19 @@ class McpBackend:
             {"status": status, "summary": summary},
         )
 
+    async def request_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        return await _call_dict(
+            self.session, "request_closeout_reports", {"run_id": run_id, "timeout_s": 100}
+        )
+
+    async def get_closeout_reports(self, run_id: str) -> dict[str, Any]:
+        return await _call_dict(self.session, "get_closeout_reports", {"run_id": run_id})
+
+    async def submit_closeout_report(self, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        return await _call_dict(
+            self.session, "submit_closeout_report", {"run_id": run_id, "report": report}
+        )
+
     async def log_decision(self, summary: str, rationale: str, key: str | None) -> dict[str, Any]:
         return await _call_dict(
             self.session,
@@ -712,6 +744,7 @@ async def drive_one_task_with_backend(
     crash_at: str | None = None,
     workflow_goal: str = DEFAULT_GOAL,
     policy: dict[str, Any] | None = None,
+    collect_closeout: bool = False,
 ) -> dict[str, Any]:
     """Drive the lifecycle once over either Alice backend, including recovery."""
 
@@ -910,8 +943,41 @@ async def drive_one_task_with_backend(
     if last_delivery_id:
         await backend.wait_for_event(0.05, last_delivery_id)
 
-    logger.info("Releasing worker %r...", agent_name)
-    await backend.release_agent(agent_name)
+    if collect_closeout:
+        state = await backend.get_state()
+        run_id = state["workflow"]["run_id"]
+        worker_names = {a["name"] for a in state["agents"] if a["standing_role"] != "orchestrator"}
+        await backend.request_closeout_reports(run_id)
+        logger.info("Closeout collection requested for %s", run_id)
+        closeout_deadline = asyncio.get_running_loop().time() + timeout_s
+        ack = None
+        while True:
+            reports = await backend.get_closeout_reports(run_id)
+            if not any(
+                m["author"] in worker_names and m["reason"] == "awaiting_report"
+                for m in reports["missing"]
+            ):
+                break
+            if asyncio.get_running_loop().time() >= closeout_deadline:
+                raise TimeoutError(
+                    "Mock Alice closeout: workers did not report within drive budget"
+                )
+            delivery = await backend.wait_for_event(1.0, ack)
+            event = delivery.get("event")
+            ack = event.get("delivery_id") if event else None
+        await backend.submit_closeout_report(
+            run_id,
+            {
+                "summary": "Orchestrated the scripted task and collected worker retrospectives.",
+                "outstanding_items": [],
+                "lessons": [],
+                "claims": [],
+            },
+        )
+        result_data["closeout"] = await backend.get_closeout_reports(run_id)
+    else:
+        logger.info("Releasing worker %r...", agent_name)
+        await backend.release_agent(agent_name)
     await backend.set_workflow_status("done", f"Task {task_id} finished successfully")
     logger.info("Workflow marked DONE. Mock Alice session complete.")
     return result_data
@@ -926,6 +992,7 @@ async def drive_one_task_mcp(
     timeout_s: float = 60.0,
     expected_harness: str | None = None,
     crash_at: str | None = None,
+    collect_closeout: bool = False,
 ) -> dict[str, Any]:
     """Compatibility wrapper for the shared lifecycle over MCP."""
 
@@ -938,6 +1005,7 @@ async def drive_one_task_mcp(
         timeout_s,
         expected_harness,
         crash_at,
+        collect_closeout=collect_closeout,
     )
 
 
@@ -950,6 +1018,7 @@ async def drive_one_task(
     timeout_s: float = 60.0,
     expected_harness: str | None = None,
     crash_at: str | None = None,
+    collect_closeout: bool = False,
 ) -> dict[str, Any]:
     """Compatibility wrapper for the shared lifecycle over the direct store."""
 
@@ -962,6 +1031,7 @@ async def drive_one_task(
         timeout_s,
         expected_harness,
         crash_at,
+        collect_closeout=collect_closeout,
     )
 
 
@@ -1019,6 +1089,11 @@ def main() -> None:
         dest="harness",
         default="claude-code",
         help="Expected worker harness (claude-code, codex, etc.); --runtime is the Step 4 name",
+    )
+    parser.add_argument(
+        "--closeout",
+        action="store_true",
+        help="Collect worker retrospectives and submit Alice's report before done",
     )
     parser.add_argument("--timeout", type=float, default=60.0, help="Hold timeout in seconds")
     parser.add_argument(
@@ -1180,6 +1255,7 @@ def main() -> None:
                         timeout_s=args.timeout,
                         expected_harness=args.harness,
                         crash_at=args.crash_at,
+                        collect_closeout=args.closeout,
                     )
 
             result = asyncio.run(run_mcp_session())
@@ -1195,6 +1271,7 @@ def main() -> None:
                     timeout_s=args.timeout,
                     expected_harness=args.harness,
                     crash_at=args.crash_at,
+                    collect_closeout=args.closeout,
                 )
             )
         # The join guide contains Unicode; keep the diagnostic result printable
