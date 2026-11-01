@@ -2145,6 +2145,14 @@ def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
     process = start(root, env)
     try:
         info = await_hub(root, process)
+        # #416: hub.json gets its pid before the registry does. The refusal
+        # lists live registry entries, so wait for this hub's live entry.
+        await_registry(
+            env,
+            lambda found: any(
+                e.get("hub_id") == info["hub_id"] and e.get("pid") == info["pid"] for e in found
+            ),
+        )
         # #265: discovery refusals and the explicit-URL read are read-only;
         # run them in-process against the live hub.
         for command in (["status"], ["status", "--snapshot"], ["inbox"], ["down"]):
