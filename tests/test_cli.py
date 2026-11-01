@@ -868,9 +868,9 @@ def test_bare_repository_hub_runs_in_a_linked_worktree(
             info = await_hub(checkout, process)
             assert (info["name"], info["git_common_dir"]) == (checkout.name, str(bare))
             assert info["default_branch"] == "main"
-        # #327: wait for both "running" prints so the registry entries carry
-        # live URLs before any later listing; concurrent first `up`s share one
-        # worktree root whose record is now published atomically.
+        # #327, #420: await_hub ensures live registration; also wait for both
+        # "running" prints. Concurrent first `up`s share one worktree root
+        # whose record is published atomically.
         for _checkout, process in processes.items():
             await_hub_stdout(process, "ROBOMATE_TOKEN_FILE=")
         # New hubs keep their state outside every checkout: nothing to exclude.
@@ -2762,8 +2762,8 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
         a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
         assert (a["name"], b["name"]) == ("wt-a", "wt-b")
         assert a["port"] != b["port"]
-        # #327: concurrent first `up`s share one worktree root; wait for both
-        # prints so both registry entries are live before asserting.
+        # #327, #420: await_hub ensures live registration; also wait for both
+        # prints from the concurrent first `up`s sharing one worktree root.
         await_hub_stdout(hub_a, "ROBOMATE_TOKEN_FILE=")
         await_hub_stdout(hub_b, "ROBOMATE_TOKEN_FILE=")
 
