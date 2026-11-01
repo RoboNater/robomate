@@ -11,12 +11,15 @@ import argparse
 import concurrent.futures
 import email.parser
 import hashlib
+import http.client
 import io
 import json
 import re
 import sys
 import tarfile
+import time
 import tomllib
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -151,8 +154,27 @@ def artifact_bytes(artifact: dict[str, Any], cache: Path) -> bytes:
     if path.exists():
         data = path.read_bytes()
     else:
-        with urllib.request.urlopen(artifact["url"], timeout=60) as response:
-            data = response.read()
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(artifact["url"], timeout=60) as response:
+                    data = response.read()
+                break
+            except (OSError, http.client.IncompleteRead) as exc:
+                retryable = not isinstance(exc, urllib.error.HTTPError) or (
+                    exc.code == 429 or 500 <= exc.code < 600
+                )
+                if not retryable or attempt == attempts:
+                    raise OSError(
+                        f"artifact download failed: {artifact['url']} "
+                        f"after {attempt} attempts: {exc}"
+                    ) from exc
+                print(
+                    f"Retrying artifact download: {artifact['url']} "
+                    f"(attempt {attempt}/{attempts} failed: {exc})",
+                    file=sys.stderr,
+                )
+                time.sleep(attempt)
         if digest(data) != expected.split(":")[1]:
             raise ValueError(f"artifact hash mismatch: {artifact['url']}")
         path.write_bytes(data)

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import email.message
+import http.client
 import importlib.util
 import io
 import json
+import ssl
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
+import urllib.error
 import zipfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -22,6 +28,117 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 AUDIT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AUDIT)
+
+
+@pytest.fixture
+def download(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str], Mock, Mock]:
+    artifact = {
+        "url": "https://example.invalid/artifact.whl",
+        "hash": f"sha256:{AUDIT.digest(b'artifact')}",
+    }
+    opener = Mock(return_value=io.BytesIO(b"artifact"))
+    sleep = Mock()
+    monkeypatch.setattr(AUDIT.urllib.request, "urlopen", opener)
+    monkeypatch.setattr(time, "sleep", sleep)
+    return artifact, opener, sleep
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("connection dropped"),
+        ssl.SSLError("unexpected EOF"),
+        TimeoutError("timed out"),
+        urllib.error.URLError("transport error"),
+        http.client.IncompleteRead(b"partial", 10),
+        *[
+            urllib.error.HTTPError(
+                "https://example.invalid/artifact.whl", code, "busy", email.message.Message(), None
+            )
+            for code in (429, 500, 503, 599)
+        ],
+    ],
+)
+@pytest.mark.parametrize("phase", ["open", "read"])
+def test_download_retries_transient_failure(
+    tmp_path: Path,
+    download: tuple[dict[str, str], Mock, Mock],
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    phase: str,
+) -> None:
+    artifact, opener, sleep = download
+    if phase == "read":
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.side_effect = error
+        opener.side_effect = [response, io.BytesIO(b"artifact")]
+    else:
+        opener.side_effect = [error, io.BytesIO(b"artifact")]
+    assert AUDIT.artifact_bytes(artifact, tmp_path) == b"artifact"
+    assert opener.call_args_list == [((artifact["url"],), {"timeout": 60})] * 2
+    sleep.assert_called_once()
+    assert sleep.call_args.args[0] > 0
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 1
+    assert artifact["url"] in lines[0]
+    assert "retry" in lines[0].lower()
+    assert (tmp_path / AUDIT.digest(b"artifact")).read_bytes() == b"artifact"
+
+
+def test_download_gives_up_after_limit(
+    tmp_path: Path,
+    download: tuple[dict[str, str], Mock, Mock],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact, opener, sleep = download
+    opener.side_effect = http.client.IncompleteRead(b"partial", 10)
+    with pytest.raises(OSError) as caught:
+        AUDIT.artifact_bytes(artifact, tmp_path)
+    assert opener.call_count == 3
+    assert artifact["url"] in str(caught.value)
+    assert "3 attempts" in str(caught.value)
+    assert isinstance(caught.value.__cause__, http.client.IncompleteRead)
+    assert sleep.call_count == 2
+    assert len(capsys.readouterr().err.splitlines()) == 2
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 408])
+def test_download_does_not_retry_other_client_errors(
+    tmp_path: Path,
+    download: tuple[dict[str, str], Mock, Mock],
+    capsys: pytest.CaptureFixture[str],
+    code: int,
+) -> None:
+    artifact, opener, sleep = download
+    opener.side_effect = urllib.error.HTTPError(
+        artifact["url"], code, "client error", email.message.Message(), None
+    )
+    with pytest.raises(OSError) as caught:
+        AUDIT.artifact_bytes(artifact, tmp_path)
+    assert artifact["url"] in str(caught.value)
+    assert "1 attempt" in str(caught.value)
+    opener.assert_called_once()
+    sleep.assert_not_called()
+    assert capsys.readouterr().err == ""
+    assert not list(tmp_path.iterdir())
+
+
+def test_download_does_not_retry_hash_mismatch(
+    tmp_path: Path,
+    download: tuple[dict[str, str], Mock, Mock],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact, opener, sleep = download
+    opener.return_value = io.BytesIO(b"corrupted")
+    with pytest.raises(ValueError, match="artifact hash mismatch"):
+        AUDIT.artifact_bytes(artifact, tmp_path)
+    opener.assert_called_once()
+    sleep.assert_not_called()
+    assert capsys.readouterr().err == ""
+    assert not list(tmp_path.iterdir())
 
 
 class Fixture:
