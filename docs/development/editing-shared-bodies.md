@@ -1,6 +1,6 @@
 # Editing shared issue and PR bodies
 
-Use this procedure for authorized edits, especially roadmap #2. It prevents
+Use this procedure for authorized edits, including reservations issue #409. It prevents
 failed builds, accumulated newlines, Windows encoding damage and stale-copy
 overwrites (#255). Replace only exact text within its own uniquely anchored
 section; never rebuild whole sections from memory or an earlier fetch.

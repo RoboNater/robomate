@@ -1,25 +1,34 @@
 Use the `alice-orchestrator` skill to carry this work through a reviewed,
-gate-checked merge and roadmap close-out.
+gate-checked merge and any required counter close-out.
 
 Connect through `robomate mcp --role orchestrator` to the existing HTTP hub
 started by `robomate up` in its checkout of the target repository. The hub and
 its durable state remain available if this harness session restarts.
 
 Goal: Address issue `<issue-owner>/<issue-repository>#<issue>`, merge its pull
-request, and close out by updating roadmap issue
-`<roadmap-owner>/<roadmap-repository>#<roadmap-issue>`.
+request, and close out. No reservations issue was supplied. If the work needs
+a shared counter, ask the operator to identify its authoritative shared issue
+before using a value; a hub log alone is not a reservation. Only if the run
+uses a shared counter, claim a unique value before writing code that uses it,
+advance the next value with the shared-body procedure, and have the reviewer
+verify it. After merge, close out only that claim as shipped; release it if
+abandoned. Ordinary runs require no roadmap decision comment, adjudication or
+completion edit; the Closes reference closes the issue and triage maintains
+the plan. If no counter is used, no reservations close-out task is needed.
 
 The Goal is the statement of work. For one issue, keep the sentence above. For
 any other job that ends in one merged pull request (several issues together, a
 plan step, a job described in a paragraph), replace that sentence with the
 statement text itself: the repository-qualified issues it names, if any, what
-must change, and its acceptance criteria, ending with the close-out clause.
-Work that needs more than one pull request takes one run per pull request.
+must change, and its acceptance criteria. Work that needs more than one pull
+request takes one run per pull request.
 
-For a throwaway run with no roadmap target, replace the final clause inside the
-Goal with: `and close out with no roadmap edit; record the merge only in the
-workflow summary`. Never leave the durable Goal pointing to text outside
-itself.
+If a reservations target is supplied, replace "No reservations issue was
+supplied" and the missing-target instruction inside the Goal with:
+`The run's reservations issue is <reservations-owner>/<reservations-repository>#<reservations-issue>;
+read it only if a counter is needed`. A supplied target alone adds no task.
+Never leave the durable Goal pointing to text outside itself. Existing prepared
+runs retain their saved goal, including any explicit roadmap obligation.
 
 Forge comment identity account: `<account>`.
 

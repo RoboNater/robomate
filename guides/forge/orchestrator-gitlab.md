@@ -32,11 +32,11 @@ RE-REVIEW rather than forcing or bypassing the check.
   glab mr view <iid> -R <host>/<project> --comments
   glab mr diff <iid> -R <host>/<project>
   ```
-- **Verify roadmap issue update** (close-out):
+- **Verify reservations issue update** (close-out):
   ```sh
   glab issue view <number> -R <host>/<project>
   ```
-  (use `gh issue view` if the roadmap issue is hosted on GitHub).
+  (use `gh issue view` if the reservations issue is hosted on GitHub).
 
 For resume and head verification, use the MR API above; read `.sha`, `.state`,
 `.target_branch`, `.merge_commit_sha` and `.squash_commit_sha`. Compare `.sha`

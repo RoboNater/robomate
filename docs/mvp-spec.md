@@ -195,7 +195,7 @@ identity key and never changes.
 | Path | Contents |
 |---|---|
 | `hub.json` | `hub_id`, `name`, `checkout` (owning checkout), `git_common_dir`, `origin`, `forge`, `default_branch`, `url`, `port`, `pid`, `started_at`, `robomate_version` |
-| `hub.db` | SQLite state (schema continues from PoC v12; reserve versions per the roadmap rule) |
+| `hub.db` | SQLite state (schema continues from PoC v12; reserve versions per the shared-counter rule) |
 | `token` | per-hub bearer token, mode 0600; in its own directory from M2 (§12) |
 | `up.lock` | OS-held per-hub lock while the hub starts or runs; prevents a concurrent `up` of the same hub, never of a sibling hub |
 | `config.toml` | optional hub settings, the first configuration layer (below) |
@@ -749,7 +749,7 @@ recorded.
 |---|---|
 | `nits_issue` | a standing issue where trivial items are added as a comment; without it, `nit` is not an allowed action |
 | `followup_label` | label applied to every follow-up issue (default `robomate-followup`), so the operator triages them in the forge |
-| `closeout_steps` | list of steps passed verbatim to every close-out task, e.g. `"Update the roadmap issue with current status"` (#16: nothing about roadmaps is hard-coded) |
+| `closeout_steps` | list of steps passed verbatim to every close-out task, e.g. `"If this run used a counter, mark its claim shipped in the run's reservations issue"` (#408: ordinary runs do no roadmap upkeep) |
 
 **Per-agent retrospectives (#215).** After review/merge, before assigning the
 close-out task, Alice calls `request_closeout_reports(run_id, timeout_s=100)`.
@@ -808,6 +808,21 @@ serialized against submission. Missing reports never prevent release or done,
 and collection introduces no approval/merge gate. Operator abandonment uses
 the same finalization operation when that lifecycle operation lands. Report,
 status and export presentation, including safe rendering, remain #216.
+
+**Counter reservations (#408).** Ordinary runs do no roadmap decision comment,
+adjudication or completion edit. `Closes #N` closes the issue and triage maintains
+the plan. Only a counter-using run reads or edits the run's reservations issue.
+Alice claims a unique value or explicitly assigns the claim to the implementer
+before code uses it, advancing the next value with the shared-body procedure.
+On a stale snapshot, re-read and rebuild rather than overwrite another claim.
+The reviewer verifies the code's claimed value and in-flight uniqueness; Alice
+checks the shared claim before merge. A hub log alone is insufficient. If no
+authoritative target is supplied or readable, ask the operator before using a
+counter. After merge, close out only the used claim as shipped; release an
+unused claim if dropped or abandoned without rewinding over other claims.
+A supplied target alone requires no post-merge reservations task. This does not
+remove other explicit close-out steps or follow-up handling; legacy prepared
+runs retain their durable goals.
 
 **The close-out task.** After MERGE (or after approval, with `deliver: pr`), the orchestrator
 assigns the run's implementer a `closeout` task (another implementer if that one is lost).
@@ -1245,7 +1260,7 @@ itself.
 | M7 | Denise: interactive doctor agent | Optional generated `start-denise.sh` / `.ps1` from standard-run preparation; harness/model/effort inheritance and overrides; short run-specific context with robomate and target-repository references; local guide, selected-run repair access and operator authority rules (§5.1); hub-independent recovery reports | The operator starts Denise only when needed, with no hand-assembled briefing, on Bash and native PowerShell. Diagnosis works with the hub down and with a separate target repository. Recorded acceptance covers a stopped hub, an agent returned to the shell, an attached/orphan predecessor, a pending question or pause, and preservation of uncommitted work; normal team scripts and orchestration remain usable |
 | M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no pasted launch prompts; Denise's separate context/profile/report files remain (§5.1). The same again from a second worktree's hub while the first runs |
 | M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; Devin CLI certified, or attempted and recorded; Devin Desktop (Devin Local) attempted via `join` and recorded; one real run with a non-Claude orchestrator |
-| M4 | Close-out and resilience | per-agent closeout report models, durable bounded collection before release (#215), `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: all-three and crashed-worker report collection survive restart with explicit missing reasons; report retries, identity/size/credential validation and pause-aware expiry; `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and its roadmap issue updated, with no operator chat |
+| M4 | Close-out and resilience | per-agent closeout report models, durable bounded collection before release (#215), `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: all-three and crashed-worker report collection survive restart with explicit missing reasons; report retries, identity/size/credential validation and pause-aware expiry; `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and any used counter claim closed out in the reservations issue, with no operator chat |
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 

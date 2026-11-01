@@ -23,6 +23,23 @@ HELPER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HELPER)
 
 
+def test_removed_roadmap_inputs_name_their_replacements(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        HELPER.main(["--roadmap", "owner/repo#2"])
+    assert error.value.code == 2
+    assert "--roadmap was renamed to --reservations" in capsys.readouterr().err
+    config = tmp_path / "old.toml"
+    config.write_text('roadmap = "owner/repo#2"\n', encoding="utf-8")
+    output = tmp_path / "output.toml"
+    with pytest.raises(SystemExit) as error:
+        HELPER.main(["--config", str(config), "--generate-config", str(output)])
+    assert error.value.code == 1
+    assert "roadmap was renamed to reservations" in capsys.readouterr().err
+    assert not output.exists()
+
+
 def test_generation_round_trip_and_no_preparation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -221,7 +238,7 @@ def test_prepare_clones_and_forwards_arguments(
         str(run_dir),
         "--account",
         "tester",
-        "--roadmap",
+        "--reservations",
         "owner/repo#2",
         "--bob-harness",
         "codex",

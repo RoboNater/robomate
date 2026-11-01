@@ -1050,8 +1050,10 @@ def render_alice_prompt(manifest_path: Path) -> str:
     if repository != SANDBOX_REPOSITORY or not isinstance(issue_number, int) or not issue_url:
         raise ScenarioError("manifest does not contain a seeded sandbox issue")
     goal = (
-        f"Address issue {repository}#{issue_number}, merge its pull request, and close out "
-        "with no roadmap edit; record the merge only in the workflow summary."
+        f"Address issue {repository}#{issue_number}, merge its pull request, and close out. "
+        "No reservations issue was supplied; if a shared counter is needed, ask the "
+        "operator for its authoritative issue and claim a value before code uses it. "
+        "Ordinary runs do no roadmap upkeep; close out a reservation only if a counter was used."
     )
     policy = {
         "max_review_rounds": 3,

@@ -454,8 +454,14 @@ def probe_versions(harnesses: set[str]) -> tuple[dict[str, str], dict[str, str]]
     return versions, parsed_versions
 
 
-THROWAWAY_CLOSE_OUT = (
-    "close out with no roadmap edit; record the merge only in the workflow summary"
+COUNTER_CLOSE_OUT = (
+    "Only if the run uses a shared counter, claim a unique value in the run's "
+    "reservations issue before writing code that uses it; use the shared-body "
+    "procedure, advance the next value, and have the reviewer verify the claim. "
+    "After merge, close out only that claim as shipped; release it if abandoned. "
+    "If no counter is used, no reservations close-out task is needed. "
+    "Ordinary runs require no roadmap decision comment, adjudication or completion edit; "
+    "the Closes reference closes the issue and triage maintains the plan."
 )
 
 
@@ -476,22 +482,22 @@ def read_work_file(path: Path) -> dict[str, str]:
     return {"text": text, "path": str(path), "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def resolve_roadmap(roadmap: str | None, slug: str | None, repository: str) -> str | None:
-    """Render ``--roadmap`` as Alice's goal names it, or None when omitted (#34).
+def resolve_reservations(reservations: str | None, slug: str | None, repository: str) -> str | None:
+    """Render ``--reservations`` as Alice's goal names it, or None when omitted (#34).
 
     A bare number (digits, optionally with a leading ``#``) names that issue of
     the repository prepare-run is operating on (``slug or repository``); any
     other value (``OWNER/REPO#N`` and the like) passes through verbatim for
-    Alice and bob to resolve at close-out.
+    Alice to resolve before claiming a counter.
     """
-    if roadmap is None:
+    if reservations is None:
         return None
-    if not roadmap.strip():
-        raise ValueError("--roadmap must not be empty")
-    match = re.fullmatch(r"#?(\d+)", roadmap)
+    if not reservations.strip():
+        raise ValueError("--reservations must not be empty")
+    match = re.fullmatch(r"#?(\d+)", reservations)
     if match:
         return f"{slug or repository}#{match.group(1)}"
-    return roadmap
+    return reservations
 
 
 def render_goal(
@@ -499,34 +505,30 @@ def render_goal(
     repository: str,
     issue: int | None,
     work: str | None,
-    roadmap: str | None = None,
+    reservations: str | None = None,
     forge: str = "github",
 ) -> str:
     """The durable goal: the statement of work, or the one-issue sentence (#34)."""
     change_term = "merge request" if forge == "gitlab" else "pull request"
-    rendered = resolve_roadmap(roadmap, slug, repository)
-    if rendered is not None:
-        instructions = (
-            f"The implementer bob should make a decision on what roadmap ({rendered}) "
-            "updates are necessary, if any, when they open the PR and include it as a "
-            "PR comment so it can be reviewed. After the merge the implementer bob "
-            "should update the roadmap per the adjudicated PR if necessary. Make sure "
-            "you include that in bob's initial tasking."
+    rendered = resolve_reservations(reservations, slug, repository)
+    if rendered is None:
+        target = (
+            "No reservations issue was supplied. If the work needs a shared counter, "
+            "ask the operator to identify its authoritative shared issue before using a value; "
+            "a hub log alone is not a reservation."
         )
-        if work is not None:
-            return f"{work}\n\nWhen done, close out. {instructions}"
-        if issue is not None:
-            target = f"{slug or repository}#{issue}"
-        else:
-            target = "<issue-owner>/<issue-repository>#<issue>"
-        return f"Address issue `{target}`, merge its {change_term}, and close out. {instructions}"
-    if work is not None:
-        return f"{work}\n\nWhen done, {THROWAWAY_CLOSE_OUT}."
-    if issue is not None:
-        target = f"{slug or repository}#{issue}"
     else:
-        target = "<issue-owner>/<issue-repository>#<issue>"
-    return f"Address issue `{target}`, merge its {change_term}, and {THROWAWAY_CLOSE_OUT}."
+        target = (
+            f"The run's reservations issue is ({rendered}); read it only if a counter is needed."
+        )
+    instructions = f"{target} {COUNTER_CLOSE_OUT}"
+    if work is not None:
+        return f"{work}\n\nWhen done, close out. {instructions}"
+    if issue is not None:
+        issue_target = f"{slug or repository}#{issue}"
+    else:
+        issue_target = "<issue-owner>/<issue-repository>#<issue>"
+    return f"Address issue `{issue_target}`, merge its {change_term}, and close out. {instructions}"
 
 
 def goal_sha256(goal: str) -> str:
@@ -2779,7 +2781,7 @@ def prepare(
     bob_effort: str = "",
     charlie_effort: str = "",
     auto_start: bool = True,
-    roadmap: str | None = None,
+    reservations: str | None = None,
     hub_repo: Path | None = None,
     stall_after_min: float = DEFAULT_STALL_AFTER_MIN,
     max_resumes: int | None = DEFAULT_MAX_RESUMES,
@@ -2815,8 +2817,8 @@ def prepare(
             "--work-file and --issue are mutually exclusive; name the issue inside "
             "the statement of work, or pass --issue alone"
         )
-    if roadmap is not None and not roadmap.strip():
-        raise ValueError("--roadmap must not be empty")
+    if reservations is not None and not reservations.strip():
+        raise ValueError("--reservations must not be empty")
     statement = read_work_file(work_file.resolve()) if work_file is not None else None
     work_text = statement["text"] if statement is not None else None
     if not run_dir.is_absolute() or run_dir != run_dir.resolve():
@@ -2949,7 +2951,7 @@ def prepare(
         slug = parse_github_slug(repository, forge=forge)
         clone_from = clone_source(repository, slug)
 
-    goal = render_goal(slug, repository, issue, work_text, roadmap, forge=forge)
+    goal = render_goal(slug, repository, issue, work_text, reservations, forge=forge)
     check_goal_size(goal)
     check_hub_workflow(hub_repo, hub_state, run_dir, goal)
 
@@ -3270,7 +3272,7 @@ def prepare(
         "path": statement["path"] if statement is not None else None,
         "sha256": statement["sha256"] if statement is not None else None,
         "goal_sha256": goal_sha,
-        "roadmap": resolve_roadmap(roadmap, slug, repository),
+        "reservations": resolve_reservations(reservations, slug, repository),
     }
 
     manifest = {
@@ -3811,11 +3813,11 @@ def main() -> None:
         "exclude these from archives",
     )
     parser.add_argument(
-        "--roadmap",
+        "--reservations",
         default=None,
-        metavar="ROADMAP",
-        help="roadmap issue bob may update: bare N or #N of the target repository, "
-        "or OWNER/REPO#N verbatim (default: no roadmap update required)",
+        metavar="RESERVATIONS",
+        help="shared-counter reservations issue: bare N or #N of the target repository, "
+        "or OWNER/REPO#N verbatim (default: no target supplied; ask before using a counter)",
     )
     for name, default in (("alice", "claude"), ("bob", "claude"), ("charlie", "codex")):
         # --bob / --charlie are the earlier spellings of the worker harness flags.
@@ -3958,6 +3960,8 @@ def main() -> None:
         default=None,
         help="with --worker-only: the hub's token file as this host reads it",
     )
+    if any(arg == "--roadmap" or arg.startswith("--roadmap=") for arg in sys.argv[1:]):
+        parser.error("--roadmap was renamed to --reservations")
     args = parser.parse_args()
     # None means the flag was not given; an empty value is still validated.
     harnesses = dict(DEFAULT_HARNESSES)
@@ -3977,7 +3981,7 @@ def main() -> None:
             "--issue": args.issue is not None,
             "--work-file": args.work_file is not None,
             "--account": args.account is not None,
-            "--roadmap": args.roadmap is not None,
+            "--reservations": args.reservations is not None,
             "--state-dir": args.state_dir is not None,
             "--hub-repo": args.hub_repo is not None,
             "--remote-worker": args.remote_worker is not None,
@@ -4055,7 +4059,7 @@ def main() -> None:
             bob_effort=args.bob_effort,
             charlie_effort=args.charlie_effort,
             auto_start=args.auto_start,
-            roadmap=args.roadmap,
+            reservations=args.reservations,
             hub_repo=args.hub_repo,
             stall_after_min=args.stall_after_min,
             pytest_workers=args.pytest_workers,

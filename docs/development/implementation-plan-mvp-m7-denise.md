@@ -247,7 +247,8 @@ The recovery procedure is:
 No dependency on future M2 join, state relocation or M3 certification. No new package is
 expected. Changes needing a dependency follow `docs/dependency-licenses.md`. No counters
 are reserved by #174: an implementation that needs a DB or wire schema change must reserve
-on #2 before editing. An optional manifest field alone does not consume those counters.
+in reservations issue #409 before editing, following AGENTS.md. An optional manifest
+field alone does not consume those counters.
 
 ## Spec deltas and remaining choices
 

@@ -183,16 +183,12 @@ reviewer, and in the closeout report. Alice follows the same rule for her
 own steps and preserves the statement's departures from worker guides when
 summarizing assignments; the summary must not silently restore guide defaults.
 
-For example, a statement saying to update roadmap completion after merge
-can coexist with a requirement to reserve the next DB schema version at
-pickup, before writing it into code. Reserve early, implement and review
-with the reserved version, then mark the version shipped and the issue
-complete after merge according to the adjudicated roadmap decision. Do not
-turn that post-merge instruction into a prohibition on all pre-merge roadmap
-edits. If the statement explicitly prohibits all pre-merge roadmap edits,
-clarify the conflict through the normal question path before using a schema
+For example, marking a counter shipped after merge does not postpone its
+claim: reserve the next DB schema version at pickup, before writing it into
+code, then implement and review with that value. If the statement prohibits
+all pre-merge reservation edits, clarify the conflict before using a schema
 number and record the decision. Reading the next available number does not
-reserve it. This example grants workers no additional roadmap authority.
+reserve it. This example grants workers no additional authority.
 
 A reviewer judges the change against the task's requirements; no operator
 question id is needed for the task's own scope, including scope stated in an

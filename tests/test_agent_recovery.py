@@ -87,6 +87,27 @@ def save_rows(args: argparse.Namespace, rows: list[dict[str, Any]]) -> None:
     args.sessions.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
 
+@pytest.mark.parametrize("target_key", ["roadmap", "reservations"])
+def test_resume_loads_old_and_new_reservations_metadata_without_rewriting_goal(
+    recovery_args: argparse.Namespace, target_key: str
+) -> None:
+    """The rename must not change a prepared run's durable statement (#408)."""
+    goal = "Address acme/app#42; update roadmap acme/app#2 after merge."
+    manifest = {
+        "schema_version": 1,
+        "hub_id": "hub-1",
+        "work": {"goal": goal, target_key: "acme/app#2"},
+        "launch": {"agents": {"bob": {"harness": "codex"}}},
+    }
+    path = recovery_args.sessions.parent / "run.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = path.read_bytes()
+    conversation, prompt = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
+    assert conversation == CODEX_ID
+    assert "task-1" in prompt
+    assert path.read_bytes() == before
+
+
 def test_zero_argument_preparation_captures_distinct_times_and_full_state(
     recovery_args: argparse.Namespace,
 ) -> None:
