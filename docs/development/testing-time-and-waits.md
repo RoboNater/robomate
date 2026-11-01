@@ -217,15 +217,15 @@ A full suite at 250 ms is too slow to require. Baseline on main at
 uv run --locked pytest -n auto` without `-q` showed `db latency probe:
 250 ms` and `1 failed, 2495 passed, 35 skipped in 1229.42s`, with the
 failure `tests/test_mock_alice.py::test_mock_alice_drives_scaled_endurance_scenario`
-(`TimeoutError`), reported here and not fixed in #392. That failure is
-intermittent with signature `TimeoutError` from
-`tests/test_mock_alice.py::test_mock_alice_drives_scaled_endurance_scenario`
-under the 250 ms probe: on the PR head the reviewer ran the same file at
-250 ms (37 passed) and the full suite at 250 ms (2496 passed, 35 skipped)
-with no failure. It is tracked in #412. This does not narrow the AGENTS.md
-rule: a 250 ms failure in a touched test still blocks the PR as a timing
-defect; when the failure matches this signature, report it on #412 with the
-command and failure lines.
+(`TimeoutError`), not fixed in #392. #412 / PR #425 identified an outer
+`LIVENESS_S` timeout from sheer transaction count and removed redundant
+periodic sweeps, preserving the explicit frozen-clock sweeps and hang bound.
+Heavy load can still exhaust that bound. If this `TimeoutError` signature
+recurs, open a new follow-up issue referencing #412 / PR #425 with the
+command, traceback naming the expired wait, transaction count and timings.
+Classify it using the guidance above rather than raising the bound. The
+AGENTS.md rule remains: a 250 ms failure in a touched test still blocks the
+PR as a timing defect.
 
 ## Reproduce first: the slow-host probe, or the failing host
 
