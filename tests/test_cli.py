@@ -293,7 +293,11 @@ def _startup_diagnostics(root: Path, process: subprocess.Popen[str], elapsed: fl
 def await_hub(
     root: Path, process: subprocess.Popen[str], timeout_s: float = LIVENESS_S
 ) -> dict[str, object]:
-    """Wait until the hub records its pid in hub.json, which `started()` writes.
+    """Wait for the hub's pid in hub.json and its completed live registration.
+
+    `started()` marks "registered live" on stderr after writing hubs.json.
+    Wait for that marker as well as hub.json so every caller sees a live
+    registry entry (#420).
 
     `timeout_s` is a hang bound, not a budget (#372, timing policy): a passing
     start never comes near it, so it costs time only when startup is already
@@ -308,7 +312,11 @@ def await_hub(
     while (elapsed := time.monotonic() - started) < timeout_s:
         data = read_hub(root)
         pid = int((data or {}).get("pid") or 0)
-        if data and pid:
+        registered = any(
+            line.startswith(f"{STAGE_PREFIX}registered live at ")
+            for line in _hub_stderr(process).splitlines()
+        )
+        if data and pid and registered:
             if pid == process.pid:
                 return data
             if sys.platform == "win32" and process.poll() is None and process_alive(pid):
@@ -331,8 +339,8 @@ def await_registry(
 ) -> list[dict[str, Any]]:
     """Poll hubs.json until its entries satisfy `matches`, and return them (#180).
 
-    `robomate up` writes hub.json before it registers in hubs.json, so
-    await_hub can return first. A read that meets `robomate`'s os.replace of
+    `await_hub` already waits for live registration; this helper checks the
+    expected entries and their fields. A read that meets `robomate`'s os.replace of
     hubs.json fails on Windows with a sharing violation (EACCES) that clears
     within milliseconds; retry it like any other not-yet state.
     """
@@ -363,9 +371,9 @@ def await_hub_stdout(
 ) -> str:
     """Poll a hub's stdout log until `needle` appears (#327 signature 3).
 
-    `await_hub` returns on hub.json, which `started()` writes before the
-    registry update and the "running" print. Waiting for the print ensures the
-    registry entry carries the live URL before `ls` probes it.
+    `await_hub` already waits for live registration, but `started()` prints
+    the "running" text afterwards. Wait for the requested text before
+    checking the printed URL, paths or port-reuse message.
     """
 
     deadline = time.monotonic() + timeout_s
@@ -695,10 +703,8 @@ def test_two_hubs_in_one_repository(
             assert (worktree_root / str(info["name"]) / "token" / "token").is_file()
             assert not (checkout / ".robomate").exists()
         assert not (root / ".robomate").exists()
-        # #327 signature 3: `started()` writes hub.json before the registry
-        # update and the print, so `await_hub` alone can precede a live
-        # registry entry. Wait for both prints, then for both registry entries
-        # to carry URLs, before the first `ls` probes /healthz.
+        # #327 signature 3, #420: await_hub ensures live registration; also
+        # check both prints and the registry URLs before `ls` probes /healthz.
         printed_a = await_hub_stdout(hub_a, "ROBOMATE_TOKEN_FILE=")
         printed_b = await_hub_stdout(hub_b, "ROBOMATE_TOKEN_FILE=")
         assert f"Hub wt-a running at {a['url']}" in printed_a
@@ -862,9 +868,9 @@ def test_bare_repository_hub_runs_in_a_linked_worktree(
             info = await_hub(checkout, process)
             assert (info["name"], info["git_common_dir"]) == (checkout.name, str(bare))
             assert info["default_branch"] == "main"
-        # #327: wait for both "running" prints so the registry entries carry
-        # live URLs before any later listing; concurrent first `up`s share one
-        # worktree root whose record is now published atomically.
+        # #327, #420: await_hub ensures live registration; also wait for both
+        # "running" prints. Concurrent first `up`s share one worktree root
+        # whose record is published atomically.
         for _checkout, process in processes.items():
             await_hub_stdout(process, "ROBOMATE_TOKEN_FILE=")
         # New hubs keep their state outside every checkout: nothing to exclude.
@@ -2145,8 +2151,8 @@ def test_status_never_attaches_to_the_only_hub_but_takes_an_explicit_url(
     process = start(root, env)
     try:
         info = await_hub(root, process)
-        # #416: hub.json gets its pid before the registry does. The refusal
-        # lists live registry entries, so wait for this hub's live entry.
+        # #416, #420: await_hub ensures live registration; also check that the
+        # registry entry matches this hub's identity and pid for the refusal.
         await_registry(
             env,
             lambda found: any(
@@ -2358,11 +2364,9 @@ def test_ls_lists_two_live_hubs_and_prunes_stale_entry(
         first_info = await_hub(root, first)
         second_info = await_hub(other, second)
 
-        # #320, #350, #368: await_hub returns as soon as healthz answers, but
-        # the initial registration in hubs.json has url=None and pid=None; the
-        # live registration (url, port, pid) happens in the started callback.
-        # Wait until both hubs have their final live registry entries before
-        # adding the stale entry and running ls.
+        # #320, #350, #368, #420: await_hub ensures live registration; also
+        # check both hubs' registry identities, URLs and pids before adding
+        # the stale entry and running ls.
         def live_registered(found: list[dict[str, Any]]) -> bool:
             by_id = {e.get("hub_id"): e for e in found}
             e1 = by_id.get(first_info["hub_id"])
@@ -2758,8 +2762,8 @@ def test_forget_releases_name_and_port_and_next_up_takes_first_free(
         a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
         assert (a["name"], b["name"]) == ("wt-a", "wt-b")
         assert a["port"] != b["port"]
-        # #327: concurrent first `up`s share one worktree root; wait for both
-        # prints so both registry entries are live before asserting.
+        # #327, #420: await_hub ensures live registration; also wait for both
+        # prints from the concurrent first `up`s sharing one worktree root.
         await_hub_stdout(hub_a, "ROBOMATE_TOKEN_FILE=")
         await_hub_stdout(hub_b, "ROBOMATE_TOKEN_FILE=")
 
