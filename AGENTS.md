@@ -80,7 +80,7 @@ points still run. See the role guides for details.
 `-n auto` respects each run's `PYTEST_XDIST_AUTO_NUM_WORKERS`. Set
 `pytest_workers` in the standard-run TOML or `--pytest-workers N` when preparing
 (0 means CPU count); generated launch and resume scripts carry the setting.
-CI uses the runner's CPU count and keeps `test` and `windows` required; `probe` (50 ms) and `probe-100` (100 ms) become required when #365 closes.
+CI uses the runner's CPU count. `test`, `windows`, `probe` (50 ms) and `probe-100` (100 ms) are all required.
 
 Don't pipe a check through `tail` or `head` to shorten it: the pipeline
 returns the last command's exit status, so a failing suite looks green. Use

@@ -196,10 +196,10 @@ its bound: `LIVENESS_S`, never a fixed budget (#372).
 ## In CI and review
 
 CI runs the full suite under the probe twice on Linux: `probe` at 50 ms and `probe-100` at
-100 ms. Both become required when #365 closes (`test` and `windows` are
-already required). A reviewer also runs each added or changed test file once
-at 250 ms, because 250 ms catches what 100 ms misses: the real-time deadline
-that #380 fixed passed at 100 ms and failed every time at 250 ms.
+100 ms. Both are required, along with `test` and `windows`. A reviewer also runs
+each added or changed test file once at 250 ms, because 250 ms catches what 100 ms
+misses: the real-time deadline that #380 fixed passed at 100 ms and failed every time
+at 250 ms.
 
 ```sh
 ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest <each added or changed test file>
