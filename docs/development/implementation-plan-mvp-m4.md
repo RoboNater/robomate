@@ -1,13 +1,15 @@
 # Implementation plan — MVP Milestone M4: close-out and resilience
 
-Status: proposed. Tracking issue [#429](https://github.com/RoboNater/robomate/issues/429);
+Status: proposed, with the points left open at merge settled under
+[Decisions settled after merge](#decisions-settled-after-merge). Tracking issue
+[#429](https://github.com/RoboNater/robomate/issues/429);
 roadmap [#2](https://github.com/RoboNater/robomate/issues/2), section M4.
 
 This plans the remaining work, using the [M2 plan](implementation-plan-mvp-m2.md)
 and [M5 plan](implementation-plan-mvp-m5-gitlab.md) format. The
 [MVP spec](../mvp-spec.md) remains the design of record. §-numbers refer to it.
-This PR changes no production code or spec text, opens no step issues and changes no
-roadmap or reservations. Triage creates the step issues after merge.
+This plan changes no production code or spec text, opens no step issues and changes no
+roadmap or reservations. Triage creates the step issues.
 
 ## What M4 has to deliver
 
@@ -123,7 +125,8 @@ Done-when inventory (split into independently checkable clauses):
 2. Per-author exports already escape prose, URLs and controls, use ordinal paths, and
    expose export failures without undoing done. Startup retries finalized **done** runs.
    #423 owns retry completion and retention; a missing index alone cannot distinguish
-   a crash from an operator deletion.
+   a crash from an operator deletion, so its decision adds a durable completion record.
+   #431 replaces the Markdown escaping with fenced literal text.
 3. `task.role` is free text in SQLite, but public result dispatch has only three typed
    roles. The existing Collection test's prose completion of a string `closeout` task
    does not prove any `CloseoutResult` rule. Validation must use the stored task role.
@@ -149,6 +152,58 @@ Done-when inventory (split into independently checkable clauses):
    A timestamp range cannot attribute decisions or late operator answers to a run.
    Step 6 adds explicit storage attribution before Step 4 relies on it; legacy rows
    without an authoritative reference remain unscoped.
+
+## Decisions settled after merge
+
+The plan merged with these points open or unstated. The owner delegated them on
+2026-11-02, as long as they fit the project's intent and the spec, and may redirect any
+of them. They live here so a step issue can stay a short pointer. The sections below
+already reflect them.
+
+1. **Abandon with a queued run: no hold.** Alice starts the queued run through
+   `start_workflow()`, as [Abandonment](#abandonment) describes. At most one run can be
+   queued, so the case is rare. A hold would keep Alice and the workers polling, and
+   idle holds cost tokens (§7.2). The operator keeps control without new code by
+   stopping the agents first, which Step 4 documents.
+2. **Typed closeout on every run.** `closeout` keeps §7.2's default of `true`, even when
+   nothing is pending. #408 removed roadmap upkeep, not close-out itself, and the typed
+   task is what stops nonblocking findings being dropped (#15). On a run with nothing
+   pending it costs one short task. `closeout: false` stays available per run.
+3. **Export retention (#423): an export is written once, and deleting it is final.**
+   Rewriting every completed run at each hub start is wasted work, and it would bring
+   back files an operator removed on purpose.
+   - After `index.json` is written, record completion in the database, for example an
+     exported-at column on `closeout_collection`. This needs a migration, so #423 claims
+     its version on #409 first.
+   - Startup retries only finalized `done` runs with no completion record. A failed or
+     interrupted export has none, so it retries at each start and `status` reports it
+     again if it still fails.
+   - An operator removes an export by deleting its files or run directory, with no new
+     command, and the hub never recreates it. The docs must say this removes only the
+     exported files: the reports stay in `hub.db` until that hub's state is removed. A
+     purge command is out of scope.
+   - At migration: `index.json` present means complete; report files with no index are
+     an interrupted export and stay unmarked so they retry; no index and no report files
+     means complete without writing anything. That last case can't be told apart from a
+     deliberate deletion, and a run that really crashed there loses only its export,
+     because its reports stay in the database.
+4. **Order: §13 doesn't change.** Lane A's queue stays first: #395, #245, #246, #247,
+   #423. Triage opens all the step issues now. Steps 1 and 6 start when Lane A reaches
+   them or a lane is free, ahead of M3, with Step 2 after Step 1. This follows the
+   precedent of #215 and #356, doesn't delay M2, and landing after #247 avoids launcher
+   churn. Steps 3–5 follow the edge table. Steps 7 and 8 stay behind M2 and M3.
+5. **Readable exports (#431) land before Step 3.** Today's export renderer backslash-escapes
+   all punctuation and shows line breaks as `\u000a`, so URLs and SHAs are hard to read in
+   a terminal. Step 3 reuses that renderer for `report.md` and `robomate report`, so fixing
+   it first means the main operator report inherits the fix. #431 and #423 change the same
+   file, and whichever lands second rebases.
+6. **Filing route (#366): workers keep filing, with no permission change.** §7.3 gives
+   filing to the implementer, and pre-approving `gh issue create` would widen a permission
+   to work around a safeguard that may be behaving correctly. If a harness refuses, the
+   worker returns `blocked` with the rejection named and uses no other route. Alice asks
+   through `ask_user`, the operator files the issue, and Alice records its number. The
+   guides' FOLLOW-UP route says this. Codex and OpenCode workers filed #423, #424 and #412
+   with no refusal on 2026-11-01, so the refusal isn't constant.
 
 ## Design
 
@@ -200,7 +255,8 @@ reconstruct evidence from task prose or make new forge calls while rendering. A 
 closeout is labelled explicitly. The headline reports delivery state, unresolved findings,
 incomplete steps and, after Step 5, submitted/expected retrospective counts.
 
-Reuse the Views escaping and private permissions for all untrusted fields. Reports do not
+Reuse the export renderer as #431 leaves it (fenced literal text with visible control
+escapes) and private permissions for all untrusted fields. Reports do not
 execute text, follow links, file issues, or certify agent claims. CLI prints the same safe
 content; status contains the compact headline, not report prose. `report [run]` defaults
 to the current run or newest terminal run, selected within the chosen hub; an explicit
@@ -209,9 +265,12 @@ creating the terminal file. Final files are readable offline. Missing legacy fie
 “collection not requested” are distinct from an empty or missing report.
 
 Export is post-commit and retryable: failure records an observable error, retains terminal
-state and is retried after restart. Step 3 extends #423's agreed retention/completion
-mechanism to the main report; Step 5 extends it to the appendix/abandoned exports. Never
-resurrect intentionally removed sensitive artifacts or declare a partial export complete.
+state and is retried after restart. Step 3 extends #423's retention/completion mechanism
+to the main report; Step 5 extends it to the appendix/abandoned exports. One completion
+record covers a run's whole artifact set and is written after its last file. A run
+already complete when Step 3 lands gets no `report.md`; the reader renders it from stored
+data. Never resurrect intentionally removed sensitive artifacts or declare a partial
+export complete.
 
 ### Abandonment
 
@@ -249,6 +308,11 @@ resurrect intentionally removed sensitive artifacts or declare a partial export 
   `work_submitted` with `standby`. A restarted Alice makes the same choice from durable
   terminal/queue state; an abandoned run is never reopened. Duplicate notifications
   reconcile against the already active next run rather than starting a second run.
+- Abandon itself never starts the queue, and only Alice does. So when the environment
+  is broken and the queued run shouldn't start, the operator stops the agents and their
+  launchers before running `robomate abandon`; the run stays queued. A restarted Alice
+  starts it, so the operator restarts Alice only after fixing the problem. Step 4
+  documents this order in the user guide.
 - Preserve question rows and their actual answered/withdrawn/unanswered provenance.
   Default inbox and pending-question counts include only live-run questions; unanswered
   questions from done/abandoned runs are historical and non-actionable, not fabricated
@@ -284,8 +348,9 @@ cancellation nor a no-PR delivery policy.
 ### Order, launcher handoff and neighboring issues
 
 §13's order stays **M2 and M7, then M3, M4, M6**. Planning now is not permission to move
-M4 ahead of them. Technically, Steps 1, 2 and 6 need only merged M2 infrastructure; the
-owner may schedule such independent work early, as with #215/#356. Steps 3–5 depend on
+M4 ahead of them. Technically, Steps 1, 2 and 6 need only merged M2 infrastructure, so
+they may start ahead of M3 once Lane A's queue reaches them or a lane is free, as with
+#215/#356. M4 acceptance still follows §13. Steps 3–5 depend on
 specific work below, including Step 6 before abandonment. Step 7 tests the successor
 path; Step 8 waits for M2 and M3 completion. No M4 feature depends on a particular new
 M3 harness adapter.
@@ -327,11 +392,12 @@ follow-ups through §7.3. Nothing posts from a retrospective automatically.
 | #358 | Continue ordinary-run evidence now, 3–5 runs across its harness/OS/remote/crash matrix; compare hub and file reports while both exist. After removal mark that comparison inapplicable and continue hub views. Not replaced by a scripted test |
 | #359 | Starts after Step 5, at least two ordinary hub-only runs across its matrix; Step 8 may contribute, not claim every matrix row from one run |
 | #386 → #424 | Keep Lane D order: policy window first, early-loss semantics next. Steps 1/3 avoid hard-coded window values; Step 5 and Step 7 wait for both to stabilize reads/status/export reason assertions. They touch the same collection/tests, so serialize integration |
-| #423 | Keep Lane A and its owner retention decision, before #248. Step 3 waits for its retry/retention seam; Step 5 extends it. No competing marker/deletion policy in this plan |
+| #423 | Keep Lane A, before #248, with the retention decision under [Decisions settled after merge](#decisions-settled-after-merge). Step 3 waits for its retry/retention seam; Step 5 extends it. No competing marker/deletion policy in this plan |
+| #431 | Before Step 3, so the run report inherits literal rendering. Rebases with #423 on `closeout_export.py`. No counter |
 | #272, #396 | Track 1 owner decisions on second-timeout actions and silent interactive sessions. Not prerequisites for typed closeout. Step 7 preserves diagnostic-only stalls; acceptance escalates/records a real stall rather than inventing cancellation authority |
 | #286 | Held aside by owner; do not fold in its guide redesign or new result fields. Step 3 reports attributed typed facts and missing data, which prevents report rendering from restating criteria as results |
 | #298 | After M7 on its own track. M4 implements §7.3 `followup_label` only, not configurable project/board actions. If #298 lands first, consume its established rules without broadening worker authority |
-| #366 | Track 1, owner chooses filing route. A denied follow-up is blocked/escalated through the operator channel, never silently dropped or delegated by assumption; Step 8 needs an environment where required authorized filing succeeds |
+| #366 | Track 1, route decided: workers file, and the operator files if a harness refuses. A denied follow-up is blocked/escalated through the operator channel, never silently dropped or delegated by assumption; Step 8 needs an environment where required authorized filing succeeds |
 | #341, #334, #351 | Independent diagnosis/guard work. Keep already-held assignment redelivery and fields in Step 1/7 tests. Do not infer #341's cause without its operator archive; incorporate a proven overlapping fix if it lands |
 | #389 | Defer to owner: changes a locked decision and MVP non-goal. This plan preserves merge/pr delivery modes; abandon is not successful evidence-only delivery |
 | #185 | Defer operator question history UI; Step 6 includes closed-set withdrawal metadata but no question/reason prose or `inbox --all`. It does not fully close #185 |
@@ -355,13 +421,14 @@ operator through Alice before implementing it.
 | §7.3, §8 task contract | Stored typed context, role-specific dispatch, assignment/reattachment fields; guide uses default typed closeout even with zero items, without routine roadmap work | 1 |
 | §7.2, §7.3, §8, Appendix A | Durable PR binding, explicit delivery/closeout policy; fresh gate and run-fenced finalization; settle #17 against already locked one-PR rule | 2 |
 | §7.3, §11 | Report source fields, missing historical evidence, active draft/default selection, headline, private post-commit export/retry using #423 semantics | 3 |
-| §7.2, §7.3, §7.4, §7.5, §8, §11 | Abandon audit/cancellation; existing `on_done` retention; scoped notification, Alice queue start/exit/standby, terminal-question refusal and late-event isolation | 4 |
+| §7.2, §7.3, §7.4, §7.5, §8, §11 | Abandon audit/cancellation; existing `on_done` retention; scoped notification, Alice queue start/exit/standby, terminal-question refusal and late-event isolation. §7.2's “the second starts only after the first is `done`” also covers `abandoned`, where Alice starts it and nothing starts it automatically | 4 |
 | §7.3, §8, §13; closeout/recovery/user docs | #357 appendix, abandoned per-author export, launcher handoff, accepted post-closeout gap and operator routing | 5 |
 | §8, §11 | Persist workflow attribution for events/decisions/messages; bounded read-only timeline, legacy unscoped handling and additive event metadata; no prose summaries | 6 |
 | §7.5; recovery and role guides | Closeout/done/abandon recovery examples; successor launcher commands and live evidence limits | 7 |
 | §13 | Link verified acceptance evidence; retain milestone order | 8 |
 | §7.3 / tool window and missing semantics | Owned by #386/#424; consume their final contract, do not edit it concurrently | Their own PRs, before 5/7 |
-| Export retention/completion | Owned by #423, applied to run reports in 3/5 | #423 then 3/5 |
+| Export retention/completion | Owned by #423, applied to run reports in 3/5. Replaces §7.3's “finalized runs are exported again on the next hub start” | #423 then 3/5 |
+| §7.3 export rendering | Owned by #431: replaces “Prose and URLs are Markdown-escaped literal text” | #431, before 3 |
 
 ## Steps
 
@@ -375,7 +442,7 @@ the spec, and lists dependencies; it does not repeat this design. Triage can cro
 ```
 Ready     [1 closeout]                         [6 attribution + timeline]
 Then      [2 done + delivery] ◀── 1
-Next      [3 run report]      ◀── 2, #423 retry/retention
+Next      [3 run report]      ◀── 2, #423 retry/retention, #431 literal rendering
 Then      [4 abandon]         ◀── 3, 6
 Then      [5 #357 integration] ◀── 4, #386 → #424
 Then      [7 resilience gaps] ◀── 5, M2 successor + retirement
@@ -384,14 +451,14 @@ Last      [8 M4 acceptance]   ◀── 7, M2 acceptance + M3 completion
 
 Read the table as the authoritative edge list; arrows through a chain carry its earlier
 prerequisites. Step 6 can run in parallel with Steps 1–3; Step 4 waits for it. Steps 1/6
-have no technical M3 dependency, but scheduling them early remains the owner's choice
-under §13.
+have no technical M3 dependency and may start early, as
+[Decisions settled after merge](#decisions-settled-after-merge) sets out.
 
 | Step | Needs (landed unless stated otherwise) | Reason for each edge |
 |---|---|---|
 | 1 | Current M2 layers/run identity/join/branch work; #215/#356 | Reuse existing settings, attribution, assignments and collection; all already on main |
 | 2 | 1 | A typed completed closeout and `closeout` policy must exist before enforcing it |
-| 3 | 2; #423 | Report delivery/finalization facts and retry/retention contract must be stable |
+| 3 | 2; #423; #431 | Report delivery/finalization facts and retry/retention contract must be stable; the report reuses the renderer #431 fixes |
 | 4 | 3; 6 | Reuse report artifacts (3); stored event/question attribution enables terminal isolation and Alice notification (6) |
 | 5 | 4; #386 and #424 (in that order); #356 | Report and abandon exist via 4; integrate final window/reason behavior and existing safe exports |
 | 6 | Current run identity, events/results | Attribute records at their writers, then expose the read projection; no new closeout dependency |
@@ -500,12 +567,13 @@ Step 4 adds abandoned input and Step 5 adds retrospectives.
 
 **Approach.** Read a consistent run-scoped snapshot, retaining every finding across rounds
 and linking resolutions/dispositions by ID. Render missing legacy fields and disabled
-closeout explicitly. Reuse safe literal/Markdown helpers and #423's completed/retry/retained
+closeout explicitly. Reuse #431's literal rendering and #423's completed/retry/retained
 artifact contract. Expose an operator reader through the existing authenticated CLI route;
 require the operator credential, with no worker state-directory access. Terminal export
 failures remain observable while the queue proceeds. Read offline Markdown directly with
 the hub stopped; document its path
-and sensitive-artifact handling in the user guide.
+and sensitive-artifact handling in the user guide, including that deleting an exported
+file leaves the data in `hub.db`.
 
 **Tests.** Add `tests/test_run_report.py`: multiple rounds, blocking/resolved/pending and
 disputed findings, every disposition action/link/reason, false steps, statement source and
@@ -522,7 +590,7 @@ ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_run_report.py
 ```
 
 **Size:** medium. **Suggested model:** tier 1 for data provenance review; capable tier 2
-implementer. **Dependencies:** Step 2 and #423. **Counters:** table. Apply §7.3/§11 reader,
+implementer. **Dependencies:** Step 2, #423 and #431. **Counters:** table. Apply §7.3/§11 reader,
 headline and artifact clarifications. No new retention decision in this step.
 
 ### Step 4 — Operator abandonment and terminal-run isolation
@@ -542,7 +610,7 @@ exclude old actionable work events without erasing historical records. Update Al
 kickoff/event/resume/terminal instructions and launcher guards for the queue/standby/exit
 choices above, including an Alice already blocked in `wait_for_event`. Source new tasks
 only from the current run's valid events. Document outstanding counters without granting
-workers lifecycle or process authority.
+workers lifecycle or process authority. Add the stop-first order to the user guide.
 
 **Tests.** Add `tests/test_abandon.py`: active/paused/escalated exits, omitted/nonblank
 reason, credential refusal, no live run, original-run retry after new activation, race
@@ -552,7 +620,8 @@ with a queued run retaining workers, and policy-appropriate waking of worker hol
 A waiting Alice receives the scoped abandonment event, starts the retained queue exactly
 once with `start_workflow`, or exits/waits according to empty-queue policy. Restart Alice
 before notification, after notification and after queued activation; no abandoned run is
-reopened. Fake-launcher tests prove abandoned/release does not cause endless auto-resume.
+reopened. With no Alice running, abandon leaves the queued run queued and no hub path
+starts it. Fake-launcher tests prove abandoned/release does not cause endless auto-resume.
 Retain dirty worktrees/branches and refuse destructive new-task setup. Cover terminal
 question exclusion from inbox/counts, direct historical read retaining unanswered status,
 late answer refusal with no writes, answer/abandon races, terminal-event non-redelivery,
@@ -570,7 +639,8 @@ ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_abandon.py
 
 **Size:** medium to large. **Suggested model:** tier 1 implementer/reviewer.
 **Dependencies:** Steps 3 and 6. **Counters:** table. Apply §7.2/§7.3/§7.4/§7.5/§8/§11
-and served-guide lifecycle clarifications.
+and served-guide lifecycle clarifications, including §7.2's sentence on when a second run
+starts.
 
 ### Step 5 — Integrate agent reports and hub-only reporting (#357)
 
@@ -732,7 +802,9 @@ The operator starts the hub/team through the supported post-M2 path and controls
 intentional kills, restarts, standby and eventual cleanup. Workers use pytest-owned hubs
 for scripted checks and never operate the acceptance hub or other agents. No special
 review/CI bypass, new operator authority or automatic approval of follow-up filing is
-part of this plan. #366 must not prevent required authorized issue creation in this run.
+part of this plan. #366 must not prevent required authorized issue creation in this run:
+its operator fallback would count as an intervention, so use a harness and route that
+#366's live check has shown to work.
 
 **Scope and procedure.**
 
@@ -834,7 +906,8 @@ After this plan merges, triage links it from M4 on #2 and opens/reuses one point
 per step with the milestone/label above. Link #15 to Step 1, #14/#17 to Step 2, #18 to
 Step 7 and #20 to Step 6; close or supersede the historical scope only when its owning
 implementation is verified, not because a plan exists. #357 stays its own Step 5 with the
-launcher clarification. Keep #386 → #424 and #423 on their current lanes, #358/#359 and
+launcher clarification. Keep #386 → #424 and #423 on their current lanes, place #431
+before Step 3, and keep #358/#359 and
 other live checks as evidence rows, and owner-held issues held.
 
 The roadmap should show the edge table, Step 6 before Step 4, M2 #268/#269/Step-11 handoff,
