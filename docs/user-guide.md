@@ -790,6 +790,7 @@ $env:CODEX_HOME = "C:\my-run\configs\codex"; codex login status
 - `max_review_rounds`: Maximum number of review remediation rounds before Alice escalates to the operator (default 3).
 - `merge_method`: Must match repository settings (`squash`, `merge`, or `rebase`).
 - `stall_after_min`: Minutes without substantive hub calls, task progress, or event consumption before the hub reports an agent as stalled (default 20). A diagnostic only: it never fails, reassigns, or stops anything. It sits between `HUB_LOST_AFTER_S` (the bridge heartbeat stopped) and `max_task_lease_min` (one task's total time).
+- `closeout_wait_s`: Bounded pre-release closeout collection window in seconds (default 300, maximum 1800). `robomate submit --policy closeout_wait_s=N` and configuration layers may set it; `request_closeout_reports` without `timeout_s` uses it.
 
 ---
 

@@ -23,6 +23,8 @@ from .constants import (
 )
 from .discovery import validate_agent_name
 from .models import (
+    CLOSEOUT_WAIT_DEFAULT_S,
+    CLOSEOUT_WAIT_MAX_S,
     IMPLEMENTER_RESULT_SCHEMA,
     REBASE_RESULT_SCHEMA,
     REVIEWER_RESULT_SCHEMA,
@@ -57,6 +59,8 @@ from .token import TokenError, load_or_create_token, read_token_file, token_matc
 
 __all__ = [
     "AGENT_HEADER",
+    "CLOSEOUT_WAIT_DEFAULT_S",
+    "CLOSEOUT_WAIT_MAX_S",
     "IMPLEMENTER_RESULT_SCHEMA",
     "REBASE_RESULT_SCHEMA",
     "REVIEWER_RESULT_SCHEMA",

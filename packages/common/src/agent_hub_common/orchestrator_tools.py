@@ -12,10 +12,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from .models import WorkflowStatus
+from .models import CLOSEOUT_WAIT_MAX_S, WorkflowStatus
 
 Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
-CloseoutTimeout = Annotated[float, Field(gt=0, le=1800, allow_inf_nan=False)]
+CloseoutTimeout = Annotated[float, Field(gt=0, le=CLOSEOUT_WAIT_MAX_S, allow_inf_nan=False)]
 Lease = Annotated[float, Field(gt=0, le=525600, allow_inf_nan=False)]
 Sha = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{40}$")]
 PositiveId = Annotated[int, Field(gt=0)]

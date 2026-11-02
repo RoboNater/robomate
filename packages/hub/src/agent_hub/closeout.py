@@ -13,7 +13,14 @@ from sqlite3 import Connection, Row
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from agent_hub_common import MAX_TYPED_RESULT_BYTES, AgentCloseoutReport, EventKind, to_iso
+from agent_hub_common import (
+    CLOSEOUT_WAIT_DEFAULT_S,
+    CLOSEOUT_WAIT_MAX_S,
+    MAX_TYPED_RESULT_BYTES,
+    AgentCloseoutReport,
+    EventKind,
+    to_iso,
+)
 from pydantic import ValidationError
 
 from .database import database
@@ -83,25 +90,26 @@ def _effective_closeout_timeout(run_policy_json: str | None, timeout_s: float | 
     """Resolve the bounded collection window (#386).
 
     An explicit `timeout_s` overrides the run policy. When omitted, the run's
-    `closeout_wait_s` applies (default 300 s for policies stored without it).
-    Both are bounded to (0, 1800].
+    `closeout_wait_s` applies (default for policies stored without it).
+    Both are bounded to (0, `CLOSEOUT_WAIT_MAX_S`].
     """
 
     if timeout_s is None:
-        try:
-            stored: dict[str, Any] = json.loads(run_policy_json or "{}") or {}
-        except Exception:
-            stored = {}
-        raw = stored.get("closeout_wait_s", 300)
-        effective = raw
-        if not isinstance(effective, (int, float)) or isinstance(effective, bool):
-            raise ValueError("closeout timeout_s must be greater than zero and at most 1800")
-        if not math.isfinite(float(effective)) or not 0 < float(effective) <= 1800:
-            raise ValueError("closeout timeout_s must be greater than zero and at most 1800")
-        return float(effective)
-    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or not 0 < timeout_s <= 1800:
-        raise ValueError("closeout timeout_s must be greater than zero and at most 1800")
-    return float(timeout_s)
+        from .store import _json_object
+
+        stored = _json_object(run_policy_json) or {}
+        raw = stored.get("closeout_wait_s", CLOSEOUT_WAIT_DEFAULT_S)
+    else:
+        raw = timeout_s
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(
+            f"closeout timeout_s must be greater than zero and at most {CLOSEOUT_WAIT_MAX_S}"
+        )
+    if not math.isfinite(float(raw)) or not 0 < float(raw) <= CLOSEOUT_WAIT_MAX_S:
+        raise ValueError(
+            f"closeout timeout_s must be greater than zero and at most {CLOSEOUT_WAIT_MAX_S}"
+        )
+    return float(raw)
 
 
 def request(

@@ -574,3 +574,20 @@ def test_served_guides_preserve_statement_precedence_and_authority(role: str, fo
         "Only `status: answered` confirms authority; `status: withdrawn` never does",
     ):
         assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_guide_states_closeout_policy_window(forge: str) -> None:
+    """#386: served orchestrator guide names closeout_wait_s, 300 s, no 100 s max."""
+
+    response = guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge)
+    assert response.status_code == 200
+    text = " ".join(bytes(response.body).decode("utf-8").split())
+    assert "closeout_wait_s" in text
+    assert "default 300 seconds" in text
+    assert "maximum 1800 seconds" in text
+    assert "request_closeout_reports(run_id)" in text
+    assert "Proceed as soon as `get_closeout_reports` shows nobody missing" in text
+    assert "maximum 100 seconds" not in text.lower()
+    assert "at most 100 seconds" not in text.lower()
+    assert "default and maximum worker window" not in text.lower()

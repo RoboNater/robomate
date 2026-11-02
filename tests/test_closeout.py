@@ -8,6 +8,7 @@ import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -552,3 +553,200 @@ def test_early_release_records_missing_without_waiting(store: HubStore) -> None:
         store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
     store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
     assert store.get_closeout_reports(run_id)["finalized"]
+
+
+def _deadline_delta_s(store: HubStore, run_id: str) -> float:
+    """Return (deadline - requested_at) in seconds for #386 window assertions."""
+
+    from datetime import datetime
+
+    from agent_hub.database import database
+
+    with database(store.path) as connection:
+        row = connection.execute(
+            "SELECT requested_at, deadline FROM closeout_collection"
+            " WHERE workflow_id = (SELECT id FROM workflow WHERE run_id = ?)",
+            (run_id,),
+        ).fetchone()
+    assert row is not None
+    requested = datetime.fromisoformat(row["requested_at"].replace("Z", "+00:00"))
+    deadline = datetime.fromisoformat(row["deadline"].replace("Z", "+00:00"))
+    return (deadline - requested).total_seconds()
+
+
+def test_closeout_default_uses_policy_300_and_explicit_overrides(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """#386: omitted timeout uses run closeout_wait_s (default 300); explicit wins."""
+
+    from agent_hub.database import initialize_database
+
+    def fresh(policy: dict[str, Any] | None) -> tuple[HubStore, str]:
+        path = Path(tmp_path) / f"{len(list(tmp_path.iterdir()))}.db"
+        initialize_database(path)
+        hub_store = HubStore(path)
+        frozen_clock.install(hub_store)
+        if policy is None:
+            hub_store.initialize_workflow()
+        else:
+            hub_store.initialize_workflow("Goal", policy)
+        hub_store.check_in("bob", worker_instance_id="bob-instance")
+        task = hub_store.assign_task("bob", "implementer", "Build", "Build")
+        hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
+        run_id = str(hub_store.get_state()["workflow"]["run_id"])
+        return hub_store, run_id
+
+    # Stored policy without the key reads as the 300 s default.
+    default_store, default_run = fresh(None)
+    assert default_store.get_state()["workflow"]["policy"] == {}
+    default_store.request_closeout_reports(default_run, "alice", "alice-session")
+    assert _deadline_delta_s(default_store, default_run) == pytest.approx(300, abs=1)
+
+    # --policy closeout_wait_s=600 gives a 600 s deadline.
+    policy_store, policy_run = fresh({"closeout_wait_s": 600})
+    policy_store.request_closeout_reports(policy_run, "alice", "alice-session")
+    assert _deadline_delta_s(policy_store, policy_run) == pytest.approx(600, abs=1)
+
+    # An explicit timeout overrides the policy on first request.
+    override_store, override_run = fresh({"closeout_wait_s": 600})
+    override_store.request_closeout_reports(override_run, "alice", "alice-session", 20)
+    assert _deadline_delta_s(override_store, override_run) == pytest.approx(20, abs=1)
+
+    # Repeated requests keep the original deadline.
+    first = policy_store.get_closeout_reports(policy_run)["deadline"]
+    assert (
+        policy_store.request_closeout_reports(policy_run, "alice", "other-session", 100)["deadline"]
+        == first
+    )
+
+    # The default window expires only after 300 s on the frozen clock.
+    frozen_clock.install(default_store)
+    frozen_clock.advance(299)
+    assert all(
+        m["reason"] == "awaiting_report"
+        for m in default_store.get_closeout_reports(default_run)["missing"]
+    )
+    frozen_clock.advance(2)
+    assert (
+        next(
+            m["reason"]
+            for m in default_store.get_closeout_reports(default_run)["missing"]
+            if m["author"] == "bob"
+        )
+        == "deadline_expired"
+    )
+
+
+def test_closeout_policy_and_argument_bounds_schema_and_hub(tmp_path: Path) -> None:
+    """#386: policy and argument accept 1800, reject 0/negative/non-finite/>1800."""
+
+    from agent_hub.database import initialize_database
+    from agent_hub_common import WorkflowPolicy
+    from agent_hub_common.orchestrator_tools import CloseoutTimeout
+    from pydantic import TypeAdapter
+
+    adapter = TypeAdapter(CloseoutTimeout)
+    assert adapter.validate_python(1800) == 1800
+    assert WorkflowPolicy.model_validate({"closeout_wait_s": 1800}).closeout_wait_s == 1800
+    assert WorkflowPolicy().closeout_wait_s == 300
+
+    for bad in (0, -1, 1801, 1800.5, float("inf"), float("-inf"), float("nan"), True):
+        with pytest.raises(ValidationError):
+            WorkflowPolicy.model_validate({"closeout_wait_s": bad})
+    for bad in (0, -1, 1801, 1800.5, float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(bad)
+
+    for bad in (0, -1, 1801, 1800.5, float("inf"), float("-inf"), float("nan"), True):
+        path = Path(tmp_path) / f"hub-{str(bad)}.db"
+        initialize_database(path)
+        hub_store = HubStore(path)
+        hub_store.initialize_workflow()
+        run_id = str(hub_store.get_state()["workflow"]["run_id"])
+        with pytest.raises(ValueError, match="greater than zero and at most 1800"):
+            hub_store.request_closeout_reports(run_id, "alice", "sess", bad)
+
+    path = Path(tmp_path) / "hub-1800.db"
+    initialize_database(path)
+    hub_store = HubStore(path)
+    hub_store.initialize_workflow()
+    run_id = str(hub_store.get_state()["workflow"]["run_id"])
+    hub_store.request_closeout_reports(run_id, "alice", "sess", 1800)
+    assert _deadline_delta_s(hub_store, run_id) == pytest.approx(1800, abs=1)
+
+
+def test_closeout_pause_with_longer_window_uses_advance(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    """#386: workflow pause suspends expiry and host pause shifts the 300 s window."""
+
+    # Workflow pause: 300 s window survives a 400 s pause, then shifts on resume.
+    run_id = prepare(store, 300)
+    first = store.get_closeout_reports(run_id)["deadline"]
+    store.set_workflow_status(WorkflowStatus.PAUSED, "Pause", actor="alice", session=None)
+    frozen_clock.advance(400)
+    assert all(
+        m["reason"] == "awaiting_report" for m in store.get_closeout_reports(run_id)["missing"]
+    )
+    store.set_workflow_status(WorkflowStatus.ACTIVE, "Resume", actor="alice", session=None)
+    resumed = store.get_closeout_reports(run_id)["deadline"]
+    assert resumed > first
+    frozen_clock.advance(299)
+    assert all(
+        m["reason"] == "awaiting_report" for m in store.get_closeout_reports(run_id)["missing"]
+    )
+    frozen_clock.advance(2)
+    assert (
+        next(
+            m["reason"]
+            for m in store.get_closeout_reports(run_id)["missing"]
+            if m["author"] == "bob"
+        )
+        == "deadline_expired"
+    )
+
+
+def test_closeout_host_pause_shifts_longer_window(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """#386: a detected host pause shifts the 300 s closeout deadline."""
+
+    from agent_hub.database import initialize_database
+
+    path = Path(tmp_path) / "hub.db"
+    initialize_database(path)
+    hub_store = HubStore(path, detect_host_pauses=True)
+    frozen_clock.install(hub_store)
+    hub_store.initialize_workflow()
+    hub_store.check_in("bob", worker_instance_id="bob-instance")
+    task = hub_store.assign_task("bob", "implementer", "Build", "Build")
+    hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
+    run_id = str(hub_store.get_state()["workflow"]["run_id"])
+    hub_store.request_closeout_reports(run_id, "alice", "alice-session")
+    first = hub_store.get_closeout_reports(run_id)["deadline"]
+    hub_store.sweep(60)
+    frozen_clock.advance(601)
+    shifted = hub_store.get_closeout_reports(run_id)
+    assert shifted["deadline"] > first
+    assert all(m["reason"] == "awaiting_report" for m in shifted["missing"])
+
+
+def test_closeout_submit_policy_override_600() -> None:
+    """#386: robomate submit --policy closeout_wait_s=600 resolves to a 600 s policy."""
+
+    from agent_hub.submit import _resolve_policy
+    from agent_hub_common import WorkflowPolicy
+    from robomate.cli import _parse_policy_override
+
+    key, value = _parse_policy_override("closeout_wait_s=600")
+    assert (key, value) == ("closeout_wait_s", 600)
+    merged = _resolve_policy(WorkflowPolicy(), {key: value})
+    assert merged["closeout_wait_s"] == 600
+
+    key, value = _parse_policy_override("policy.closeout_wait_s=600")
+    assert _resolve_policy(WorkflowPolicy(), {key: value})["closeout_wait_s"] == 600
+
+    with pytest.raises(ValueError):
+        _resolve_policy(WorkflowPolicy(), {"closeout_wait_s": 0})
+    with pytest.raises(ValueError):
+        _resolve_policy(WorkflowPolicy(), {"closeout_wait_s": 1801})

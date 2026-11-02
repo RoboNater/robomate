@@ -22,7 +22,10 @@ class WorkflowStatus(StrEnum):
 
 PositiveNumber = Annotated[int | float, Field(gt=0, allow_inf_nan=False)]
 
-CloseoutWait = Annotated[int | float, Field(gt=0, le=1800, allow_inf_nan=False)]
+CLOSEOUT_WAIT_DEFAULT_S = 300
+CLOSEOUT_WAIT_MAX_S = 1800
+
+CloseoutWait = Annotated[int | float, Field(gt=0, le=CLOSEOUT_WAIT_MAX_S, allow_inf_nan=False)]
 
 
 class RolePolicy(BaseModel):
@@ -55,7 +58,7 @@ class WorkflowPolicy(BaseModel):
     stall_after_min: PositiveNumber = 20
     # Bounded pre-release closeout collection window (#386): omitted
     # `request_closeout_reports` timeout uses this run policy value.
-    closeout_wait_s: CloseoutWait = 300
+    closeout_wait_s: CloseoutWait = CLOSEOUT_WAIT_DEFAULT_S
     # What happens when a run ends with the queue empty (mvp-spec §7.2, M2 Step 3).
     # `release` releases workers; `standby` keeps them joined for the next run.
     on_done: Literal["release", "standby"] = "release"
