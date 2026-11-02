@@ -144,6 +144,11 @@ Done-when inventory (split into independently checkable clauses):
    engine. The [recovery guide](agent-recovery.md) contains prepared-run-era limitations;
    M2 join/takeover has since landed. Update stale instructions with the launcher handoff,
    and add only uncovered crash boundaries.
+8. Main's `event` and `decision` tables have no workflow foreign key; `message` has only
+   nullable `task_id`. Gate readings and operator questions already carry workflow IDs.
+   A timestamp range cannot attribute decisions or late operator answers to a run.
+   Step 6 adds explicit storage attribution before Step 4 relies on it; legacy rows
+   without an authoritative reference remain unscoped.
 
 ## Design
 
@@ -179,9 +184,11 @@ then commits against the same workflow and unchanged binding. Fail closed if the
 read fails or the binding changed while awaiting it. For `merge`, require `merged` and
 record the actual merge SHA separately from the approved PR head. For `pr`, require the
 approved open head and the normal review/CI gate. Require completed typed closeout unless
-explicitly disabled and no active tasks before finalizing. Preserve the existing
-approved-head/CI/review safeguards; no prose, retrospective claim or old “clean” reading
-can substitute for the forge state. Replay after queue activation must not finalize the
+explicitly disabled. These are the two §7.3 coded predicates; do not add a third
+no-active-task predicate. Alice still follows the guide to settle outstanding work before
+requesting done. Preserve the existing approved-head/CI/review safeguards; no prose,
+retrospective claim or old “clean” reading can substitute for the forge state. Replay
+after queue activation must not finalize the
 next run accidentally: fence the operation with its original run identity.
 
 Render `runs/<run_id>/report.md` after terminal state commits, using a consistent read
@@ -218,16 +225,48 @@ resurrect intentionally removed sensitive artifacts or declare a partial export 
 - Atomically cancel unfinished tasks of that run with an abandonment note, clear their
   current-task ownership, finalize any requested collection, and mark the run abandoned.
   Completed results, findings, statements, questions, decisions, branches and worktrees
-  remain. Late results/reports cannot mutate the terminal run. This requests cooperative
-  worker release; it never kills a process or claims a release acknowledgement.
-- Release the run's workers regardless of `on_done`. Preserve a queued run as queued;
-  **do not automatically start it** after this exceptional exit. The operator can later
-  start it through the normal orchestration path with rejoined workers. This avoids
-  handing a queued statement to agents still unwinding canceled work. Keep run/event
-  attribution so old events cannot drive the next workflow.
-- Preserve unanswered/withdrawn/answered operator-question history in the abandoned run.
-  No fabricated answer, withdrawal or authority is created. Old questions must not block
-  a later run; any queued run keeps its own policy and questions.
+  remain. Late results/reports cannot mutate the terminal run. Worker release, when
+  policy calls for it, is cooperative; the operation never kills a process or claims
+  a release acknowledgement.
+- Follow §7.2's worker policy: with a queued run, keep workers joined under either
+  `on_done` value; without one, `release` releases workers and `standby` keeps them idle.
+  Canceled task ownership is cleared, but uncommitted edits are preserved; a worker
+  finishes handling its terminal old task, returns to `await_assignment`, and applies
+  the normal clean-workspace checks before accepting new work. Retention is not permission
+  to overwrite abandoned work.
+- In the same transaction, enqueue a run-scoped `workflow_abandoned` control event with
+  the original workflow/run ID, and wake Alice's `wait_for_event`. The join/get_state
+  re-briefing includes the latest abandoned run and its terminal status even after a
+  different run starts. Update the orchestrator guide's kickoff, event routing, resume
+  and “end only at done” wording, plus surviving launcher's terminal-exit guards.
+  Alice acknowledges the notification after reconciling durable state, never assigns
+  further work or calls done for the abandoned run, and reports its terminal outcome.
+- The abandon transaction leaves the queued run queued. **Alice**, not an operator CLI
+  or worker, then calls the existing `start_workflow()` to start the oldest queued run
+  after observing the completed abandonment transaction. This is the normal §7.2 queue
+  path, with the retained workers; no new approval or queue-hold policy. If the queue is
+  empty, Alice ends her turn with `on_done: release`, or keeps waiting for
+  `work_submitted` with `standby`. A restarted Alice makes the same choice from durable
+  terminal/queue state; an abandoned run is never reopened. Duplicate notifications
+  reconcile against the already active next run rather than starting a second run.
+- Preserve question rows and their actual answered/withdrawn/unanswered provenance.
+  Default inbox and pending-question counts include only live-run questions; unanswered
+  questions from done/abandoned runs are historical and non-actionable, not fabricated
+  answers or withdrawals. Direct `get_operator_answer` still returns the original
+  status plus run/terminal metadata. `hub.answer` checks the question's workflow under
+  its write lock and refuses a terminal-run question without writing an answer, event
+  or decision. If answer wins the race before abandon, its event is attributed to the
+  old run and cannot resume the next one. The abandoned report shows that history;
+  this adds no #185 history UI and does not grant authority in a later run.
+- Use Step 6's persisted event/decision/message attribution. Exclude terminal-run work
+  events (including old `user_answered`) from actionable event selection/redelivery;
+  preserve them for timeline/history without forging an acknowledgement. Run-scoped
+  abandonment notifications are the explicit terminal control exception, not sources
+  for new tasks. Hub-scoped diagnostics and queued `work_submitted` remain deliverable.
+  Reject assignment sourced from an event belonging to a different/terminal workflow;
+  Alice also compares event run IDs with live state before acting. Legacy events are
+  backfilled only from authoritative references as in Step 6; ambiguous legacy work
+  events are surfaced for reconciliation, never treated as a later run's authority.
 - Write its manifest and report with status `abandoned`, reason/actor/time, partial work,
   canceled task IDs, PR state as last recorded (possibly absent or already merged), all
   findings and unresolved dispositions, incomplete/not-run closeout steps, and the
@@ -238,15 +277,18 @@ resurrect intentionally removed sensitive artifacts or declare a partial export 
 
 This is an idempotent terminal operation scoped to the original run; retries cannot
 abandon the queued or next run. Done and abandon race under the same lock: one terminal
-outcome wins. The plan does not add queue cancellation or a no-PR delivery policy.
+outcome wins. This follows the existing worker-retention policy and two-predicate done
+check, rather than making either an operator decision. The plan adds neither queue
+cancellation nor a no-PR delivery policy.
 
 ### Order, launcher handoff and neighboring issues
 
 §13's order stays **M2 and M7, then M3, M4, M6**. Planning now is not permission to move
 M4 ahead of them. Technically, Steps 1, 2 and 6 need only merged M2 infrastructure; the
 owner may schedule such independent work early, as with #215/#356. Steps 3–5 depend on
-specific work below, Step 7 tests the supported successor path, and Step 8 waits for M2
-and M3 completion. No M4 feature depends on a particular new M3 harness adapter.
+specific work below, including Step 6 before abandonment. Step 7 tests the successor
+path; Step 8 waits for M2 and M3 completion. No M4 feature depends on a particular new
+M3 harness adapter.
 
 M2 Steps 8–10 (#245/#246/#247) remain their own PRs. Cleanup must retain reports; clone
 fallback matters to remote live evidence; the successor launcher carries report tools,
@@ -313,9 +355,9 @@ operator through Alice before implementing it.
 | §7.3, §8 task contract | Stored typed context, role-specific dispatch, assignment/reattachment fields; guide uses default typed closeout even with zero items, without routine roadmap work | 1 |
 | §7.2, §7.3, §8, Appendix A | Durable PR binding, explicit delivery/closeout policy; fresh gate and run-fenced finalization; settle #17 against already locked one-PR rule | 2 |
 | §7.3, §11 | Report source fields, missing historical evidence, active draft/default selection, headline, private post-commit export/retry using #423 semantics | 3 |
-| §7.2, §7.3, §8, §11 | Abandon reason/audit, task cancellation, cooperative release, retained queue with explicit restart, report contents and terminal-race semantics | 4 |
+| §7.2, §7.3, §7.4, §7.5, §8, §11 | Abandon audit/cancellation; existing `on_done` retention; scoped notification, Alice queue start/exit/standby, terminal-question refusal and late-event isolation | 4 |
 | §7.3, §8, §13; closeout/recovery/user docs | #357 appendix, abandoned per-author export, launcher handoff, accepted post-closeout gap and operator routing | 5 |
-| §8, §11 | Read-only bounded timeline pagination/follow and closed-set labels; no prose summaries despite old #20 suggestion | 6 |
+| §8, §11 | Persist workflow attribution for events/decisions/messages; bounded read-only timeline, legacy unscoped handling and additive event metadata; no prose summaries | 6 |
 | §7.5; recovery and role guides | Closeout/done/abandon recovery examples; successor launcher commands and live evidence limits | 7 |
 | §13 | Link verified acceptance evidence; retain milestone order | 8 |
 | §7.3 / tool window and missing semantics | Owned by #386/#424; consume their final contract, do not edit it concurrently | Their own PRs, before 5/7 |
@@ -331,35 +373,30 @@ the spec, and lists dependencies; it does not repeat this design. Triage can cro
 #15/#17 to the owning step instead of opening duplicate implementations.
 
 ```
-Ready on current infrastructure:  [1 closeout]       [6 timeline]
-                                      │
-                                 [2 done + delivery]
-                                      │
-#423 retry/retention ───────────▶ [3 run report]
-                                      │
-                                 [4 abandon]
-                                      │
-#386 ──▶ #424 ──────────────────▶ [5 #357 integration]
-                                      │
-M2 successor + retirement ──────▶ [7 resilience gaps]
-                                      │
-M2 acceptance + M3 completion ──▶ [8 M4 acceptance] ◀── 6
+Ready     [1 closeout]                         [6 attribution + timeline]
+Then      [2 done + delivery] ◀── 1
+Next      [3 run report]      ◀── 2, #423 retry/retention
+Then      [4 abandon]         ◀── 3, 6
+Then      [5 #357 integration] ◀── 4, #386 → #424
+Then      [7 resilience gaps] ◀── 5, M2 successor + retirement
+Last      [8 M4 acceptance]   ◀── 7, M2 acceptance + M3 completion
 ```
 
 Read the table as the authoritative edge list; arrows through a chain carry its earlier
-prerequisites. Step 6 can run in parallel with Steps 1–5 and 7. Steps 1/6 have no technical
-M3 dependency, but scheduling them early remains the owner's choice under §13.
+prerequisites. Step 6 can run in parallel with Steps 1–3; Step 4 waits for it. Steps 1/6
+have no technical M3 dependency, but scheduling them early remains the owner's choice
+under §13.
 
 | Step | Needs (landed unless stated otherwise) | Reason for each edge |
 |---|---|---|
 | 1 | Current M2 layers/run identity/join/branch work; #215/#356 | Reuse existing settings, attribution, assignments and collection; all already on main |
 | 2 | 1 | A typed completed closeout and `closeout` policy must exist before enforcing it |
 | 3 | 2; #423 | Report delivery/finalization facts and retry/retention contract must be stable |
-| 4 | 3 | Reuse the report/terminal artifact seam rather than add an abandon-only renderer |
+| 4 | 3; 6 | Reuse report artifacts (3); stored event/question attribution enables terminal isolation and Alice notification (6) |
 | 5 | 4; #386 and #424 (in that order); #356 | Report and abandon exist via 4; integrate final window/reason behavior and existing safe exports |
-| 6 | Current run identity, events/results | Independent read projection; no new closeout dependency |
+| 6 | Current run identity, events/results | Attribute records at their writers, then expose the read projection; no new closeout dependency |
 | 7 | 5; M2 #247/#268/#269/#248 | Exercise all new terminal/collection seams and the validated surviving launcher, not removed wrappers |
-| 8 | 7; 6; M2 #249; completed M3 | All feature/crash tests, timeline, preceding milestone acceptance and harness certification precede final M4 evidence |
+| 8 | 7; M2 #249; completed M3 | All feature/crash tests (including 6 via 4/5/7), preceding milestone acceptance and harness certification precede final M4 evidence |
 
 ### Shared counters
 
@@ -375,9 +412,9 @@ other lanes; a dependency diagram is not a reservation.
 | 1 | Yes: stored closeout context on task | No change expected | Additive role/result and assignment fields; test old role consumers and dispatch explicitly |
 | 2 | Yes: durable workflow PR/head binding | No change expected | Policy JSON additions need no separate migration; finalization must bind a run durably |
 | 3 | No new migration expected | No change expected | Derived report; reuse #423's durable retry mechanism rather than invent a second marker |
-| 4 | Yes: workflow status constraint plus abandonment attribution/reason | No change expected | Additive operator method/status; check all status consumers and bridge errors |
+| 4 | Yes: workflow status and event-kind constraints plus abandonment audit | No change expected | Reuse Step 6 attribution; additive operator method/control event; check status/hold/launcher consumers |
 | 5 | No new migration expected | No change expected | Existing reports/context and safe renderer |
-| 6 | No migration expected | No change expected | Read-only union of existing records; no manufactured transition history |
+| 6 | Yes: nullable workflow foreign keys/indexes on event, decision and message | No change expected | Persist new writer attribution; backfill only authoritative references; additive response fields |
 | 7 | No migration expected | No change expected | Tests/guides, production changes only for reproduced defects |
 | 8 | None | None | Evidence only; the real subject run may separately use a counter |
 
@@ -410,7 +447,8 @@ late result and reattachment fields. Rejected completion leaves task open withou
 or completion event. Test both bridges/tool lists, generic and implementer standing roles,
 reviewer rejection, safe assignment text, bounded assignment/result sizes and same
 source-event replay. Oversized context is rejected before writes; transport bounds are
-never raised to fit a task. Reuse collection ordering without treating the retrospective as the closeout result.
+never raised to fit a task. Reuse collection ordering without treating the retrospective
+as the closeout result.
 
 ```sh
 uv run --locked pytest tests/test_closeout_task.py tests/test_models.py tests/test_config_layers.py tests/test_protocol.py tests/test_worker_client.py tests/test_worker_tools.py tests/test_guides.py tests/test_mcp.py tests/test_closeout.py
@@ -424,7 +462,8 @@ above. Update §7.3/§8 and served guides in this PR.
 ### Step 2 — Enforced done, explicit delivery and one PR per run
 
 **Scope.** #14 plus #17's remaining enforcement; durable binding, `deliver` policy through
-layers/submit/launchers, fresh gate, completed typed closeout and no-active-task checks.
+layers/submit/launchers, fresh gate and completed typed closeout check. Do not add a
+no-active-task coded predicate beyond §7.3; settling work remains guide procedure.
 
 **Approach.** Bind results to the run's PR and expected approved head, rejecting conflicting
 PRs; reuse the run branch for label stability. Route the async forge read through the
@@ -438,7 +477,7 @@ successor path if landed. Alice still alone merges; the hub adds no merge tool.
 
 **Tests.** Add `tests/test_done_gate.py`, fake gates for both forges: unmerged/closed PR,
 wrong URL/head, stale cached gate, unavailable forge, missing/failed/legacy prose closeout,
-active task, valid merge and valid explicit PR mode, `closeout: false`, unchanged default,
+valid merge and valid explicit PR mode, `closeout: false`, unchanged default,
 concurrent result/binding change and done replay with queued workflow. Verify default
 issue and work-file submissions both merge; PR mode is explicit/durable. Preserve approved
 head versus squash merge SHA. Existing lifecycle/collection tests must still pass with
@@ -457,24 +496,25 @@ for any still-present preparation entry point run with that PR as well.
 
 **Scope.** Typed report renderer, `runs/<run_id>/report.md`, operator `robomate report
 [run]` with hub selection, and the status headline. Includes normal done and active draft;
-Step 4 adds abandoned input and Step 5 adds retrospectives. No production code is changed
-by the current planning PR.
+Step 4 adds abandoned input and Step 5 adds retrospectives.
 
 **Approach.** Read a consistent run-scoped snapshot, retaining every finding across rounds
 and linking resolutions/dispositions by ID. Render missing legacy fields and disabled
 closeout explicitly. Reuse safe literal/Markdown helpers and #423's completed/retry/retained
 artifact contract. Expose an operator reader through the existing authenticated CLI route;
 require the operator credential, with no worker state-directory access. Terminal export
-failures remain observable while the queue proceeds. Read offline Markdown directly with the hub stopped; document its path
+failures remain observable while the queue proceeds. Read offline Markdown directly with
+the hub stopped; document its path
 and sensitive-artifact handling in the user guide.
 
 **Tests.** Add `tests/test_run_report.py`: multiple rounds, blocking/resolved/pending and
 disputed findings, every disposition action/link/reason, false steps, statement source and
 SHA, profile/approval/merge identity, no-collection and old-data cases, draft versus final,
 explicit/default/unknown run selection with a new live/queued run, missing operator
-credential, invalid/path-like run IDs, adversarial text, private modes, atomic interrupted write, restart retry and intentional retention/deletion
-semantics. Pytest-owned CLI subprocess coverage compares output with terminal file and
-status headline; no report text leaks through compact status.
+credential, invalid/path-like run IDs, adversarial text, private modes, atomic interrupted
+write, restart retry and intentional retention/deletion semantics. Pytest-owned CLI
+subprocess coverage compares output with terminal file and status headline; no report
+text leaks through compact status.
 
 ```sh
 uv run --locked pytest tests/test_run_report.py tests/test_closeout_export.py tests/test_cli.py tests/test_rpc.py tests/test_doc_links.py
@@ -488,31 +528,49 @@ headline and artifact clarifications. No new retention decision in this step.
 ### Step 4 — Operator abandonment and terminal-run isolation
 
 **Scope.** `abandoned` status, operator-only `hub.abandon`/CLI `abandon [--reason TEXT]`,
-transactional task cancellation/release, preserved queue and abandoned manifest/report.
+transactional task cancellation, policy-based worker retention, scoped Alice notification,
+queued-run handoff, terminal-question handling and abandoned manifest/report.
 
 **Approach.** Implement the abandonment design above. Finalize collection in the same
 transaction using `closeout.finalize`; the main report includes available observations'
 counts and unfinished state, but per-author abandoned exports/appendix wait for Step 5.
 Fence retries by original run identity. Preserve worktrees and evidence. Refuse worker or
 orchestrator attempts to set abandoned even though it becomes a workflow enum member.
-Document explicit queued-run restart and outstanding counter handling without authorizing
-workers to change lifecycle or stop processes.
+Use Step 6 attribution for `workflow_abandoned`, task-cancellation events and the audit
+rows. Apply live-run inbox/status filtering and terminal `hub.answer` refusal atomically;
+exclude old actionable work events without erasing historical records. Update Alice's
+kickoff/event/resume/terminal instructions and launcher guards for the queue/standby/exit
+choices above, including an Alice already blocked in `wait_for_event`. Source new tasks
+only from the current run's valid events. Document outstanding counters without granting
+workers lifecycle or process authority.
 
 **Tests.** Add `tests/test_abandon.py`: active/paused/escalated exits, omitted/nonblank
 reason, credential refusal, no live run, original-run retry after new activation, race
 with done/submission, unfinished tasks canceled once, preserved terminal results and open
-questions, late result/report refusal, cooperative release waking holds, unchanged
-worktrees/branches, queued statement/policy retained and not activated, later start with
-rejoined workers, no fake merge, report/manifests and export failure/restart. Cover no PR,
-open PR and already merged PR. Operator attribution is durable and secret-free.
+questions, late result/report refusal, release/standby with an empty queue, both policies
+with a queued run retaining workers, and policy-appropriate waking of worker holds.
+A waiting Alice receives the scoped abandonment event, starts the retained queue exactly
+once with `start_workflow`, or exits/waits according to empty-queue policy. Restart Alice
+before notification, after notification and after queued activation; no abandoned run is
+reopened. Fake-launcher tests prove abandoned/release does not cause endless auto-resume.
+Retain dirty worktrees/branches and refuse destructive new-task setup. Cover terminal
+question exclusion from inbox/counts, direct historical read retaining unanswered status,
+late answer refusal with no writes, answer/abandon races, terminal-event non-redelivery,
+old-source assignment refusal, no fake merge, manifests/report and export failure/restart.
+Cover no/open/already merged PR. Operator attribution is durable and secret-free.
 
 ```sh
-uv run --locked pytest tests/test_abandon.py tests/test_run_report.py tests/test_store.py tests/test_rpc.py tests/test_cli.py tests/test_closeout.py tests/test_database.py
+uv run --locked pytest tests/test_abandon.py tests/test_run_report.py tests/test_timeline.py tests/test_store.py tests/test_rpc.py tests/test_cli.py tests/test_closeout.py tests/test_database.py tests/test_orchestrator_bridge.py tests/test_guides.py
+# Before #248, additionally:
+uv run --locked pytest tests/test_alice_launcher.py tests/test_prepare_run.py
+# With #247's successor, additionally (and alone after retirement):
+uv run --locked pytest tests/test_agent_launcher.py
 ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_abandon.py
 ```
 
-**Size:** medium. **Suggested model:** tier 1 implementer/reviewer. **Dependencies:** Step 3.
-**Counters:** table. Apply §7.2/§7.3/§8/§11 sequencing clarifications in this PR.
+**Size:** medium to large. **Suggested model:** tier 1 implementer/reviewer.
+**Dependencies:** Steps 3 and 6. **Counters:** table. Apply §7.2/§7.3/§7.4/§7.5/§8/§11
+and served-guide lifecycle clarifications.
 
 ### Step 5 — Integrate agent reports and hub-only reporting (#357)
 
@@ -551,18 +609,37 @@ uv run --locked pytest tests/test_agent_launcher.py
 §7.3/§8/§13 and report/user documentation updates. #359 live evidence follows this PR;
 workers neither launch the live team nor operate its hub.
 
-### Step 6 — Payload-free timeline (#20)
+### Step 6 — Run attribution and payload-free timeline (#20)
 
-**Scope.** `robomate log --timeline [--follow] [--json] [--run RUN]`, selected-hub read-only
-operator view of interleaved events, messages, decisions, task/result metadata and gate
-readings. The bare `log` uses the same safe event view; this replaces #20's old script
-command. #185/#186 UI enhancements remain deferred.
+**Scope.** Persist attribution for event/decision/message writers and expose
+`robomate log --timeline [--follow] [--json] [--run RUN]`, a selected-hub read-only operator
+view of interleaved records, task/result metadata and gate readings. The bare `log` uses
+the same safe view; this replaces #20's old script spelling. #185/#186 UI stays deferred.
 
-**Approach.** Use a bounded paginated projection with stable cursor and deterministic
-ordering `(timestamp, source kind, row ID)`; follow resumes by cursor, not timestamps
-alone. Query records attributable to that run, not all rows between two times; legacy
-unattributed rows are labelled hub-scoped rather than guessed into a run. Closed-set
-kind/state/role/outcome and validated IDs/SHAs/PR references only; unknown kinds get a
+**Approach.** Add nullable `workflow_id` foreign keys and indexes to `event`, `decision`
+and `message`. Update every writer to take explicit attribution from the affected
+workflow, task, operator question or collection; do not silently attach an old result or
+answer to whatever workflow is live now. `log_decision` uses its current workflow in the
+same write transaction; terminal transitions explicitly retain the original workflow.
+True hub-level records (for example host-pause diagnostics with no run) remain NULL.
+Expose workflow/run IDs additively in event records and re-briefing. During migration,
+backfill messages from their task, and events only where a valid stored task/question/run
+reference establishes one workflow. Old decisions with no authoritative reference stay
+NULL; do not parse prose, decision keys or timestamp ranges to invent their owner.
+
+Timeline `--run` selects matching attributed records and reports a count of excluded
+legacy unscoped records; the unfiltered view labels those and hub-scoped records
+explicitly. The report/evidence records that historical attribution is unavailable.
+New decisions and taskless run messages are included in the correct run. Add source-event
+attribution to the existing task-assignment consistency checks so Step 4 can reject a
+terminal/other-run event as the source of new work without guessing from its payload.
+This does not make hub diagnostics a source of workflow authority.
+
+Use a bounded paginated projection with stable cursor and deterministic ordering
+`(timestamp, source kind, row ID)`; follow tracks per-source ID watermarks so a backward
+clock step does not skip newly inserted rows. Each page has a stable read snapshot.
+Closed-set kind/state/role/outcome and validated IDs/SHAs/PR references only; unknown
+kinds get a
 fixed `unknown` label. Never print decision summaries, keys/rationales, task titles,
 question/answer/withdrawal text, worker progress, report prose or event payload text.
 Withdrawal metadata can show state, actor/time and settling event ID without implying an
@@ -573,19 +650,25 @@ history. Call/telemetry detail is deferred to M6; it is not required for useful 
 **Tests.** Add `tests/test_timeline.py`: seeded same-time rows from all sources appear
 once in deterministic order, run/hub scoping, multiple pages/follow/reconnect with no
 omissions, valid JSON, bounded output, invalid cursors/run IDs, unknown labels, controls,
-and payload-marker exclusion in every format. Follow is a read-only bounded hold and
-stops cleanly. Confirm no event ack/lease/expiry mutation, and withdrawn remains distinct
-from answered. Pytest-owned CLI tests execute all new flags; keep hub-report's existing
+and payload-marker exclusion in every format. Migration/writer tests cover every event,
+decision and message insertion path, taskless messages, old-question answers after a new
+run starts, authoritative backfill versus unscoped legacy decisions, and isolation of
+two sequential runs with overlapping/equal/backward timestamps. Check new run decisions
+appear under `--run`, and hub-only records are never falsely assigned. Follow is a
+read-only bounded hold and stops cleanly. Confirm no event ack/lease/expiry mutation,
+and withdrawn remains distinct from answered. Pytest-owned CLI tests execute all new
+flags; keep hub-report's existing
 payload-marker regression green.
 
 ```sh
-uv run --locked pytest tests/test_timeline.py tests/test_hub_report.py tests/test_rpc.py tests/test_cli.py
+uv run --locked pytest tests/test_timeline.py tests/test_database.py tests/test_store.py tests/test_durable_events.py tests/test_idempotency.py tests/test_closeout.py tests/test_hub_report.py tests/test_rpc.py tests/test_cli.py
 ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_timeline.py
 ```
 
-**Size:** medium. **Suggested model:** capable tier 2 implementer, tier 1 security/provenance
-reviewer. **Dependencies:** existing run identity only; parallel with Steps 1–5/7.
-**Counters:** table. Update §8/§11 and #20's reviewer command to this CLI contract.
+**Size:** medium to large (writer audit plus projection). **Suggested model:** tier 1
+implementer and reviewer. **Dependencies:** existing run identity only; parallel with
+Steps 1–3, required before Step 4. **Counters:** table. Update §8/§11 and #20's reviewer
+command to this attribution and CLI contract; reserve the migration only at pickup.
 
 ### Step 7 — Close the resume test gaps (#18)
 
@@ -617,8 +700,10 @@ the previous in-memory standby sample; those are different mechanisms.
 Assert no duplicate task/review/merge/issue/release; one owner after takeover; original
 result/receipt preserved; modified head re-reviewed; merged head checked before WRAP-UP;
 ambiguous state escalates; no unintended loss during the controlled restart grace; and
-late events cannot act on a later run. Hub deadlines use `frozen_clock.advance`, condition
-waits use `wait_until` and `LIVENESS_S`; no sleeps or short scheduling budgets. Execute the
+late events cannot act on a later run using Steps 6/4 attribution and dispatch guards.
+Terminal unanswered questions never become a later run's answers. Hub deadlines use
+`frozen_clock.advance`, condition waits use `wait_until` and `LIVENESS_S`; no sleeps or
+short scheduling budgets. Execute the
 surviving launcher's `resume` entry through fake-harness tests on Linux/native Windows.
 
 ```sh
@@ -736,7 +821,7 @@ or stop a live team, inspect protected state or change workflow status.
 | Existing prose CLOSE-OUT is mistaken for typed coverage | Inventory marks it partial; role-specific dispatch and tests in Step 1; no legacy prose gate pass |
 | Gate adds async forge latency/race before finalization | Recheck the original run/binding under lock; fail closed, preserve state and idempotency |
 | New done rail breaks mocks/lifecycle fixtures | Update them with explicit fake-gate/typed-result setup; no production test bypass |
-| Queue starts while abandoned workers still unwind | Cancel old tasks and release cooperatively; preserve queue without auto-activation; fence late calls |
+| Queue starts while canceled work is unwinding | Follow §7.2 retention; Alice starts only after atomic abandonment; reject late old-run calls and preserve dirty-worktree checks |
 | #423 retention or #386/#424 semantics move during report work | Explicit dependencies, shared retry seam and serialized integration; no competing policy |
 | M2 deletes a generator that #357 expected to edit | Conditional surviving-launcher contract; preserve old archives, do not gate #248 on M4 |
 | Typed report is read as verified prose | Source labels, missing-data markers, inert rendering and separate retrospective assertions |
@@ -752,7 +837,7 @@ implementation is verified, not because a plan exists. #357 stays its own Step 5
 launcher clarification. Keep #386 → #424 and #423 on their current lanes, #358/#359 and
 other live checks as evidence rows, and owner-held issues held.
 
-The roadmap should show the edge table, independent Step 6, M2 #268/#269/Step-11 handoff,
+The roadmap should show the edge table, Step 6 before Step 4, M2 #268/#269/Step-11 handoff,
 M3-before-M4 acceptance and all remaining live obligations. This is proposed bookkeeping
 for triage, not an agent edit to #2. Step issues point here and the implementing PRs close
 their issues. Counter-using runs alone maintain their claims in #409; this documentation
