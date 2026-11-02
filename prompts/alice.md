@@ -51,6 +51,7 @@ Policy:
   "max_wall_minutes": 120,
   "max_task_lease_min": 120,
   "stall_after_min": 20,
+  "closeout_wait_s": 300,
   "on_done": "release"
 }
 ```

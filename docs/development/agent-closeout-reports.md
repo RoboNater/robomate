@@ -39,7 +39,7 @@ An open task takes precedence; collection is not a new task role. The implemente
 can still receive the §7.3 closeout task after its retrospective is submitted.
 Alice submits her own report after that task, before marking the run done.
 
-Use a bounded collection period (default 100 seconds), measured with the hub's
+Use a bounded collection period (default 300 seconds, run `closeout_wait_s`, maximum 1800 seconds), measured with the hub's
 pause-aware clock. At expiry, Alice proceeds with explicit missing-report
 reasons; a lost, crashed or unresponsive agent never blocks release or `done`.
 Run finalization freezes the collection and renders submitted and missing
@@ -77,7 +77,7 @@ AgentCloseoutReport:
             verification: verified | unverified,
             evidence?: nonempty string}]
 
-request_closeout_reports(run_id: str, timeout_s: float = 100)
+request_closeout_reports(run_id: str, timeout_s: float | None = None)
   -> {run_id, deadline, submitted: [agent], missing: [agent]}
 submit_closeout_report(run_id: str, report: AgentCloseoutReport)
   -> {report_id, run_id, author, submitted_at}

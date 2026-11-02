@@ -521,7 +521,7 @@ def test_verified_claims_and_finding_references(store: HubStore) -> None:
     }
     receipt = store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", body)
     now = store._now()
-    store.clock = lambda: now + timedelta(seconds=101)
+    store.clock = lambda: now + timedelta(seconds=301)
     assert store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", body) == receipt
     stored = store.get_closeout_reports(run_id)["reports"][0]["report"]
     assert stored["claims"][0]["verification"] == "verified"

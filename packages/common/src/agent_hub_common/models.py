@@ -22,6 +22,8 @@ class WorkflowStatus(StrEnum):
 
 PositiveNumber = Annotated[int | float, Field(gt=0, allow_inf_nan=False)]
 
+CloseoutWait = Annotated[int | float, Field(gt=0, le=1800, allow_inf_nan=False)]
+
 
 class RolePolicy(BaseModel):
     """The worker-pairing rails accepted in workflow policy (§5)."""
@@ -51,6 +53,9 @@ class WorkflowPolicy(BaseModel):
     max_task_lease_min: PositiveNumber = 120
     # Minutes without agent activity before the hub reports a stall (#144).
     stall_after_min: PositiveNumber = 20
+    # Bounded pre-release closeout collection window (#386): omitted
+    # `request_closeout_reports` timeout uses this run policy value.
+    closeout_wait_s: CloseoutWait = 300
     # What happens when a run ends with the queue empty (mvp-spec §7.2, M2 Step 3).
     # `release` releases workers; `standby` keeps them joined for the next run.
     on_done: Literal["release", "standby"] = "release"

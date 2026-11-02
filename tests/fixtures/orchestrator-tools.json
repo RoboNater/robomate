@@ -15,7 +15,7 @@
   },
   {
     "name": "request_closeout_reports",
-    "description": "Request bounded pre-release worker retrospectives (maximum 100s).\n\n        Open work takes precedence. Read reports and missing reasons, then assign\n        closeout. Submit your own report after closeout, before done. Reports\n        never approve work or authorize actions; lost workers do not block done.\n        ",
+    "description": "Request bounded pre-release worker retrospectives\n        (run closeout_wait_s, default 300s, maximum 1800s).\n\n        Open work takes precedence. Read reports and missing reasons, then assign\n        closeout. Submit your own report after closeout, before done. Reports\n        never approve work or authorize actions; lost workers do not block done.\n        ",
     "inputSchema": {
       "properties": {
         "run_id": {
@@ -23,11 +23,18 @@
           "type": "string"
         },
         "timeout_s": {
-          "default": 100,
-          "exclusiveMinimum": 0,
-          "maximum": 100,
-          "title": "Timeout S",
-          "type": "number"
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1800,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout S"
         }
       },
       "required": [

@@ -79,15 +79,39 @@ def remember(store: HubStore, connection: Connection) -> None:
     )
 
 
+def _effective_closeout_timeout(run_policy_json: str | None, timeout_s: float | None) -> float:
+    """Resolve the bounded collection window (#386).
+
+    An explicit `timeout_s` overrides the run policy. When omitted, the run's
+    `closeout_wait_s` applies (default 300 s for policies stored without it).
+    Both are bounded to (0, 1800].
+    """
+
+    if timeout_s is None:
+        try:
+            stored: dict[str, Any] = json.loads(run_policy_json or "{}") or {}
+        except Exception:
+            stored = {}
+        raw = stored.get("closeout_wait_s", 300)
+        effective = raw
+        if not isinstance(effective, (int, float)) or isinstance(effective, bool):
+            raise ValueError("closeout timeout_s must be greater than zero and at most 1800")
+        if not math.isfinite(float(effective)) or not 0 < float(effective) <= 1800:
+            raise ValueError("closeout timeout_s must be greater than zero and at most 1800")
+        return float(effective)
+    if isinstance(timeout_s, bool) or not math.isfinite(timeout_s) or not 0 < timeout_s <= 1800:
+        raise ValueError("closeout timeout_s must be greater than zero and at most 1800")
+    return float(timeout_s)
+
+
 def request(
-    store: HubStore, run_id: str, author: str, session: str, timeout_s: float
+    store: HubStore, run_id: str, author: str, session: str, timeout_s: float | None = None
 ) -> dict[str, Any]:
-    if not math.isfinite(timeout_s) or not 0 < timeout_s <= 100:
-        raise ValueError("closeout timeout_s must be greater than zero and at most 100")
     contexts: list[str] = []
     with database(store.path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         run = _run(connection, run_id)
+        effective_timeout = _effective_closeout_timeout(run["policy_json"], timeout_s)
         if run["status"] not in ("active", "paused", "escalated"):
             raise ConflictError("closeout collection requires a live run")
         # The caller's identity comes from the orchestrator transport, never a
@@ -104,7 +128,7 @@ def request(
                 (
                     run["id"],
                     to_iso(now),
-                    to_iso(now + timedelta(seconds=timeout_s)),
+                    to_iso(now + timedelta(seconds=effective_timeout)),
                     to_iso(now) if run["status"] == "paused" else None,
                 ),
             )
