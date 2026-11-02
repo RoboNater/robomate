@@ -750,3 +750,45 @@ def test_closeout_submit_policy_override_600() -> None:
         _resolve_policy(WorkflowPolicy(), {"closeout_wait_s": 0})
     with pytest.raises(ValueError):
         _resolve_policy(WorkflowPolicy(), {"closeout_wait_s": 1801})
+
+
+async def test_closeout_mcp_omitted_timeout_uses_policy_300(
+    app: FastAPI,
+    hub_store: HubStore,
+    frozen_clock: FrozenClock,
+) -> None:
+    """#386 r2-2: MCP request_closeout_reports without timeout_s yields the 300 s default."""
+
+    async with app.router.lifespan_context(app):
+        bridge = bridge_for(app)
+        alice = create_orchestrator_mcp(bridge)
+        try:
+            hub_store.check_in("bob", worker_instance_id="bob-instance")
+            task = hub_store.assign_task("bob", "implementer", "Build", "Build")
+            hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
+            run_id = str(hub_store.get_state()["workflow"]["run_id"])
+            result = await call(alice, "request_closeout_reports", run_id=run_id)
+            assert _deadline_delta_s(hub_store, run_id) == pytest.approx(300, abs=1)
+            assert result["deadline"] == hub_store.get_closeout_reports(run_id)["deadline"]
+        finally:
+            await bridge.close()
+
+
+def test_closeout_stored_out_of_range_policy_refused(tmp_path: Path) -> None:
+    """#386 r2-2: a stored out-of-range closeout_wait_s is refused, not applied."""
+
+    from agent_hub.database import database, initialize_database
+
+    for bad in (0, -5, 1801, 9999, True):
+        path = Path(tmp_path) / f"bad-policy-{bad}.db"
+        initialize_database(path)
+        hub_store = HubStore(path)
+        hub_store.initialize_workflow()
+        run_id = str(hub_store.get_state()["workflow"]["run_id"])
+        with database(hub_store.path) as connection:
+            connection.execute(
+                "UPDATE workflow SET policy_json = ? WHERE run_id = ?",
+                (json.dumps({"closeout_wait_s": bad}), run_id),
+            )
+        with pytest.raises(ValueError, match="greater than zero and at most 1800"):
+            hub_store.request_closeout_reports(run_id, "alice", "sess")
