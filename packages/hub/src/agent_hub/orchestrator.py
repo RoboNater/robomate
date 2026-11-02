@@ -60,7 +60,7 @@ class OrchestratorOps(OrchestratorTools):
         return caller
 
     async def request_closeout_reports(
-        self, run_id: str, timeout_s: CloseoutTimeout = 100
+        self, run_id: str, timeout_s: CloseoutTimeout | None = None
     ) -> dict[str, Any]:
         caller = self._caller()
         return self.store.request_closeout_reports(

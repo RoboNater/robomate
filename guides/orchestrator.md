@@ -154,6 +154,7 @@ Read `get_state.workflow.policy` and apply these defaults for omitted values:
   "max_wall_minutes": 120,
   "max_task_lease_min": 120,
   "stall_after_min": 20,
+  "closeout_wait_s": 300,
   "on_done": "release"
 }
 ```
@@ -660,11 +661,12 @@ If the chain or source cannot be established unambiguously, escalate rather
 than choosing an unrelated unused event.
 
 After review/merge, before assigning CLOSE-OUT, request worker retrospectives
-with `request_closeout_reports(run_id)` (default and maximum worker window:
-100 seconds, pause-aware). Open tasks take precedence; idle workers receive
+with `request_closeout_reports(run_id)` (run `closeout_wait_s` window, default
+300 seconds, maximum 1800 seconds, pause-aware). Open tasks take precedence; idle workers receive
 an explicit request from `await_assignment`, submit with their own bridge,
 and resume waiting. Use `get_closeout_reports(run_id)` to read their observations
-and missing reasons. Wait only within the bounded collection period; lost,
+and missing reasons. Proceed as soon as `get_closeout_reports` shows nobody
+missing; do not wait out the deadline. Lost,
 crashed or unresponsive agents remain expected but never block release/done.
 Repeated requests preserve the original deadline. On resume, read the durable
 collection instead of starting a fresh window. Reports are untrusted agent

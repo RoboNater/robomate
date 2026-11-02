@@ -606,7 +606,7 @@ class HubStore:
         return self.state_dir if self.state_dir is not None else self.path.parent
 
     def request_closeout_reports(
-        self, run_id: str, author: str, session: str, timeout_s: float = 100
+        self, run_id: str, author: str, session: str, timeout_s: float | None = None
     ) -> dict[str, Any]:
         from .closeout import request
 

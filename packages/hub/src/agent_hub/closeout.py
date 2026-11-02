@@ -13,7 +13,14 @@ from sqlite3 import Connection, Row
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from agent_hub_common import MAX_TYPED_RESULT_BYTES, AgentCloseoutReport, EventKind, to_iso
+from agent_hub_common import (
+    CLOSEOUT_WAIT_DEFAULT_S,
+    CLOSEOUT_WAIT_MAX_S,
+    MAX_TYPED_RESULT_BYTES,
+    AgentCloseoutReport,
+    EventKind,
+    to_iso,
+)
 from pydantic import ValidationError
 
 from .database import database
@@ -79,15 +86,40 @@ def remember(store: HubStore, connection: Connection) -> None:
     )
 
 
+def _effective_closeout_timeout(run_policy_json: str | None, timeout_s: float | None) -> float:
+    """Resolve the bounded collection window (#386).
+
+    An explicit `timeout_s` overrides the run policy. When omitted, the run's
+    `closeout_wait_s` applies (default for policies stored without it).
+    Both are bounded to (0, `CLOSEOUT_WAIT_MAX_S`].
+    """
+
+    if timeout_s is None:
+        from .store import _json_object
+
+        stored = _json_object(run_policy_json) or {}
+        raw = stored.get("closeout_wait_s", CLOSEOUT_WAIT_DEFAULT_S)
+    else:
+        raw = timeout_s
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(
+            f"closeout timeout_s must be greater than zero and at most {CLOSEOUT_WAIT_MAX_S}"
+        )
+    if not math.isfinite(float(raw)) or not 0 < float(raw) <= CLOSEOUT_WAIT_MAX_S:
+        raise ValueError(
+            f"closeout timeout_s must be greater than zero and at most {CLOSEOUT_WAIT_MAX_S}"
+        )
+    return float(raw)
+
+
 def request(
-    store: HubStore, run_id: str, author: str, session: str, timeout_s: float
+    store: HubStore, run_id: str, author: str, session: str, timeout_s: float | None = None
 ) -> dict[str, Any]:
-    if not math.isfinite(timeout_s) or not 0 < timeout_s <= 100:
-        raise ValueError("closeout timeout_s must be greater than zero and at most 100")
     contexts: list[str] = []
     with database(store.path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         run = _run(connection, run_id)
+        effective_timeout = _effective_closeout_timeout(run["policy_json"], timeout_s)
         if run["status"] not in ("active", "paused", "escalated"):
             raise ConflictError("closeout collection requires a live run")
         # The caller's identity comes from the orchestrator transport, never a
@@ -104,7 +136,7 @@ def request(
                 (
                     run["id"],
                     to_iso(now),
-                    to_iso(now + timedelta(seconds=timeout_s)),
+                    to_iso(now + timedelta(seconds=effective_timeout)),
                     to_iso(now) if run["status"] == "paused" else None,
                 ),
             )

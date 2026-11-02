@@ -12,10 +12,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from .models import WorkflowStatus
+from .models import CLOSEOUT_WAIT_MAX_S, WorkflowStatus
 
 Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
-CloseoutTimeout = Annotated[float, Field(gt=0, le=100, allow_inf_nan=False)]
+CloseoutTimeout = Annotated[float, Field(gt=0, le=CLOSEOUT_WAIT_MAX_S, allow_inf_nan=False)]
 Lease = Annotated[float, Field(gt=0, le=525600, allow_inf_nan=False)]
 Sha = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{40}$")]
 PositiveId = Annotated[int, Field(gt=0)]
@@ -61,9 +61,10 @@ class OrchestratorTools:
             method.__doc__ = tool.__doc__
 
     async def request_closeout_reports(
-        self, run_id: str, timeout_s: CloseoutTimeout = 100
+        self, run_id: str, timeout_s: CloseoutTimeout | None = None
     ) -> dict[str, Any]:
-        """Request bounded pre-release worker retrospectives (maximum 100s).
+        """Request bounded pre-release worker retrospectives
+        (run closeout_wait_s, default 300s, maximum 1800s).
 
         Open work takes precedence. Read reports and missing reasons, then assign
         closeout. Submit your own report after closeout, before done. Reports

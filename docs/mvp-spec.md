@@ -726,6 +726,9 @@ permissions, which certification catches per harness.
 - Policy additions (to PoC `WorkflowPolicy`):
   - `deliver: merge | pr` (default `merge`) — #14.
   - `closeout: true | false` (default `true`) — run the close-out task (§7.3).
+  - `closeout_wait_s` (positive number up to 1800, default 300) — bounded
+    pre-release closeout collection window (§7.3); `robomate submit --policy
+    closeout_wait_s=N` and configuration layers may set it (#386).
   - `on_done: release | standby` (default `release`). `release` releases workers when a run
     ends with the queue empty; `standby` keeps them joined for the next queued run. With a
     queued run waiting, workers stay for it under either value. Idle holds cost tokens, so
@@ -753,11 +756,13 @@ recorded.
 | `closeout_steps` | list of steps passed verbatim to every close-out task, e.g. `"If this run used a counter, mark its claim shipped in the run's reservations issue"` (#408: ordinary runs do no roadmap upkeep) |
 
 **Per-agent retrospectives (#215).** After review/merge, before assigning the
-close-out task, Alice calls `request_closeout_reports(run_id, timeout_s=100)`.
-The bounded worker window is greater than zero and at most 100 seconds, using
+close-out task, Alice calls `request_closeout_reports(run_id)`.
+The bounded worker window is greater than zero and at most 1800 seconds, using
 the hub's pause-aware clock: explicit workflow pauses suspend expiry (including
 across restart), and detected host pauses shift the deadline with task leases.
-Repeated requests retain the original deadline and expected-author set.
+When `timeout_s` is omitted, the run's `closeout_wait_s` applies (default 300 s);
+an explicit value overrides it. Repeated requests retain the original deadline
+and expected-author set.
 The hub durably records participants at join and run activation, supplements
 pre-v27 history from task assignees, and snapshots them plus Alice at request.
 Lost participants remain expected. An open task takes precedence over a request.
@@ -967,7 +972,7 @@ tools and supported operator CLI commands, without consuming events or taking a 
 |---|---|---|
 | `join`, `whoami` | any | **new**: only tools callable before `join`; worker `join` over A2A (`check_in` alias kept until M2 Step 11); `whoami` over `GET /whoami` (#238) |
 | `await_assignment`, `get_role_guide`, `report_progress` | worker | adds the durable `closeout_requested` response (§7.3); hold capped by `MAX_HOLD_DEFAULT_S` (100 s, #12) until M3 per-harness profiles |
-| `request_closeout_reports(run_id, timeout_s=100)`, `get_closeout_reports(run_id)` | orchestrator | **new** (#215): durable bounded pre-release collection; submitted reports and explicit missing reasons (§7.3) |
+| `request_closeout_reports(run_id, timeout_s=None)`, `get_closeout_reports(run_id)` | orchestrator | **new** (#215): durable bounded pre-release collection; submitted reports and explicit missing reasons (§7.3); omitted `timeout_s` uses run `closeout_wait_s` (default 300 s, maximum 1800 s, #386) |
 | `submit_closeout_report(run_id, report)` | worker, orchestrator | **new** (#215): one strict retrospective per run/author; worker A2A submission, caller-derived attribution, identical-retry receipt (§7.3) |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
 | `ask_orchestrator` | worker | renamed from `ask_alice` (`ask_alice` alias kept until M2 Step 11; #238) |
@@ -988,7 +993,7 @@ tools and supported operator CLI commands, without consuming events or taking a 
 **Bridge compatibility (#215).** The additive wire version remains 1, but a
 pre-#215 worker bridge does not understand `closeout_requested`: it interprets
 that response as an assignment with an empty task ID. Repeated waits can
-redeliver it immediately until the bounded collection deadline (at most 100
+redeliver it immediately until the bounded collection deadline (at most 1800
 active seconds), after which its report is recorded as missing. The hub
 creates no task or report from that response. Operators should upgrade hub and bridges together and
 restart long-lived bridge processes when upgrading; workers do not perform

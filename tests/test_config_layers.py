@@ -209,6 +209,40 @@ def test_max_review_rounds_resolves_repository_over_user_and_hub_over_both(
     assert resolved_hub.policy.max_review_rounds == 8
 
 
+def test_closeout_wait_s_resolves_repository_over_user_and_hub_over_both(
+    tmp_path: Path,
+) -> None:
+    """#386: closeout_wait_s is a policy scalar across hub/repository/user layers."""
+
+    from agent_hub_common import CLOSEOUT_WAIT_DEFAULT_S
+
+    hub_cfg = tmp_path / "state" / "config.toml"
+    repo_cfg = tmp_path / "repo" / ".git" / "robomate" / "config.toml"
+    user_cfg = tmp_path / "user" / "robomate" / "config.toml"
+
+    assert (
+        load_config_layers(hub_cfg, repo_cfg, user_cfg).policy.closeout_wait_s
+        == CLOSEOUT_WAIT_DEFAULT_S
+    )
+
+    _write_toml(user_cfg, "closeout_wait_s = 600\n")
+    assert load_config_layers(hub_cfg, repo_cfg, user_cfg).policy.closeout_wait_s == 600
+
+    _write_toml(repo_cfg, "closeout_wait_s = 900\n")
+    resolved_repo = load_config_layers(hub_cfg, repo_cfg, user_cfg)
+    assert resolved_repo.closeout_wait_s == 900
+    assert resolved_repo.policy.closeout_wait_s == 900
+
+    _write_toml(hub_cfg, "[policy]\ncloseout_wait_s = 1200\n")
+    resolved_hub = load_config_layers(hub_cfg, repo_cfg, user_cfg)
+    assert resolved_hub.closeout_wait_s == 1200
+    assert resolved_hub.policy.closeout_wait_s == 1200
+
+    _write_toml(repo_cfg, "closeout_wait_s = 0\n")
+    with pytest.raises(ConfigLayerError):
+        load_config_layers(hub_cfg, repo_cfg, user_cfg)
+
+
 def test_worktree_root_in_hub_config_is_an_error(tmp_path: Path) -> None:
     for hub_dir_name in ("state", ".robomate"):
         hub_cfg = _write_toml(

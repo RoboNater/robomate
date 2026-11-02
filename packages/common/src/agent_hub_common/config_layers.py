@@ -46,6 +46,7 @@ _POLICY_SCALAR_KEYS: frozenset[str] = frozenset(
         "max_wall_minutes",
         "max_task_lease_min",
         "stall_after_min",
+        "closeout_wait_s",
         "on_done",
     }
 )
@@ -161,6 +162,10 @@ class ResolvedConfig:
     @property
     def stall_after_min(self) -> int | float:
         return self.policy.stall_after_min
+
+    @property
+    def closeout_wait_s(self) -> int | float:
+        return self.policy.closeout_wait_s
 
     @property
     def on_done(self) -> Literal["release", "standby"]:
