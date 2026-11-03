@@ -172,9 +172,12 @@ already reflect them.
 3. **Export retention (#423): an export is written once, and deleting it is final.**
    Rewriting every completed run at each hub start is wasted work, and it would bring
    back files an operator removed on purpose.
-   - After `index.json` is written, record completion in the database, for example an
-     exported-at column on `closeout_collection`. This needs a migration, so #423 claims
-     its version on #409 first.
+   - After `index.json` is written, record completion in the database on the run's
+     `workflow` row, for example an exported-at column. Every run has that row, but a
+     `closeout_collection` row exists only when collection was requested. Steps 3 and 4
+     export `report.md` for runs without one (`closeout: false`, or abandoned before
+     collection), and the one marker must cover them too. This needs a migration, so #423
+     claims its version on #409 first.
    - Startup retries only finalized `done` runs with no completion record. A failed or
      interrupted export has none, so it retries at each start and `status` reports it
      again if it still fails.
@@ -186,7 +189,8 @@ already reflect them.
      an interrupted export and stay unmarked so they retry; no index and no report files
      means complete without writing anything. That last case can't be told apart from a
      deliberate deletion, and a run that really crashed there loses only its export,
-     because its reports stay in the database.
+     because its reports stay in the database. A `done` run that never requested
+     collection has nothing to export, and it is marked complete as well.
 4. **Order: §13 doesn't change.** Lane A's queue stays first: #395, #245, #246, #247,
    #423. Triage opens all the step issues now. Steps 1 and 6 start when Lane A reaches
    them or a lane is free, ahead of M3, with Step 2 after Step 1. This follows the
