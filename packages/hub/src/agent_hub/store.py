@@ -2174,6 +2174,14 @@ class HubStore:
                     "reattached_task_id": reattached["task_id"] if reattached else None,
                 },
             )
+            # Loss is provisional until this collection finalizes. Rejoining
+            # restores the original window, without carrying a stale loss reason.
+            connection.execute(
+                "UPDATE closeout_expected SET missing_reason = NULL WHERE author = ?"
+                " AND missing_reason = 'worker_lost' AND workflow_id IN"
+                " (SELECT workflow_id FROM closeout_collection WHERE finalized_at IS NULL)",
+                (name,),
+            )
             from .closeout import remember
 
             remember(self, connection)
@@ -3553,6 +3561,10 @@ class HubStore:
                     },
                 )
             )
+        if rows:
+            from .closeout import record_losses
+
+            record_losses(connection)
         return emitted
 
     # -- activity and stalls (#144) -------------------------------------------

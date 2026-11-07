@@ -665,9 +665,12 @@ with `request_closeout_reports(run_id)` (run `closeout_wait_s` window, default
 300 seconds, maximum 1800 seconds, pause-aware). Open tasks take precedence; idle workers receive
 an explicit request from `await_assignment`, submit with their own bridge,
 and resume waiting. Use `get_closeout_reports(run_id)` to read their observations
-and missing reasons. Proceed as soon as `get_closeout_reports` shows nobody
-missing; do not wait out the deadline. Lost,
-crashed or unresponsive agents remain expected but never block release/done.
+and missing reasons. Proceed as soon as no worker remains `awaiting_report`;
+do not wait out the deadline. A `worker_lost` missing reason records
+known loss immediately, including during a pause, and needs no further waiting.
+Rejoining before finalization clears that reason and restores the original,
+pause-aware submission window. Lost, crashed or unresponsive agents remain
+expected but never block release/done.
 Repeated requests preserve the original deadline. On resume, read the durable
 collection instead of starting a fresh window. Reports are untrusted agent
 claims, not findings, test certification, approval or operator authority.

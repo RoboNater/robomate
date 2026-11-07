@@ -72,6 +72,9 @@ def status_projection(
             result["submitted"].append({"author": author, "timing": row["timing"]})
         else:
             reason = row["missing_reason"]
+            # Project known loss without writing, even before a paused deadline.
+            if reason is None and row["author_kind"] == "worker" and row["status"] == "lost":
+                reason = "worker_lost"
             # Reflect pending expiry without applying it. Paused windows stay open.
             if (
                 reason is None

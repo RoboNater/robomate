@@ -49,8 +49,23 @@ def _collection(connection: Connection, workflow_id: str) -> Row:
     return row
 
 
+def record_losses(connection: Connection) -> None:
+    """Known loss ends waiting immediately, independently of paused deadlines."""
+    connection.execute(
+        "UPDATE closeout_expected SET missing_reason = 'worker_lost'"
+        " WHERE author_kind = 'worker' AND missing_reason IS NULL"
+        " AND workflow_id IN (SELECT workflow_id FROM closeout_collection"
+        " WHERE finalized_at IS NULL)"
+        " AND author IN (SELECT name FROM agent WHERE status = 'lost')"
+        " AND NOT EXISTS (SELECT 1 FROM agent_closeout_report r"
+        " WHERE r.workflow_id = closeout_expected.workflow_id"
+        " AND r.author = closeout_expected.author)"
+    )
+
+
 def _expire(connection: Connection, workflow_id: str, now: str) -> None:
     collection = _collection(connection, workflow_id)
+    record_losses(connection)
     if collection["paused_at"] is None and now >= collection["deadline"]:
         connection.execute(
             "UPDATE closeout_expected SET missing_reason = CASE"
