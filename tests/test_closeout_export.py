@@ -427,3 +427,45 @@ async def test_failed_export_stays_visible_after_queued_run_activation(
         hub_store.retry_closeout_exports()
         assert hub_store.status_summary()["closeout_export_errors"] == []
         assert (export_dir(hub_store, failed_run) / "index.json").is_file()
+
+
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("read_before_done", [False, True])
+def test_predeadline_loss_status_read_and_early_done_export(
+    store: HubStore, frozen_clock: FrozenClock, paused: bool, read_before_done: bool
+) -> None:
+    """Known loss ends waiting even while expiry is paused; status never writes."""
+    run_id = prepare(store)
+    submit(store, run_id, "bob", report())
+    submit(store, run_id, "alice", report())
+    if paused:
+        store.set_workflow_status(WorkflowStatus.PAUSED, "Pause", actor="alice", session=None)
+    frozen_clock.advance(2)
+    store.heartbeat("bob", "bob-instance", None)
+    store.sweep(1)
+    expected = [{"author": "charlie", "reason": "worker_lost"}]
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT missing_reason FROM closeout_expected WHERE author = 'charlie'"
+            ).fetchone()[0]
+            == "worker_lost"
+        )
+        # A persisted collection from before #424 may not have stored the loss.
+        # Both the pure projection and read/finalize must still agree.
+        connection.execute(
+            "UPDATE closeout_expected SET missing_reason = NULL WHERE author = 'charlie'"
+        )
+        before = list(connection.iterdump())
+    assert store.status_summary()["closeout"]["missing"] == expected
+    with database(store.path) as connection:
+        assert list(connection.iterdump()) == before
+    if read_before_done:
+        assert store.get_closeout_reports(run_id)["missing"] == expected
+    done(store)
+    assert store.get_closeout_reports(run_id)["missing"] == expected
+    assert store.status_summary()["closeout"]["missing"] == expected
+    entries = json.loads((export_dir(store, run_id) / "index.json").read_text())["authors"]
+    assert next(e for e in entries if e["author"] == "charlie")["reason"] == "worker_lost"
+    store.check_in("charlie", worker_instance_id="charlie-returned")
+    assert store.get_closeout_reports(run_id)["missing"] == expected

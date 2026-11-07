@@ -792,3 +792,53 @@ def test_closeout_stored_out_of_range_policy_refused(tmp_path: Path) -> None:
             )
         with pytest.raises(ValueError, match="greater than zero and at most 1800"):
             hub_store.request_closeout_reports(run_id, "alice", "sess")
+
+
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("expired", [False, True])
+async def test_loss_rejoin_clears_reason_and_preserves_window(
+    store: HubStore, frozen_clock: FrozenClock, paused: bool, expired: bool
+) -> None:
+    run_id = prepare(store)
+    if paused:
+        store.set_workflow_status(WorkflowStatus.PAUSED, "Pause", actor="alice", session=None)
+    frozen_clock.advance(2)
+    store.sweep(1)
+    assert {m["author"]: m["reason"] for m in store.get_closeout_reports(run_id)["missing"]}[
+        "bob"
+    ] == "worker_lost"
+    if expired:
+        frozen_clock.advance(101)
+    returned = store.check_in("bob", worker_instance_id="bob-returned")
+    reason = "deadline_expired" if expired and not paused else "awaiting_report"
+    assert {m["author"]: m["reason"] for m in store.status_summary()["closeout"]["missing"]}[
+        "bob"
+    ] == reason
+    assert {m["author"]: m["reason"] for m in store.get_closeout_reports(run_id)["missing"]}[
+        "bob"
+    ] == reason
+    if reason == "awaiting_report":
+        pending = await store.await_assignment(returned.context_id, 0)
+        assert isinstance(pending, dict) and pending["closeout_requested"]
+        store.submit_closeout_report(run_id, "bob", "bob-returned", "worker", report())
+    else:
+        with pytest.raises(ConflictError, match="window"):
+            store.submit_closeout_report(run_id, "bob", "bob-returned", "worker", report())
+
+
+def test_collection_of_already_lost_worker_and_submitted_report_precedence(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    store.check_in("charlie", worker_instance_id="charlie-instance")
+    frozen_clock.advance(2)
+    store.sweep(1)
+    run_id = prepare(store)
+    assert {m["author"]: m["reason"] for m in store.get_closeout_reports(run_id)["missing"]}[
+        "charlie"
+    ] == "worker_lost"
+    store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
+    # Lose bob too without a sweep gap: an accepted report remains submitted.
+    frozen_clock.advance(1)
+    store.sweep(1)
+    assert store.get_closeout_reports(run_id)["submitted"] == ["bob"]
+    assert store.status_summary()["closeout"]["submitted_count"] == 1

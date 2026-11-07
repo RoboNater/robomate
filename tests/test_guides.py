@@ -587,7 +587,9 @@ def test_served_orchestrator_guide_states_closeout_policy_window(forge: str) -> 
     assert "default 300 seconds" in text
     assert "maximum 1800 seconds" in text
     assert "request_closeout_reports(run_id)" in text
-    assert "Proceed as soon as `get_closeout_reports` shows nobody missing" in text
+    assert "Proceed as soon as no worker remains `awaiting_report`" in text
+    assert "A `worker_lost` missing reason records known loss immediately" in text
+    assert "needs no further waiting" in text
     assert "maximum 100 seconds" not in text.lower()
     assert "at most 100 seconds" not in text.lower()
     assert "default and maximum worker window" not in text.lower()
