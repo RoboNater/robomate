@@ -810,16 +810,19 @@ Known worker loss immediately persists `worker_lost` for an unsubmitted report
 in an open collection, even before the deadline or during a pause (#424).
 Alice needs no further waiting for that author. Rejoining clears this provisional
 reason before finalization and restores the original pause-aware window; it does
-not extend an expired deadline. Reads and read-only status also reflect known
-loss in collections created before this policy. Expiry persists explicit worker
-missing reasons (`deadline_expired`, `worker_lost`, or `agent_released`); an early
+not extend an expired deadline. If the unpaused deadline has already passed,
+that rejoin reclassifies even a `worker_lost` reason stored at expiry as
+`deadline_expired` on the next read or finalization; submission remains closed.
+Reads and read-only status also reflect known loss in collections created before
+this policy. Expiry persists explicit worker missing reasons (`deadline_expired`,
+`worker_lost`, or `agent_released`); an early
 release records `agent_released`. Submitted reports take precedence over loss.
 Alice can still submit after the worker deadline, until finalization. `done`
 freezes collection, preserves known loss even before the deadline, and records
 other remaining missing authors (`run_finalized`), serialized against submission.
 Rejoining after finalization cannot alter the frozen reasons. Missing reports
-never prevent release or done, and collection introduces no approval/merge gate. Operator abandonment uses
-the same finalization operation when that lifecycle operation lands. Report,
+never prevent release or done, and collection introduces no approval/merge gate.
+Operator abandonment uses the same finalization operation when that lifecycle operation lands. Report,
 status and export presentation are described below (#356); the run-report appendix remains #357.
 
 **Operator closeout views (#356).** `robomate status` and `--json` show the
