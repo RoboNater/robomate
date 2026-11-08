@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 import robomate.cli as cli
-from agent_hub_common.discovery import Binding, checkout_git_dir, write_binding
+from agent_hub_common.discovery import Binding, Repository, checkout_git_dir, write_binding
 from test_worktrees import _git, make_manager, make_repo
 
 
@@ -253,7 +253,7 @@ def test_failed_git_removal_restores_the_hub_lock(
     path, _ = manager.ensure("bob")
     original = cleanup.git
 
-    def refuse_remove(repo: cleanup.Repository, *args: str, cwd: Path | None = None) -> str:
+    def refuse_remove(repo: Repository, *args: str, cwd: Path | None = None) -> str:
         if args[:2] == ("worktree", "remove"):
             raise RuntimeError("removal refused")
         return original(repo, *args, cwd=cwd)
