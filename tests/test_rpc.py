@@ -1750,6 +1750,7 @@ async def test_hub_submit_github_runs_no_glab(
 async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> None:
     """r1-4: submit resolves auto; explicit skips probe."""
 
+    import itertools
     import json
     import sqlite3
     from collections.abc import Sequence
@@ -1796,10 +1797,14 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
 
         return _run
 
+    # #443: unique names independent of directory contents; SQLite -wal/-shm
+    # side files come and go with GC timing, so len(iterdir()) can reuse a name.
+    _db_names = itertools.count()
+
     async def _submit_with(
         policy: dict[str, Any] | None, ci: GlabResult, origin_arg: str = origin
     ) -> tuple[bool, list[str]]:
-        path = tmp_path / f"submit-{len(list(tmp_path.iterdir()))}.db"
+        path = tmp_path / f"submit-{next(_db_names)}.db"
         initialize_database(path)
         store = HubStore(path)
         file_calls: list[str] = []
@@ -1830,7 +1835,7 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
         stored, calls = await _submit_with({"allow_no_ci": allow}, GlabResult(1, "boom", "boom"))
         assert stored is expected and calls == []
     # local origin (no slug) + auto -> True without forge calls (github path).
-    local_path = tmp_path / f"submit-{len(list(tmp_path.iterdir()))}.db"
+    local_path = tmp_path / f"submit-{next(_db_names)}.db"
     initialize_database(local_path)
     local_store = HubStore(local_path)
 
