@@ -1,5 +1,6 @@
 """Operator cleanup exercises real git worktrees in disposable repositories."""
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import pytest
 import robomate.cli as cli
 from agent_hub_common.discovery import Binding, Repository, checkout_git_dir, write_binding
+from agent_hub_common.registry import register
 from test_worktrees import _git, make_manager, make_repo
 
 
@@ -263,3 +265,77 @@ def test_failed_git_removal_restores_the_hub_lock(
         clean(monkeypatch)
     assert exc.value.code == 1 and path.is_dir()
     assert "locked robomate hub repo" in _git(cleanup_repo, "worktree", "list", "--porcelain")
+
+
+@pytest.mark.parametrize("selector", ["repo", "hub-repo", "checkout"])
+def test_orphan_can_be_selected_from_outside_a_checkout(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+) -> None:
+    manager, _, common = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    register(
+        {
+            "hub_id": manager.hub_id,
+            "name": "repo",
+            "checkout": str(cleanup_repo),
+            "git_common_dir": str(common),
+            "state_dir": str(manager.state_dir),
+            "pid": None,
+        }
+    )
+    shutil.rmtree(manager.state_dir)
+    monkeypatch.chdir(tmp_path)
+    clean(monkeypatch, "--hub", str(cleanup_repo) if selector == "checkout" else selector)
+    assert not path.exists() and not manager.state_dir.exists()
+
+
+def test_orphan_with_live_registered_process_is_refused(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, common = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    register(
+        {
+            "hub_id": manager.hub_id,
+            "name": "repo",
+            "checkout": str(cleanup_repo),
+            "git_common_dir": str(common),
+            "state_dir": str(manager.state_dir),
+            "pid": os.getpid(),
+        }
+    )
+    shutil.rmtree(manager.state_dir)
+    with pytest.raises(SystemExit) as exc:
+        clean(monkeypatch)
+    assert exc.value.code == 1 and path.is_dir()
+
+
+def test_clean_never_chooses_between_same_named_orphans(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, common = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    # The registry can have the same name in different repositories. Even if
+    # only this checkout's binding can be read, --hub must not silently pick it.
+    for hub_id, git_common in ((manager.hub_id, common), ("other-id", tmp_path / "elsewhere")):
+        register(
+            {
+                "hub_id": hub_id,
+                "name": "repo",
+                "checkout": str(cleanup_repo),
+                "git_common_dir": str(git_common),
+                "state_dir": str(manager.state_dir),
+                "pid": None,
+            }
+        )
+    shutil.rmtree(manager.state_dir)
+    with pytest.raises(SystemExit) as exc:
+        clean(monkeypatch, "--hub", "repo")
+    assert exc.value.code == 1 and path.is_dir()

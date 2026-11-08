@@ -13,6 +13,7 @@ from agent_hub_common.discovery import (
     Repository,
     checkout_git_dir,
     find_hub,
+    hub_checkout,
     read_binding,
     resolve_repository,
 )
@@ -81,19 +82,28 @@ def agent_worktrees(repo: Repository) -> list[AgentWorktree]:
 def cleanup_target(cwd: Path, selector: str | None) -> tuple[Repository, LocalHub]:
     """Resolve locally, including a selected hub whose state was removed by hand."""
 
+    # Discovery can prune registry entries whose state vanished. Retain their
+    # repository/identity information long enough to locate the orphan bindings.
+    entries = recorded_entries()
     try:
         hub = find_hub(cwd, selector=selector)
     except DiscoveryError:
-        if selector:
-            entries = recorded_entries()
-            matches = [e for e in entries if e.get("hub_id") == selector] or [
-                e for e in entries if e.get("name") == selector
-            ]
-            # Orphan recovery must not resolve an ambiguous registry selection
-            # by silently choosing the repository containing the caller.
-            if len(matches) > 1:
-                raise
-        repo = resolve_repository(cwd)
+        matches = (
+            (
+                [e for e in entries if e.get("hub_id") == selector]
+                or [e for e in entries if e.get("name") == selector]
+            )
+            if selector
+            else []
+        )
+        # Orphan recovery must not resolve an ambiguous registry selection
+        # by silently choosing the repository containing the caller.
+        if len(matches) > 1:
+            raise
+        selected_checkout = hub_checkout(matches[0]) if matches else None
+        if selected_checkout is None and selector and any(c in selector for c in "/\\.~:"):
+            selected_checkout = Path(selector).expanduser()
+        repo = resolve_repository(selected_checkout or cwd)
         bound = read_binding(checkout_git_dir(repo.root))
         candidates = [item.binding for item in agent_worktrees(repo)]
         if bound is not None:
@@ -103,7 +113,11 @@ def cleanup_target(cwd: Path, selector: str | None) -> tuple[Repository, LocalHu
             candidates = [
                 b
                 for b in candidates
-                if selector in (b.name, b.hub_id) or b.checkout.resolve() == selected_path
+                if (matches and b.hub_id == matches[0].get("hub_id"))
+                or (
+                    not matches
+                    and (selector in (b.name, b.hub_id) or b.checkout.resolve() == selected_path)
+                )
             ]
         else:
             candidates = [b for b in candidates if bound is not None and b.hub_id == bound.hub_id]

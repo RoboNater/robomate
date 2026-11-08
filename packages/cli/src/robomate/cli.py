@@ -1536,6 +1536,11 @@ def _clean(selector: str | None) -> None:
     escape_unencodable_output()
     read_token_file(operator_token_path(), "operator token")
     repo, hub = cleanup_target(Path.cwd(), selector)
+    if any(
+        entry.get("hub_id") == hub.hub_id and process_alive(int(entry.get("pid") or 0))
+        for entry in recorded_entries()
+    ):
+        raise RuntimeError(f"{hub.label()} has a live recorded process; stop it before cleanup")
     with ExitStack() as stack:
         if hub.state_dir.is_dir():
             try:
