@@ -117,33 +117,85 @@ script. The operator sets `pytest_workers` in the standard-run TOML or passes
 setting can be edited in a generated script before resuming (the run record
 then retains its original value, like a hand-edited model).
 
-<!-- Long local command: #122. -->
+<!-- Long local command: #122, #355. -->
 
-A local command can outlast one tool call too: the full test suite takes
-minutes. Start it detached with its exit code written to a file, then poll for
-that file in separate foreground calls, each under your harness's tool limit
-(120 s on Claude Code). Print the directory and spell it out in each poll,
-because shell variables may not survive between calls:
+A local command can outlast one tool call. Choose a method for the actual
+harness, shell tool and sandbox; detached children do not survive every tool
+boundary. A new route means a harness/shell-tool/sandbox combination without
+matching documented evidence, or one whose process-lifetime behaviour has
+changed. Reuse successful evidence for a matching route; do not re-probe on
+every task. For a new route, run the harmless two-call marker probe in [the validation notes](https://github.com/RoboNater/robomate/blob/main/docs/development/long-command-validation.md).
+Neither `nohup` nor `setsid` alone guarantees survival. Do not infer sandbox
+behaviour from an ordinary terminal or an unsandboxed call.
+
+For Codex tools that return retained command sessions (`exec_command` and
+`write_stdin`, including calls through `functions.exec`), keep the command in
+the foreground of that session. Start the following with
+`exec_command(yield_time_ms=1000)`; retain its returned `session_id`:
 
 ```sh
-D=$(mktemp -d) && echo "$D" && (nohup sh -c 'uv run --locked pytest -n auto > "$1/out.log" 2>&1; echo $? > "$1/rc"' sh "$D" >/dev/null 2>&1 &)
-D='<dir>'; for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done; cat "$D/rc" 2>/dev/null || echo running; tail -3 "$D/out.log"
+D=$(mktemp -d) && echo "$D" && sh -c '
+  printf "started\n" > "$1/started" || exit 1
+  if uv run --locked pytest -n auto > "$1/out.log" 2>&1; then rc=0; else rc=$?; fi
+  printf "%s\n" "$rc" > "$1/rc" || exit 1
+  exit "$rc"
+' sh "$D"
 ```
 
-On native Windows, run that in Git Bash, or this in PowerShell. The child
-uses UTF-8 for Python output, including redirected pytest diagnostics:
+Poll that exact session using `write_stdin(session_id=..., chars="",
+yield_time_ms=30000)` in bounded foreground calls (at most 60 s per call).
+Keep polling until the tool returns the process exit code. If it finishes in
+the first call, inspect that exit code directly. Do not detach the command,
+abandon the session, or end the agent turn while waiting. Read `out.log` and
+`rc` from the printed directory in a separate call; require the tool exit code
+and recorded rc to agree. A nonzero code is a failed check. A lost session or
+missing rc is an incomplete check, never a pass.
+
+For POSIX tools without retained sessions, use the following detached
+fallback where the two-call probe has succeeded on that route. Claude Code
+Bash on Linux without a sandbox has recorded successful evidence, including
+2.1.319 (see the validation notes); matching workers may reuse that evidence.
+For other configurations this is a **fallback only after the two-call
+probe succeeds on that route**. Print the directory and spell it out in each
+poll, because shell variables may not survive between calls:
+
+```sh
+D=$(mktemp -d) && echo "$D" && (nohup sh -c 'printf "started\n" > "$1/started" || exit 1; if uv run --locked pytest -n auto > "$1/out.log" 2>&1; then rc=0; else rc=$?; fi; printf "%s\n" "$rc" > "$1/rc"' sh "$D" >"$D/launcher.log" 2>&1 </dev/null &)
+D='<printed directory>'; for i in $(seq 1 12); do [ -f "$D/rc" ] && break; sleep 5; done; if [ ! -f "$D/started" ]; then echo 'FAILED: no startup marker'; elif [ -f "$D/rc" ]; then cat "$D/rc"; else echo 'INCOMPLETE: no rc; inspect started and launcher.log'; fi
+```
+
+Only on a POSIX host with `setsid` available, and after its own successful
+probe, `setsid nohup` may replace `nohup` in that fallback. It is not a
+portable or universal fix. If detachment fails and no retained session is
+available, use a foreground call that can cover the command or report blocked;
+do not keep relaunching the same validation.
+
+On native Windows, preserve the Git Bash fallback where its probe succeeds,
+or use this PowerShell fallback after probing `Start-Process` on that tool
+route. The child uses UTF-8 for redirected Python diagnostics:
 
 ```powershell
-$D = New-Item -ItemType Directory (Join-Path ([IO.Path]::GetTempPath()) (New-Guid)); "$D"; Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "`$env:PYTHONUTF8 = '1'; uv run --locked pytest -n auto *> '$D/out.log'; `$LASTEXITCODE > '$D/rc'"
-$D = '<dir>'; foreach ($i in 1..18) { if (Test-Path "$D/rc") { break }; Start-Sleep 5 }; if (Test-Path "$D/rc") { Get-Content "$D/rc" } else { 'running' }; Get-Content "$D/out.log" -Tail 3
+$D = New-Item -ItemType Directory (Join-Path ([IO.Path]::GetTempPath()) (New-Guid)); "$D"; Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "`$env:PYTHONUTF8 = '1'; 'started' > '$D/started'; uv run --locked pytest -n auto *> '$D/out.log'; `$LASTEXITCODE > '$D/rc'"
+$D = '<printed directory>'; foreach ($i in 1..12) { if (Test-Path "$D/rc") { break }; Start-Sleep 5 }; if (-not (Test-Path "$D/started")) { 'FAILED: no startup marker' } elseif (Test-Path "$D/rc") { Get-Content "$D/rc" } else { 'INCOMPLETE: no rc; inspect started and launch errors' }
 ```
 
-The command has finished only once `rc` exists, and passed only if it holds
-`0`; read the log for any failures.
+For every method, check for `started` on the first poll (within 60 s). If it
+is absent, inspect launch errors and report the failed launch. Before launch,
+choose a finite total validation budget appropriate to the suite (for example
+30 minutes). At that deadline, a missing rc or still-running session requires
+a progress/blocker report and investigation, not indefinite polling or a
+success claim. A missing file alone does not prove that a child was killed;
+avoid launching duplicates while its state is uncertain. Detached fallback
+checks finish only when `rc` exists and pass only when it contains `0`; always
+read the log for failures. Use writable validation scratch and, if needed,
+`UV_CACHE_DIR` under the harness temporary directory.
+
+Keep the agent turn alive until release. These recipes authorize validation
+commands only; they grant no permission to launch agents or hubs.
 
 <!-- Progress visibility: #170. -->
 
-Report progress when the detached suite starts, and on each poll that crosses
+Report progress when the validation suite starts, and on each poll that crosses
 about half of `stall_after_min`. Submit once the work is ready rather than
 holding the result for forge CI that Alice's merge gate checks anyway; if you
 wait for CI anyway, report progress when the wait starts.

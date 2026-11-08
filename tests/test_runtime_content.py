@@ -86,7 +86,7 @@ def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
         worker,
         (
             "about half is a good interval",
-            "Report progress when the detached suite starts",
+            "Report progress when the validation suite starts",
         ),
     )
     assert_fragments(

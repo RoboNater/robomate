@@ -764,7 +764,7 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             # The recipe is in the worker guide inlined above (#122).
             wait += (
                 " For a local command that outlasts one call, such as the full test "
-                "suite, use the detached-run recipe in the Waiting section above."
+                "suite, use the route-appropriate long-command recipe in the Waiting section above."
             )
         sections.append(wait)
     elif name == "alice":
