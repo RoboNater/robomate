@@ -116,6 +116,48 @@ not probes performed by bob. Matching Claude Code Bash/Linux unsandboxed
 workers can reuse that evidence; a changed shell tool or sandbox, or observed
 loss of completion, calls for a fresh probe.
 
+Opencode has separate successful evidence on the same host. Run
+`20261108_089a9496`, implementation agent bob (provider meta, model
+`opencode-go/muse-spark-1.3-contributor`), ran on opencode 1.19.5, Ubuntu
+24.04.5 LTS, Linux 6.8.0-147-generic, Bash 5.2.21, util-linux `setsid` 2.39.3.
+This is the same machine as the Codex and Claude Code evidence above; the
+operator confirmed it. Actual tool route: opencode `bash` tool, unsandboxed
+(no sandbox config; `permission.external_directory=allow`, `snapshot=false`
+in `configs/bob.opencode.json`; probe wrote outside the worktree to
+`$TMPDIR`). The prior run's closeout records a detached `nohup` marker probe
+with `started`, `finished` and rc `0`, then two full
+`uv run --locked pytest -n auto` suites via the detached fallback, both with
+rc `0`: 2568 passed, 35 skipped at `9ef7f69`, and 2569 passed, 35 skipped at
+`8837560` ([PR #439](https://github.com/RoboNater/robomate/pull/439)). That
+closeout does not record sandbox mode, a `setsid nohup` trial, PID/PGID/SID,
+or the probe scratch path, so the doc's two-call probe was rerun on this
+host/version and is recorded directly below. Do not read the prior run as
+having tried `setsid nohup`.
+
+- Scratch roots `$TMPDIR/tmp.pItobPIudM` (`nohup`) and
+  `$TMPDIR/tmp.z9rjcZ3zXs` (`setsid nohup`), both outside the worktree, with a
+  0.05-second startup check in the launch call and a 3-second delay in the
+  inspection call. Both launch and inspection tool calls returned rc 0.
+
+| Available route / method | Startup | Completion log | Recorded rc | Final tool exit |
+| --- | --- | --- | --- | --- |
+| Unsandboxed `nohup sh ... &` | `started` | `finished` | 0 | launch 0 only |
+| Unsandboxed `setsid nohup sh ... &` | `started` | `finished` | 0 | launch 0 only |
+
+Tool-visible process metadata for the detached launch: `nohup` parent
+PID/PPID/PGID/SID `398425/397226/398425/398425`; `nohup` child
+`398429/398428/398425/398425` (same PGID/SID as parent, no new session);
+`setsid` parent `398490/397226/398490/398490`; `setsid` child
+`398494/398493/398494/398494` (distinct PGID/SID, new session). Both
+launcher logs were empty. The distinct `setsid` session completed on this
+route; it does not establish survival in a workspace-write sandbox.
+
+Practical tip: detached `pytest -n auto` output is buffered so progress dots arrive late; poll the tail of `out.log` together with `ps` for the child to tell a stall from a slow run.
+
+Matching opencode 1.19.x `bash`, Linux, same sandbox mode may reuse this
+evidence; a changed opencode version, shell tool or sandbox, or observed loss
+of completion, calls for a fresh probe.
+
 Windows PowerShell, Windows Git Bash and other harness routes were not
 executed in this run. Their recipes remain conditional fallbacks,
 with an actual-route probe required before relying on detachment. Rendering
