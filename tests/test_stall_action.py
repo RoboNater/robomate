@@ -99,6 +99,26 @@ def test_task_progress_before_action_prevents_escalation(
     assert not store.open_operator_questions()
 
 
+def test_lost_worker_keeps_operator_question_open(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    store, instance = setup(tmp_path, frozen_clock)
+    store.assign_task("bob", "implementer", "Fix", "Work")
+    advance(store, frozen_clock, instance, 180)
+    question_id = store.open_operator_questions()[0]["question_id"]
+    # The bridge now stops too: loss is not evidence that the worker recovered.
+    frozen_clock.advance(180)
+    events = store.sweep(180)
+    assert EventKind.AGENT_LOST in [e.kind for e in events]
+    assert store.sweep_stalls() == []
+    episode = next(e for e in store.stall_episodes() if e["role"] == "worker")
+    assert episode["cleared_reason"] == "lost"
+    assert [q["question_id"] for q in store.open_operator_questions()] == [question_id]
+    assert store.operator_answer(question_id)["status"] == "unanswered"
+    assert store.get_state()["workflow"]["status"] == "escalated"
+    assert store.sweep_stalls() == []
+
+
 @pytest.mark.parametrize("answer", [False, True])
 def test_recovery_withdraws_only_unanswered_hub_question(
     tmp_path: Path, frozen_clock: FrozenClock, answer: bool

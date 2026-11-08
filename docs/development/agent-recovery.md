@@ -288,9 +288,11 @@ The second threshold opens one durable operator question per worker episode,
 escalates the workflow, and sends Alice a `stall_action` event with the question,
 worker instance, task, reasons and ages. Alice checks PR comments, worker state
 and the manual recovery guidance. This never stops or restarts a process,
-changes task ownership, shortens a lease or grants authority. When the episode
-clears, the hub withdraws its own unanswered question and notifies Alice again;
-it preserves operator answers and unrelated questions. Withdrawal grants no
+changes task ownership, shortens a lease or grants authority. When the worker
+recovers (`cleared_reason: recovered`), the hub withdraws its own unanswered
+question and notifies Alice again; it preserves operator answers and unrelated
+questions. Loss, release, removal, replacement and workflow changes leave the
+question open for the operator because they do not confirm recovery. Withdrawal grants no
 authority and does not automatically resume the workflow. Alice follows the
 normal escalation resolution checks. Episode/question/event writes are atomic
 and the durable episode link prevents duplicate actions across sweeps/restarts.

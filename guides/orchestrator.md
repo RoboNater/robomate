@@ -284,7 +284,9 @@ Handle events as follows:
   stall episode.
 - `stall_action`: the optional second inactivity threshold opened an operator
   question (`action: operator_question`), or the hub withdrew its own unanswered
-  question when the episode cleared (`action: question_withdrawn`). Read the
+  question when the worker recovered (`action: question_withdrawn`). Loss,
+  release, removal, replacement or workflow changes leave the question open
+  for the operator; they do not confirm recovery. Read the
   linked `question_id` and current worker/task state; inspect the latest PR
   comments and the manual recovery guidance (#223) before deciding the next
   step. Do not ask the same question again. A fresh bridge heartbeat does not

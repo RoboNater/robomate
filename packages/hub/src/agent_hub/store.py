@@ -4192,7 +4192,7 @@ class HubStore:
     def _sweep_stall_actions(
         self, connection: Connection, report: Mapping[str, Any], now: datetime, emitted: list[int]
     ) -> None:
-        """Ask once per eligible worker episode; withdraw only our own moot questions.
+        """Ask once per eligible worker episode; withdraw only on confirmed recovery.
 
         The episode link, question, decision and Alice event commit together.
         An answer is never synthesized and workflow resumption stays with Alice.
@@ -4213,7 +4213,9 @@ class HubStore:
                 "episode_id": row["id"],
             }
             if row["cleared"] is not None:
-                if question_id is None:
+                # Loss, release, replacement or workflow changes end assessment,
+                # but do not prove recovery or settle the operator's decision.
+                if question_id is None or row["cleared_reason"] != "recovered":
                     continue
                 cursor = connection.execute(
                     "UPDATE operator_question SET withdrawn = ?, withdrawn_by = 'hub',"

@@ -470,8 +470,10 @@ Queue and run identity enter the compact state in M2 Step 3.
   independently per reason, and atomically opens one operator question per
   worker episode, escalates the workflow and queues `stall_action` for Alice
   to inspect PR comments, worker state and manual recovery (#223). The hub
-  withdraws its own unanswered question when the episode clears and queues a
+  withdraws its own unanswered question when the worker recovers and queues a
   withdrawal `stall_action`; it preserves answers and unrelated questions.
+  Loss, release, removal, replacement and workflow changes leave it open for
+  the operator; ending an episode does not itself confirm recovery.
   Neither action grants process/task-control authority or automatically resumes
   the workflow. Holds and host-pause suppression still apply. DB schema v28
   links the question to its episode; bridge heartbeats never count as progress.
