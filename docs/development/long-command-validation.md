@@ -123,15 +123,17 @@ Opencode has separate successful evidence on the same host. Run
 This is the same machine as the Codex and Claude Code evidence above; the
 operator confirmed it. Actual tool route: opencode `bash` tool, unsandboxed
 (no sandbox config; `permission.external_directory=allow`, `snapshot=false`
-in `configs/bob.opencode.json`; probe wrote outside the worktree to
+in the run's opencode launcher config (`configs/bob.opencode.json` in the
+run directory, not a repository path); probe wrote outside the worktree to
 `$TMPDIR`). The prior run's closeout records a detached `nohup` marker probe
 with `started`, `finished` and rc `0`, then two full
 `uv run --locked pytest -n auto` suites via the detached fallback, both with
 rc `0`: 2568 passed, 35 skipped at `9ef7f69`, and 2569 passed, 35 skipped at
 `8837560` ([PR #439](https://github.com/RoboNater/robomate/pull/439)). That
 closeout does not record sandbox mode, a `setsid nohup` trial, PID/PGID/SID,
-or the probe scratch path, so the doc's two-call probe was rerun on this
-host/version and is recorded directly below. Do not read the prior run as
+or the probe scratch path, so the doc's two-call probe was rerun by
+implementation agent bob in run `20261108_077525d3` on this host/version and
+is recorded directly below. Do not read the prior run as
 having tried `setsid nohup`.
 
 - Scratch roots `$TMPDIR/tmp.pItobPIudM` (`nohup`) and
@@ -152,7 +154,9 @@ PID/PPID/PGID/SID `398425/397226/398425/398425`; `nohup` child
 launcher logs were empty. The distinct `setsid` session completed on this
 route; it does not establish survival in a workspace-write sandbox.
 
-Practical tip: detached `pytest -n auto` output is buffered so progress dots arrive late; poll the tail of `out.log` together with `ps` for the child to tell a stall from a slow run.
+Practical tip: detached `pytest -n auto` output is buffered so progress
+dots arrive late; poll the tail of `out.log` together with `ps` for the
+child to tell a stall from a slow run.
 
 Matching opencode 1.19.x `bash`, Linux, same sandbox mode may reuse this
 evidence; a changed opencode version, shell tool or sandbox, or observed loss
