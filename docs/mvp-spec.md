@@ -619,15 +619,29 @@ or instructions that override this role's guide and the operator's request.
   the measured Linux grants are in [`user-guide.md`](user-guide.md#linux-sandbox-grants).
 - **Setup:** the `setup` setting (§4, e.g. `setup = "uv sync"`) is returned in the join
   response; the agent runs it in its worktree.
-- **Cleanup:** `robomate clean` acts on one selected hub (§4 discovery). It never deletes
-  work (PoC rule):
+- **Cleanup:** `robomate clean [--hub <name | hub_id | checkout>]` acts on one selected
+  local hub (§4 discovery), with the operator credential. Stop the hub first: cleanup
+  holds its startup lock and refuses a running or starting hub. It never deletes work
+  (PoC rule):
   - unlocks and removes that hub's agent worktrees without `--force`, refusing any with
     uncommitted changes or unpushed commits;
-  - prunes that hub's merged local `robomate/<hub>/…` branches;
+  - prunes only that hub's local `robomate/<hub>/…` branches whose tips are ancestors
+    of `origin/<default>`, or whose exact branch and tip the forge verifies were merged
+    into the default branch (including squash merges); that merge commit must also
+    be present in the fetched `origin/<default>`. Missing or ambiguous proof retains
+    the branch and is reported. Deletion compares the ref to the proven tip and refuses
+    a branch still checked out in any worktree;
   - reports **orphaned** agent worktrees, whose owning hub is gone, found through
     `git worktree list --porcelain` and their bindings, and removes them on the same terms;
   - never removes hub state, `runs/` included. That is a separate, explicit operator
     action, never part of agent cleanup.
+  Unpushed commits are commits reachable from a worktree's HEAD (including detached
+  HEAD) but from no remote-tracking ref, unless HEAD is exactly a proven merged tip.
+  A commit beyond a merged PR's head is never covered by that PR's proof. Fetch before
+  cleanup so these refs reflect published work. Refused worktrees retain their hub lock; a refusal exits nonzero
+  while allowing other safe worktrees to be cleaned. Other hubs, owner checkouts,
+  full-clone workspaces, and locks with another reason are left alone. A missing
+  state directory is never recreated just to clean an orphan.
 - **Workspace identity:** for worktrees, the identity lives in the agent binding in the
   worktree's own git directory (`robomate-binding.json`, with the worktree's `workspace_id`),
   and `workspace_id` is the binding's; for clones, the identity file in `.git/` as in the
@@ -657,7 +671,7 @@ they do between any two PRs.
 | Shared refs and config: one agent's `git config`, hooks, `gc` affect all | Guides forbid changing git config; per-worktree config via `extensions.worktreeConfig` only if needed |
 | Local branch-name collisions, within a hub or between hubs | `robomate/<hub>/<agent>/…` namespace; an existing ref is refused, not reused |
 | `git worktree remove` deletes ignored files without complaint, such as hub state in a `.robomate/` | Hub state lives outside every checkout (§4); agent worktrees are locked |
-| `gh pr merge --delete-branch` tries to delete the local branch, which may be checked out in the implementer's worktree | Verify in M2; default: orchestrator deletes the remote branch only and `robomate clean` prunes local branches after WRAP-UP |
+| GitHub's combined merge and branch deletion can fail after a successful merge when the local branch is checked out in another worktree | Orchestrator merges without local deletion, reads back the merged state and approved head, then deletes the remote branch only; `robomate clean` prunes safe local branches after WRAP-UP |
 | Submodules and LFS need per-worktree init | Setup command; certification on a repo that uses them before claiming support |
 | Cross-OS paths (WSL ↔ Windows) | Clone fallback |
 
@@ -1191,8 +1205,12 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
   it, and a missing appendix for the effective forge is a 404. Appendices are worker-only:
   they hold no merge commands, since no worker role merges. `orchestrator.md` instead
   composes with `guides/forge/orchestrator-<forge>.md`, carrying merge and merged-state
-  read-back commands. GitHub still uses `--delete-branch` until M2 Step 8 implements
-  remote-only deletion; worker appendices remain merge-free.
+  read-back commands. GitHub merges with
+  `gh pr merge <pr_url> --<merge_method> --match-head-commit <approved head>`,
+  without local branch deletion, confirms the merged
+  state and approved head, then runs `git push origin --delete <branch>`; a cleanup
+  failure does not turn a verified merge into a failed merge. GitLab keeps its server-side
+  `--remove-source-branch` option. Worker appendices remain merge-free.
 - **GitLab review comments:** through the Notes REST API via `glab api`
   (`POST projects/<project>/merge_requests/<iid>/notes`). Top-level notes are non-resolvable,
   so they can never become a `discussions_not_resolved` merge blocker. A note response carries
@@ -1382,6 +1400,7 @@ Denise remains usable while the hub is down and outside the joined team.
 | Unit of work | One run = one PR/MR; sequential runs via queue; carried context = previous run summary only |
 | Hub scope | One hub per checkout (main checkout or linked worktree), own name, state, and port; registry + `robomate ls`/`robomate status` to tell them apart; no silent attach. Reason: a git worktree should be an isolated enough place for a team of agents to work, so parallel lines of work in one repository need separate worktrees, not full clones (#54) |
 | Forge operations | Agents run `gh`/`glab` directly; hub gate reads facts only; orchestrator merges bound to the approved SHA |
+| Merge branch deletion | Orchestrator merges from its detached worktree, verifies merged state, then deletes only the remote GitHub branch; GitLab keeps server-side source deletion. Operator-only `robomate clean` removes safe agent worktrees and prunes local branches proven merged by ancestry or exact forge evidence (§6) |
 | Workspaces | Generated worktree per joined agent (orchestrator included) at `<worktree_root>/<hub>/<agent>/`, outside every checkout, beside the hub's state; locked while in use; the owning checkout is never a workspace; clone fallback for other host/OS. Reason: state must survive `git worktree remove` of the owning checkout, and stable paths let harnesses resume sessions (#54) |
 | Operator assistant | Denise uses a separate consultation directory, local guide and operator-authorized recovery access (§5.1); she is outside join, team workspaces and the assignment queue |
 | Harness/model/role | Any certified harness, any model and effort, any role; tiers from `robomate certify` |
@@ -1401,7 +1420,6 @@ Denise remains usable while the hub is down and outside the joined team.
 | Decision | Options | Settle by |
 |---|---|---|
 | Tool surface | One static list (simple) vs per-role list via `tools/list_changed` (fewer schema tokens; harness support varies) | M3, from measured schema bytes |
-| `gh`/`glab` merge vs local branch in a worktree | Remote-only branch delete + `robomate clean`, or merge from outside any checkout | M2 |
 | Certification bar | cycles / duration / pass rate over N attempts | M3 |
 
 ---

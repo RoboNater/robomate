@@ -1,15 +1,28 @@
 """Operator cleanup exercises real git worktrees in disposable repositories."""
 
+import json
 import os
 import shutil
+import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
+import robomate.clean as cleanup
 import robomate.cli as cli
-from agent_hub_common.discovery import Binding, Repository, checkout_git_dir, write_binding
+from agent_hub_common.discovery import (
+    Binding,
+    Repository,
+    checkout_git_dir,
+    resolve_repository,
+    write_binding,
+)
 from agent_hub_common.registry import register
 from test_worktrees import _git, make_manager, make_repo
+
+MERGED_ON_FORGE = cleanup.merged_on_forge
 
 
 @pytest.fixture
@@ -33,6 +46,9 @@ def cleanup_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for key in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.chdir(root)
+    # This fixture's example origin is deliberately not a real forge project.
+    # Tests for the CLI's forge adapter below supply explicit JSON responses.
+    monkeypatch.setattr(cleanup, "merged_on_forge", lambda repo, branch, head: False)
     return root
 
 
@@ -339,3 +355,206 @@ def test_clean_never_chooses_between_same_named_orphans(
     with pytest.raises(SystemExit) as exc:
         clean(monkeypatch, "--hub", "repo")
     assert exc.value.code == 1 and path.is_dir()
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_squash_merged_exact_head_is_removed_even_without_remote_tracking_ref(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    detached: bool,
+) -> None:
+    manager, _, _ = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    branch = "robomate/repo/bob/squashed"
+    _git(path, "switch", "--no-track", "-c", branch)
+    (path / "feature").write_text("feature", encoding="utf-8")
+    _git(path, "add", "feature")
+    _git(path, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-m", "feature")
+    head = _git(path, "rev-parse", "HEAD")
+    _git(cleanup_repo, "merge", "--squash", branch)
+    _git(
+        cleanup_repo,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "-m",
+        "squash",
+    )
+    _git(cleanup_repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    if detached:
+        _git(path, "switch", "--detach", head)
+    monkeypatch.setattr(
+        cleanup, "merged_on_forge", lambda repo, candidate, tip: candidate == branch and tip == head
+    )
+    clean(monkeypatch)
+    assert not path.exists()
+    assert branch not in _git(cleanup_repo, "branch", "--format=%(refname:short)").splitlines()
+
+
+def test_commit_beyond_merged_pr_head_is_unpublished_and_kept(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, _ = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    branch = "robomate/repo/bob/newer"
+    _git(path, "switch", "--no-track", "-c", branch)
+    merged_head = _git(path, "rev-parse", "HEAD")
+    _git(
+        path,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "new unpublished work",
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "merged_on_forge",
+        lambda repo, candidate, tip: candidate == branch and tip == merged_head,
+    )
+    with pytest.raises(SystemExit) as exc:
+        clean(monkeypatch)
+    assert exc.value.code == 1 and path.is_dir()
+    assert branch in _git(cleanup_repo, "branch", "--format=%(refname:short)").splitlines()
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "exact",
+        "head",
+        "branch",
+        "base",
+        "state",
+        "ambiguous",
+        "missing-merge",
+        "unfetched-merge",
+        "invalid-json",
+        "cli-fails",
+    ],
+)
+def test_forge_proof_requires_exact_branch_head_base_and_reachable_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forge: str,
+    case: str,
+) -> None:
+    root = make_repo(tmp_path)
+    repo = replace(resolve_repository(root), forge=forge)
+    if forge == "gitlab":
+        repo = replace(repo, origin="git@gitlab.example:team/repo.git")
+    branch = "robomate/repo/bob/squashed"
+    head = "a" * 40
+    merge_sha = _git(root, "rev-parse", "HEAD")
+    if forge == "github":
+        row: dict[str, Any] = {
+            "state": "MERGED",
+            "headRefName": branch,
+            "headRefOid": head,
+            "baseRefName": "main",
+            "mergeCommit": {"oid": merge_sha},
+        }
+        keys = {
+            "head": "headRefOid",
+            "branch": "headRefName",
+            "base": "baseRefName",
+            "state": "state",
+        }
+        merge_key = "mergeCommit"
+    else:
+        row = {
+            "state": "merged",
+            "source_branch": branch,
+            "sha": head,
+            "target_branch": "main",
+            "merge_commit_sha": merge_sha,
+        }
+        keys = {"head": "sha", "branch": "source_branch", "base": "target_branch", "state": "state"}
+        merge_key = "merge_commit_sha"
+    if case in keys:
+        row[keys[case]] = "wrong"
+    if case == "missing-merge":
+        row.pop(merge_key)
+    if case == "unfetched-merge":
+        row[merge_key] = {"oid": "b" * 40} if forge == "github" else "b" * 40
+    payload = json.dumps([row, row] if case == "ambiguous" else [row])
+    if case == "invalid-json":
+        payload = "not JSON"
+    run = subprocess.run
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[0] not in ("gh", "glab"):
+            return run(command, **kwargs)
+        if forge == "github":
+            assert command[:3] == ["gh", "pr", "list"]
+            assert "https://github.com/example/repo" in command
+            assert command[command.index("--head") + 1] == branch
+        else:
+            assert command[:4] == ["glab", "api", "--hostname", "gitlab.example"]
+            assert "projects/team%2Frepo/merge_requests?" in command[4]
+            assert "source_branch=robomate%2Frepo%2Fbob%2Fsquashed" in command[4]
+        return subprocess.CompletedProcess(
+            command, 1 if case == "cli-fails" else 0, stdout=payload, stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert MERGED_ON_FORGE(repo, branch, head) is (case == "exact")
+
+
+def test_branch_pruning_uses_full_refs_even_when_a_tag_has_the_same_name(
+    cleanup_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = "robomate/repo/bob/merged"
+    unrelated = f"heads/{branch}"
+    _git(cleanup_repo, "branch", branch)
+    _git(cleanup_repo, "branch", unrelated)
+    _git(cleanup_repo, "tag", branch)
+    clean(monkeypatch)
+    refs = _git(cleanup_repo, "for-each-ref", "--format=%(refname)").splitlines()
+    assert f"refs/heads/{branch}" not in refs
+    assert f"refs/heads/{unrelated}" in refs
+    assert f"refs/tags/{branch}" in refs
+
+
+def test_branch_advance_after_merge_proof_is_never_deleted(
+    cleanup_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = "robomate/repo/bob/merged"
+    _git(cleanup_repo, "branch", branch)
+    tree = _git(cleanup_repo, "rev-parse", "HEAD^{tree}")
+    newer = _git(
+        cleanup_repo,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit-tree",
+        tree,
+        "-p",
+        "HEAD",
+        "-m",
+        "new unpushed work",
+    )
+    original = cleanup.git
+
+    def advance_before_delete(repo: Repository, *args: str, cwd: Path | None = None) -> str:
+        if args[:2] == ("update-ref", "-d"):
+            _git(cleanup_repo, "update-ref", f"refs/heads/{branch}", newer)
+        return original(repo, *args, cwd=cwd)
+
+    monkeypatch.setattr(cleanup, "git", advance_before_delete)
+    with pytest.raises(SystemExit) as exc:
+        clean(monkeypatch)
+    assert exc.value.code == 1
+    assert _git(cleanup_repo, "rev-parse", f"refs/heads/{branch}") == newer

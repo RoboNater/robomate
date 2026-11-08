@@ -7,18 +7,31 @@ For resume and result verification, read the full current head, state, base
 and merge commit:
 
 ```sh
-gh pr view <pr_url> --json headRefOid,state,baseRefName,mergeCommit
+gh pr view <pr_url> --json headRefOid,headRefName,state,baseRefName,mergeCommit
 ```
 
 When the final merge gate invariant holds, checkpoint the event/action and run:
 
 ```text
-gh pr merge <pr_url> --<merge_method> --delete-branch --match-head-commit <approved head>
+gh pr merge <pr_url> --<merge_method> --match-head-commit <approved head>
 ```
 
 Read the PR back with the command above. Confirm `state == "MERGED"`, confirm
 the recorded head equals the approved head, and record `mergeCommit.oid`
 separately. A `--match-head-commit` refusal routes to the gate or RE-REVIEW.
+Use the read-back state to determine whether the merge happened, including when
+the CLI exits nonzero after a successful server-side merge. Once the merged state
+and approved head are verified, delete only the remote branch named by
+`headRefName`:
+
+```sh
+git push origin --delete <branch>
+```
+
+Never delete the local branch or its worktree during merge; operator-only
+`robomate clean` owns that cleanup. If remote deletion fails, report it as an
+outstanding cleanup item and keep the verified merge result; do not retry the
+merge merely to delete a branch.
 Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every check name/bucket. Never merge from a stale or unreadable gate.
 
 For counter-only reservations close-out, verify the update with
