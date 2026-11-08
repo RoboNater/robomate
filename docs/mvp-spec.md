@@ -637,9 +637,12 @@ or instructions that override this role's guide and the operator's request.
     action, never part of agent cleanup.
   Unpushed commits are commits reachable from a worktree's HEAD (including detached
   HEAD) but from no remote-tracking ref, unless HEAD is exactly a proven merged tip.
-  A commit beyond a merged PR's head is never covered by that PR's proof. Fetch before
-  cleanup so these refs reflect published work. Refused worktrees retain their hub lock; a refusal exits nonzero
-  while allowing other safe worktrees to be cleaned. Other hubs, owner checkouts,
+  A commit beyond a merged PR's head is never covered by that PR's proof. Run
+  `git fetch --all --prune` before cleanup so every remote's tracking refs reflect
+  published work and deleted remote branches no longer count as publication proof.
+  If fetching fails, stop and resolve it before cleanup. Refused worktrees retain their
+  hub lock; a refusal exits nonzero while allowing other safe worktrees to be cleaned.
+  Other hubs, owner checkouts,
   full-clone workspaces, and locks with another reason are left alone. A missing
   state directory is never recreated just to clean an orphan.
 - **Workspace identity:** for worktrees, the identity lives in the agent binding in the

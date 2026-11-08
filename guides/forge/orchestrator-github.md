@@ -29,9 +29,17 @@ git push origin --delete <branch>
 ```
 
 Never delete the local branch or its worktree during merge; operator-only
-`robomate clean` owns that cleanup. If remote deletion fails, report it as an
-outstanding cleanup item and keep the verified merge result; do not retry the
-merge merely to delete a branch.
+`robomate clean` owns that cleanup. If remote deletion fails, check the exact ref:
+
+```sh
+git ls-remote --exit-code origin refs/heads/<branch>
+```
+
+Exit 2 means no matching ref: count the branch as already deleted (for example,
+GitHub may have deleted it automatically). Exit 0 means it still exists; report
+an outstanding cleanup item. Any other exit means the lookup failed: report
+cleanup as unverified. Keep the verified merge result in every case; do not
+retry the merge merely to delete a branch.
 Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every check name/bucket. Never merge from a stale or unreadable gate.
 
 For counter-only reservations close-out, verify the update with

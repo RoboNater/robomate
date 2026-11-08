@@ -1723,6 +1723,11 @@ def main() -> None:
     clean = commands.add_parser(
         "clean",
         help="remove a stopped hub's safe agent worktrees and merged branches (operator-only)",
+        description=(
+            "Remove a stopped hub's safe agent worktrees and merged branches. "
+            "First run git fetch --all --prune successfully: cleanup uses local "
+            "remote-tracking refs to check for unpushed work."
+        ),
     )
     for command in (down, status, inbox, answer, submit, relocate, workspace, clean):
         command.add_argument(
