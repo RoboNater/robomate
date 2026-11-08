@@ -3,7 +3,10 @@
 The worker guide selects retained command sessions where the backend supports
 them. A shell background job is a different lifetime mechanism: `nohup` changes
 signal handling, and `setsid` creates a session, but neither guarantees that a
-tool backend will retain descendants after returning. Probe the actual route
+tool backend will retain descendants after returning. The [official OpenAI
+Codex prompting guide](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide#shell_command)
+describes polling an existing `exec_command` session with `write_stdin`; it
+does not establish detached-child survival for this runtime. Probe the actual route
 before prescribing detachment. These probes start no agents or hubs.
 
 ## Two-call probe
