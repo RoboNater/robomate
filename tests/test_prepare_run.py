@@ -1865,16 +1865,28 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
     assert claude_rule in bob and claude_rule in charlie
     assert "do not use `run_in_background` for a wait" in bob
     assert "Do not end your turn until the workflow is `done`." in alice
-    # #122: the guide's detached-run recipe reaches every worker, in both shells, and
-    # the Claude note points a Claude worker at it.
+    # #355: rendered workers retain session polling, bounded failure checks and
+    # both platform fallbacks. These assertions do not prove child survival.
     for recipe in (
-        # The directory is an argument, not program text: it may contain spaces.
-        """echo $? > "$1/rc"' sh "$D" >/dev/null 2>&1 &)""",
+        "exec_command(yield_time_ms=1000)",
+        'write_stdin(session_id=..., chars="",',
+        'exit "$rc"',
+        "A lost session or",
+        "INCOMPLETE: no rc",
+        "finite total validation budget",
+        "fallback only after the two-call",
         "`$LASTEXITCODE > '$D/rc'\"",
-        'for i in $(seq 1 18); do [ -f "$D/rc" ] && break; sleep 5; done',
     ):
         assert recipe in bob and recipe in charlie
-    pointer = "use the detached-run recipe in the Waiting section above"
+    # Keep the served guide and generated kickoff instruction in sync.
+    guide = (ROOT / "guides/worker.md").read_text(encoding="utf-8")
+    prompt = (ROOT / "prompts/worker.md").read_text(encoding="utf-8")
+    marker = "<!-- Long local command: #122, #355. -->"
+    end_marker = "<!-- Progress visibility: #170. -->"
+    assert (
+        guide.split(marker)[1].split(end_marker)[0] == prompt.split(marker)[1].split(end_marker)[0]
+    )
+    pointer = "use the route-appropriate long-command recipe in the Waiting section above"
     assert pointer in bob and pointer not in charlie and pointer not in alice
 
 
