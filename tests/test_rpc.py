@@ -1751,13 +1751,23 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
     """r1-4: submit resolves auto; explicit skips probe."""
 
     import json
+    import sqlite3
     from collections.abc import Sequence
-    from typing import Any
+    from typing import Any, cast
 
     from agent_hub.database import initialize_database
     from agent_hub.gitlab_gate import GlabResult
     from agent_hub.store import HubStore
     from agent_hub.submit import submit_statement
+
+    def _stored_allow_no_ci(store: HubStore, workflow_id: str) -> bool:
+        with sqlite3.connect(store.path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT policy_json FROM workflow WHERE id = ?",
+                (workflow_id,),
+            ).fetchone()
+            return cast(bool, json.loads(row["policy_json"])["allow_no_ci"])
 
     origin = "git@host:group/project.git"
     base_project: dict[str, Any] = {
@@ -1805,16 +1815,7 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
             "file",
             glab_runner=_runner_with_ci(ci, file_calls),
         )
-        import sqlite3
-
-        with sqlite3.connect(store.path) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT policy_json FROM workflow WHERE id = ?",
-                (result["workflow_id"],),
-            ).fetchone()
-            stored = json.loads(row["policy_json"])["allow_no_ci"]
-        return stored, file_calls
+        return _stored_allow_no_ci(store, result["workflow_id"]), file_calls
 
     # auto + CI present (pass) -> False, with one file call.
     stored, calls = await _submit_with(
@@ -1828,8 +1829,29 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
     for allow, expected in ((True, True), (False, False)):
         stored, calls = await _submit_with({"allow_no_ci": allow}, GlabResult(1, "boom", "boom"))
         assert stored is expected and calls == []
-    # local origin + auto -> True without calls (no slug path here uses gitlab origin,
-    # so local case is github path; covered by github local test in forge_preflight).
+    # local origin (no slug) + auto -> True without forge calls (github path).
+    local_path = tmp_path / f"submit-{len(list(tmp_path.iterdir()))}.db"
+    initialize_database(local_path)
+    local_store = HubStore(local_path)
+
+    async def _fail_forge(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("local origin must not call forge")
+
+    local_result = await submit_statement(
+        local_store,
+        {
+            "origin": "/tmp/local-repo",
+            "forge": "github",
+            "git_common_dir": None,
+        },
+        "Do work",
+        {"allow_no_ci": "auto"},
+        "file",
+        glab_runner=_fail_forge,
+        gh_runner=_fail_forge,
+    )
+    assert _stored_allow_no_ci(local_store, local_result["workflow_id"]) is True
+    assert local_result["run_id"] and local_result["statement_sha256"]
 
 
 @pytest.mark.parametrize("entry", ["initialize_workflow", "start_workflow"])
