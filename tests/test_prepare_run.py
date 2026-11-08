@@ -3763,10 +3763,34 @@ def test_recovery_controls_refuse_pause_or_reconcile_with_override(
 def test_stall_and_resume_options_reach_policy_and_scripts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    helper_spec = importlib.util.spec_from_file_location(
+        "stall_setup", ROOT / "scripts/prep-standard-run-area.py"
+    )
+    assert helper_spec and helper_spec.loader
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
+    config = tmp_path / "standard.toml"
+    config.write_text("stall_after_min = 2\nstall_action_after_min = 5\n")
+    forwarded: dict[str, Any] = {}
+
+    def capture(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        # Exercise standard setup's real forwarding, then feed prepare-run the
+        # same option values rather than independently choosing them below.
+        if command[0] == sys.executable:
+            for key in ("stall_after_min", "stall_action_after_min"):
+                forwarded[key] = float(command[command.index("--" + key.replace("_", "-")) + 1])
+        return subprocess.CompletedProcess(command, 0, stdout="local-origin")
+
+    setup_dir = tmp_path / "setup"
+    values = helper.settings(helper.parser().parse_args(["--config", str(config)]))
+    values.update(repository="local-origin", run_dir=str(setup_dir), account="tester", issue=42)
+    with monkeypatch.context() as patch:
+        patch.setattr(helper.subprocess, "run", capture)
+        helper.prepare(values, yes=True)
     run_dir, manifest = prepare(
         tmp_path,
         monkeypatch,
-        stall_after_min=2,
+        **forwarded,
         max_resumes=0,
         resume_delay_s=1.5,
         resume_max_delay_s=60,
@@ -3774,7 +3798,9 @@ def test_stall_and_resume_options_reach_policy_and_scripts(
         resume_series_reset_s=30,
     )
     assert manifest["policy"]["stall_after_min"] == 2
+    assert manifest["policy"]["stall_action_after_min"] == 5
     assert '"stall_after_min": 2' in (run_dir / "alice.prompt.md").read_text()
+    assert '"stall_action_after_min": 5' in (run_dir / "alice.prompt.md").read_text()
     start = (run_dir / f"start-alice.{SCRIPT_SUFFIX}").read_text()
     assert "--max-resumes 0" in start
     assert "--resume-delay-s 1.5" in start
@@ -3802,6 +3828,10 @@ def test_stall_and_resume_options_reach_policy_and_scripts(
     [
         ("stall_after_min", 0, "--stall-after-min"),
         ("stall_after_min", float("inf"), "--stall-after-min"),
+        ("stall_action_after_min", -1, "--stall-action-after-min"),
+        ("stall_action_after_min", 20, "--stall-action-after-min"),
+        ("stall_action_after_min", True, "--stall-action-after-min"),
+        ("stall_action_after_min", float("inf"), "--stall-action-after-min"),
         ("max_resumes", -1, "--max-resumes"),
         ("resume_delay_s", -0.5, "--resume-delay-s"),
         ("resume_max_delay_s", -0.5, "--resume-max-delay-s"),

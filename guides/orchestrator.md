@@ -154,6 +154,7 @@ Read `get_state.workflow.policy` and apply these defaults for omitted values:
   "max_wall_minutes": 120,
   "max_task_lease_min": 120,
   "stall_after_min": 20,
+  "stall_action_after_min": 0,
   "closeout_wait_s": 300,
   "on_done": "release"
 }
@@ -281,6 +282,20 @@ Handle events as follows:
   `lease_expired` or `agent_lost` follows if it has really stopped. If the
   stall blocks the workflow, escalate with `ask_user`. One event arrives per
   stall episode.
+- `stall_action`: the optional second inactivity threshold opened an operator
+  question (`action: operator_question`), or the hub withdrew its own unanswered
+  question when the worker recovered (`action: question_withdrawn`). Loss,
+  release, removal, replacement or workflow changes leave the question open
+  for the operator; they do not confirm recovery. Read the
+  linked `question_id` and current worker/task state; inspect the latest PR
+  comments and the manual recovery guidance (#223) before deciding the next
+  step. Do not ask the same question again. A fresh bridge heartbeat does not
+  prove agent progress. Neither event nor withdrawal authorizes stopping,
+  restarting or reassigning a worker, changing a lease, or bypassing recovery
+  and identity checks. Only an answered operator question grants the authority
+  its answer actually supplies; a withdrawn question grants none. The hub does
+  not resume the escalated workflow automatically: use the normal escalation
+  resolution checks, including other open questions, before resuming it.
 - `host_paused`: log the clock evidence and tell the operator the detected gap
   and grace duration. Let workers resume heartbeating during grace; inspect any
   later loss or lease expiry against the pause record before routing recovery.

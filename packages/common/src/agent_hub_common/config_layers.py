@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import ValidationError
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from .discovery import (
     WORKTREE_ROOT_SUFFIX,
@@ -46,6 +46,7 @@ _POLICY_SCALAR_KEYS: frozenset[str] = frozenset(
         "max_wall_minutes",
         "max_task_lease_min",
         "stall_after_min",
+        "stall_action_after_min",
         "closeout_wait_s",
         "on_done",
     }
@@ -162,6 +163,10 @@ class ResolvedConfig:
     @property
     def stall_after_min(self) -> int | float:
         return self.policy.stall_after_min
+
+    @property
+    def stall_action_after_min(self) -> int | float:
+        return self.policy.stall_action_after_min
 
     @property
     def closeout_wait_s(self) -> int | float:
@@ -323,7 +328,11 @@ def _parse_policy_scalar(
     if key in target:
         raise _value_error(path, qualified, "duplicate policy setting in the same file")
     try:
-        WorkflowPolicy.model_validate({key: value})
+        # Validate each scalar's type/bounds here; cross-field constraints must
+        # wait until layers merge, since the other threshold may be elsewhere.
+        TypeAdapter(
+            WorkflowPolicy.model_fields[key].rebuild_annotation(), config=ConfigDict(strict=True)
+        ).validate_python(value)
     except ValidationError as exc:
         raise _value_error(path, qualified, exc.errors()[0]["msg"]) from exc
     target[key] = value
@@ -635,7 +644,11 @@ def load_config_layers(
     policy_payload: dict[str, Any] = dict(merged_policy_scalars)
     if merged_role_policy:
         policy_payload["role_policy"] = merged_role_policy
-    policy = WorkflowPolicy.model_validate(policy_payload)
+    try:
+        policy = WorkflowPolicy.model_validate(policy_payload)
+    except ValidationError as exc:
+        sources = ", ".join(str(item.path) for item in layers if item.policy_scalars)
+        raise ConfigLayerError(f"invalid resolved workflow policy from {sources}: {exc}") from exc
 
     policy_overrides: dict[str, Any] = dict(merged_policy_scalars)
     if merged_role_policy:

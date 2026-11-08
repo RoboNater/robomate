@@ -21,6 +21,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v28 is #272's stall operator-question linkage and stall_action event kind.
 # v27 is #215's durable closeout reports and collection/expected authors.
 # v26 is #315's run branch on `workflow` (`robomate/<hub>/<agent>/<label>`).
 # v25 is #244's agent workspace path and kind (`worktree` or `clone`).
@@ -48,7 +49,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 
 class DatabaseVersionError(RuntimeError):
@@ -307,6 +308,7 @@ CREATE TABLE IF NOT EXISTS stall_episode (
     reasons_json TEXT NOT NULL,
     evidence_json TEXT NOT NULL,
     event_id INTEGER,
+    escalation_question_id INTEGER,
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
@@ -440,6 +442,10 @@ def initialize_database(path: Path) -> None:
         _migrate_operator_question(connection)
         _migrate_question_resumed_by(connection)
         _migrate_stall_episode(connection)
+        if "escalation_question_id" not in _columns(connection, "stall_episode"):
+            connection.execute(
+                "ALTER TABLE stall_episode ADD COLUMN escalation_question_id INTEGER"
+            )
         _migrate_question_withdrawal(connection)
         _migrate_lease_clock_shift(connection)
         _migrate_orchestrator_last_call(connection)

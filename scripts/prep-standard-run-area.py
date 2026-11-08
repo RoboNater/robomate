@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from denise import resolve_settings  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULTS: dict[str, str | int | bool] = {
+DEFAULTS: dict[str, str | int | float | bool] = {
     "repository": "",
     "run_parent_dir": "~/working",
     "run_dir": "",
@@ -45,7 +46,10 @@ DEFAULTS: dict[str, str | int | bool] = {
     "denise_effort": "",
     "auto_start": True,
     "pytest_workers": 0,
+    "stall_after_min": 20,
+    "stall_action_after_min": 0,
 }
+MINUTE_KEYS = ("stall_after_min", "stall_action_after_min")
 PATH_KEYS = ("run_parent_dir", "work_file")
 
 
@@ -70,7 +74,11 @@ def parser() -> argparse.ArgumentParser:
         if isinstance(default, bool):
             group.add_argument(flag, action=argparse.BooleanOptionalAction, default=None)
         else:
-            group.add_argument(flag, type=int if isinstance(default, int) else str, default=None)
+            group.add_argument(
+                flag,
+                type=float if key in MINUTE_KEYS else int if isinstance(default, int) else str,
+                default=None,
+            )
     return result
 
 
@@ -90,7 +98,10 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
         if unknown := loaded.keys() - DEFAULTS.keys():
             raise ValueError(f"unknown config keys: {', '.join(sorted(unknown))}")
         for key, value in loaded.items():
-            if type(value) is not type(DEFAULTS[key]):
+            if key in MINUTE_KEYS:
+                if type(value) not in (int, float):
+                    raise ValueError(f"{key} must be a number of minutes")
+            elif type(value) is not type(DEFAULTS[key]):
                 raise ValueError(f"{key} must be a {type(DEFAULTS[key]).__name__}")
             if key in PATH_KEYS and value:
                 value = canonical_path(value, config.parent)
@@ -121,6 +132,11 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def validate(values: dict[str, Any], *, preparing: bool) -> None:
+    if not math.isfinite(values["stall_after_min"]) or values["stall_after_min"] <= 0:
+        raise ValueError("stall_after_min must be a positive finite number of minutes")
+    action = values["stall_action_after_min"]
+    if not math.isfinite(action) or action < 0 or (action and action <= values["stall_after_min"]):
+        raise ValueError("stall_action_after_min must be 0 or greater than stall_after_min")
     if values["pytest_workers"] < 0:
         raise ValueError("pytest_workers must not be negative (0 means CPU count)")
     if values["issue"] < 0:
@@ -167,11 +183,15 @@ def write_config(path: Path, values: dict[str, Any]) -> None:
     for key, value in values.items():
         literal = (
             str(value).lower()
-            if type(value) in (int, bool)
+            if type(value) in (int, float, bool)
             else json.dumps(value, ensure_ascii=False)
         )
         if key == "pytest_workers":
             lines.append("# Workers per pytest -n auto run; 0 uses the CPU count.")
+        if key == "stall_after_min":
+            lines.append("# Minutes without agent activity before a diagnostic stall.")
+        if key == "stall_action_after_min":
+            lines.append("# Absolute inactivity minutes before asking the operator; 0 disables.")
         lines.append(f"{key} = {literal}")
     with path.expanduser().open("x", encoding="utf-8") as stream:
         stream.write("\n".join(lines) + "\n")
@@ -228,6 +248,8 @@ def prepare(values: dict[str, Any], *, yes: bool, source_config: Path | None = N
         values["account"],
     ]
     command += ["--pytest-workers", str(values["pytest_workers"])]
+    command += ["--stall-after-min", str(values["stall_after_min"])]
+    command += ["--stall-action-after-min", str(values["stall_action_after_min"])]
     if values["issue"]:
         command += ["--issue", str(values["issue"])]
     else:

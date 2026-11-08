@@ -2784,6 +2784,7 @@ def prepare(
     reservations: str | None = None,
     hub_repo: Path | None = None,
     stall_after_min: float = DEFAULT_STALL_AFTER_MIN,
+    stall_action_after_min: float = 0,
     max_resumes: int | None = DEFAULT_MAX_RESUMES,
     resume_delay_s: float = DEFAULT_RESUME_DELAY_S,
     resume_max_delay_s: float = DEFAULT_RESUME_MAX_DELAY_S,
@@ -2802,6 +2803,13 @@ def prepare(
 
     if not (isinstance(stall_after_min, int | float) and 0 < stall_after_min < float("inf")):
         raise ValueError("--stall-after-min must be a positive number of minutes")
+    if (
+        isinstance(stall_action_after_min, bool)
+        or not isinstance(stall_action_after_min, int | float)
+        or not 0 <= stall_action_after_min < float("inf")
+        or (stall_action_after_min and stall_action_after_min <= stall_after_min)
+    ):
+        raise ValueError("--stall-action-after-min must be 0 or greater than --stall-after-min")
     if max_resumes is not None and max_resumes < 0:
         raise ValueError("--max-resumes must not be negative (0 disables automatic resumes)")
     if not 0 <= resume_delay_s < float("inf"):
@@ -3092,6 +3100,7 @@ def prepare(
         "max_task_lease_min": 120,
         # Activity silence before the hub reports a stall (#144); a warning only.
         "stall_after_min": stall_after_min,
+        "stall_action_after_min": stall_action_after_min,
     }
     check_hub_workflow(hub_repo, hub_state, run_dir, goal, policy)
     # r1-3/r2-1: require concrete work after early validation (hub, auth,
@@ -3875,6 +3884,14 @@ def main() -> None:
         f"reports a stall (#144; default {DEFAULT_STALL_AFTER_MIN})",
     )
     parser.add_argument(
+        "--stall-action-after-min",
+        type=float,
+        default=0,
+        metavar="MINUTES",
+        help="absolute worker inactivity minutes before asking the operator; "
+        "0 disables (default); must exceed --stall-after-min",
+    )
+    parser.add_argument(
         "--pytest-workers",
         type=int,
         default=0,
@@ -3992,6 +4009,7 @@ def main() -> None:
             "--alice-model": bool(args.alice_model),
             "--alice-effort": bool(args.alice_effort),
             "--stall-after-min": args.stall_after_min != DEFAULT_STALL_AFTER_MIN,
+            "--stall-action-after-min": args.stall_action_after_min != 0,
         }
         if given := [flag for flag, present in hub_only.items() if present]:
             parser.error(f"hub-host flags do not apply to --worker-only: {', '.join(given)}")
@@ -4062,6 +4080,7 @@ def main() -> None:
             reservations=args.reservations,
             hub_repo=args.hub_repo,
             stall_after_min=args.stall_after_min,
+            stall_action_after_min=args.stall_action_after_min,
             pytest_workers=args.pytest_workers,
             max_resumes=args.max_resumes,
             resume_delay_s=args.resume_delay_s,
