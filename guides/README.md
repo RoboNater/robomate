@@ -35,4 +35,7 @@ without its forge commands.
 
 Worker appendices hold no merge commands. The orchestrator guide composes
 with `forge/orchestrator-<forge>.md`, which includes merge and merged-state
-read-back commands. GitHub retains `--delete-branch` until M2 Step 8.
+read-back commands. GitHub merges without local branch deletion, reads back
+`MERGED` and the approved head, then deletes only the remote branch with
+`git push origin --delete <branch>`. GitLab's server-side source-branch deletion
+is unchanged; operator-only `robomate clean` owns local cleanup.
