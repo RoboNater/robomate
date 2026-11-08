@@ -5,6 +5,7 @@ both call these methods. Their names, signatures and docstrings, which are the
 tools' schemas, live in `agent_hub_common.orchestrator_tools` (#47).
 """
 
+import logging
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from time import monotonic
@@ -39,6 +40,8 @@ OPERATOR = Caller("operator", None)
 # Set by the transport around each call. A context variable rather than an
 # argument, because each method's signature is its tool's schema.
 CALLER: ContextVar[Caller | None] = ContextVar("robomate_caller", default=None)
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestratorOps(OrchestratorTools):
@@ -217,6 +220,12 @@ class OrchestratorOps(OrchestratorTools):
         self, summary: str, rationale: str, key: str | None = None
     ) -> dict[str, int]:
         caller = self._caller()
+        if key is None and summary.startswith("event:"):
+            logger.warning(
+                "log_decision summary starts with 'event:' but no key was passed; "
+                'pass the checkpoint as key="event:<event-id>:<action>" '
+                "for dedupe and retry"
+            )
         return {
             "id": self.store.log_decision(
                 summary, rationale, key=key, actor=caller.actor, session=caller.session

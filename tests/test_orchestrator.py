@@ -425,3 +425,26 @@ async def test_rpc_and_mcp_return_the_same_result(
         assert text == f"Error executing tool {operation}: {over_rpc['error']['message']}"
     else:
         assert over_rpc["result"] == over_mcp.structuredContent
+
+
+async def test_log_decision_warns_on_unkeyed_event_prefix(
+    store: HubStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#446: an unkeyed `event:`-prefixed summary warns; a keyed call does not."""
+
+    ops = OrchestratorOps(store, StubGate(), caller=Caller("alice", SESSION))
+    with caplog.at_level("WARNING", logger="agent_hub.orchestrator"):
+        result = await ops.log_decision("event:1:assign", "Because")
+    assert result["id"] >= 1
+    assert "no key was passed" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="agent_hub.orchestrator"):
+        keyed = await ops.log_decision("event:1:assign", "Because", key="event:1:assign")
+    assert keyed["id"] >= 1
+    assert "no key was passed" not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="agent_hub.orchestrator"):
+        await ops.log_decision("Plan", "Because")
+    assert "no key was passed" not in caplog.text

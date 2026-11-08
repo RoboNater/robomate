@@ -455,7 +455,7 @@
   },
   {
     "name": "log_decision",
-    "description": "Append a durable audit entry explaining Alice's decision.",
+    "description": "Append a durable audit entry explaining Alice's decision.\n\n        Pass an event checkpoint as `key` (for example\n        `key=\"event:<event-id>:<action>\"`), not in `summary`: the hub\n        deduplicates on `key`, and the bridge retries a transport error only\n        for a keyed call.\n        ",
     "inputSchema": {
       "properties": {
         "summary": {

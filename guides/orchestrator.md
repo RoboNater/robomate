@@ -95,8 +95,10 @@ Fresh prepared runs may still start with `get_state` through their configured br
    `v28 reserved for #N (in progress); next is v29`. Re-fetch immediately before
    writing; if another run changed the snapshot, rebuild and choose an unclaimed
    value. Reuse this work's existing claim unchanged on resume, and check other
-   in-flight claims. Record `summary="reservation:<counter>"` with `log_decision`
-   and include the target, claim and value in the assignment. If the implementer
+    in-flight claims. Record `summary="reservation:<counter>"` with `log_decision`
+    (a summary label only, not a checkpoint key; it does not deduplicate.
+    Checkpoint keys belong in `key`, see Durable event loop)
+    and include the target, claim and value in the assignment. If the implementer
    discovers a counter later, claim it through this same path before using it.
    If uniqueness cannot be established, escalate instead of guessing.
    Ordinary runs do no roadmap decision comment, adjudication or completion
@@ -248,7 +250,10 @@ command: keep waiting in the foreground with `wait_for_event` or the merge
 gate, each call kept under 120 s on Claude Code.
 
 Before a delivered event causes more than one action, call `log_decision` first
-with a deterministic checkpoint key such as `event:<event-id>:<action>`. On
+with the checkpoint in `key`, not in `summary`, for example
+`log_decision(summary="...", rationale="...", key="event:<event-id>:<action>")`.
+The hub deduplicates on `key`, and the bridge retries a transport error only
+for a keyed call. On
 redelivery, call `get_state`, repeat the same checkpoint call, and inspect
 whether the action already happened before retrying it. The current delivery ID
 can be acknowledged even after its lease expires. A stale delivery ID cannot

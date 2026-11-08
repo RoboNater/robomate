@@ -185,7 +185,13 @@ class OrchestratorTools:
     async def log_decision(
         self, summary: str, rationale: str, key: str | None = None
     ) -> dict[str, int]:
-        """Append a durable audit entry explaining Alice's decision."""
+        """Append a durable audit entry explaining Alice's decision.
+
+        Pass an event checkpoint as `key` (for example
+        `key="event:<event-id>:<action>"`), not in `summary`: the hub
+        deduplicates on `key`, and the bridge retries a transport error only
+        for a keyed call.
+        """
         raise NotImplementedError
 
     async def ask_user(
