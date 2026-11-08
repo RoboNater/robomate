@@ -593,3 +593,15 @@ def test_served_orchestrator_guide_states_closeout_policy_window(forge: str) -> 
     assert "maximum 100 seconds" not in text.lower()
     assert "at most 100 seconds" not in text.lower()
     assert "default and maximum worker window" not in text.lower()
+
+
+def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> None:
+    """#245: gh's local deletion can fail after the server has merged the PR."""
+
+    response = guide_response(CHECKED_IN_GUIDES, "orchestrator", forge="github")
+    assert response.status_code == 200
+    text = bytes(response.body).decode("utf-8")
+    assert "--delete-branch" not in text
+    assert "--match-head-commit <approved head>" in text
+    assert "git push origin --delete <branch>" in text
+    assert text.index('state == "MERGED"') < text.index("git push origin --delete <branch>")

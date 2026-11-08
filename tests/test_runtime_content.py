@@ -553,7 +553,11 @@ def test_merge_invariant_and_command_match_the_spec_exactly() -> None:
     assert spec_invariant is not None and skill_invariant is not None
     assert normalize(skill_invariant.group("text")) == normalize(spec_invariant.group("text"))
 
-    spec_merge = re.search(r"Then Alice runs:\n\n\s+`(?P<text>gh pr merge[^`]+)`", spec)
+    # M2 Step 8 (#245) supersedes the frozen PoC's combined branch deletion.
+    # The merge invariant above still comes from the PoC; the command is MVP policy.
+    spec_merge = re.search(
+        r"GitHub merges with\s+`(?P<text>gh pr merge[^`]+)`", read("docs/mvp-spec.md")
+    )
     skill_merge = re.search(
         r"```text\n(?P<text>gh pr merge.*?)\n```", read("guides/forge/orchestrator-github.md")
     )
