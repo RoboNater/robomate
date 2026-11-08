@@ -1751,13 +1751,23 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
     """r1-4: submit resolves auto; explicit skips probe."""
 
     import json
+    import sqlite3
     from collections.abc import Sequence
-    from typing import Any
+    from typing import Any, cast
 
     from agent_hub.database import initialize_database
     from agent_hub.gitlab_gate import GlabResult
     from agent_hub.store import HubStore
     from agent_hub.submit import submit_statement
+
+    def _stored_allow_no_ci(store: HubStore, workflow_id: str) -> bool:
+        with sqlite3.connect(store.path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT policy_json FROM workflow WHERE id = ?",
+                (workflow_id,),
+            ).fetchone()
+            return cast(bool, json.loads(row["policy_json"])["allow_no_ci"])
 
     origin = "git@host:group/project.git"
     base_project: dict[str, Any] = {
@@ -1805,16 +1815,7 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
             "file",
             glab_runner=_runner_with_ci(ci, file_calls),
         )
-        import sqlite3
-
-        with sqlite3.connect(store.path) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT policy_json FROM workflow WHERE id = ?",
-                (result["workflow_id"],),
-            ).fetchone()
-            stored = json.loads(row["policy_json"])["allow_no_ci"]
-        return stored, file_calls
+        return _stored_allow_no_ci(store, result["workflow_id"]), file_calls
 
     # auto + CI present (pass) -> False, with one file call.
     stored, calls = await _submit_with(
@@ -1849,16 +1850,7 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
         glab_runner=_fail_forge,
         gh_runner=_fail_forge,
     )
-    import sqlite3
-
-    with sqlite3.connect(local_store.path) as conn:
-        conn.row_factory = sqlite3.Row
-        local_row = conn.execute(
-            "SELECT policy_json FROM workflow WHERE id = ?",
-            (local_result["workflow_id"],),
-        ).fetchone()
-        local_stored = json.loads(local_row["policy_json"])["allow_no_ci"]
-    assert local_stored is True
+    assert _stored_allow_no_ci(local_store, local_result["workflow_id"]) is True
     assert local_result["run_id"] and local_result["statement_sha256"]
 
 

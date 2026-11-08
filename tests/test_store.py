@@ -1850,6 +1850,22 @@ def test_get_statement_returns_bytes_verbatim_and_unknown_is_not_found(tmp_path:
         store.get_statement("0" * 64)
 
 
+def test_get_workflow_returns_row_and_unknown_is_not_found(tmp_path: Path) -> None:
+    """#291 r2-2: get_workflow reads the created row; unknown is NotFound."""
+
+    path = tmp_path / "wf.db"
+    initialize_database(path)
+    store = HubStore(path)
+    workflow_id = store.start_workflow("Do work", source="submit:file")
+    got = store.get_workflow(workflow_id)
+    assert got["id"] == workflow_id
+    assert got["run_id"]
+    assert got["statement_sha256"]
+    assert got["status"] in ("active", "queued")
+    with pytest.raises(NotFoundError):
+        store.get_workflow("no-such-id")
+
+
 def test_store_statement_over_cap_is_refused(tmp_path: Path) -> None:
     """M2 Step 4: statement over 12 KiB cap refuses with cap in message."""
 
