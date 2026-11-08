@@ -112,6 +112,20 @@ def test_config_paths_and_cli_work_replacement(
     assert values["work_file"] == "" and values["issue"] == 43
 
 
+def test_stall_timeout_round_trip_and_cli_precedence(tmp_path: Path) -> None:
+    config = tmp_path / "settings.toml"
+    config.write_text("stall_after_min = 3.5\n")
+    output = tmp_path / "merged.toml"
+    HELPER.main(["--config", str(config), "--generate-config", str(output)])
+    assert tomllib.loads(output.read_text())["stall_after_min"] == 3.5
+    assert (
+        HELPER.settings(
+            HELPER.parser().parse_args(["--config", str(output), "--stall-after-min", "7"])
+        )["stall_after_min"]
+        == 7
+    )
+
+
 def test_doctor_config_cli_precedence_and_side_effect_free_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -160,6 +174,10 @@ def test_doctor_config_cli_precedence_and_side_effect_free_resolution(
         "issue = true",
         "auto_start = 1",
         "issue = -1",
+        "stall_after_min = 0",
+        "stall_after_min = -1",
+        "stall_after_min = inf",
+        "stall_after_min = true",
         'forge = "other"',
         'bob_harness = "other"',
         'denise_settings_from = "worker"',
@@ -255,6 +273,8 @@ def test_prepare_clones_and_forwards_arguments(
         "--denise-effort",
         "future doctor effort",
         "--no-auto-start",
+        "--stall-after-min",
+        "3.5",
         *flags,
     ]
     HELPER.main(args)
@@ -267,6 +287,7 @@ def test_prepare_clones_and_forwards_arguments(
     assert command[command.index(flags[0]) + 1] == flags[1]
     assert ("--issue" in command) != ("--work-file" in command)
     assert "--no-auto-start" in command
+    assert command[command.index("--stall-after-min") + 1] == "3.5"
     assert command[command.index("--denise-settings-from") + 1] == "charlie"
     assert command[command.index("--denise-harness") + 1] == "claude"
     assert command[command.index("--denise-model") + 1] == "future doctor model"
