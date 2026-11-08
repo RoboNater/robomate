@@ -6,8 +6,8 @@ signal handling, and `setsid` creates a session, but neither guarantees that a
 tool backend will retain descendants after returning. The [official OpenAI
 Codex prompting guide](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide#shell_command)
 describes polling an existing `exec_command` session with `write_stdin`; it
-does not establish detached-child survival for this runtime. Probe the actual route
-before prescribing detachment. These probes start no agents or hubs.
+does not establish detached-child survival for this runtime. Probe the actual
+route before prescribing detachment. These probes start no agents or hubs.
 
 ## Two-call probe
 
@@ -95,8 +95,8 @@ Tool-visible process metadata for the detached launch: parent
 PID/PPID/PGID/SID `97572/97074/97572/97572`; nohup child
 `97576/97572/97572/97572`; setsid child `97578/97572/97578/97578`.
 Both launcher logs were empty. Re-running the two-call examples above with
-their bounded startup loop gave the same results for both detached methods. The distinct setsid session completed on this
-route; it does not establish survival in workspace-write sandboxes.
+their bounded startup loop gave the same results for both detached methods.
+The distinct setsid session completed on this route; it does not establish survival in workspace-write sandboxes.
 
 [Issue #355](https://github.com/RoboNater/robomate/issues/355) records **prior**
 Codex 0.164.0 workspace-write observations: both nohup and setsid started but
@@ -109,3 +109,19 @@ were not executed in this run. Their recipes remain conditional fallbacks,
 with an actual-route probe required before relying on detachment. Rendering
 tests verify that the instructions reach workers; they cannot prove process
 survival across a shell-tool boundary.
+
+## Full-suite check on the selected route
+
+The worker guide's foreground capture-and-exit recipe ran
+`uv run --locked pytest -n auto` with four workers through the same unsandboxed
+`exec_command` route, retained session 67775. It wrote `started`, a complete
+`out.log` (2568 passed, 35 skipped in 499.84 seconds), and `rc` containing `0`;
+`write_stdin` returned final process exit code `0`. Scratch was
+`/home/jethro/lw/w535-robomate/w535r-run-log/lanes/do002-i355/tmp/bob/tmp.tL0oCcYwyt`.
+No cache override was needed on this route.
+
+The earlier full-suite session 39029 exposed a stale documentation-content
+assertion, returning tool exit code `1` and file rc `1` (2567 passed, 35 skipped,
+one failed). After updating the assertion from “detached suite” to “validation
+suite,” the run above passed. This also checks that the retained-session
+recipe preserves a real suite failure, not just the harmless control's rc 7.
