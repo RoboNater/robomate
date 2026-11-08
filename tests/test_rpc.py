@@ -1828,8 +1828,38 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
     for allow, expected in ((True, True), (False, False)):
         stored, calls = await _submit_with({"allow_no_ci": allow}, GlabResult(1, "boom", "boom"))
         assert stored is expected and calls == []
-    # local origin + auto -> True without calls (no slug path here uses gitlab origin,
-    # so local case is github path; covered by github local test in forge_preflight).
+    # local origin (no slug) + auto -> True without forge calls (github path).
+    local_path = tmp_path / f"submit-{len(list(tmp_path.iterdir()))}.db"
+    initialize_database(local_path)
+    local_store = HubStore(local_path)
+
+    async def _fail_forge(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("local origin must not call forge")
+
+    local_result = await submit_statement(
+        local_store,
+        {
+            "origin": "/tmp/local-repo",
+            "forge": "github",
+            "git_common_dir": None,
+        },
+        "Do work",
+        {"allow_no_ci": "auto"},
+        "file",
+        glab_runner=_fail_forge,
+        gh_runner=_fail_forge,
+    )
+    import sqlite3
+
+    with sqlite3.connect(local_store.path) as conn:
+        conn.row_factory = sqlite3.Row
+        local_row = conn.execute(
+            "SELECT policy_json FROM workflow WHERE id = ?",
+            (local_result["workflow_id"],),
+        ).fetchone()
+        local_stored = json.loads(local_row["policy_json"])["allow_no_ci"]
+    assert local_stored is True
+    assert local_result["run_id"] and local_result["statement_sha256"]
 
 
 @pytest.mark.parametrize("entry", ["initialize_workflow", "start_workflow"])

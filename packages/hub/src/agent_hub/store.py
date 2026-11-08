@@ -732,6 +732,30 @@ class HubStore:
                 "created": str(row["created"]),
             }
 
+    def get_workflow(self, workflow_id: str) -> dict[str, Any]:
+        """Return one workflow row by id (run identity for submit, #291).
+
+        `submit_statement` just created the row in the same process, with
+        `work_submitted` in the same transaction, so a missing row is an
+        internal error, not an empty-string fallback.
+        """
+
+        with database(self.path) as connection:
+            row = connection.execute(
+                "SELECT id, run_id, statement_sha256, status FROM workflow WHERE id = ?",
+                (workflow_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"unknown workflow: {workflow_id}")
+            return {
+                "id": str(row["id"]),
+                "run_id": str(row["run_id"]),
+                "statement_sha256": (
+                    None if row["statement_sha256"] is None else str(row["statement_sha256"])
+                ),
+                "status": str(row["status"]),
+            }
+
     def _clear_stale_releases(self, connection: Connection) -> None:
         """Make a newly live run take returning workers (r1-1).
 

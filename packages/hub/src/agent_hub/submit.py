@@ -216,29 +216,12 @@ async def submit_statement(
         force_queued=True,
         emit_work_submitted=True,
     )
-    # Read back run identity for the response.
-    state = store.get_state()
-    run_id: str | None = None
-    statement_sha256: str | None = None
-    status: str = "queued"
-    workflow = state.get("workflow")
-    if workflow is not None and workflow.get("id") == workflow_id:
-        run_id = workflow.get("run_id")
-        statement_sha256 = workflow.get("statement_sha256")
-        status = str(workflow.get("status") or "active")
-    else:
-        for entry in state.get("queue") or []:
-            if entry.get("workflow_id") == workflow_id:
-                run_id = entry.get("run_id")
-                statement_sha256 = entry.get("statement_sha256")
-                status = "queued"
-                break
-    if run_id is None or statement_sha256 is None:
-        run_id = run_id or ""
-        statement_sha256 = statement_sha256 or ""
+    # Read back run identity from the created row (#291 r2-2): the row was
+    # just written in this process, so it must exist; no empty-string fallback.
+    workflow = store.get_workflow(workflow_id)
     return {
         "workflow_id": workflow_id,
-        "run_id": run_id,
-        "statement_sha256": statement_sha256,
-        "status": status,
+        "run_id": workflow["run_id"],
+        "statement_sha256": workflow["statement_sha256"],
+        "status": workflow["status"],
     }
