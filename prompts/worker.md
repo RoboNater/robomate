@@ -125,8 +125,10 @@ then retains its original value, like a hand-edited model).
 
 A local command can outlast one tool call. Choose a method for the actual
 harness, shell tool and sandbox; detached children do not survive every tool
-boundary. Before using detachment on a new route, run the harmless two-call
-marker probe in [the validation notes](https://github.com/RoboNater/robomate/blob/main/docs/development/long-command-validation.md).
+boundary. A new route means a harness/shell-tool/sandbox combination without
+matching documented evidence, or one whose process-lifetime behaviour has
+changed. Reuse successful evidence for a matching route; do not re-probe on
+every task. For a new route, run the harmless two-call marker probe in [the validation notes](https://github.com/RoboNater/robomate/blob/main/docs/development/long-command-validation.md).
 Neither `nohup` nor `setsid` alone guarantees survival. Do not infer sandbox
 behaviour from an ordinary terminal or an unsandboxed call.
 
@@ -145,7 +147,7 @@ D=$(mktemp -d) && echo "$D" && sh -c '
 ```
 
 Poll that exact session using `write_stdin(session_id=..., chars="",
-yield_time_ms=1000)` in bounded foreground calls (at most 60 s per call).
+yield_time_ms=30000)` in bounded foreground calls (at most 60 s per call).
 Keep polling until the tool returns the process exit code. If it finishes in
 the first call, inspect that exit code directly. Do not detach the command,
 abandon the session, or end the agent turn while waiting. Read `out.log` and
@@ -153,13 +155,17 @@ abandon the session, or end the agent turn while waiting. Read `out.log` and
 and recorded rc to agree. A nonzero code is a failed check. A lost session or
 missing rc is an incomplete check, never a pass.
 
-For other POSIX tools, the following is a **fallback only after the two-call
+For POSIX tools without retained sessions, use the following detached
+fallback where the two-call probe has succeeded on that route. Claude Code
+Bash on Linux without a sandbox has recorded successful evidence, including
+2.1.319 (see the validation notes); matching workers may reuse that evidence.
+For other configurations this is a **fallback only after the two-call
 probe succeeds on that route**. Print the directory and spell it out in each
 poll, because shell variables may not survive between calls:
 
 ```sh
 D=$(mktemp -d) && echo "$D" && (nohup sh -c 'printf "started\n" > "$1/started" || exit 1; if uv run --locked pytest -n auto > "$1/out.log" 2>&1; then rc=0; else rc=$?; fi; printf "%s\n" "$rc" > "$1/rc"' sh "$D" >"$D/launcher.log" 2>&1 </dev/null &)
-D='<printed directory>'; for i in $(seq 1 12); do [ -f "$D/rc" ] && break; sleep 5; done; if [ -f "$D/rc" ]; then cat "$D/rc"; else echo 'INCOMPLETE: no rc; inspect started and launcher.log'; fi
+D='<printed directory>'; for i in $(seq 1 12); do [ -f "$D/rc" ] && break; sleep 5; done; if [ ! -f "$D/started" ]; then echo 'FAILED: no startup marker'; elif [ -f "$D/rc" ]; then cat "$D/rc"; else echo 'INCOMPLETE: no rc; inspect started and launcher.log'; fi
 ```
 
 Only on a POSIX host with `setsid` available, and after its own successful
@@ -174,7 +180,7 @@ route. The child uses UTF-8 for redirected Python diagnostics:
 
 ```powershell
 $D = New-Item -ItemType Directory (Join-Path ([IO.Path]::GetTempPath()) (New-Guid)); "$D"; Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', "`$env:PYTHONUTF8 = '1'; 'started' > '$D/started'; uv run --locked pytest -n auto *> '$D/out.log'; `$LASTEXITCODE > '$D/rc'"
-$D = '<printed directory>'; foreach ($i in 1..12) { if (Test-Path "$D/rc") { break }; Start-Sleep 5 }; if (Test-Path "$D/rc") { Get-Content "$D/rc" } else { 'INCOMPLETE: no rc; inspect started and launch errors' }
+$D = '<printed directory>'; foreach ($i in 1..12) { if (Test-Path "$D/rc") { break }; Start-Sleep 5 }; if (-not (Test-Path "$D/started")) { 'FAILED: no startup marker' } elseif (Test-Path "$D/rc") { Get-Content "$D/rc" } else { 'INCOMPLETE: no rc; inspect started and launch errors' }
 ```
 
 For every method, check for `started` on the first poll (within 60 s). If it

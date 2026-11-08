@@ -1869,10 +1869,14 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
     # both platform fallbacks. These assertions do not prove child survival.
     for recipe in (
         "exec_command(yield_time_ms=1000)",
-        'write_stdin(session_id=..., chars="",',
+        'write_stdin(session_id=..., chars="", yield_time_ms=30000)',
         'exit "$rc"',
         "A lost session or",
         "INCOMPLETE: no rc",
+        "Reuse successful evidence for a matching route",
+        "Claude Code Bash on Linux without a sandbox",
+        'if [ ! -f "$D/started" ]; then',
+        'if (-not (Test-Path "$D/started"))',
         "finite total validation budget",
         "fallback only after the two-call",
         "`$LASTEXITCODE > '$D/rc'\"",

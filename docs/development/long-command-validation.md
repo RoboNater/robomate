@@ -79,7 +79,7 @@ Run `20261108_83ed3597`, implementation agent bob:
   That exact sandbox route remains **unverified in this run**. Alice accepted
   testing the available route with this limitation explicitly recorded.
 - Scratch root:
-  `/home/jethro/lw/w535-robomate/w535r-run-log/lanes/do002-i355/tmp/bob/detach-probe.zAmrFi`.
+  `$TMPDIR/detach-probe.zAmrFi`.
   The two detached variants used separate subdirectories, with a 0.2-second
   startup check in the launch call and a 3-second delay in the inspection call.
   Both launch and inspection tool calls returned rc 0.
@@ -104,8 +104,20 @@ lacked completion, while a retained session completed. Those are attributed
 prior evidence, not a new sandbox result or a universal Codex claim. The
 cleanup mechanism and regression date remain unknown.
 
-Windows PowerShell, Windows Git Bash, Claude Code and other harness routes
-were not executed in this run. Their recipes remain conditional fallbacks,
+Claude Code has separate successful evidence: the [issue's prior run
+comments](https://github.com/RoboNater/robomate/issues/355) report successful
+nohup validation under Claude Code 2.1.310's Bash tool on Linux. During this
+run, [reviewer charlie's two-call probes](https://github.com/RoboNater/robomate/pull/437#issuecomment-6718363814)
+on Claude Code 2.1.319's Bash tool, Linux 6.8.0-147, unsandboxed, completed
+with `started`, `out.log` and rc `0` for both nohup and setsid nohup. Charlie
+also completed the changed-file 250 ms validation using the POSIX detached
+fallback and recorded rc `0`. These are attributed reviewer/prior-run results,
+not probes performed by bob. Matching Claude Code Bash/Linux unsandboxed
+workers can reuse that evidence; a changed shell tool or sandbox, or observed
+loss of completion, calls for a fresh probe.
+
+Windows PowerShell, Windows Git Bash and other harness routes were not
+executed in this run. Their recipes remain conditional fallbacks,
 with an actual-route probe required before relying on detachment. Rendering
 tests verify that the instructions reach workers; they cannot prove process
 survival across a shell-tool boundary.
@@ -117,7 +129,7 @@ The worker guide's foreground capture-and-exit recipe ran
 `exec_command` route, retained session 67775. It wrote `started`, a complete
 `out.log` (2568 passed, 35 skipped in 499.84 seconds), and `rc` containing `0`;
 `write_stdin` returned final process exit code `0`. Scratch was
-`/home/jethro/lw/w535-robomate/w535r-run-log/lanes/do002-i355/tmp/bob/tmp.tL0oCcYwyt`.
+`$TMPDIR/tmp.tL0oCcYwyt`.
 No cache override was needed on this route.
 
 The earlier full-suite session 39029 exposed a stale documentation-content
