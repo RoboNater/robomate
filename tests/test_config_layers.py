@@ -23,6 +23,37 @@ def _write_toml(path: Path, content: str) -> Path:
     return path
 
 
+def test_stall_timeout_layer_precedence(tmp_path: Path) -> None:
+    user = _write_toml(
+        tmp_path / "user.toml", "stall_after_min = 3.5\nstall_action_after_min = 10\n"
+    )
+    repo = tmp_path / "repo.toml"
+    hub = tmp_path / "hub.toml"
+    assert load_config_layers(hub, repo, user).stall_after_min == 3.5
+    assert load_config_layers(hub, repo, user).stall_action_after_min == 10
+    _write_toml(repo, "[policy]\nstall_after_min = 5\n")
+    assert load_config_layers(hub, repo, user).policy_overrides["stall_after_min"] == 5
+    _write_toml(hub, "stall_after_min = 7\nstall_action_after_min = 12\n")
+    resolved = load_config_layers(hub, repo, user)
+    assert resolved.policy.stall_after_min == 7
+    assert resolved.policy.stall_action_after_min == 12
+    from agent_hub.submit import _resolve_policy
+    from robomate.cli import _parse_policy_override
+
+    key, value = _parse_policy_override("stall_action_after_min=15")
+    assert _resolve_policy(resolved.policy, {key: value})["stall_action_after_min"] == 15
+
+
+def test_stall_thresholds_validate_after_merging_layers(tmp_path: Path) -> None:
+    user = _write_toml(tmp_path / "user.toml", "stall_action_after_min = 10\n")
+    repo = _write_toml(tmp_path / "repo.toml", "stall_after_min = 2\n")
+    hub = tmp_path / "hub.toml"
+    assert load_config_layers(hub, repo, user).stall_action_after_min == 10
+    _write_toml(hub, "stall_after_min = 10\n")
+    with pytest.raises(ConfigLayerError, match="stall_action_after_min"):
+        load_config_layers(hub, repo, user)
+
+
 def test_user_config_path_linux_and_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

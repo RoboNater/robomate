@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import subprocess
 import tempfile
@@ -1405,6 +1406,7 @@ class HubStore:
             # Open `ask_user` questions, which `robomate inbox` lists (#130).
             "operator_questions": operator_questions,
             "stall_after_min": assessment["stall_after_min"],
+            "stall_action_after_min": assessment["stall_action_after_min"],
             "orchestrator_activity": assessment["orchestrator"],
             "assessed_at": to_iso(now),
         }
@@ -1729,43 +1731,63 @@ class HubStore:
                 task = self._require_open_task(connection, waiting_on_task_id)
                 if task.workflow_id != workflow_id:
                     raise ConflictError("task belongs to another workflow")
-            event_boundary = connection.execute(
-                "SELECT COALESCE(MAX(id), 0) FROM event"
-            ).fetchone()[0]
-            now = self._now_iso()
-            cursor = connection.execute(
-                "INSERT INTO operator_question"
-                " (workflow_id, asked, actor, session, question, options_json,"
-                " waiting_on_task_id, asked_after_event_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    workflow_id,
-                    now,
-                    actor,
-                    session,
-                    question,
-                    None if options is None else json.dumps(list(options)),
-                    waiting_on_task_id,
-                    event_boundary,
-                ),
+            return self._ask_operator_question(
+                connection,
+                workflow_id,
+                question,
+                options,
+                actor=actor,
+                session=session,
+                waiting_on_task_id=waiting_on_task_id,
             )
-            question_id = int(cursor.lastrowid or 0)
-            row = connection.execute(
-                "SELECT status FROM workflow WHERE id = ?", (workflow_id,)
-            ).fetchone()
-            if row["status"] == WorkflowStatus.ESCALATED.value:
-                rationale = "Workflow already escalated; question added"
-            else:
-                connection.execute(
-                    "UPDATE workflow SET status = ? WHERE id = ?",
-                    (WorkflowStatus.ESCALATED.value, workflow_id),
-                )
-                rationale = f"Workflow status set to {WorkflowStatus.ESCALATED.value}"
+
+    def _ask_operator_question(
+        self,
+        connection: Connection,
+        workflow_id: str,
+        question: str,
+        options: Sequence[str] | None,
+        *,
+        actor: str,
+        session: str | None,
+        waiting_on_task_id: str | None = None,
+    ) -> int:
+        """Persist question, escalation and decision in the caller's transaction."""
+
+        event_boundary = connection.execute("SELECT COALESCE(MAX(id), 0) FROM event").fetchone()[0]
+        now = self._now_iso()
+        cursor = connection.execute(
+            "INSERT INTO operator_question"
+            " (workflow_id, asked, actor, session, question, options_json,"
+            " waiting_on_task_id, asked_after_event_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                workflow_id,
+                now,
+                actor,
+                session,
+                question,
+                None if options is None else json.dumps(list(options)),
+                waiting_on_task_id,
+                event_boundary,
+            ),
+        )
+        question_id = int(cursor.lastrowid or 0)
+        row = connection.execute(
+            "SELECT status FROM workflow WHERE id = ?", (workflow_id,)
+        ).fetchone()
+        if row["status"] == WorkflowStatus.ESCALATED.value:
+            rationale = "Workflow already escalated; question added"
+        else:
             connection.execute(
-                "INSERT INTO decision (ts, summary, rationale, actor, session)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (now, f"Asked the operator question {question_id}", rationale, actor, session),
+                "UPDATE workflow SET status = ? WHERE id = ?",
+                (WorkflowStatus.ESCALATED.value, workflow_id),
             )
+            rationale = f"Workflow status set to {WorkflowStatus.ESCALATED.value}"
+        connection.execute(
+            "INSERT INTO decision (ts, summary, rationale, actor, session) VALUES (?, ?, ?, ?, ?)",
+            (now, f"Asked the operator question {question_id}", rationale, actor, session),
+        )
         return question_id
 
     def withdraw_question(
@@ -3798,6 +3820,7 @@ class HubStore:
                 "workflow_id": None,
                 "workflow_status": None,
                 "stall_after_min": None,
+                "stall_action_after_min": 0,
                 "orchestrator": None,
                 "agents": {
                     r["name"]: {
@@ -3815,7 +3838,18 @@ class HubStore:
                 },
             }
         status = WorkflowStatus(row["status"])
-        threshold_min = self._stall_after_min(_json_object(row["policy_json"]) or {})
+        policy = _json_object(row["policy_json"]) or {}
+        threshold_min = self._stall_after_min(policy)
+        action_min = policy.get("stall_action_after_min", 0)
+        # Legacy workflows may contain unvalidated policy. Invalid action settings
+        # fail closed rather than silently enabling an operator action.
+        if (
+            isinstance(action_min, bool)
+            or not isinstance(action_min, int | float)
+            or not math.isfinite(action_min)
+            or action_min <= threshold_min
+        ):
+            action_min = 0
         threshold = timedelta(minutes=threshold_min)
         # Done ends the assessment; paused suspends it until the workflow
         # resumes, when every silence and progress clock restarts.
@@ -3839,6 +3873,7 @@ class HubStore:
             "workflow_id": row["id"],
             "workflow_status": status.value,
             "stall_after_min": threshold_min,
+            "stall_action_after_min": action_min,
             "orchestrator": orchestrator,
             "agents": agents,
         }
@@ -4038,9 +4073,10 @@ class HubStore:
     def sweep_stalls(self) -> list[EventRecord]:
         """Open, refresh and close stall episodes; queue one event per worker episode.
 
-        Changes nothing about any agent, task or workflow (#144): a stall is
-        diagnostic. A worker's episode starts with one `agent_stalled` event
-        for Alice; an orchestrator stall can only reach the operator, so it is
+        Changes nothing about any agent or task. A worker's episode starts
+        with one diagnostic `agent_stalled` event for Alice. An enabled second
+        threshold asks the operator once, and notifies Alice of that action.
+        An orchestrator stall can only reach the operator, so it is
         recorded and shown, never queued to the stalled orchestrator itself.
         An episode stays open while any reason holds and closes once none does,
         so a recovered agent can start a new one.
@@ -4079,7 +4115,11 @@ class HubStore:
                     else (row["actor"], row["instance"])
                 )
                 current = stalled.get(key)
-                if current is not None and key not in seen:
+                if (
+                    current is not None
+                    and key not in seen
+                    and row["workflow_id"] == report["workflow_id"]
+                ):
                     seen.add(key)
                     connection.execute(
                         "UPDATE stall_episode SET assessed = ?, reasons_json = ?,"
@@ -4136,6 +4176,7 @@ class HubStore:
                     "UPDATE stall_episode SET event_id = ? WHERE id = ?", (event_id, episode_id)
                 )
                 emitted.append(event_id)
+            self._sweep_stall_actions(connection, report, now, emitted)
             events = [
                 _event(row)
                 for row in connection.execute(
@@ -4147,6 +4188,119 @@ class HubStore:
         if events:
             self.signals.notify(EVENT_KEY)
         return events
+
+    def _sweep_stall_actions(
+        self, connection: Connection, report: Mapping[str, Any], now: datetime, emitted: list[int]
+    ) -> None:
+        """Ask once per eligible worker episode; withdraw only on confirmed recovery.
+
+        The episode link, question, decision and Alice event commit together.
+        An answer is never synthesized and workflow resumption stays with Alice.
+        """
+
+        now_iso = to_iso(now)
+        rows = connection.execute(
+            "SELECT * FROM stall_episode WHERE role = 'worker' AND (cleared IS NULL OR"
+            " escalation_question_id IN (SELECT id FROM operator_question"
+            " WHERE answered IS NULL AND withdrawn IS NULL))"
+        ).fetchall()
+        for row in rows:
+            question_id = row["escalation_question_id"]
+            payload = {
+                "agent": row["actor"],
+                "instance": row["instance"],
+                "task_id": row["task_id"],
+                "episode_id": row["id"],
+            }
+            if row["cleared"] is not None:
+                # Loss, release, replacement or workflow changes end assessment,
+                # but do not prove recovery or settle the operator's decision.
+                if question_id is None or row["cleared_reason"] != "recovered":
+                    continue
+                cursor = connection.execute(
+                    "UPDATE operator_question SET withdrawn = ?, withdrawn_by = 'hub',"
+                    " withdrawal_reason = ? WHERE id = ? AND actor = 'hub' AND session IS NULL"
+                    " AND answered IS NULL AND withdrawn IS NULL",
+                    (
+                        now_iso,
+                        f"Stall episode {row['id']} cleared: {row['cleared_reason']}",
+                        question_id,
+                    ),
+                )
+                if cursor.rowcount:
+                    event_id = self._add_event(
+                        connection,
+                        EventKind.STALL_ACTION,
+                        payload
+                        | {
+                            "action": "question_withdrawn",
+                            "question_id": question_id,
+                            "cleared_reason": row["cleared_reason"],
+                        },
+                    )
+                    connection.execute(
+                        "UPDATE operator_question SET settling_event_id = ? WHERE id = ?",
+                        (event_id, question_id),
+                    )
+                    connection.execute(
+                        "INSERT INTO decision (ts, summary, rationale, actor)"
+                        " VALUES (?, ?, ?, 'hub')",
+                        (
+                            now_iso,
+                            f"Withdrew operator question {question_id}",
+                            f"Stall episode {row['id']} cleared: {row['cleared_reason']}; "
+                            "no authority granted",
+                        ),
+                    )
+                    emitted.append(event_id)
+                continue
+            action_min = report["stall_action_after_min"]
+            if (
+                not action_min
+                or question_id is not None
+                or row["workflow_id"] != report["workflow_id"]
+            ):
+                continue
+            agent_row = connection.execute(
+                "SELECT * FROM agent WHERE name = ?", (row["actor"],)
+            ).fetchone()
+            if agent_row is None or agent_row["worker_instance_id"] != row["instance"]:
+                continue
+            current = self._assess_worker(
+                connection, _agent(agent_row), now, timedelta(minutes=action_min), None
+            )
+            if not current["stalled"]:
+                continue
+            evidence = json.dumps(_stall_evidence(current) | {"reasons": current["reasons"]})
+            question = (
+                f"Worker {row['actor']} (instance {row['instance']}, task {row['task_id']}) "
+                f"has reached stall_action_after_min={action_min} in stall episode {row['id']}. "
+                f"Reasons and ages: {evidence}. "
+                "Inspect latest PR comments, worker state and manual recovery guidance (#223). "
+                "What should happen next? This question authorizes no process control, "
+                "task reassignment or lease change."
+            )
+            question_id = self._ask_operator_question(
+                connection, row["workflow_id"], question, None, actor="hub", session=None
+            )
+            connection.execute(
+                "UPDATE stall_episode SET escalation_question_id = ? WHERE id = ?",
+                (question_id, row["id"]),
+            )
+            emitted.append(
+                self._add_event(
+                    connection,
+                    EventKind.STALL_ACTION,
+                    payload
+                    | {
+                        "action": "operator_question",
+                        "question_id": question_id,
+                        "stall_action_after_min": action_min,
+                        "reasons": current["reasons"],
+                    }
+                    | _stall_evidence(current),
+                )
+            )
 
     def stall_episodes(self, *, open_only: bool = False) -> list[dict[str, Any]]:
         """Recorded stall episodes, oldest first."""
@@ -4199,6 +4353,8 @@ def _cleared_reason(row: Row, report: Mapping[str, Any], first_sweep: bool) -> s
 
     if first_sweep:
         return "hub_restarted"
+    if row["workflow_id"] != report["workflow_id"]:
+        return "workflow_changed"
     status = report["workflow_status"]
     if status == WorkflowStatus.DONE.value:
         return "workflow_done"
@@ -4230,6 +4386,7 @@ def _stall_episode(row: Row) -> dict[str, Any]:
         "reasons": json.loads(row["reasons_json"]),
         "evidence": json.loads(row["evidence_json"]),
         "event_id": row["event_id"],
+        "escalation_question_id": row["escalation_question_id"],
     }
 
 
