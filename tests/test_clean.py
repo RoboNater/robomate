@@ -197,3 +197,69 @@ def test_clean_keeps_worktree_with_foreign_lock(
         clean(monkeypatch)
     assert exc.value.code == 1 and path.is_dir()
     assert "locked operator hold" in _git(cleanup_repo, "worktree", "list", "--porcelain")
+
+
+def test_clean_removes_published_worktree_but_retains_unmerged_branch(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _, _ = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    branch = "robomate/repo/bob/published"
+    _git(path, "switch", "-c", branch)
+    _git(
+        path,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "published",
+    )
+    _git(path, "update-ref", f"refs/remotes/origin/{branch}", "HEAD")
+    clean(monkeypatch)
+    assert not path.exists()
+    assert branch in _git(cleanup_repo, "branch", "--format=%(refname:short)").splitlines()
+
+
+def test_orphan_with_uncommitted_work_is_reported_and_kept(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manager, _, _ = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    (path / "untracked.txt").write_text("work", encoding="utf-8")
+    shutil.rmtree(manager.state_dir)
+    with pytest.raises(SystemExit) as exc:
+        clean(monkeypatch)
+    assert exc.value.code == 1 and path.is_dir()
+    assert not manager.state_dir.exists()
+    assert "Orphaned agent worktree" in capsys.readouterr().out
+
+
+def test_failed_git_removal_restores_the_hub_lock(
+    cleanup_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import robomate.clean as cleanup
+
+    manager, _, _ = make_manager(cleanup_repo, tmp_path)
+    path, _ = manager.ensure("bob")
+    original = cleanup.git
+
+    def refuse_remove(repo: cleanup.Repository, *args: str, cwd: Path | None = None) -> str:
+        if args[:2] == ("worktree", "remove"):
+            raise RuntimeError("removal refused")
+        return original(repo, *args, cwd=cwd)
+
+    monkeypatch.setattr(cleanup, "git", refuse_remove)
+    with pytest.raises(SystemExit) as exc:
+        clean(monkeypatch)
+    assert exc.value.code == 1 and path.is_dir()
+    assert "locked robomate hub repo" in _git(cleanup_repo, "worktree", "list", "--porcelain")

@@ -16,6 +16,7 @@ from agent_hub_common.discovery import (
     read_binding,
     resolve_repository,
 )
+from agent_hub_common.registry import recorded_entries
 
 
 def git(repo: Repository, *args: str, cwd: Path | None = None) -> str:
@@ -83,6 +84,15 @@ def cleanup_target(cwd: Path, selector: str | None) -> tuple[Repository, LocalHu
     try:
         hub = find_hub(cwd, selector=selector)
     except DiscoveryError:
+        if selector:
+            entries = recorded_entries()
+            matches = [e for e in entries if e.get("hub_id") == selector] or [
+                e for e in entries if e.get("name") == selector
+            ]
+            # Orphan recovery must not resolve an ambiguous registry selection
+            # by silently choosing the repository containing the caller.
+            if len(matches) > 1:
+                raise
         repo = resolve_repository(cwd)
         bound = read_binding(checkout_git_dir(repo.root))
         candidates = [item.binding for item in agent_worktrees(repo)]
