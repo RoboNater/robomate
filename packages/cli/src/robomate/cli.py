@@ -93,6 +93,8 @@ from agent_hub_common.stdio import escape_unencodable_output
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
+from robomate.clean import clean_worktrees, cleanup_target
+
 VERSION = "0.1.0"
 
 
@@ -1528,6 +1530,24 @@ def _relocate(selector: str | None) -> None:
     print(f"Start it with robomate up in {hub.checkout}.")
 
 
+def _clean(selector: str | None) -> None:
+    """Operator-only cleanup; serialize with startup and require a stopped hub."""
+
+    escape_unencodable_output()
+    read_token_file(operator_token_path(), "operator token")
+    repo, hub = cleanup_target(Path.cwd(), selector)
+    with ExitStack() as stack:
+        if hub.state_dir.is_dir():
+            try:
+                stack.enter_context(_hub_lock(hub.state_dir))
+            except HubLockBusy:
+                raise RuntimeError(
+                    f"{hub.label()} is running or starting; stop it with robomate down first"
+                ) from None
+        clean_worktrees(repo, hub)
+    print(f"Cleaned {hub.label()}; hub state and runs were kept.")
+
+
 def _workspace(agent_name: str, selector: str | None) -> None:
     """Create an agent's worktree ahead of join via operator-only `hub.workspace` (M2 Step 7b).
 
@@ -1695,7 +1715,11 @@ def main() -> None:
         help="create an agent's worktree ahead of join and print its path (operator-only)",
     )
     workspace.add_argument("agent", metavar="NAME", help="agent name (e.g. bob)")
-    for command in (down, status, inbox, answer, submit, relocate, workspace):
+    clean = commands.add_parser(
+        "clean",
+        help="remove a stopped hub's safe agent worktrees and merged branches (operator-only)",
+    )
+    for command in (down, status, inbox, answer, submit, relocate, workspace, clean):
         command.add_argument(
             "--hub",
             metavar="NAME|HUB_ID|CHECKOUT",
@@ -1756,6 +1780,8 @@ def main() -> None:
             _relocate(args.hub)
         elif args.command == "workspace":
             _workspace(args.agent, args.hub)
+        elif args.command == "clean":
+            _clean(args.hub)
         elif args.command == "ls":
             _ls(args.json)
         elif args.command == "forget":
