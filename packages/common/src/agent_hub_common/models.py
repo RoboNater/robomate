@@ -56,12 +56,20 @@ class WorkflowPolicy(BaseModel):
     max_task_lease_min: PositiveNumber = 120
     # Minutes without agent activity before the hub reports a stall (#144).
     stall_after_min: PositiveNumber = 20
+    # Absolute eligible inactivity before asking the operator (#272); 0 disables it.
+    stall_action_after_min: Annotated[int | float, Field(ge=0, allow_inf_nan=False)] = 0
     # Bounded pre-release closeout collection window (#386): omitted
     # `request_closeout_reports` timeout uses this run policy value.
     closeout_wait_s: CloseoutWait = CLOSEOUT_WAIT_DEFAULT_S
     # What happens when a run ends with the queue empty (mvp-spec §7.2, M2 Step 3).
     # `release` releases workers; `standby` keeps them joined for the next run.
     on_done: Literal["release", "standby"] = "release"
+
+    @model_validator(mode="after")
+    def ordered_stall_thresholds(self) -> Self:
+        if self.stall_action_after_min and self.stall_action_after_min <= self.stall_after_min:
+            raise ValueError("stall_action_after_min must be 0 or greater than stall_after_min")
+        return self
 
 
 class AgentStatus(StrEnum):
@@ -93,6 +101,8 @@ class EventKind(StrEnum):
     # A worker stopped making hub calls or task progress while its bridge
     # kept heartbeating (#144); one per stall episode, never a lifecycle change.
     AGENT_STALLED = "agent_stalled"
+    # Durable operator-question action/withdrawal, never process or task control (#272).
+    STALL_ACTION = "stall_action"
     HOST_PAUSED = "host_paused"
     # The operator submitted a statement of work; the hub queued a workflow (#241).
     WORK_SUBMITTED = "work_submitted"

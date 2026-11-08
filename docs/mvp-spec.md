@@ -465,6 +465,16 @@ Queue and run identity enter the compact state in M2 Step 3.
   delivered, for the policy's `stall_after_min`. Shown with its evidence; a worker's episode
   queues one `agent_stalled` event; nothing is failed or restarted. Episodes are kept in
   `stall_episode` (DB schema v17).
+  Optional `stall_action_after_min` (#272, default 0/disabled) must exceed
+  `stall_after_min` when enabled. It measures the same eligible inactivity,
+  independently per reason, and atomically opens one operator question per
+  worker episode, escalates the workflow and queues `stall_action` for Alice
+  to inspect PR comments, worker state and manual recovery (#223). The hub
+  withdraws its own unanswered question when the episode clears and queues a
+  withdrawal `stall_action`; it preserves answers and unrelated questions.
+  Neither action grants process/task-control authority or automatically resumes
+  the workflow. Holds and host-pause suppression still apply. DB schema v28
+  links the question to its episode; bridge heartbeats never count as progress.
 
 ### 5.1 Denise: interactive operator assistant (M7)
 

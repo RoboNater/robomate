@@ -47,8 +47,9 @@ DEFAULTS: dict[str, str | int | float | bool] = {
     "auto_start": True,
     "pytest_workers": 0,
     "stall_after_min": 20,
+    "stall_action_after_min": 0,
 }
-MINUTE_KEYS = ("stall_after_min",)
+MINUTE_KEYS = ("stall_after_min", "stall_action_after_min")
 PATH_KEYS = ("run_parent_dir", "work_file")
 
 
@@ -133,6 +134,9 @@ def settings(args: argparse.Namespace) -> dict[str, Any]:
 def validate(values: dict[str, Any], *, preparing: bool) -> None:
     if not math.isfinite(values["stall_after_min"]) or values["stall_after_min"] <= 0:
         raise ValueError("stall_after_min must be a positive finite number of minutes")
+    action = values["stall_action_after_min"]
+    if not math.isfinite(action) or action < 0 or (action and action <= values["stall_after_min"]):
+        raise ValueError("stall_action_after_min must be 0 or greater than stall_after_min")
     if values["pytest_workers"] < 0:
         raise ValueError("pytest_workers must not be negative (0 means CPU count)")
     if values["issue"] < 0:
@@ -186,6 +190,8 @@ def write_config(path: Path, values: dict[str, Any]) -> None:
             lines.append("# Workers per pytest -n auto run; 0 uses the CPU count.")
         if key == "stall_after_min":
             lines.append("# Minutes without agent activity before a diagnostic stall.")
+        if key == "stall_action_after_min":
+            lines.append("# Absolute inactivity minutes before asking the operator; 0 disables.")
         lines.append(f"{key} = {literal}")
     with path.expanduser().open("x", encoding="utf-8") as stream:
         stream.write("\n".join(lines) + "\n")
@@ -243,6 +249,7 @@ def prepare(values: dict[str, Any], *, yes: bool, source_config: Path | None = N
     ]
     command += ["--pytest-workers", str(values["pytest_workers"])]
     command += ["--stall-after-min", str(values["stall_after_min"])]
+    command += ["--stall-action-after-min", str(values["stall_action_after_min"])]
     if values["issue"]:
         command += ["--issue", str(values["issue"])]
     else:
