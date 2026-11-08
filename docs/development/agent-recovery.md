@@ -257,12 +257,22 @@ whose model is rate-limited or hung, or that ended its turn without exiting,
 keeps it running. The hub therefore tracks substantive hub calls, task
 progress and held calls separately, and `robomate status` marks an agent
 `STALLED` when, for longer than the workflow policy's `stall_after_min`
-(default 20 minutes; `prepare-run.py --stall-after-min`):
+(default 20 minutes):
 
 - it made no substantive hub call and holds none (`no_hub_call`);
 - a worker's assigned task has had no message, progress, question or result
   since its assignment (`no_task_progress`);
 - an event for Alice has never been delivered (`event_backlog`).
+
+Set `stall_after_min = 30` in the standard-run TOML, or pass
+`scripts/prep-standard-run.sh --config run-config.toml --stall-after-min 30`
+(PowerShell: `scripts/prep-standard-run.ps1` with the same arguments). CLI
+values override the file; positive fractional minutes are accepted. The helper
+forwards this to the existing `prepare-run.py --stall-after-min` option and
+records it in the run policy and Alice's prompt. For the M2 submission path,
+set `stall_after_min` in the user, repository or hub configuration layer, or
+override it per run with `robomate submit statement.md --policy stall_after_min=30`.
+The #247/#268 launcher and setup successors must retain these policy settings.
 
 Each line names the ages, the bridge heartbeat's age, and the task or event
 IDs. `robomate status --json` carries the same under each agent's `activity`
