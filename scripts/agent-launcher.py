@@ -51,6 +51,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import uuid
 from collections.abc import Callable, Mapping
@@ -66,6 +67,7 @@ import agent_launcher as common  # noqa: E402
 from agent_interactive import split_arguments  # noqa: E402
 from agent_recovery import agent_lock, prepare  # noqa: E402
 from agent_sessions import conversation as saved_conversation  # noqa: E402
+from agent_sessions import exact_id  # noqa: E402
 from agent_worker import WorkerLauncher, WorkerReader  # noqa: E402
 
 ROLES = ("orchestrator", "implementer", "reviewer", "worker")
@@ -144,6 +146,10 @@ class Place:
     sessions: Path
     """The directory holding ``<agent>.jsonl``."""
     selector: str | None
+    explicit: bool = False
+    """Whether a joining child's bridge needs the URL and token file to find the hub:
+    a remote host, or a hub named by ``ROBOMATE_HUB_URL``. A local hub is found
+    through the worktree's binding instead."""
 
 
 def locate(args: argparse.Namespace) -> Place:
@@ -155,7 +161,13 @@ def locate(args: argparse.Namespace) -> Place:
             raise Usage("--hub-url, --token-file and --sessions-dir go together (a remote host)")
         if args.hub:
             raise Usage("--hub selects a local hub; --hub-url names a remote one, not both")
-        return Place(args.hub_url.rstrip("/"), Path(args.token_file), Path(args.sessions_dir), None)
+        return Place(
+            args.hub_url.rstrip("/"),
+            Path(args.token_file).resolve(),
+            Path(args.sessions_dir),
+            None,
+            explicit=True,
+        )
     from agent_hub_common.discovery import DiscoveryError, LocalHub, find_hub
 
     try:
@@ -167,7 +179,33 @@ def locate(args: argparse.Namespace) -> Place:
         return Place(hub.url.rstrip("/"), hub.token_file, sessions, args.hub)
     if not args.sessions_dir:
         raise Usage("a hub named by ROBOMATE_HUB_URL has no local state: add --sessions-dir")
-    return Place(hub.url, hub.token_file, Path(args.sessions_dir), None)
+    return Place(hub.url, hub.token_file, Path(args.sessions_dir), None, explicit=True)
+
+
+def is_selection(name: str) -> bool:
+    """The variables by which a bridge finds a hub explicitly (spec §4)."""
+    return name == "ROBOMATE_HUB_URL" or name.startswith("ROBOMATE_TOKEN")
+
+
+def cleared_environment() -> dict[str, str]:
+    """This process's environment without an inherited hub selection."""
+    return {key: value for key, value in os.environ.items() if not is_selection(key)}
+
+
+def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """A joining child's environment: the selected hub, never an inherited one (#247 r1-3).
+
+    A local hub's worktree binding names it, so any ambient selection is
+    cleared. A remote host's clone has no binding: its bridge gets the URL and
+    token file the operator gave, and no ``ROBOMATE_TOKEN``, which would
+    otherwise take precedence over the file.
+    """
+    forwarded: dict[str, str] = {}
+    if place.explicit:
+        if place.token_file is None:
+            raise Usage("the hub's token file is unknown: name it with --token-file")
+        forwarded = {"ROBOMATE_HUB_URL": place.url, "ROBOMATE_TOKEN_FILE": str(place.token_file)}
+    return cleared_environment() | forwarded | dict(extra or {})
 
 
 def robomate_workspace(agent: str, selector: str | None) -> Path:
@@ -695,6 +733,46 @@ def best_effort_hub(place: Place, tools: Tools, agent: str, role: str) -> dict[s
     }
 
 
+_UUID_FILE = re.compile(r"([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\.jsonl$")
+
+
+def codex_conversation(home: Path, since: float, workdir: Path) -> str | None:
+    """The one Codex session written in ``workdir`` since ``since``, from Codex's own store.
+
+    Codex names each rollout ``rollout-<time>-<id>.jsonl`` and records its
+    working directory in the first line. Only a single candidate whose
+    recorded directory is ``workdir`` counts; anything else is no capture.
+    """
+    found = set()
+    for path in (home / "sessions").rglob("rollout-*.jsonl"):
+        match = _UUID_FILE.search(path.name)
+        try:
+            if match is None or path.stat().st_mtime < since:
+                continue
+            with path.open(encoding="utf-8") as stream:
+                first = json.loads(stream.readline())
+        except (OSError, ValueError):
+            continue
+        meta = first.get("payload") if isinstance(first, dict) else None
+        cwd = (meta if isinstance(meta, dict) else first).get("cwd")
+        if isinstance(cwd, str) and Path(cwd).resolve() == workdir.resolve():
+            found.add(match.group(1))
+    return found.pop() if len(found) == 1 else None
+
+
+def capture_remedy(harness: str, agent: str, workdir: Path) -> str:
+    """What the operator does when an interactive harness's conversation ID is not captured."""
+    where = {
+        "codex": f"run `codex resume` in {workdir} to list its sessions",
+        "opencode": f"run `opencode session list` in {workdir}",
+    }.get(harness, f"use {harness}'s own session list for {workdir}")
+    return (
+        f"To resume or ask later, find the exact ID ({where}) and pass it: "
+        f"agent-launcher.py resume {agent} --resume-session ID, or agent-launcher.py ask "
+        f"{agent} ID. Never use --last or --continue: they may pick another agent's."
+    )
+
+
 def run_interactive(
     argv: list[str],
     *,
@@ -704,16 +782,66 @@ def run_interactive(
     cwd: Path,
     env: Mapping[str, str],
 ) -> int:
-    """One interactive harness, recorded but never resumed automatically (#222)."""
+    """One interactive harness, recorded but never resumed automatically (#222).
 
-    child = subprocess.Popen(argv, cwd=cwd, env=os.environ | dict(env))
+    A Codex session's ID is looked up in Codex's store after it ends; without
+    an exact capture the operator is told how to supply the ID by hand.
+    """
+
+    started = time.time() - 1.0
+    child = subprocess.Popen(argv, cwd=cwd, env=dict(env))
     common.log_session(log, event=event, pid=child.pid, interactive=True, **row)
     try:
         code = child.wait()
     except KeyboardInterrupt:
         code = child.wait()
+    if row["conversation_id"] is None:
+        found = None
+        if row["harness"] == "codex":
+            home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
+            found = codex_conversation(home, started, cwd)
+        if found is not None:
+            row = row | {"conversation_id": found}
+            common.log_session(
+                log, event="conversation", conversation_source="codex session store", **row
+            )
+            say(f"conversation {found} (from the Codex session store)")
+        else:
+            say(
+                "no conversation ID was captured. "
+                + capture_remedy(row["harness"], row["agent"], cwd)
+            )
     common.log_session(log, event="exit", exit_code=code, interactive=True, **row)
     return code
+
+
+def supplied_conversation(log: Path, saved: Mapping[str, Any], supplied: str | None) -> None:
+    """Record an operator-supplied ID for a launch that captured none (#222).
+
+    Recovery refuses a start whose conversation was never recorded, so that
+    no earlier conversation is reused; the operator's exact ID, given after
+    an interactive start without capture, is recorded first instead.
+    """
+    rows = saved_rows(log)
+    launches = [i for i, row in enumerate(rows) if row.get("event") in LAUNCH_EVENTS]
+    if supplied is None or not launches or rows[launches[-1]].get("interactive") is not True:
+        # A headless launch keeps #173's refusal and its documented remedy.
+        return
+    if any(isinstance(row.get("conversation_id"), str) for row in rows[launches[-1] :]):
+        return
+    if not exact_id(str(saved["harness"]), supplied):
+        raise Usage(f"{supplied!r} is not an exact {saved['harness']} conversation ID")
+    latest = rows[launches[-1]]
+    common.log_session(
+        log,
+        event="conversation",
+        conversation_source="operator",
+        conversation_id=supplied,
+        **{
+            key: latest.get(key)
+            for key in ("agent", "harness", "role", "hub_id", "workflow_id", "run_id")
+        },
+    )
 
 
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
@@ -740,14 +868,26 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         argv, prompted = interactive_start(
             args.harness, program, flags, granted, perms, extra, prompt=line, session_id=session_id
         )
-        env = (
+        env = child_environment(
+            place,
             opencode_environment(args.effort, safe=args.safe_mode)
             if args.harness == "opencode"
-            else {}
+            else {},
         )
         announce(args.harness, args.safe_mode, extra)
         if not prompted:
             print(f"Type this line once the harness is ready: {line}", flush=True)
+        if not session_id:
+            print(
+                f"Note: {args.harness} does not tell an interactive launcher its conversation "
+                + (
+                    "ID; the launcher looks for it in the Codex session store afterwards. "
+                    if args.harness == "codex"
+                    else "ID. "
+                )
+                + capture_remedy(args.harness, args.agent, workdir),
+                flush=True,
+            )
         row = {
             "agent": args.agent,
             "harness": args.harness,
@@ -780,6 +920,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         command=base,
         sessions=log,
         cwd=workdir,
+        env=child_environment(place),
     )
     reader = make_reader(tools, place, args.agent, args.role)
     kind = JoinedOrchestrator if args.role == "orchestrator" else JoinedWorker
@@ -821,6 +962,8 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         "force": args.force,
     }
     reader = make_reader(tools, place, args.agent, role)
+    with agent_lock(log):
+        supplied_conversation(log, saved, args.resume_session)
     if args.interactive:
         namespace = argparse.Namespace(
             harness=harness, sessions=log, recovery_config=None, **recovery
@@ -838,7 +981,10 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 extra,
                 conversation,
             )
-            env = opencode_environment(effort, safe=args.safe_mode) if harness == "opencode" else {}
+            env = child_environment(
+                place,
+                opencode_environment(effort, safe=args.safe_mode) if harness == "opencode" else {},
+            )
             announce(harness, args.safe_mode, extra)
             print(
                 f"Send this once the conversation is open: {continuation(args.agent, role)}",
@@ -877,6 +1023,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         command=base,
         sessions=log,
         cwd=workdir,
+        env=child_environment(place),
         **recovery,
     )
     kind = JoinedOrchestrator if role == "orchestrator" else JoinedWorker
@@ -927,7 +1074,7 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     )
     try:
         return subprocess.call(
-            argv, cwd=workdir if workdir.is_dir() else None, env=os.environ | env
+            argv, cwd=workdir if workdir.is_dir() else None, env=cleared_environment() | env
         )
     except KeyboardInterrupt:
         return common.EXIT_INTERRUPTED
@@ -979,6 +1126,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     if settings["status"] != "ready":
         raise Usage(settings["skip_reason"])
     harness = settings["harness"]
+    profile_name = "codex" if harness == "codex" else "claude"
     target = Path(args.target).resolve() if args.target else None
     context = denise.build_joined_context(
         manifest,
@@ -989,8 +1137,33 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         tooling_root=ROOT,
         settings=settings,
     )
-    report = denise.render_joined(context)
     doctor_dir = context["doctor"]
+    # Denise's own harness home/config under the selected run (docs/denise/guide.md):
+    # no robomate MCP entry, no team permissions, no unattended approvals.
+    profile = Path(doctor_dir["configs"]) / profile_name
+    doctor_dir["profile"] = str(profile)
+    report = denise.render_joined(context)
+    profile.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if harness == "codex":
+        (profile / "config.toml").write_text(
+            "# Denise's doctor profile (agent-launcher.py doctor): no MCP servers and no\n"
+            "# unattended approvals. Rewritten at each start; log in once with\n"
+            f"#   CODEX_HOME={profile} codex login\n",
+            encoding="utf-8",
+        )
+        profile_variable = "CODEX_HOME"
+        login = (
+            ""
+            if (profile / "auth.json").is_file()
+            else f"Denise's Codex profile has no login yet: run `CODEX_HOME={profile} codex "
+            "login`, or log in when Codex asks. Never point it at another agent's home."
+        )
+    else:
+        profile_variable = "CLAUDE_CONFIG_DIR"
+        login = (
+            f"Denise's Claude Code profile is {profile}: log in there when Claude Code asks, "
+            "never with another agent's configuration."
+        )
     write_roots = [
         root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
     ]
@@ -1018,8 +1191,12 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         f"harness arguments: {extra!a}.",
         flush=True,
     )
-    environment = {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
-    return subprocess.call(argv, cwd=doctor_dir["workdir"], env=os.environ | environment)
+    if login:
+        print(login, flush=True)
+    # No inherited hub selection: discovery is scoped to each operator command.
+    environment = cleared_environment() | {profile_variable: str(profile)}
+    environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
+    return subprocess.call(argv, cwd=doctor_dir["workdir"], env=environment)
 
 
 # -- arguments ------------------------------------------------------------------------

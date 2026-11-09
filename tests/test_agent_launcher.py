@@ -44,7 +44,8 @@ FAKE_HARNESS = """\
 import json, os, sys, time
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
-keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR")
+keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
+        "ROBOMATE_TOKEN_FILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
           "env": {k: os.environ.get(k) for k in keys}}
 log = os.environ["FAKE_LOG"]
@@ -58,6 +59,15 @@ export = os.environ.get("FAKE_EXPORT_ID")
 if export and "--export" in argv:
     with open(argv[argv.index("--export") + 1], "w", encoding="utf-8") as stream:
         json.dump({"schema_version": "ATIF-v1.2", "session_id": export, "steps": []}, stream)
+rollout = os.environ.get("FAKE_CODEX_ROLLOUT")
+if rollout:
+    # Codex's own session store: rollout-<time>-<id>.jsonl, working directory first.
+    store = os.path.join(os.environ["CODEX_HOME"], "sessions", "2026", "11", "09")
+    os.makedirs(store, exist_ok=True)
+    name = os.path.join(store, "rollout-2026-11-09T00-00-00-" + rollout + ".jsonl")
+    with open(name, "w", encoding="utf-8") as stream:
+        meta = {"type": "session_meta", "payload": {"id": rollout, "cwd": os.getcwd()}}
+        stream.write(json.dumps(meta) + "\\n")
 line = os.environ.get("FAKE_ID_LINE")
 if line:
     print(line, flush=True)
@@ -81,7 +91,13 @@ def git(cwd: Path, *words: str) -> str:
 def area(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     """A hub checkout with legacy state, an agent worktree, and the fake harness outside both."""
 
-    for name in ("ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE", "FAKE_ID_LINE"):
+    for name in (
+        "ROBOMATE_HUB_URL",
+        "ROBOMATE_TOKEN",
+        "ROBOMATE_TOKEN_FILE",
+        "FAKE_ID_LINE",
+        "FAKE_CODEX_ROLLOUT",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("FAKE_EXPORT_ID", raising=False)
     monkeypatch.delenv("FAKE_PLAN", raising=False)
@@ -233,6 +249,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, harness: str, role: str
 ) -> None:
     use_harness(harness, monkeypatch)
+    monkeypatch.setenv("ROBOMATE_HUB_URL", "http://another-hub:1")
+    monkeypatch.setenv("ROBOMATE_TOKEN", "ambient-token")
     agent = "alice" if role == "orchestrator" else "bob"
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
     active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
@@ -265,6 +283,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
             "m-1",
         ]
         assert run["env"]["FAKE_MARK"] == "kept"
+        # The worktree's binding names a local hub; an ambient selection is cleared.
+        assert run["env"]["ROBOMATE_HUB_URL"] is None and run["env"]["ROBOMATE_TOKEN"] is None
         # No rendered config, prompt file or MCP config path is passed.
         assert not any("--mcp-config" in word or "prompt.md" in word for word in run["argv"])
     resumed = second["stdin"] if harness == "codex" else second["argv"][-1]
@@ -562,51 +582,136 @@ def test_ask_refuses_a_harness_whose_hub_tools_cannot_be_switched_off(
     assert launches(area) == []
 
 
-def test_a_remote_host_names_its_hub_sessions_and_clone(
-    area: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("interactive", [False, True])
+def test_a_remote_host_hands_its_hub_selection_to_the_joining_harness(
+    area: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interactive: bool
 ) -> None:
-    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    """A clone has no hub binding: the bridge finds the hub only from the forwarded selection."""
+
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    monkeypatch.setenv("ROBOMATE_HUB_URL", "http://another-hub:1")
+    monkeypatch.setenv("ROBOMATE_TOKEN", "ambient-token")
+    monkeypatch.setenv("ROBOMATE_TOKEN_FILE", str(tmp_path / "ambient token"))
     sessions = tmp_path / "remote sessions"
-    hub = FakeHub(
-        after_launches(
-            area,
-            {"workflow": workflow(), "agents": [agent_row()]},
-            {"workflow": workflow(), "agents": [agent_row("released", context="c2")]},
-        )
-    )
+    token = area["state"] / "token"
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
 
     def no_workspace(agent: str, selector: str | None) -> Path:
         raise AssertionError("a remote host has no local robomate workspace")
 
+    remote = ["--hub-url", "http://hub.example:8420/", "--token-file", str(token)]
+    remote += ["--sessions-dir", str(sessions), "--read-retry-delay-s", "0"]
+    words = ["start", "bob", "--role", "implementer", "--harness", "claude-code", *remote]
+    words += ["--workdir", str(area["worktree"]), "--predecessor-poll-s", "0.01"]
+    words += ["--resume-delay-s", "0"]
     code = CLI.main(
-        [
-            "start",
-            "bob",
-            "--role",
-            "implementer",
-            "--harness",
-            "claude-code",
-            "--hub-url",
-            "http://hub.example:8420",
-            "--token-file",
-            str(area["state"] / "token"),
-            "--sessions-dir",
-            str(sessions),
-            "--workdir",
-            str(area["worktree"]),
-            "--read-retry-delay-s",
-            "0",
-            "--predecessor-poll-s",
-            "0.01",
-        ],
+        words + (["--interactive"] if interactive else []),
         programs=programs(area),
         reader=hub,
         workspace=no_workspace,
     )
 
-    assert code == 0
+    assert code == (1 if interactive else 0)
+    if interactive:
+        # The guarded resume on that host hands on the same selection.
+        assert (
+            CLI.main(["resume", "bob", *remote], programs=programs(area), reader=snapshotting(hub))
+            == 0
+        )
+    assert len(launches(area)) == 2
+    for run in launches(area):
+        assert run["env"]["ROBOMATE_HUB_URL"] == "http://hub.example:8420"
+        assert run["env"]["ROBOMATE_TOKEN_FILE"] == str(token.resolve())
+        # An ambient token would take precedence over the file in the bridge.
+        assert run["env"]["ROBOMATE_TOKEN"] is None
     assert (sessions / "bob.jsonl").is_file()
     assert not area["sessions"].exists()
+
+
+def test_interactive_codex_start_captures_its_conversation_for_resume_and_ask(
+    area: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conversation = "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f9"
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex home"))
+    monkeypatch.setenv("FAKE_CODEX_ROLLOUT", conversation)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
+    words = start_words(area, "bob", "implementer", "codex", "--interactive")
+
+    assert CLI.main(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 1
+
+    log = rows(area)
+    assert [row["event"] for row in log] == ["start", "conversation", "exit"]
+    assert log[1]["conversation_id"] == conversation
+    assert log[1]["conversation_source"] == "codex session store"
+    monkeypatch.delenv("FAKE_CODEX_ROLLOUT")
+    resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+    assert CLI.main(resume, programs=programs(area), reader=snapshotting(hub)) == 0
+    assert launches(area)[1]["argv"][-3:] == ["resume", conversation, "-"]
+    assert CLI.main(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 0
+    assert launches(area)[2]["argv"][-1] == conversation
+
+
+def snapshotting(hub: Any) -> Any:
+    """The same scripted hub, also answering the recovery reads."""
+
+    status: Callable[[str], dict[str, Any]] = hub.answer
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.snapshot":
+            live = status("hub.status")["workflow"]
+            return {
+                "hub_id": HUB,
+                "workflow": live,
+                "tasks": [],
+                "taken_at": "2026-11-09T00:00:00Z",
+            }
+        if method == "hub.questions":
+            return {"questions": []}
+        return status(method)
+
+    return FakeHub(answer)
+
+
+@pytest.mark.parametrize("harness", ["opencode", "antigravity", "devin"])
+def test_interactive_start_without_capture_warns_and_takes_the_operators_exact_id(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+) -> None:
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
+    words = start_words(area, "bob", "reviewer", harness, "--interactive")
+
+    assert CLI.main(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 0
+
+    out = capsys.readouterr()
+    assert "does not tell an interactive launcher its conversation ID" in out.out
+    assert "--resume-session ID" in out.out and "no conversation ID was captured" in out.err
+    resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+    # Without an ID, recovery refuses rather than guess one.
+    assert CLI.main(resume, programs=programs(area), reader=snapshotting(hub)) == 4
+    assert len(launches(area)) == 1
+    exact = str(IDS[harness])
+    assert CLI.main([*resume, "--resume-session", "not an id"], programs=programs(area)) == 2
+    assert (
+        CLI.main(
+            [*resume, "--resume-session", exact], programs=programs(area), reader=snapshotting(hub)
+        )
+        == 0
+    )
+    assert exact in launches(area)[1]["argv"]
+    recorded = [row for row in rows(area) if row["event"] == "conversation"]
+    assert [(row["conversation_id"], row["conversation_source"]) for row in recorded] == [
+        (exact, "operator")
+    ]
 
 
 # -- Denise's doctor entry -------------------------------------------------------------
@@ -766,3 +871,40 @@ def test_doctor_supports_only_its_ready_harnesses(
         CLI.main(["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "opencode"])
     assert refused.value.code == 2
     assert launches(area) == []
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
+    area: dict[str, Path], run: dict[str, Path], monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    for name, value in {
+        "ROBOMATE_HUB_URL": "http://another-hub:1",
+        "ROBOMATE_TOKEN": "ambient-token",
+        "ROBOMATE_TOKEN_FILE": str(area["root"] / "ambient token"),
+        "CODEX_HOME": str(area["root"] / "team codex home"),
+        "CLAUDE_CONFIG_DIR": str(area["root"] / "team claude config"),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", harness]
+    assert CLI.main(words, programs=programs(area), reader=no_hub()) == 0
+
+    (launch,) = launches(area)
+    env = launch["env"]
+    assert env["ROBOMATE_HUB_URL"] is None and env["ROBOMATE_TOKEN"] is None
+    assert env["ROBOMATE_TOKEN_FILE"] is None
+    profile = run["denise"] / "configs" / ("codex" if harness == "codex" else "claude")
+    variable, other = (
+        ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
+        if harness == "codex"
+        else ("CLAUDE_CONFIG_DIR", "CODEX_HOME")
+    )
+    assert env[variable] == str(profile) and profile.is_dir()
+    if harness == "codex":
+        config = (profile / "config.toml").read_text(encoding="utf-8")
+        assert "[mcp_servers" not in config and "approval" not in config.split("#")[0]
+    context = json.loads((run["denise"] / "context.json").read_text(encoding="utf-8"))
+    assert context["doctor"]["profile"] == str(profile)
+    assert env[other] == str(
+        area["root"] / ("team claude config" if other == "CLAUDE_CONFIG_DIR" else "team codex home")
+    )

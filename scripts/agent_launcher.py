@@ -392,6 +392,8 @@ class Launcher:
             # agent-launcher.py runs the harness in the agent's worktree (#247);
             # the prepared-run scripts `cd` there before starting the launcher.
             cwd=getattr(self.args, "cwd", None),
+            # agent-launcher.py hands every joining child its hub selection (#247 r1-3).
+            env=getattr(self.args, "env", None),
         )
         if self.interrupted:
             # A signal that landed just before this launch.

@@ -54,7 +54,9 @@ operator credential), starts the harness there with the join line
 but `sessions/<agent>.jsonl` (with its `.lock`, and Devin's export) in the
 hub's state directory. The harness finds the hub through its static
 `robomate mcp` entry and the worktree's binding: there is no rendered config,
-prompt file or run directory. The sandbox grants measured in the
+prompt file or run directory. An inherited `ROBOMATE_HUB_URL` or
+`ROBOMATE_TOKEN*` would override that binding, so the launcher clears them
+for every harness it starts. The sandbox grants measured in the
 [user guide](../user-guide.md#linux-sandbox-grants) are passed as flags:
 Claude Code's sandbox (`--settings` with the forge hosts and a read-deny on
 the hub's token directory) and Codex's `workspace-write` with network and the
@@ -136,6 +138,19 @@ get the join line as their initial prompt; for AntiGravity and Devin the
 launcher prints it for you to type. An interactive `resume` applies the same
 guards, opens the conversation, and prints the continuation to send.
 
+An interactive harness owns the terminal, so its output cannot be read for a
+conversation ID. The ID is exact for Claude Code, which takes the one the
+launcher chooses. For Codex, the launcher looks after the session in Codex's
+own session store (`$CODEX_HOME/sessions`) for the single rollout written in
+that worktree since the start, and records it as a `conversation` row.
+Elsewhere, and whenever that lookup finds no single candidate, the launcher
+says so before and after the session and names the remedy: find the exact ID
+in the harness's own session list (`codex resume`, `opencode session list`)
+and pass it to `resume <agent> --resume-session ID`, which records it with
+`conversation_source: operator` before the usual guards, or to
+`ask <agent> ID`. Recovery refuses to guess an ID, and never uses `--last` or
+`--continue`.
+
 ### Remote hosts
 
 On a host without the hub, create the clone with
@@ -149,7 +164,11 @@ uv run --project <robomate checkout> python scripts/agent-launcher.py start bob 
 ```
 
 `resume` and `ask` on that host take `--hub-url`, `--token-file` and
-`--sessions-dir` (`ask` needs only `--sessions-dir`).
+`--sessions-dir` (`ask` needs only `--sessions-dir`). A clone has no hub
+binding, so the launcher hands its bridge the same selection: every harness
+it starts or resumes there gets `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN_FILE`
+from these options, and no inherited `ROBOMATE_TOKEN`, which would otherwise
+take precedence over the file.
 
 ### Denise's doctor entry
 
@@ -165,11 +184,17 @@ locally; a missing run lists the hub's runs and creates nothing. In that
 run's `denise/` it refreshes `context.json` (the run, the robomate checkout
 and the target checkout as separate references, and an access inventory) and
 `startup.md`, and creates a new report under `reports/`; earlier reports are
-kept. Denise starts interactively in `denise/workspace` with no MCP server
-(`--strict-mcp-config` for Claude Code, `mcp_servers={}` for Codex), no
-unattended flags, the local guide `docs/denise/guide.md`, and directory
+kept. Denise starts interactively in `denise/workspace` with her own
+harness profile, `denise/configs/claude` (`CLAUDE_CONFIG_DIR`) or
+`denise/configs/codex` (`CODEX_HOME`, whose `config.toml` holds no MCP server
+and no approval policy), never the operator's or a team agent's. She gets no
+MCP server (`--strict-mcp-config` for Claude Code, `mcp_servers={}` for
+Codex), no unattended flags, no inherited `ROBOMATE_HUB_URL` or
+`ROBOMATE_TOKEN*`, the local guide `docs/denise/guide.md`, and directory
 grants only on the inventory's write roots: the selected run, the target
-checkout and its git common directory, and the hub's state. M7 Step 2's
+checkout and its git common directory, and the hub's state. A new profile has
+no login: the launcher says how to log in to it (`CODEX_HOME=<profile> codex
+login`, or Claude Code's own prompt). M7 Step 2's
 generated wrappers for prepared runs remain until Step 11 proves this entry
 on Bash and PowerShell.
 
