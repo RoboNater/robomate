@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -34,7 +35,7 @@ from agent_hub_common import (
     to_iso,
     utcnow,
 )
-from timing import LIVENESS_S, wait_until
+from timing import LIVENESS_S, FrozenClock, wait_until
 
 CLAUDE = AgentProfile(
     harness="claude-code",
@@ -2123,3 +2124,135 @@ def test_finished_task_error_names_only_the_callers_task(store: HubStore) -> Non
     assert "await_assignment" in message
     assert charlie_task not in message
     assert "Charlie work" not in message
+
+
+async def test_repeated_assignment_paces_until_deadline(
+    store: HubStore, frozen_clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeat waits the whole requested hold, then returns a reminder (#434)."""
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    await store.await_assignment(agent.context_id, LIVENESS_S)
+    first = await store.await_assignment(agent.context_id, LIVENESS_S)
+    assert isinstance(first, TaskRecord) and first.already_held
+    before = store.get_task(task_id)
+    # Holds normally use real monotonic time (testing-time-and-waits.md).
+    # Drive this deadline explicitly and wake the subscription after advancing.
+    monkeypatch.setattr(store_module, "monotonic", frozen_clock.monotonic)
+    polls = []
+    original_claim = HubStore._claim_assignment
+
+    def counted_claim(
+        self: HubStore, name: str
+    ) -> TaskRecord | Released | dict[str, object] | None:
+        polls.append(name)
+        return original_claim(self, name)
+
+    monkeypatch.setattr(HubStore, "_claim_assignment", counted_claim)
+    pending = asyncio.create_task(store.await_assignment(agent.context_id, 100))
+    key = context_key(agent.context_id)
+    await wait_until(lambda: store.signals.waiting(key), "repeat hold subscription")
+    assert not pending.done()
+    after = len(polls)
+    frozen_clock.advance(99)
+    store.signals.notify(key)
+    await wait_until(lambda: len(polls) > after, "repeat rechecked before deadline")
+    assert not pending.done()
+    frozen_clock.advance(1)
+    store.signals.notify(key)
+    result = await asyncio.wait_for(pending, LIVENESS_S)
+    assert isinstance(result, TaskRecord) and result.id == task_id and result.already_held
+    assert store.get_task(task_id) == before
+    evidence = store.assess_activity()["agents"]["bob"]
+    assert evidence["redelivery_count"] == 2
+    assert not evidence["stalled"]
+    assert store.get_state()["agents"][0]["redelivery_count"] == 2
+    with database(store.path) as connection:
+        payloads = [
+            json.loads(row[0]) for row in connection.execute("SELECT payload_json FROM event")
+        ]
+    diagnostics = [p for p in payloads if p.get("diagnostic") == "repeated_assignment"]
+    assert len(diagnostics) == 1 and diagnostics[0]["task_id"] == task_id
+
+
+@pytest.mark.parametrize(
+    "action", ["release", "cancel", "question", "reply", "roundtrip", "finish", "lost"]
+)
+async def test_repeated_assignment_wakes_on_change(
+    store: HubStore, action: str, frozen_clock: FrozenClock
+) -> None:
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    await store.await_assignment(agent.context_id, LIVENESS_S)
+    question_id = None
+    if action == "reply":
+        question_id = store.open_question(task_id, "bob", "Which base?", "q1")
+    await store.await_assignment(agent.context_id, LIVENESS_S)
+    pending = asyncio.create_task(store.await_assignment(agent.context_id, LIVENESS_S))
+    await wait_until(lambda: store.signals.waiting(context_key(agent.context_id)), "repeat hold")
+    assert not pending.done()
+    if action == "lost":
+        frozen_clock.advance(181)
+        store.sweep(180)
+    elif action == "release":
+        store.release_agent("bob")
+    elif action == "cancel":
+        store.cancel_task(task_id)
+    elif action == "question":
+        store.open_question(task_id, "bob", "Which base?", "q1")
+    elif action == "roundtrip":
+        question_id = store.open_question(task_id, "bob", "Which base?", "q1")
+        store.reply(task_id, "main", question_id)
+    elif action == "reply":
+        assert question_id is not None
+        store.reply(task_id, "main", question_id)
+    else:
+        store.submit_result(
+            task_id,
+            "bob",
+            {"outcome": "blocked", "summary": "Need input", "blocker": "Operator decision"},
+        )
+    result = await asyncio.wait_for(pending, LIVENESS_S)
+    if action == "release":
+        assert result == Released(agent="bob")
+    elif action in ("cancel", "finish", "lost"):
+        assert result is None
+    else:
+        assert isinstance(result, TaskRecord)
+        assert result.state == (
+            TaskState.WORKING if action in ("reply", "roundtrip") else TaskState.INPUT_REQUIRED
+        )
+    if action in ("release", "cancel", "finish", "lost"):
+        assert "redelivery_count" not in store.assess_activity()["agents"]["bob"]
+
+
+async def test_terminal_rollback_preserves_worker_diagnostics(
+    store: HubStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-2: failed terminal writes cannot erase the in-memory evidence."""
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    store.record_failed_task_call(agent)
+    before = store.assess_activity()["agents"]["bob"]
+    original_database = database
+
+    @contextmanager
+    def rollback(path: Path) -> Iterator[Connection]:
+        with original_database(path) as connection:
+            yield connection
+            raise RuntimeError("simulated terminal transaction rollback")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module, "database", rollback)
+        with pytest.raises(RuntimeError, match="simulated terminal transaction rollback"):
+            store.cancel_task(task_id)
+    assert store.assess_activity()["agents"]["bob"] == before
+    held = store.get_task(task_id)
+    assert held is not None and held.state == TaskState.WORKING
+    store.cancel_task(task_id)
+    evidence = store.assess_activity()["agents"]["bob"]
+    assert "redelivery_count" not in evidence
+    assert "failed_task_call_count" not in evidence

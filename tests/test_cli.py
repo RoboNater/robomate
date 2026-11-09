@@ -4309,3 +4309,36 @@ def test_remote_workspace_clones_hub_origin(
     finally:
         if process.poll() is None:
             stop(root, env, process)
+
+
+async def test_status_renders_repeated_assignment_without_changing_stall_state(
+    store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Fix", "Secret instructions")
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    status = store.status_summary() | {
+        "repo_root": str(store.path.parent),
+        "url": "http://hub.test",
+        "origin": "o/r",
+        "forge": "github",
+        "default_branch": "main",
+        "orchestrator": None,
+    }
+    monkeypatch.setattr(
+        cli, "find_hub", lambda *args, **kwargs: HubEndpoint("http://hub.test", "t")
+    )
+    monkeypatch.setattr(cli, "_rpc", lambda *args, **kwargs: status)
+    cli._status(False, None)
+    output = capsys.readouterr().out
+    assert "bob:" in output
+    assert f"repeated assignment: task {task.id} redelivered 2 times" in output
+    assert "STALLED" not in output and "Secret instructions" not in output
+    store.cancel_task(task.id)
+    status.update(store.status_summary())
+    cli._status(False, None)
+    assert "repeated assignment" not in capsys.readouterr().out
