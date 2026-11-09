@@ -3058,16 +3058,22 @@ class HubStore:
         if task.state not in TERMINAL_STATES:
             return task
         base = f"task {task_id} is already {task.state.value}"
+        raise ConflictError(f"{base}. {self._held_task_hint(connection, agent_name)}")
+
+    def held_task_hint(self, agent_name: str) -> str:
+        """Describe only the caller's current open task for recovery."""
+        with database(self.path) as connection:
+            return self._held_task_hint(connection, agent_name)
+
+    def _held_task_hint(self, connection: Connection, agent_name: str) -> str:
         row = connection.execute(
             "SELECT current_task_id FROM agent WHERE name = ?", (agent_name,)
         ).fetchone()
         held_id = self._open_task_id(connection, row["current_task_id"] if row else None)
-        if held_id is None or held_id == task_id:
-            raise ConflictError(f"{base}. You hold no open task; call await_assignment")
+        if held_id is None:
+            return "You hold no open task; call await_assignment"
         held = self._require_task(connection, held_id)
-        raise ConflictError(
-            f'{base}. You hold open task {held.id} ("{held.title}"); use that task_id'
-        )
+        return f'You hold open task {held.id} ("{held.title}"); use that task_id'
 
     def _task_context_id(self, connection: Connection, task: TaskRecord) -> str:
         if task.assignee is None:
