@@ -692,6 +692,7 @@ class WorkerHubClient:
         # `environ` unset (r1-2 on #244). Honor that path too, so an explicit
         # clone never falls through to worktree creation.
         configured_workspace = self.settings.workspace
+        detected_clone = False
         # A provisioned remote clone is explicit even without HUB_WORKSPACE.
         # Detect from a subdirectory too; a malformed identity must be refused,
         # rather than silently creating a worktree on the remote hub host.
@@ -700,6 +701,7 @@ class WorkerHubClient:
                 root, git_dir = resolve_checkout(bridge_cwd)
                 if (git_dir / IDENTITY_FILE).exists() and (root / ".git").is_dir():
                     configured_workspace = root
+                    detected_clone = True
         if explicit_raw_env:
             explicit_raw = explicit_raw_env
             workspace_explicit = True
@@ -731,7 +733,13 @@ class WorkerHubClient:
                 try:
                     identity = read_identity(canonical_path, clean_name)
                     profile = replace(profile, workspace_id=identity["workspace_id"])
-                except Exception:
+                except Exception as exc:
+                    if detected_clone:
+                        raise ValueError(
+                            f"detected clone identity {canonical_path / '.git' / IDENTITY_FILE} "
+                            f"is invalid for agent {clean_name!r}; use the matching agent name "
+                            "or a clone provisioned for this agent"
+                        ) from exc
                     profile = replace(profile, workspace_id=None)
         else:
             resolved_workspace_path = bridge_cwd

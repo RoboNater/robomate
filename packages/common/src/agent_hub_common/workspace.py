@@ -85,7 +85,10 @@ def create_clone(destination: Path, repository: str, agent: str) -> Path:
     if not destination.is_absolute() or destination != destination.resolve():
         raise ConfigurationError("--clone must be an absolute canonical path")
     if destination.exists():
-        workspace = canonical_workspace(str(destination))
+        try:
+            workspace = canonical_workspace(str(destination))
+        except ConfigurationError as exc:
+            raise ConfigurationError(str(exc).replace("HUB_WORKSPACE", "--clone")) from exc
         if git(workspace, "remote", "get-url", "origin") != repository:
             raise ConfigurationError("existing clone has a different origin; leaving it intact")
         if git(workspace, "status", "--porcelain"):
