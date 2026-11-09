@@ -84,6 +84,7 @@ class WorkerHubClient:
             },
         )
         self.current_task_id: str | None = None
+        self._last_redelivered_task_id: str | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         # Active pending question (question_text, message_id) per task (§4.1)
         self._pending_questions: dict[str, tuple[str, str]] = {}
@@ -1069,7 +1070,9 @@ class WorkerHubClient:
         )
         return dict(json.loads("".join(part.get("text", "") for part in result.get("parts", []))))
 
-    async def await_assignment(self, timeout_s: float | None = None) -> dict[str, Any]:
+    async def await_assignment(
+        self, timeout_s: float | None = None, *, include_instructions: bool = False
+    ) -> dict[str, Any]:
         """Poll the hub for the next task assignment, holding until assigned or released."""
         if not self.context_id:
             raise RuntimeError("Worker has not checked in yet; call check_in first")
@@ -1150,6 +1153,14 @@ class WorkerHubClient:
             status_metadata = status_msg.get("metadata") or {}
             if status_metadata.get(MetaKeys.ALREADY_HELD) is True:
                 assignment["already_held"] = True
+        if assignment.get("already_held"):
+            if self._last_redelivered_task_id == assignment["task_id"] and not include_instructions:
+                # Compact only after this bridge delivered the full recovery
+                # text. A restarted bridge surfaces all fields again (#351).
+                return {key: assignment[key] for key in ("task_id", "title", "already_held")}
+            self._last_redelivered_task_id = assignment["task_id"]
+        else:
+            self._last_redelivered_task_id = None
         return assignment
 
     async def report_progress(

@@ -17,7 +17,7 @@ from agent_hub_common import (
 )
 from conftest import BASE_URL, TOKEN, check_in, message, rpc, sse_results
 from fastapi import FastAPI
-from timing import LIVENESS_S, wait_until
+from timing import LIVENESS_S, FrozenClock, wait_until
 
 
 async def post(
@@ -1216,3 +1216,71 @@ async def test_result_on_finished_task_names_held_task(
     )
     assert "already completed" in body["error"]["message"]
     assert second.id in body["error"]["message"]
+
+
+async def test_rejected_task_calls_record_diagnostic_counts(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    context_id, held_id = await assigned_context(client, hub_store)
+    other_context = await check_in(client, "charlie")
+    other = hub_store.assign_task("charlie", "implementer", "Other", "Private")
+    assert other_context != context_id
+    for task_id in ("mistyped-id", other.id):
+        response = await client.post(
+            "/a2a",
+            json=rpc(
+                "message/send",
+                message(
+                    "Still working",
+                    context_id=context_id,
+                    task_id=task_id,
+                    metadata={MetaKeys.KIND: "progress"},
+                ),
+            ),
+        )
+        assert "error" in response.json()
+    evidence = hub_store.assess_activity()["agents"]["bob"]
+    assert evidence["failed_task_call_count"] == 2
+    assert evidence["task_id"] == held_id
+    assert not evidence["stalled"]
+    assert "failed_task_call_count" not in hub_store.assess_activity()["agents"]["charlie"]
+
+
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+async def test_paced_next_preserves_hold_lease_and_stall_progress(
+    client: httpx.AsyncClient, app: FastAPI, frozen_clock: FrozenClock
+) -> None:
+    hub_store: HubStore = app.state.store
+    hub_store.initialize_workflow(policy={"stall_after_min": 1})
+    context_id, task_id = await assigned_context(client, hub_store)
+    next_request = rpc(
+        "message/stream",
+        message("NEXT", context_id=context_id, metadata={MetaKeys.TIMEOUT_S: LIVENESS_S}),
+    )
+    # First recovery is immediate even with a long hold requested.
+    first = await asyncio.wait_for(client.post("/a2a", json=next_request), LIVENESS_S)
+    assert sse_results(first)[0]["metadata"][MetaKeys.ALREADY_HELD]
+    pending = asyncio.create_task(client.post("/a2a", json=next_request))
+    await wait_until(
+        lambda: hub_store.assess_activity()["agents"]["bob"].get("holding") == "await_assignment",
+        "paced NEXT worker hold",
+    )
+    assert not pending.done()
+    frozen_clock.advance(61)
+    evidence = hub_store.assess_activity()["agents"]["bob"]
+    assert evidence["holding"] == "await_assignment"
+    assert evidence["reasons"] == ["no_task_progress"]
+    assert evidence["redelivery_count"] == 2
+    # A hold exempts expiry; heartbeats still renew the lease as before.
+    agent = hub_store.agent_by_context(context_id)
+    assert agent is not None
+    before_task = hub_store.get_task(task_id)
+    assert before_task is not None
+    before = before_task.lease_expires
+    assert hub_store.heartbeat("bob", agent.worker_instance_id, task_id)
+    after_task = hub_store.get_task(task_id)
+    assert after_task is not None and after_task.lease_expires != before
+    hub_store.release_agent("bob")
+    response = await asyncio.wait_for(pending, LIVENESS_S)
+    assert sse_results(response)[0]["metadata"][MetaKeys.RELEASE]
+    assert hub_store.assess_activity()["agents"]["bob"].get("holding") is None

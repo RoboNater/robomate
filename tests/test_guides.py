@@ -605,3 +605,10 @@ def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> Non
     assert "--match-head-commit <approved head>" in text
     assert "git push origin --delete <branch>" in text
     assert text.index('state == "MERGED"') < text.index("git push origin --delete <branch>")
+
+
+def test_worker_guide_explains_held_task_id_recovery() -> None:
+    guide = (Path(__file__).parents[1] / "guides" / "worker.md").read_text()
+    assert "compare the delivered `task_id`" in guide
+    assert "your local copy of the ID is wrong" in guide
+    assert "restarted bridge" in guide

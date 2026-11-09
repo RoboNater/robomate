@@ -958,3 +958,22 @@ async def test_worker_await_assignment_surfaces_branch(
     assignment = await worker.await_assignment(timeout_s=1.0)
     assert assignment["task_id"] == task.id
     assert assignment["branch"] == "robomate/testhub/bob/99"
+
+
+async def test_repeat_reminder_is_compact_and_bridge_restart_recovers_full_text(
+    client: httpx.AsyncClient, worker_settings: WorkerSettings, hub_store: HubStore
+) -> None:
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    task = hub_store.assign_task("bob", "implementer", "Recovery", "Full task text")
+    fresh = await worker.await_assignment(timeout_s=0)
+    recovery = await worker.await_assignment(timeout_s=0)
+    assert recovery == {**fresh, "already_held": True}
+    reminder = await worker.await_assignment(timeout_s=0)
+    assert reminder == {"task_id": task.id, "title": task.title, "already_held": True}
+    assert await worker.await_assignment(timeout_s=0, include_instructions=True) == recovery
+    assert await worker.await_assignment(timeout_s=0) == reminder
+    restarted = WorkerHubClient(worker_settings, http_client=client)
+    restarted.context_id = worker.context_id
+    restarted.worker_instance_id = worker.worker_instance_id
+    assert await restarted.await_assignment(timeout_s=0) == recovery

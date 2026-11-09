@@ -262,3 +262,37 @@ def test_schema_migrates_stall_action_link(tmp_path: Path) -> None:
             r["name"] for r in connection.execute("PRAGMA table_info(stall_episode)")
         }
         assert connection.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 2
+
+
+async def test_recovery_diagnostics_in_stall_event_action_and_question(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    store, instance = setup(tmp_path, frozen_clock)
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    task = store.assign_task("bob", "implementer", "Fix", "Work")
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    store.record_failed_task_call(agent)
+    store.record_failed_task_call(agent)
+    events = advance(store, frozen_clock, instance, 60)
+    stalled = next(e for e in events if e.kind == EventKind.AGENT_STALLED)
+    assert stalled.payload["redelivery_count"] == 2
+    assert stalled.payload["failed_task_call_count"] == 2
+    assert stalled.payload["last_redelivery_age_s"] == 60
+    assert stalled.payload["last_failed_task_call_age_s"] == 60
+    events = advance(store, frozen_clock, instance, 120)
+    action = next(e for e in events if e.kind == EventKind.STALL_ACTION)
+    assert action.payload["redelivery_count"] == 2
+    assert action.payload["failed_task_call_count"] == 2
+    question = store.open_operator_questions()[0]["question"]
+    assert '"redelivery_count": 2' in question
+    assert '"failed_task_call_count": 2' in question
+    assert task.id in question
+    held = store.get_task(task.id)
+    assert held is not None and held.lease_expires == task.lease_expires
+    frozen_clock.advance(1201)
+    assert "failed_task_call_count" not in store.assess_activity()["agents"]["bob"]
+    store.cancel_task(task.id)
+    assert "redelivery_count" not in store.assess_activity()["agents"]["bob"]

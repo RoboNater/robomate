@@ -15,6 +15,7 @@ import math
 import os
 import subprocess
 import tempfile
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass, field, replace
@@ -584,6 +585,14 @@ class HubStore:
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
+
+    # In-memory recovery pacing, scoped to the worker instance and task (#434).
+    _redeliveries: dict[tuple[str, str], tuple[str, int, str]] = field(
+        default_factory=dict, init=False
+    )
+    _failed_task_calls: dict[tuple[str, str], deque[datetime]] = field(
+        default_factory=dict, init=False
+    )
 
     closeout_export_errors: dict[str, str] = field(default_factory=dict, init=False)
 
@@ -1261,6 +1270,7 @@ class HubStore:
                 summary["model_mismatch"] = _model_mismatch(
                     agent.model_source, agent.model, agent.declared_model
                 )
+                summary.update(self._worker_diagnostics(agent, now))
                 summary["heartbeat_age_s"] = _age_seconds(summary["last_heartbeat"], now)
                 summary["progress_age_s"] = _age_seconds(summary["last_progress_at"], now)
                 agents.append(summary)
@@ -2734,6 +2744,7 @@ class HubStore:
                 },
             )
         self.signals.notify(EVENT_KEY)
+        self.signals.notify(context_key(record.context_id))
         return message_id
 
     def _asked_question(self, connection: Connection, task_id: str, sent_as: str) -> int | None:
@@ -2812,6 +2823,7 @@ class HubStore:
             )
             self._set_state(connection, task.id, TaskState.WORKING)
         self.signals.notify(task_key(task_id))
+        self.signals.notify(context_key(context_id))
         return True
 
     def pending_reply(self, task_id: str, after_message_id: int) -> MessageRecord | None:
@@ -3006,6 +3018,7 @@ class HubStore:
                 res = (finished, True)
 
         self.signals.notify(EVENT_KEY)
+        self.signals.notify(context_key(self.task_context_id(task_id)))
         if operation_id is None:
             return finished
         return res
@@ -3105,6 +3118,12 @@ class HubStore:
                 task_id,
             ),
         )
+        for row in connection.execute(
+            "SELECT name, worker_instance_id FROM agent WHERE current_task_id = ?", (task_id,)
+        ).fetchall():
+            key = (row["name"], row["worker_instance_id"])
+            self._redeliveries.pop(key, None)
+            self._failed_task_calls.pop(key, None)
         connection.execute(
             "UPDATE agent SET status = CASE status WHEN ? THEN ? ELSE status END,"
             " current_task_id = NULL WHERE current_task_id = ?",
@@ -3335,11 +3354,62 @@ class HubStore:
         agent = self.agent_by_context(context_id)
         if agent is None:
             raise NotFoundError(f"unknown context: {context_id}")
-        return await self._wait_for(
-            context_key(context_id),
-            lambda: self._claim_assignment(agent.name),
-            timeout_s,
-        )
+        key = (agent.name, agent.worker_instance_id)
+        previous = self._redeliveries.get(key)
+        initial: TaskRecord | None = None
+        changed = object()
+        first_reply_id: int | None = None
+
+        def poll() -> TaskRecord | Released | dict[str, Any] | object | None:
+            nonlocal initial, first_reply_id
+            outcome = self._claim_assignment(agent.name)
+            if not isinstance(outcome, TaskRecord) or not outcome.already_held:
+                return changed if outcome is None and initial is not None else outcome
+            # State can change and change back between reads (question +
+            # reply); message insertion order still observes the reply.
+            with database(self.path) as connection:
+                reply_id = int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(id), 0) FROM message"
+                        " WHERE task_id = ? AND direction = 'from_alice'",
+                        (outcome.id,),
+                    ).fetchone()[0]
+                )
+            if initial is None:
+                first_reply_id = reply_id
+                initial = outcome
+                count = previous[1] + 1 if previous and previous[0] == outcome.id else 1
+                self._redeliveries[key] = (outcome.id, count, self._now_iso())
+                if count == 2:
+                    # Notify once without recording task progress or opening a stall.
+                    self.append_event(
+                        EventKind.TASK_PROGRESS,
+                        {
+                            "agent": agent.name,
+                            "task_id": outcome.id,
+                            "diagnostic": "repeated_assignment",
+                            "note": "Repeated held-task request; inspect recovery ID and progress",
+                            "redelivery_count": count,
+                        },
+                    )
+                if count == 1:
+                    return outcome
+            if (
+                outcome.id != initial.id
+                or outcome.state != initial.state
+                or reply_id != first_reply_id
+            ):
+                return outcome
+            return None
+
+        result = await self._wait_for(context_key(context_id), poll, timeout_s)
+        if result is changed:
+            return None
+        if result is None and initial is not None:
+            result = self._claim_assignment(agent.name)
+        if isinstance(result, TaskRecord | Released | dict) or result is None:
+            return result
+        raise AssertionError("unexpected assignment outcome")
 
     def _claim_assignment(self, name: str) -> TaskRecord | Released | dict[str, Any] | None:
         self._detect_pause(self._now(), self.monotonic_clock())
@@ -3542,6 +3612,11 @@ class HubStore:
                 ).fetchall()
             ]
         self.signals.notify(EVENT_KEY)
+        for event in events:
+            if event.kind == EventKind.AGENT_LOST:
+                agent = self.agent_by_name(event.payload["agent"])
+                if agent is not None:
+                    self.signals.notify(context_key(agent.context_id))
         return events
 
     def _expire_leases(self, connection: Connection, now: str) -> list[int]:
@@ -4019,6 +4094,39 @@ class HubStore:
             "last_call_restored": True,
         }
 
+    def record_failed_task_call(self, agent: AgentRecord) -> None:
+        """Count rejected task IDs, never their text or another worker's IDs."""
+        key = (agent.name, agent.worker_instance_id)
+        calls = self._failed_task_calls.setdefault(key, deque())
+        now = self._now()
+        floor = now - timedelta(minutes=DEFAULT_STALL_AFTER_MIN)
+        while calls and calls[0] < floor:
+            calls.popleft()
+        calls.append(now)
+
+    def _worker_diagnostics(self, agent: AgentRecord, now: datetime) -> dict[str, Any]:
+        """Current-task redeliveries and failed calls within the last 20 minutes."""
+        if agent.status in (AgentStatus.RELEASED, AgentStatus.LOST):
+            return {}
+        key = (agent.name, agent.worker_instance_id)
+        evidence: dict[str, Any] = {}
+        delivery = self._redeliveries.get(key)
+        if delivery and delivery[0] == agent.current_task_id:
+            evidence.update(
+                redelivery_count=delivery[1],
+                last_redelivery_at=delivery[2],
+                last_redelivery_age_s=_age_seconds(delivery[2], now),
+            )
+        floor = now - timedelta(minutes=DEFAULT_STALL_AFTER_MIN)
+        recent = [moment for moment in self._failed_task_calls.get(key, ()) if moment >= floor]
+        if recent:
+            evidence.update(
+                failed_task_call_count=len(recent),
+                last_failed_task_call_at=to_iso(recent[-1]),
+                last_failed_task_call_age_s=_age_seconds(to_iso(recent[-1]), now),
+            )
+        return evidence
+
     def _assess_worker(
         self,
         connection: Connection,
@@ -4074,6 +4182,7 @@ class HubStore:
             **fields,
             "task_id": task_id,
             "progress_age_s": progress_age,
+            **self._worker_diagnostics(agent, now),
         }
 
     def sweep_stalls(self) -> list[EventRecord]:
@@ -4336,6 +4445,12 @@ def _readmitted(previous: AgentStatus, open_task: str | None) -> AgentStatus:
 
 # Evidence copied into an episode and its event: ages and IDs, never text.
 _EVIDENCE_KEYS = (
+    "redelivery_count",
+    "last_redelivery_at",
+    "last_redelivery_age_s",
+    "failed_task_call_count",
+    "last_failed_task_call_at",
+    "last_failed_task_call_age_s",
     "threshold_s",
     "silence_s",
     "last_call",
