@@ -66,8 +66,14 @@ if rollout:
     os.makedirs(store, exist_ok=True)
     name = os.path.join(store, "rollout-2026-11-09T00-00-00-" + rollout + ".jsonl")
     with open(name, "w", encoding="utf-8") as stream:
-        meta = {"type": "session_meta", "payload": {"id": rollout, "cwd": os.getcwd()}}
+        named = os.environ.get("FAKE_CODEX_META_ID", rollout)
+        meta = {"type": "session_meta", "payload": {"id": named, "cwd": os.getcwd()}}
         stream.write(json.dumps(meta) + "\\n")
+appended = os.environ.get("FAKE_CODEX_APPEND")
+if appended:
+    # An earlier conversation's rollout grows while this harness runs.
+    with open(appended, "a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"type": "event_msg"}) + "\\n")
 line = os.environ.get("FAKE_ID_LINE")
 if line:
     print(line, flush=True)
@@ -97,6 +103,8 @@ def area(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
         "ROBOMATE_TOKEN_FILE",
         "FAKE_ID_LINE",
         "FAKE_CODEX_ROLLOUT",
+        "FAKE_CODEX_META_ID",
+        "FAKE_CODEX_APPEND",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("FAKE_EXPORT_ID", raising=False)
@@ -654,6 +662,48 @@ def test_interactive_codex_start_captures_its_conversation_for_resume_and_ask(
     assert launches(area)[1]["argv"][-3:] == ["resume", conversation, "-"]
     assert CLI.main(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 0
     assert launches(area)[2]["argv"][-1] == conversation
+
+
+@pytest.mark.parametrize("case", ["earlier", "appended", "none", "foreign"])
+def test_interactive_codex_never_takes_a_session_it_did_not_create(
+    area: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+) -> None:
+    """Only a rollout this launch created, naming its ID and worktree, is captured (r2-1)."""
+
+    home = tmp_path / "codex home"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    store = home / "sessions" / "2026" / "11" / "08"
+    store.mkdir(parents=True)
+    earlier_id = "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f0"
+    earlier = store / f"rollout-2026-11-08T23-59-59-{earlier_id}.jsonl"
+    if case in ("earlier", "appended"):
+        # A recent conversation in the same worktree, just modified.
+        meta = {"id": earlier_id, "cwd": str(area["worktree"].resolve())}
+        earlier.write_text(
+            json.dumps({"type": "session_meta", "payload": meta}) + "\n", encoding="utf-8"
+        )
+    if case == "appended":
+        monkeypatch.setenv("FAKE_CODEX_APPEND", str(earlier))
+    if case == "foreign":
+        # A new rollout whose metadata names another session.
+        monkeypatch.setenv("FAKE_CODEX_ROLLOUT", "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f1")
+        monkeypatch.setenv("FAKE_CODEX_META_ID", earlier_id)
+    hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": [agent_row()]}))
+    words = start_words(area, "bob", "implementer", "codex", "--interactive")
+
+    assert CLI.main(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 0
+
+    assert [row["event"] for row in rows(area)] == ["start", "exit"]
+    assert all(row["conversation_id"] is None for row in rows(area))
+    assert "no conversation ID was captured" in capsys.readouterr().err
+    resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+    assert CLI.main(resume, programs=programs(area), reader=snapshotting(hub)) == 4
+    assert len(launches(area)) == 1
 
 
 def snapshotting(hub: Any) -> Any:

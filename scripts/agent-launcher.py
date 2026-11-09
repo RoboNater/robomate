@@ -51,7 +51,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 import urllib.error
 import uuid
 from collections.abc import Callable, Mapping
@@ -736,27 +735,44 @@ def best_effort_hub(place: Place, tools: Tools, agent: str, role: str) -> dict[s
 _UUID_FILE = re.compile(r"([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\.jsonl$")
 
 
-def codex_conversation(home: Path, since: float, workdir: Path) -> str | None:
-    """The one Codex session written in ``workdir`` since ``since``, from Codex's own store.
+def codex_rollouts(home: Path) -> set[Path]:
+    """Every rollout file in Codex's session store under ``home``."""
+    try:
+        return set((home / "sessions").rglob("rollout-*.jsonl"))
+    except OSError:
+        return set()
 
-    Codex names each rollout ``rollout-<time>-<id>.jsonl`` and records its
-    working directory in the first line. Only a single candidate whose
-    recorded directory is ``workdir`` counts; anything else is no capture.
+
+def codex_conversation(home: Path, before: set[Path], workdir: Path) -> str | None:
+    """The one Codex session this launch created in ``workdir``, from Codex's own store.
+
+    Only a rollout that did not exist before the harness was spawned is a
+    candidate, so an earlier conversation, even one appended to meanwhile, is
+    never taken for this one (#247 r2-1). Codex names each rollout
+    ``rollout-<time>-<id>.jsonl`` and starts it with a ``session_meta`` line;
+    that line must name the same ID and this worktree. Anything but exactly
+    one such rollout is no capture, and the operator supplies the ID.
     """
     found = set()
-    for path in (home / "sessions").rglob("rollout-*.jsonl"):
+    for path in codex_rollouts(home) - before:
         match = _UUID_FILE.search(path.name)
+        if match is None:
+            continue
         try:
-            if match is None or path.stat().st_mtime < since:
-                continue
             with path.open(encoding="utf-8") as stream:
                 first = json.loads(stream.readline())
         except (OSError, ValueError):
             continue
         meta = first.get("payload") if isinstance(first, dict) else None
-        cwd = (meta if isinstance(meta, dict) else first).get("cwd")
-        if isinstance(cwd, str) and Path(cwd).resolve() == workdir.resolve():
-            found.add(match.group(1))
+        if (
+            not isinstance(meta, dict)
+            or first.get("type") != "session_meta"
+            or str(meta.get("id", "")).lower() != match.group(1).lower()
+            or not isinstance(meta.get("cwd"), str)
+            or Path(meta["cwd"]).resolve() != workdir.resolve()
+        ):
+            continue
+        found.add(match.group(1))
     return found.pop() if len(found) == 1 else None
 
 
@@ -788,7 +804,8 @@ def run_interactive(
     an exact capture the operator is told how to supply the ID by hand.
     """
 
-    started = time.time() - 1.0
+    codex_home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
+    before = codex_rollouts(codex_home) if row["harness"] == "codex" else set()
     child = subprocess.Popen(argv, cwd=cwd, env=dict(env))
     common.log_session(log, event=event, pid=child.pid, interactive=True, **row)
     try:
@@ -798,8 +815,7 @@ def run_interactive(
     if row["conversation_id"] is None:
         found = None
         if row["harness"] == "codex":
-            home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
-            found = codex_conversation(home, started, cwd)
+            found = codex_conversation(codex_home, before, cwd)
         if found is not None:
             row = row | {"conversation_id": found}
             common.log_session(

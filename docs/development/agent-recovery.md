@@ -141,8 +141,10 @@ guards, opens the conversation, and prints the continuation to send.
 An interactive harness owns the terminal, so its output cannot be read for a
 conversation ID. The ID is exact for Claude Code, which takes the one the
 launcher chooses. For Codex, the launcher looks after the session in Codex's
-own session store (`$CODEX_HOME/sessions`) for the single rollout written in
-that worktree since the start, and records it as a `conversation` row.
+own session store (`$CODEX_HOME/sessions`) for the single rollout that the
+session created: files that existed before the launch never count, even if
+appended to meanwhile, and the rollout's `session_meta` line must name the
+same ID and this worktree. It records that ID as a `conversation` row.
 Elsewhere, and whenever that lookup finds no single candidate, the launcher
 says so before and after the session and names the remedy: find the exact ID
 in the harness's own session list (`codex resume`, `opencode session list`)
