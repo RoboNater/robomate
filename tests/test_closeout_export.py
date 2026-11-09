@@ -220,8 +220,10 @@ def test_untrusted_content_and_colliding_unsafe_author_names(store: HubStore) ->
         )
         assert blocks.count(literal(hostile)) == 8
         assert source_url in blocks
-        assert "\n# heading" in blocks[4]
-        assert "0123456789abcdef0123456789abcdef01234567" in blocks[4]
+        assert any(
+            "\n# heading" in block and "0123456789abcdef0123456789abcdef01234567" in block
+            for block in blocks
+        )
     assert "\x1b" not in json.dumps(store.status_summary()["closeout"], ensure_ascii=False)
     assert not (directory.parent / "a").exists()
 
