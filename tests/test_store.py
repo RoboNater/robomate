@@ -2224,3 +2224,35 @@ async def test_repeated_assignment_wakes_on_change(
         )
     if action in ("release", "cancel", "finish", "lost"):
         assert "redelivery_count" not in store.assess_activity()["agents"]["bob"]
+
+
+async def test_terminal_rollback_preserves_worker_diagnostics(
+    store: HubStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r1-2: failed terminal writes cannot erase the in-memory evidence."""
+    agent = store.check_in("bob")
+    task_id = assign(store)
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    await store.await_assignment(agent.context_id, 0)
+    store.record_failed_task_call(agent)
+    before = store.assess_activity()["agents"]["bob"]
+    original_database = database
+
+    @contextmanager
+    def rollback(path: Path) -> Iterator[Connection]:
+        with original_database(path) as connection:
+            yield connection
+            raise RuntimeError("simulated terminal transaction rollback")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module, "database", rollback)
+        with pytest.raises(RuntimeError, match="simulated terminal transaction rollback"):
+            store.cancel_task(task_id)
+    assert store.assess_activity()["agents"]["bob"] == before
+    held = store.get_task(task_id)
+    assert held is not None and held.state == TaskState.WORKING
+    store.cancel_task(task_id)
+    evidence = store.assess_activity()["agents"]["bob"]
+    assert "redelivery_count" not in evidence
+    assert "failed_task_call_count" not in evidence

@@ -72,8 +72,8 @@ unless the task changes, a reply arrives or you are released. A restarted bridge
 returns the full assignment again so lost text can be recovered. If you lose
 text again while the bridge stays alive, call
 `await_assignment(include_instructions=true)` to recover all assignment fields.
-Repeated
-redelivery is diagnostic only; it grants no authority to release or reassign work.
+Repeated redelivery is diagnostic only; it grants no authority to release or
+reassign work.
 
 ## Workspace boundaries and git hygiene
 

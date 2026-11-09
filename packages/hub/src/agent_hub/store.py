@@ -99,6 +99,9 @@ OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
 # A hub runs one live workflow at a time; `queued` waits behind it (M2 Step 3).
 LIVE_STATUSES = (WorkflowStatus.ACTIVE, WorkflowStatus.PAUSED, WorkflowStatus.ESCALATED)
 LIVE_STATUS_VALUES = tuple(status.value for status in LIVE_STATUSES)
+# Diagnostic recency is deliberately independent of the workflow's stall
+# thresholds: tuning when to report a stall should not erase recent bad IDs.
+FAILED_TASK_CALL_WINDOW = timedelta(minutes=20)
 
 
 def _live_placeholders() -> str:
@@ -2031,6 +2034,7 @@ class HubStore:
             )
             self._finish(connection, task_id, state, {"status": state.value, "summary": note})
             result = self._require_task(connection, task_id)
+        self._clear_worker_diagnostics(task.assignee)
         self.signals.notify(task_key(task_id))
         self.signals.notify(context_key(context_id))
         return result
@@ -3017,6 +3021,7 @@ class HubStore:
             else:
                 res = (finished, True)
 
+        self._clear_worker_diagnostics(agent)
         self.signals.notify(EVENT_KEY)
         self.signals.notify(context_key(self.task_context_id(task_id)))
         if operation_id is None:
@@ -3036,6 +3041,7 @@ class HubStore:
             context_id = self._task_context_id(connection, task)
             self._finish(connection, task.id, TaskState.CANCELED, None)
             canceled = self._require_task(connection, task.id)
+        self._clear_worker_diagnostics(task.assignee)
         self.signals.notify(task_key(task_id))
         if context_id:
             self.signals.notify(context_key(context_id))
@@ -3118,12 +3124,6 @@ class HubStore:
                 task_id,
             ),
         )
-        for row in connection.execute(
-            "SELECT name, worker_instance_id FROM agent WHERE current_task_id = ?", (task_id,)
-        ).fetchall():
-            key = (row["name"], row["worker_instance_id"])
-            self._redeliveries.pop(key, None)
-            self._failed_task_calls.pop(key, None)
         connection.execute(
             "UPDATE agent SET status = CASE status WHEN ? THEN ? ELSE status END,"
             " current_task_id = NULL WHERE current_task_id = ?",
@@ -3614,6 +3614,7 @@ class HubStore:
         self.signals.notify(EVENT_KEY)
         for event in events:
             if event.kind == EventKind.AGENT_LOST:
+                self._clear_worker_diagnostics(event.payload["agent"])
                 agent = self.agent_by_name(event.payload["agent"])
                 if agent is not None:
                     self.signals.notify(context_key(agent.context_id))
@@ -4094,12 +4095,19 @@ class HubStore:
             "last_call_restored": True,
         }
 
+    def _clear_worker_diagnostics(self, name: str | None) -> None:
+        """Drop evidence only after the terminal-state transaction commits."""
+        for records in (self._redeliveries, self._failed_task_calls):
+            for key in list(records):
+                if key[0] == name:
+                    records.pop(key, None)
+
     def record_failed_task_call(self, agent: AgentRecord) -> None:
         """Count rejected task IDs, never their text or another worker's IDs."""
         key = (agent.name, agent.worker_instance_id)
         calls = self._failed_task_calls.setdefault(key, deque())
         now = self._now()
-        floor = now - timedelta(minutes=DEFAULT_STALL_AFTER_MIN)
+        floor = now - FAILED_TASK_CALL_WINDOW
         while calls and calls[0] < floor:
             calls.popleft()
         calls.append(now)
@@ -4117,7 +4125,7 @@ class HubStore:
                 last_redelivery_at=delivery[2],
                 last_redelivery_age_s=_age_seconds(delivery[2], now),
             )
-        floor = now - timedelta(minutes=DEFAULT_STALL_AFTER_MIN)
+        floor = now - FAILED_TASK_CALL_WINDOW
         recent = [moment for moment in self._failed_task_calls.get(key, ()) if moment >= floor]
         if recent:
             evidence.update(
