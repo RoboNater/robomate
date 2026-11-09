@@ -666,12 +666,13 @@ async def test_worker_client_join_surfaces_setup_and_pins(tmp_path: Path) -> Non
         ) as http,
     ):
         bridge_settings = WorkerSettings.unjoined(
+            cwd=root,
             environ={
                 "HUB_URL": BASE_URL,
                 "HUB_TOKEN": TOKEN,
                 "AGENT_NAME": "bob",
                 "HUB_HARNESS": "opencode",
-            }
+            },
         )
         async with WorkerHubClient(bridge_settings, http_client=http) as bridge:
             result = await bridge.join(name="bob", role="implementer")

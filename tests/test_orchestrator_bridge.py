@@ -229,13 +229,13 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_worker_task_survives_orchestrator_session_restart(
-    app: FastAPI, hub_store: HubStore
+    app: FastAPI, hub_store: HubStore, tmp_path: Path
 ) -> None:
     app.state.rpc.guides_dir = Path(__file__).resolve().parents[1] / "guides"
     async with app.router.lifespan_context(app):
 
         async def orchestrator() -> tuple[OrchestratorBridge, Any]:
-            bridge = OrchestratorBridge()
+            bridge = OrchestratorBridge(cwd=tmp_path)
             bridge._client = httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
                 base_url=BASE_URL,
@@ -390,11 +390,13 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             command=command,
             args=["mcp", "--role", "orchestrator"],
             env=bridge_env,
+            cwd=repo,
         )
         worker = StdioServerParameters(
             command=command,
             args=["mcp", "--role", "worker", "--name", "bob"],
             env=bridge_env,
+            cwd=repo,
         )
         async with (
             stdio_client(orchestrator) as (alice_read, alice_write),
@@ -598,6 +600,7 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
 
 async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
     settings: Any,
+    tmp_path: Path,
 ) -> None:
     from dataclasses import replace
 
@@ -612,7 +615,7 @@ async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
             headers={"Authorization": f"Bearer {TOKEN}"},
         ) as http,
     ):
-        client = WorkerHubClient(WorkerSettings.unjoined(environ={}), http)
+        client = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}), http)
         server = create_worker_mcp(client, include_orchestrator=True)
         try:
             with pytest.raises(ToolError, match="join"):

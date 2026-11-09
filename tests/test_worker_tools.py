@@ -57,7 +57,9 @@ async def test_combined_mcp_registers_every_tool_once(
 
 
 @pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
-async def test_combined_mcp_get_statement_for_orchestrator_and_worker(app: FastAPI) -> None:
+async def test_combined_mcp_get_statement_for_orchestrator_and_worker(
+    app: FastAPI, tmp_path: Path
+) -> None:
     statement = "Read caf\u00e9 requirements.\r\nKeep this trailing newline.\r\n"
     raw = statement.encode("utf-8")
     sha256 = hashlib.sha256(raw).hexdigest()
@@ -70,8 +72,8 @@ async def test_combined_mcp_get_statement_for_orchestrator_and_worker(app: FastA
             headers={"Authorization": f"Bearer {TOKEN}"},
         ) as http,
     ):
-        alice = WorkerHubClient(WorkerSettings.unjoined(environ={}), http)
-        bob = WorkerHubClient(WorkerSettings.unjoined(environ={}), http)
+        alice = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}), http)
+        bob = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}), http)
         try:
             orchestrator = create_worker_mcp(alice, include_orchestrator=True)
             worker = create_worker_mcp(bob, include_orchestrator=True)
