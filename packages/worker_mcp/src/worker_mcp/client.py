@@ -28,8 +28,8 @@ from agent_hub_common import (
     StandingRole,
     validate_agent_name,
 )
-from agent_hub_common.discovery import discover
-from agent_hub_common.workspace import canonical_workspace, read_identity
+from agent_hub_common.discovery import discover, resolve_checkout
+from agent_hub_common.workspace import IDENTITY_FILE, canonical_workspace, read_identity
 
 from .config import WorkerSettings
 from .orchestrator import OrchestratorBridge
@@ -692,6 +692,14 @@ class WorkerHubClient:
         # `environ` unset (r1-2 on #244). Honor that path too, so an explicit
         # clone never falls through to worktree creation.
         configured_workspace = self.settings.workspace
+        # A provisioned remote clone is explicit even without HUB_WORKSPACE.
+        # Detect from a subdirectory too; a malformed identity must be refused,
+        # rather than silently creating a worktree on the remote hub host.
+        if not explicit_raw_env and configured_workspace is None:
+            with suppress(Exception):
+                root, git_dir = resolve_checkout(bridge_cwd)
+                if (git_dir / IDENTITY_FILE).exists() and (root / ".git").is_dir():
+                    configured_workspace = root
         if explicit_raw_env:
             explicit_raw = explicit_raw_env
             workspace_explicit = True

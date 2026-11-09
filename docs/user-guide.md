@@ -284,7 +284,40 @@ uv run --project /absolute/path/to/robomate robomate up \
 
 `--bind` controls the listener; `--public-url` controls the agent card and bridge URL. Use `--port N` when the hub should bind a different port. Configure firewalls and forwarding so the public URL reaches that listener. `prepare-run.py` reads the running hub's URL; any `--hub-url`, `--public-url`, or `--hub-port` passed to it must agree with `hub.json`. A remote worker cannot use a loopback URL.
 
-Pass `--remote-worker bob` when preparing on the hub host. The printed `--worker-only bob` command is run from the robomate checkout on Bob's host, with `--hub-url` set to the public URL and `--token-file` set to the readable path to the hub's token file (`robomate status --json` reports it as `token_file`). The worker host reads that file; the generated config records the path, not the token value. `--worker-only` bootstraps the clone using that host's git and probes that host's harness version. Keep the token file available to the bridge at runtime.
+For a joined agent on another host (including a Windows IDE with a hub in WSL),
+create a full clone with that host's git. On Bob's host, run:
+
+```sh
+uv run --project /absolute/path/to/robomate robomate workspace bob \
+  --clone /absolute/path/to/agents/bob \
+  --hub-url http://192.0.2.10:8420 --token-file /private/path/hub-token
+```
+
+The origin comes from the hub, so this command can run outside the target repository.
+Supply a readable copy of the hub's bearer token file, owner-only on POSIX, and keep it
+available at runtime. The command rejects unexpanded variables and placeholders,
+checks `/healthz`, verifies that the agent card advertises exactly the supplied URL
+plus `/a2a`, and authenticates to read the origin before creating any directories.
+An unreachable or mismatched hub leaves the destination untouched. A repeated call
+reuses a clean clone with a matching identity; it refuses existing work or a different
+origin. The identity in `.git/robo-agents-workspace.json` contains no token.
+
+Keep the installed static `robomate mcp` entry token-free. Set the connection in the
+agent host's launch environment (PowerShell uses `$env:NAME = 'value'`):
+
+```sh
+export ROBOMATE_HUB_URL=http://192.0.2.10:8420
+export ROBOMATE_TOKEN_FILE=/private/path/hub-token
+cd /absolute/path/to/agents/bob
+```
+
+Start the harness there and call `join(name="bob", role="implementer")`. The bridge
+uses the explicit URL and token file and detects the clone identity, including from
+a subdirectory; the response reports `workspace_kind: "clone"` and its local path.
+It creates no worktree on the hub host. `HUB_WORKSPACE` can also explicitly select the
+clone. Each host needs access to the origin with its own git credentials.
+
+For prepared runs, pass `--remote-worker bob` when preparing on the hub host. The printed `--worker-only bob` command is run from the robomate checkout on Bob's host, with `--hub-url` set to the public URL and `--token-file` set to the readable path to the hub's token file (`robomate status --json` reports it as `token_file`). The worker host reads that file; the generated config records the path, not the token value. `--worker-only` bootstraps the clone using that host's git and probes that host's harness version. Keep the token file available to the bridge at runtime.
 
 ## Manual MCP configuration
 

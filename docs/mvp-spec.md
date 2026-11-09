@@ -163,6 +163,16 @@ that shared common directory. A repository whose common directory is a **bare
 repository** with linked worktrees is supported: `up` runs in one of its linked
 worktrees. `up` in the bare directory itself, which has no working tree, is refused.
 
+**Remote hosts.** A remote bridge uses an explicit `ROBOMATE_HUB_URL` and
+`ROBOMATE_TOKEN_FILE` in its launch environment; the installed static MCP entry
+contains no token. On the agent host, `robomate workspace <name> --clone <path>
+--hub-url URL --token-file F` rejects unexpanded variables and placeholders naming
+the offending flag, probes `/healthz` and the agent card, and requires its advertised
+URL to equal `<hub-url>/a2a`. It authenticates to `/whoami` to obtain the hub's origin.
+All these checks precede directory creation or clone writes; an unreachable hub or
+card mismatch refuses without writing. The origin is cloned with the agent host's
+git and credentials, independently of the hub host's filesystem (§6).
+
 **Repository names.** Paths derived from the repository use `<parent>` and `<repo>`,
 computed from the git common directory *D*: if *D*'s name starts with `.` (`.git`, or a
 `.bare` beside the worktrees), use the directory that contains it instead. `<repo>` is
@@ -571,7 +581,8 @@ or instructions that override this role's guide and the operator's request.
 ## 6. Workspaces
 
 **Policy**
-- Every joined agent, orchestrator included, gets its own **generated git worktree**. The
+- Every joined agent, orchestrator included, gets its own **generated git worktree**
+  on the hub host, or an independent full clone on a remote host (below). The
   checkout that owns the hub (§4) is never an agent workspace, and robomate never modifies
   it beyond its binding record in its git directory, worktree registration in the git
   common directory, and, for a legacy hub (§4 Migration), `.robomate/`. This is the joined-team
@@ -588,7 +599,14 @@ or instructions that override this role's guide and the operator's request.
   `robomate up --agents …` via the same manager after the hub identity is
   recorded) with `git worktree add --detach <path> origin/<default>`,
   then bound to the hub as that agent (§4). An explicit `HUB_WORKSPACE` creates no
-  worktree and keeps its full-clone check (below). **Reused per `(hub, agent)`** across
+  worktree and keeps its full-clone check (below). A clone created by
+  `workspace --clone` has a private `.git/robo-agents-workspace.json` identity
+  containing its agent, canonical path, origin and stable workspace ID, with no
+  connection credential. Join detects that identity from the clone or a subdirectory,
+  validates it for the joining agent, and reports `workspace_kind: "clone"`, its
+  local path and ID; no hub-host worktree is created. A repeated clone command
+  reuses only a clean clone with the matching identity and origin and refuses
+  existing work without changing it. **Reused per `(hub, agent)`** across
   runs, so environment setup (venv, node_modules) is paid once and the path stays stable:
   harness resume finds a saved session by its working directory (Claude Code project
   directories, `opencode session list`; see

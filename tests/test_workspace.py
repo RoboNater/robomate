@@ -10,7 +10,7 @@ from typing import Any, cast
 import httpx
 import pytest
 from agent_hub.store import DuplicateAgentError, HubStore
-from agent_hub_common import AgentProfile, ConfigurationError, MetaKeys
+from agent_hub_common import AgentProfile, ConfigurationError, HubSettings, MetaKeys
 from agent_hub_common.workspace import IDENTITY_FILE
 from conftest import message, rpc
 from worker_mcp.config import WorkerSettings
@@ -680,3 +680,33 @@ async def test_worker_client_join_surfaces_setup_and_pins(tmp_path: Path) -> Non
         assert result["profile"]["model"] == "pinned-client"
         assert result["profile"]["effort"] == "medium"
         assert result["workspace_path"] == str(layered.worktree_root / "repo" / "bob")
+
+
+@pytest.mark.parametrize("subdirectory", [False, True])
+async def test_join_detects_remote_clone(
+    repository: Path,
+    tmp_path: Path,
+    client: httpx.AsyncClient,
+    settings: HubSettings,
+    subdirectory: bool,
+) -> None:
+    from worker_mcp.client import WorkerHubClient
+
+    settings.guides_dir.mkdir()
+    (settings.guides_dir / "worker.md").write_text("# Worker\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# Implementer\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir()
+    (settings.guides_dir / "forge" / "github.md").write_text("# Forge\n", encoding="utf-8")
+    clone = tmp_path / "bob"
+    identity = bootstrap(repository, clone)
+    cwd = clone
+    if subdirectory:
+        cwd = clone / "src"
+        cwd.mkdir()
+    bridge_settings = WorkerSettings.unjoined(cwd=cwd, environ={})
+    async with WorkerHubClient(bridge_settings, http_client=client) as bridge:
+        result = await bridge.join("bob", "implementer")
+    assert result["workspace_kind"] == "clone"
+    assert result["workspace_path"] == str(clone)
+    assert result["workspace_id"] == identity["workspace_id"]
+    assert result["cwd_inside_workspace"] is True

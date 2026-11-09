@@ -4203,3 +4203,109 @@ def test_status_retains_export_failure_from_previous_queued_run(
         ]
     finally:
         stop(root, env, process)
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--hub-url", "http://$HUB_IP:8420"),
+        ("--hub-url", "%HUB%"),
+        ("--hub-url", "<addr>"),
+        ("--hub-url", "{x}"),
+        ("--clone", "/tmp/$WORKSPACE/bob"),
+        ("--token-file", "%TOKEN_FILE%"),
+    ],
+)
+def test_remote_workspace_rejects_placeholders_before_writing(
+    tmp_path: Path, flag: str, value: str
+) -> None:
+    destination = tmp_path / "not-created" / "bob"
+    arguments = {
+        "--clone": str(destination),
+        "--hub-url": "http://127.0.0.1:1",
+        "--token-file": str(tmp_path / "missing-token"),
+    }
+    arguments[flag] = value
+    result = _cli(
+        tmp_path,
+        dict(os.environ),
+        "workspace",
+        "bob",
+        *[item for pair in arguments.items() for item in pair],
+    )
+    assert result.returncode == 1
+    assert flag in result.stderr and "concrete" in result.stderr
+    assert not destination.parent.exists()
+
+
+def test_remote_workspace_probe_failures_write_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "not-created" / "bob"
+    token = tmp_path / "token"
+    token.write_text("test-token", encoding="utf-8")
+    token.chmod(0o600)
+    requests: list[str] = []
+
+    def unreachable(request: urllib.request.Request, **kwargs: Any) -> Any:
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(urllib.request, "urlopen", unreachable)
+    with pytest.raises(RuntimeError, match="--hub-url probe /healthz failed"):
+        cli._remote_workspace("bob", str(destination), "http://hub", str(token))
+    assert not destination.parent.exists()
+
+    def mismatched_card(request: urllib.request.Request, **kwargs: Any) -> Any:
+        requests.append(request.full_url)
+        value = (
+            {"status": "ok"}
+            if request.full_url.endswith("/healthz")
+            else {"url": "http://different/a2a"}
+        )
+        return io.BytesIO(json.dumps(value).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", mismatched_card)
+    with pytest.raises(RuntimeError, match="--hub-url agent card URL"):
+        cli._remote_workspace("bob", str(destination), "http://hub", str(token))
+    assert requests == ["http://hub/healthz", "http://hub/.well-known/agent-card.json"]
+    assert not destination.parent.exists()
+
+
+def test_remote_workspace_clones_hub_origin(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    from agent_hub_common.workspace import read_identity
+
+    root, env = repository
+    # The disposable hub advertises an accessible local origin; no forge access.
+    subprocess.run(["git", "remote", "set-url", "origin", str(root)], cwd=root, check=True)
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        destination = tmp_path / "remote-agent" / "bob"
+        arguments = (
+            "workspace",
+            "bob",
+            "--clone",
+            str(destination),
+            "--hub-url",
+            str(info["url"]),
+            "--token-file",
+            str(hub_token(root)),
+        )
+        result = _cli(tmp_path, env, *arguments)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(destination)
+        identity = read_identity(destination, "bob")
+        assert identity["repository"] == str(root)
+        assert set(identity) == {"agent", "path", "repository", "workspace_id"}
+        again = _cli(tmp_path, env, *arguments)
+        assert again.returncode == 0, again.stderr
+        assert read_identity(destination, "bob") == identity
+        (destination / "keep-work").write_text("uncommitted", encoding="utf-8")
+        dirty = _cli(tmp_path, env, *arguments)
+        assert dirty.returncode == 1 and "dirty" in dirty.stderr
+        assert (destination / "keep-work").read_text() == "uncommitted"
+    finally:
+        if process.poll() is None:
+            stop(root, env, process)
