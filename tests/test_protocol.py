@@ -942,6 +942,44 @@ async def test_a_worker_cannot_act_on_another_workers_task(
     assert "not assigned" in body["error"]["message"]
 
 
+@pytest.mark.parametrize("kind", ["progress", "result", "question"])
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("other_task", [False, True])
+async def test_bad_task_id_suggests_only_callers_open_task(
+    client: httpx.AsyncClient, hub_store: HubStore, kind: str, held: bool, other_task: bool
+) -> None:
+    context = await check_in(client, "bob")
+    own = hub_store.assign_task("bob", "implementer", "Bob's task", "work") if held else None
+    if other_task:
+        await check_in(client, "charlie")
+        target = hub_store.assign_task("charlie", "implementer", "Secret title", "work").id
+    else:
+        target = "missing-task"
+    method = "message/stream" if kind == "question" else "message/send"
+    body = await post(
+        client,
+        method,
+        message(
+            "test",
+            context_id=context,
+            task_id=target,
+            metadata={MetaKeys.KIND: kind, MetaKeys.SCHEMA_VERSION: 1},
+        ),
+    )
+    error = body["error"]
+    if other_task:
+        assert error["code"] == -32602
+        assert f"task {target} is not assigned to bob" in error["message"]
+        assert "Secret title" not in error["message"]
+    else:
+        assert error["code"] == -32001
+        assert f"task {target} not found" in error["message"]
+    if own:
+        assert f'You hold open task {own.id} ("Bob\'s task"); use that task_id.' in error["message"]
+    else:
+        assert "You hold no open task; call await_assignment." in error["message"]
+
+
 async def test_tasks_get_returns_the_task_with_its_transcript(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:

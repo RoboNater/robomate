@@ -1111,9 +1111,11 @@ class A2AProtocol:
     def _owned_task(self, task_id: str, agent: AgentRecord) -> TaskRecord:
         task = self.store.get_task(task_id)
         if task is None:
-            raise ProtocolError(TaskNotFoundError())
+            hint = self.store.held_task_hint(agent.name)
+            raise ProtocolError(TaskNotFoundError(message=f"task {task_id} not found. {hint}."))
         if task.assignee != agent.name:
-            raise _invalid(f"task {task_id} is not assigned to {agent.name}")
+            hint = self.store.held_task_hint(agent.name)
+            raise _invalid(f"task {task_id} is not assigned to {agent.name}. {hint}.")
         note_a2a(task_id=task.id)
         return task
 
