@@ -268,10 +268,13 @@ def _hub_evidence(
     snapshot: dict[str, Any],
     *,
     created: datetime | None = None,
+    orchestrator: bool | None = None,
 ) -> tuple[bool, str]:
     """Hub-side evidence that this conversation belonged to the workflow (#223 condition 4)."""
 
-    if agent == "alice":
+    if orchestrator is None:
+        orchestrator = agent == "alice"
+    if orchestrator:
         activity = status.get("orchestrator_activity")
         if isinstance(activity, dict) and activity.get("session"):
             return True, "orchestrator session on the hub workflow"
@@ -320,8 +323,16 @@ def _hub_evidence(
     return False, f"no agent row or task for {agent} on the hub workflow"
 
 
-def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[str, str]:
-    """Return exact conversation and generated prompt, after all prerequisites pass."""
+def prepare(
+    args: argparse.Namespace, reader: HubReader, agent: str, *, orchestrator: bool | None = None
+) -> tuple[str, str]:
+    """Return exact conversation and generated prompt, after all prerequisites pass.
+
+    ``orchestrator`` says whether ``agent`` is the orchestrator; None (the
+    prepared runs) decides by the name ``alice``.
+    """
+    if orchestrator is None:
+        orchestrator = agent == "alice"
     config = getattr(args, "recovery_config", None)
     if config is not None:
         config_file = (
@@ -580,7 +591,9 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
         tolerant_ok = created >= first_start - tol and (
             last_end is None or created <= last_end + tol
         )
-        evidence_present, evidence_detail = _hub_evidence(agent, status, snapshot, created=created)
+        evidence_present, evidence_detail = _hub_evidence(
+            agent, status, snapshot, created=created, orchestrator=orchestrator
+        )
         if not strict_ok and not (tolerant_ok and evidence_present):
             refuse(
                 "identity",
@@ -632,7 +645,7 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
             "Workflow is done or this worker was released. Nothing to resume; "
             "ask Alice/operator whether a separate new run is needed.",
         )
-    if agent == "alice":
+    if orchestrator:
         activity = status.get("orchestrator_activity")
         if (
             not isinstance(activity, dict)
@@ -676,7 +689,7 @@ def prepare(args: argparse.Namespace, reader: HubReader, agent: str) -> tuple[st
             "Workflow paused: have the operator resume it, or use --force to reconcile "
             "while preserving pause."
         )
-    if agent != "alice" and questions:
+    if not orchestrator and questions:
         advisories.append(
             "Open operator question(s) "
             + ", ".join(str(q["question_id"]) for q in questions)
