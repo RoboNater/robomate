@@ -536,6 +536,35 @@ class JoinedWorker(Joined, WorkerLauncher):
             "resumes the saved conversation."
         )
 
+    def before_launch(self, resumes: int) -> bool:
+        """An automatic resume does not wait for its predecessor's bridge to be lost.
+
+        This launcher's own harness has exited; a bridge it left behind is
+        superseded by the successor's join with takeover, which reattaches the
+        held task (§5, §7.5). Waiting for that bridge to become lost, as the
+        prepared launcher does before a check-in, would fail the task instead.
+        The first launch, and a manual resume, keep the prepared checks.
+        """
+
+        if resumes == 0:
+            return bool(super().before_launch(resumes))
+        workflow = self.read_hub()
+        if self.finished(workflow, resumes):
+            return False
+        if workflow is None:
+            raise common.Stop(
+                common.EXIT_CANNOT_RESUME,
+                "no_workflow",
+                "no workflow to resume. " + self.manual_resume_hint(),
+            )
+        if workflow["status"] == "paused":
+            raise common.Stop(
+                common.EXIT_PAUSED,
+                "paused",
+                "workflow paused; wait until the operator resumes it. " + self.manual_resume_hint(),
+            )
+        return True
+
     def finished(self, workflow: dict[str, Any] | None, resumes: int) -> bool:
         agent = workflow.get("agent") if workflow else None
         if workflow is not None and isinstance(agent, dict) and agent.get("status") == "released":

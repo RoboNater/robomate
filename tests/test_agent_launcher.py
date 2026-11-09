@@ -326,9 +326,13 @@ def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["hang", "exit:0"]))
-    busy = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    # The killed harness's bridge is still attached: the successor's join with
+    # takeover supersedes it and keeps the task, so the launcher does not wait.
+    orphan = {"alive": True, "activity": {"instance": "orphan-bridge"}}
+    busy = {"workflow": workflow(), "agents": [agent_row(context="c1") | orphan]}
     released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
-    hub = FakeHub(after_launches(area, busy, busy, released))
+    detached = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    hub = FakeHub(after_launches(area, detached, busy, released))
 
     def kill() -> None:
         pid_file = area["harness_dir"] / "pid"
@@ -339,7 +343,8 @@ def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
     killer = threading.Thread(target=kill)
     killer.start()
     code = CLI.main(
-        start_words(area, "bob", "implementer", "claude-code") + ["--resume-delay-s", "0.05"],
+        start_words(area, "bob", "implementer", "claude-code")
+        + ["--resume-delay-s", "0.05", "--predecessor-wait-s", "0"],
         programs=programs(area),
         reader=hub,
         workspace=workspace_of(area),
