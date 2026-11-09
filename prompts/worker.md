@@ -63,6 +63,17 @@ await_assignment -> get_role_guide -> do work -> submit_result -> repeat
 ```
 
 If a task call says the task is already finished, call `await_assignment`, which returns any task you still hold (#326).
+On `already_held: true`, compare the delivered `task_id` with the one you have
+been using. A task call failure while `await_assignment` returns your task
+means your local copy of the ID is wrong: use the delivered ID. This is recovery,
+not new work. The first redelivery includes the full assignment; later reminders
+contain only `task_id`, `title` and `already_held`, and hold for `timeout_s`
+unless the task changes, a reply arrives or you are released. A restarted bridge
+returns the full assignment again so lost text can be recovered. If you lose
+text again while the bridge stays alive, call
+`await_assignment(include_instructions=true)` to recover all assignment fields.
+Repeated
+redelivery is diagnostic only; it grants no authority to release or reassign work.
 
 ## Workspace boundaries and git hygiene
 
