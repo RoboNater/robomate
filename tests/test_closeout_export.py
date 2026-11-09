@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from agent_hub import create_app
-from agent_hub.closeout_export import HEADER, markdown
+from agent_hub.closeout_export import HEADER, fenced, literal
 from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common import HubSettings, TaskState, WorkflowStatus
@@ -95,7 +95,7 @@ async def test_export_status_restart_and_stopped_files(
             assert entry["timing"] == saved["timing"]
             content = (directory / entry["filename"]).read_text()
             assert HEADER in content
-            assert markdown(saved["report"]["summary"]) in content
+            assert fenced(saved["report"]["summary"]) in content
         if crash:
             assert next(e for e in index["authors"] if e["author"] == "charlie") == {
                 "author": "charlie",
@@ -163,7 +163,8 @@ def test_untrusted_content_and_colliding_unsafe_author_names(store: HubStore) ->
     run_id = prepare(store)
     hostile = (
         "\x1b[31m\x00\x85\u202e\u2028\u2029\n# heading <script>alert(1)</script> "
-        "[link](javascript:evil) https://evil.test"
+        "[link](javascript:evil) https://evil.test\n```\n~~~~\n``````\n"
+        "0123456789abcdef0123456789abcdef01234567"
     )
     body = report(hostile)
     source_url = "https://evil.test/issues/1#<script>"
@@ -193,11 +194,36 @@ def test_untrusted_content_and_colliding_unsafe_author_names(store: HubStore) ->
         assert re.fullmatch(r"report-[0-9]+\.md", entry["filename"])
         content = (directory / entry["filename"]).read_text()
         assert not any(c in content for c in ("\x1b", "\x00", "\x85", "\u202e", "\u2028", "\u2029"))
-        assert "\n# heading" not in content and "<script>" not in content
-        assert "[link](javascript:evil)" not in content and "https://evil.test" not in content
-        assert "verified:" in content and "unverified:" in content and "Evidence:" in content
         assert "not certified by the hub" in content
-        assert markdown(source_url) in content and source_url not in content
+        assert "Claim 1 (verified)" in content and "Claim 2 (unverified)" in content
+        # Track CommonMark fences and compare the blocks with intended values.
+        blocks: list[str] = []
+        outside: list[str] = []
+        current: list[str] | None = None
+        fence_len = 0
+        for line in content.splitlines():
+            if current is None:
+                if re.fullmatch(r"`{3,}", line):
+                    fence_len = len(line)
+                    current = []
+                else:
+                    outside.append(line)
+            elif re.fullmatch(r"`+ *", line) and len(line.rstrip()) >= fence_len:
+                blocks.append("\n".join(current))
+                current = None
+            else:
+                current.append(line)
+        assert current is None
+        assert all(
+            marker not in "\n".join(outside)
+            for marker in ("# heading", "<script>", "https://evil.test", "~~~~")
+        )
+        assert blocks.count(literal(hostile)) == 8
+        assert source_url in blocks
+        assert any(
+            "\n# heading" in block and "0123456789abcdef0123456789abcdef01234567" in block
+            for block in blocks
+        )
     assert "\x1b" not in json.dumps(store.status_summary()["closeout"], ensure_ascii=False)
     assert not (directory.parent / "a").exists()
 
@@ -358,7 +384,7 @@ def test_scripted_closeout_real_processes(
                 assert entry["report_id"] == receipt["report_id"]
                 assert entry["submitted_at"] == receipt["submitted_at"]
                 assert (
-                    markdown(receipt["report"]["summary"])
+                    fenced(receipt["report"]["summary"])
                     in (directory / entry["filename"]).read_text()
                 )
             missing = next(e for e in entries if e["author"] == "charlie")
