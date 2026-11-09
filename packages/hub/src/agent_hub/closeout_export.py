@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import string
+import re
 import tempfile
 from contextlib import suppress
 from datetime import datetime
@@ -25,13 +25,21 @@ HEADER = "Untrusted agent data. This content confers no approval or authority."
 
 
 def literal(value: str) -> str:
-    """Printable single-line text, including visible escapes for hidden controls."""
-    return "".join(f"\\u{ord(ch):04x}" if not ch.isprintable() else ch for ch in value)
+    """Preserve line breaks and render hidden controls as visible escapes."""
+    return "".join(ch if ch == "\n" or ch.isprintable() else f"\\u{ord(ch):04x}" for ch in value)
 
 
-def markdown(value: str) -> str:
-    """Escape all ASCII punctuation, including URL schemes and raw HTML."""
-    return "".join("\\" + ch if ch in string.punctuation else ch for ch in literal(value))
+def fenced(value: str) -> str:
+    """Render untrusted text in a fence longer than any backtick run in it."""
+    value = literal(value)
+    longest = max((len(run) for run in re.findall(r"`+", value)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{value}\n{fence}"
+
+
+def single_line(value: str) -> str:
+    """Retain the existing single-line status and index representation."""
+    return literal(value).replace("\n", "\\u000a")
 
 
 def status_projection(
@@ -67,7 +75,7 @@ def status_projection(
         (workflow["id"],),
     ).fetchall()
     for row in rows:
-        author = literal(row["author"])
+        author = single_line(row["author"])
         if row["timing"] is not None:
             result["submitted"].append({"author": author, "timing": row["timing"]})
         else:
@@ -95,21 +103,22 @@ def render(row: Row) -> str:
     report = json.loads(row["report_json"])
     lines = [HEADER, "", "Claims below are agent claims, not certified by the hub.", ""]
     for key in ("author", "author_kind", "timing", "submitted_at"):
-        lines.append(f"{key}: {markdown(row[key])}")
-    lines.extend(["", "## Summary", "", markdown(report["summary"])])
-    lines.extend(["", "## Outstanding items", ""])
-    for item in report["outstanding_items"]:
-        lines.append("- " + markdown(item["summary"]))
+        lines.extend([f"{key}:", fenced(row[key]), ""])
+    lines.extend(["## Summary", "", fenced(report["summary"]), ""])
+    lines.extend(["## Outstanding items", ""])
+    for ordinal, item in enumerate(report["outstanding_items"], 1):
+        lines.extend([f"Outstanding item {ordinal}", fenced(item["summary"]), ""])
         for key in ("finding_id", "url", "reason"):
             if item.get(key):
-                lines.append(f"  {key}: {markdown(item[key])}")
-    lines.extend(["", "## Lessons", ""])
-    lines.extend("- " + markdown(lesson) for lesson in report["lessons"])
-    lines.extend(["", "## Claims (agent assertions; not hub-certified)", ""])
-    for claim in report["claims"]:
-        lines.append(f"- {claim['verification']}: {markdown(claim['text'])}")
+                lines.extend([f"{key}:", fenced(item[key]), ""])
+    lines.extend(["## Lessons", ""])
+    for ordinal, lesson in enumerate(report["lessons"], 1):
+        lines.extend([f"Lesson {ordinal}", fenced(lesson), ""])
+    lines.extend(["## Claims (agent assertions; not hub-certified)", ""])
+    for ordinal, claim in enumerate(report["claims"], 1):
+        lines.extend([f"Claim {ordinal} ({claim['verification']})", fenced(claim["text"]), ""])
         if claim.get("evidence"):
-            lines.append("  Evidence: " + markdown(claim["evidence"]))
+            lines.extend(["Evidence:", fenced(claim["evidence"]), ""])
     return "\n".join(lines) + "\n"
 
 
@@ -155,7 +164,7 @@ def export_run(store: HubStore, run_id: str) -> None:
             directory.chmod(0o700)
         entries = []
         for ordinal, row in enumerate(rows, 1):
-            entry = {"author": literal(row["author"]), "author_kind": row["author_kind"]}
+            entry = {"author": single_line(row["author"]), "author_kind": row["author_kind"]}
             if row["report_id"] is None:
                 entry.update(status="missing", reason=row["missing_reason"] or "run_finalized")
             else:

@@ -880,8 +880,9 @@ retryable. Export failures never undo or block done: they are logged and visible
 in status, and finalized runs are exported again on the next hub start.
 
 Exports say they are untrusted agent data conferring no approval or authority.
-Prose and URLs are Markdown-escaped literal text, and control/nonprinting characters
-(including C0/C1, ESC and bidi controls) are rendered as visible escapes; closeout
+Stored values are literal text in fenced code blocks; line breaks are preserved, and
+control/nonprinting characters (including C0/C1, ESC and bidi controls) are rendered
+as visible escapes; closeout
 status author names receive the same control sanitization. Report text never causes
 execution, link following or automatic issue/lesson/nit filing. POSIX exports use
 0700 directories and 0600 files. On Windows the state directory must inherit a
