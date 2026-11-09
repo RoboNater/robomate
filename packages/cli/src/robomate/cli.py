@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import tomllib
@@ -90,6 +91,7 @@ from agent_hub_common.relocation import relocate_hub, relocation_targets
 from agent_hub_common.startup import stage
 from agent_hub_common.startup import stages as startup_stages
 from agent_hub_common.stdio import escape_unencodable_output
+from agent_hub_common.workspace import create_clone
 from worker_mcp.main import run_worker_bridge, serve_mcp
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
@@ -1553,6 +1555,60 @@ def _clean(selector: str | None) -> None:
     print(f"Cleaned {hub.label()}; hub state and runs were kept.")
 
 
+def _concrete_flag(value: str, flag: str) -> str:
+    if not value.strip() or re.search(r"[$<>{}]|%[^%]+%", value):
+        raise ValueError(
+            f"{flag} requires a concrete value; expand variables and replace placeholders"
+        )
+    return value.strip()
+
+
+def _remote_workspace(agent: str, destination: str, hub_url: str, token_path: str) -> None:
+    """Probe the remote hub before creating any directories or cloning its origin."""
+
+    validate_agent_name(agent)
+    destination = _concrete_flag(destination, "--clone")
+    url = _concrete_flag(hub_url, "--hub-url").rstrip("/")
+    token_path = _concrete_flag(token_path, "--token-file")
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "--hub-url must be an http(s) hub URL without credentials, query or fragment"
+        )
+    path = Path(destination)
+    if not path.is_absolute() or path != path.resolve():
+        raise ValueError("--clone must be an absolute canonical path")
+    token = read_token_file(Path(token_path).expanduser(), "--token-file")
+
+    def probe(route: str, *, authenticated: bool = False) -> dict[str, Any]:
+        headers = {"Authorization": f"Bearer {token}"} if authenticated else {}
+        request = urllib.request.Request(url + route, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=HEALTHZ_TIMEOUT_S) as response:
+                value = json.load(response)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"--hub-url probe {route} failed; no clone was written") from exc
+        if not isinstance(value, dict):
+            raise RuntimeError(f"--hub-url probe {route} did not return an object")
+        return value
+
+    if probe("/healthz").get("status") != "ok":
+        raise RuntimeError("--hub-url /healthz did not report status ok")
+    if probe("/.well-known/agent-card.json").get("url") != url + "/a2a":
+        raise RuntimeError("--hub-url agent card URL must match " + url + "/a2a")
+    origin = probe("/whoami", authenticated=True).get("origin")
+    if not isinstance(origin, str) or not origin.strip():
+        raise RuntimeError("--hub-url hub has no origin to clone")
+    print(create_clone(path, origin, agent))
+
+
 def _workspace(agent_name: str, selector: str | None) -> None:
     """Create an agent's worktree ahead of join via operator-only `hub.workspace` (M2 Step 7b).
 
@@ -1717,9 +1773,14 @@ def main() -> None:
     )
     workspace = commands.add_parser(
         "workspace",
-        help="create an agent's worktree ahead of join and print its path (operator-only)",
+        help="create an agent workspace (local worktree or remote full clone) and print its path",
     )
     workspace.add_argument("agent", metavar="NAME", help="agent name (e.g. bob)")
+    workspace.add_argument("--clone", metavar="PATH", help="create a full clone on this agent host")
+    workspace.add_argument(
+        "--hub-url", metavar="URL", help="remote hub public URL (requires --clone)"
+    )
+    workspace.add_argument("--token-file", metavar="FILE", help="remote hub bearer token file")
     clean = commands.add_parser(
         "clean",
         help="remove a stopped hub's safe agent worktrees and merged branches (operator-only)",
@@ -1789,7 +1850,14 @@ def main() -> None:
         elif args.command == "relocate":
             _relocate(args.hub)
         elif args.command == "workspace":
-            _workspace(args.agent, args.hub)
+            if args.clone is not None:
+                if args.hub or args.hub_url is None or args.token_file is None:
+                    raise ValueError("--clone requires --hub-url and --token-file, without --hub")
+                _remote_workspace(args.agent, args.clone, args.hub_url, args.token_file)
+            else:
+                if args.hub_url is not None or args.token_file is not None:
+                    raise ValueError("--hub-url and --token-file require --clone")
+                _workspace(args.agent, args.hub)
         elif args.command == "clean":
             _clean(args.hub)
         elif args.command == "ls":

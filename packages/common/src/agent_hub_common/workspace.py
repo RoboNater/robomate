@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -76,3 +77,47 @@ def read_identity(workspace: Path, agent: str) -> dict[str, Any]:
         raise ConfigurationError(
             f"HUB_WORKSPACE identity invalid: {exc}; run scripts/bootstrap-workspace.sh"
         ) from exc
+
+
+def create_clone(destination: Path, repository: str, agent: str) -> Path:
+    """Create a full clone and private identity, or reuse a clean matching clone."""
+
+    if not destination.is_absolute() or destination != destination.resolve():
+        raise ConfigurationError("--clone must be an absolute canonical path")
+    if destination.exists():
+        try:
+            workspace = canonical_workspace(str(destination))
+        except ConfigurationError as exc:
+            raise ConfigurationError(str(exc).replace("HUB_WORKSPACE", "--clone")) from exc
+        if git(workspace, "remote", "get-url", "origin") != repository:
+            raise ConfigurationError("existing clone has a different origin; leaving it intact")
+        if git(workspace, "status", "--porcelain"):
+            raise ConfigurationError("existing clone is dirty; leaving all work intact")
+        read_identity(workspace, agent)
+        return workspace
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["git", "clone", "--", repository, str(destination)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ConfigurationError(
+            "git clone failed; check origin access and the destination"
+        ) from exc
+    workspace = canonical_workspace(str(destination))
+    value = {
+        "workspace_id": secrets.token_hex(32),
+        "agent": agent,
+        "path": str(workspace),
+        "repository": repository,
+    }
+    descriptor = os.open(
+        workspace / ".git" / IDENTITY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(value, stream)
+        stream.write("\n")
+    return workspace

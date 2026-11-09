@@ -258,3 +258,15 @@ async def test_max_hold_default_s_bounds_worker_orchestrator_and_guide_timeouts(
                 wait_for_event_default_s=wait_default,
                 guide_texts=tampered,
             )
+
+
+def test_unjoined_remote_bridge_uses_explicit_url_and_token_file(tmp_path: Path) -> None:
+    token = tmp_path / "remote-token"
+    token.write_text("remote-secret\n", encoding="utf-8")
+    settings = WorkerSettings.unjoined(
+        cwd=tmp_path,
+        environ={"ROBOMATE_HUB_URL": "http://remote:8420/", "ROBOMATE_TOKEN_FILE": str(token)},
+    )
+    assert settings.hub_url == "http://remote:8420"
+    assert settings.token == "remote-secret"
+    assert settings.token_file == token

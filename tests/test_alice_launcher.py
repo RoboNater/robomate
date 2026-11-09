@@ -881,7 +881,9 @@ def test_healthy_running_time_does_not_spend_the_budget(
     assert delays == [5.0, 10.0]
 
 
-async def test_prepared_resume_replaces_the_bridge_before_reading_state(settings: Any) -> None:
+async def test_prepared_resume_replaces_the_bridge_before_reading_state(
+    settings: Any, tmp_path: Path
+) -> None:
     """#239 r1-1: execute the continuation's join/read order against the real hub."""
     from dataclasses import replace
 
@@ -899,8 +901,8 @@ async def test_prepared_resume_replaces_the_bridge_before_reading_state(settings
             headers={"Authorization": f"Bearer {TOKEN}"},
         ) as http,
     ):
-        old = OrchestratorBridge(http_client=http)
-        resumed = OrchestratorBridge(http_client=http)
+        old = OrchestratorBridge(cwd=tmp_path, http_client=http)
+        resumed = OrchestratorBridge(cwd=tmp_path, http_client=http)
         try:
             await old.call("initialize_workflow", {"goal": "Keep the existing workflow"})
             app.state.store.check_in("bob")
