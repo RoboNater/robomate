@@ -107,12 +107,12 @@ async def test_export_status_restart_and_stopped_files(
             assert directory.stat().st_mode & 0o777 == 0o700
             assert all(p.stat().st_mode & 0o777 == 0o600 for p in directory.iterdir())
     # Files can be read after the owning hub stops, with no DB or HTTP access.
-    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()}
     restarted = create_app(settings)
     frozen_clock.install(restarted.state.store)
     async with restarted.router.lifespan_context(restarted):
         assert restarted.state.store.status_summary()["closeout"] == final_status
-    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before
+    assert {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()} == before
 
 
 def test_status_is_pure_even_after_deadline(store: HubStore, frozen_clock: FrozenClock) -> None:
@@ -404,6 +404,9 @@ def test_atomic_replacement_failure_preserves_existing_export(
     done(store)
     directory = export_dir(store, run_id)
     original = {p.name: p.read_bytes() for p in directory.iterdir()}
+    # Simulate a crash after writing the index but before recording completion.
+    with database(store.path) as connection:
+        connection.execute("UPDATE workflow SET exported_at = NULL WHERE run_id = ?", (run_id,))
 
     def fail_replace(*args: Any) -> None:
         raise PermissionError("test replacement failure")
@@ -495,3 +498,68 @@ def test_predeadline_loss_status_read_and_early_done_export(
     assert next(e for e in entries if e["author"] == "charlie")["reason"] == "worker_lost"
     store.check_in("charlie", worker_instance_id="charlie-returned")
     assert store.get_closeout_reports(run_id)["missing"] == expected
+
+
+@pytest.mark.parametrize("remove_directory", [False, True])
+async def test_completed_export_deletion_is_final(
+    app: FastAPI, hub_store: HubStore, settings: HubSettings, remove_directory: bool
+) -> None:
+    import shutil
+
+    async with app.router.lifespan_context(app):
+        run_id = prepare(hub_store)
+        submit(hub_store, run_id, "bob", report())
+        done(hub_store)
+        directory = export_dir(hub_store, run_id)
+        if remove_directory:
+            shutil.rmtree(directory.parent)
+        else:
+            for path in directory.iterdir():
+                path.unlink()
+    restarted = create_app(settings)
+    async with restarted.router.lifespan_context(restarted):
+        assert restarted.state.store.get_closeout_reports(run_id)["reports"]
+    assert not directory.exists() if remove_directory else not list(directory.iterdir())
+
+
+async def test_failure_still_reported_after_restart(
+    app: FastAPI, hub_store: HubStore, settings: HubSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_hub import closeout_export
+
+    def fail(*args: Any) -> None:
+        raise PermissionError("test failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(closeout_export, "atomic_write", fail)
+        async with app.router.lifespan_context(app):
+            run_id = prepare(hub_store)
+            submit(hub_store, run_id, "bob", report())
+            done(hub_store)
+            assert hub_store.status_summary()["closeout"]["export_error"] == "PermissionError"
+        restarted = create_app(settings)
+        async with restarted.router.lifespan_context(restarted):
+            assert (
+                restarted.state.store.status_summary()["closeout"]["export_error"]
+                == "PermissionError"
+            )
+            assert restarted.state.store.status_summary()["closeout_export_errors"] == [
+                {"run_id": run_id, "error": "PermissionError"}
+            ]
+    restarted = create_app(settings)
+    async with restarted.router.lifespan_context(restarted):
+        assert restarted.state.store.status_summary()["closeout_export_errors"] == []
+    assert (export_dir(hub_store, run_id) / "index.json").is_file()
+
+
+def test_done_without_collection_marks_completion(store: HubStore) -> None:
+    run_id = str(store.get_state()["workflow"]["run_id"])
+    done(store)
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT exported_at FROM workflow WHERE run_id = ?", (run_id,)
+            ).fetchone()[0]
+            is not None
+        )
+    assert not export_dir(store, run_id).exists()
