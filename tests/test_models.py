@@ -27,7 +27,7 @@ def test_valid_implementer_result_completed() -> None:
         outcome=ImplementerOutcome.COMPLETED,
         pr_url="https://github.com/org/repo/pull/1",
         head_sha=VALID_SHA,
-        commits=[f"{VALID_SHA} feat: do something"],
+        commits=[VALID_SHA],
         tests=[TestResult(command="pytest", status="passed")],
         summary="Done successfully",
     )
@@ -230,3 +230,52 @@ def test_a_blocked_rebase_needs_no_head() -> None:
     )
 
     assert res.head_sha is None
+
+
+@pytest.mark.parametrize(
+    "bad_commit",
+    [
+        "a29763c",  # short SHA from run 20261025_de4fc61b (#371)
+        "0123456789",  # too short
+        "g" * 40,  # non-hex
+        "0" * 39,  # one short
+        "0" * 41,  # one long
+        f"{VALID_SHA} feat: do something",  # SHA plus message
+        f"  {VALID_SHA}  ",  # whitespace
+    ],
+)
+def test_implementer_commits_reject_short_or_malformed_shas(bad_commit: str) -> None:
+    with pytest.raises(ValidationError, match="commits"):
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://github.com/org/repo/pull/1",
+            head_sha=VALID_SHA,
+            commits=[bad_commit],
+            summary="Done",
+        )
+
+
+def test_implementer_commits_accept_full_shas_and_empty_list() -> None:
+    full = ImplementerResult(
+        outcome=ImplementerOutcome.COMPLETED,
+        pr_url="https://github.com/org/repo/pull/1",
+        head_sha=VALID_SHA,
+        commits=[VALID_SHA, VALID_SHA_2],
+        summary="Done",
+    )
+    assert full.commits == [VALID_SHA, VALID_SHA_2]
+
+    empty = ImplementerResult(
+        outcome=ImplementerOutcome.COMPLETED,
+        pr_url="https://github.com/org/repo/pull/1",
+        head_sha=VALID_SHA,
+        commits=[],
+        summary="Done",
+    )
+    assert empty.commits == []
+
+
+def test_implementer_commits_schema_carries_40_hex_pattern() -> None:
+    commits_schema = IMPLEMENTER_RESULT_SCHEMA["properties"]["commits"]
+    assert commits_schema["type"] == "array"
+    assert commits_schema["items"]["pattern"] == r"^[0-9a-fA-F]{40}$"

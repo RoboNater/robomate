@@ -335,3 +335,14 @@ async def test_submit_result_telemetry_identifies_task_on_error(tmp_path: Path) 
         ("start", "wrong-task-id"),
         ("error", "wrong-task-id"),
     ]
+
+
+async def test_submit_result_schema_carries_commits_pattern() -> None:
+    """#371: the worker MCP submit_result schema exposes the commits pattern."""
+    settings = WorkerSettings(hub_url="http://hub.example", token="t", agent_name="b")
+    server = create_worker_mcp(WorkerHubClient(settings))
+    tools = await server.list_tools()
+    tool = next(t for t in tools if t.name == "submit_result")
+    schema = tool.inputSchema
+    commits = schema["$defs"]["ImplementerResult"]["properties"]["commits"]
+    assert commits["items"]["pattern"] == r"^[0-9a-fA-F]{40}$"
