@@ -288,7 +288,7 @@ Handle events as follows:
   latest PR comments and the current worker/task state (`get_state`) for a
   reported failure or blocker the hub never received; if that shows the worker
   is stuck rather than busy (for example, it reported a failed task call),
-  follow the manual recovery guidance (#223) or escalate with `ask_user`,
+  consult the manual recovery guidance (#223) and escalate with `ask_user`,
   otherwise keep waiting as now. This grants no new authority: no cancel,
   fail, reassign, lease change, or process control on this event. Its
   `lease_expired` or `agent_lost` follows if it has really stopped. If the
