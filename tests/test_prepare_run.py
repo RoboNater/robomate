@@ -1754,6 +1754,7 @@ def test_fresh_run_produces_every_file(
     assert bob_env["HUB_HARNESS"] == "claude-code"
     assert bob_env["HUB_PROVIDER"] == "anthropic"
     assert bob_env["HUB_WORKSPACE"] == manifest["workspaces"]["bob"]["path"]
+    assert "HUB_EFFORT" in bob_env
     codex = tomllib.loads((run_dir / "configs/codex/config.toml").read_text())
     assert set(codex["mcp_servers"]["robomate"]["enabled_tools"]) == {
         "check_in",
@@ -1772,6 +1773,98 @@ def test_fresh_run_produces_every_file(
     assert (run_dir / "alice-runtime/.claude/skills/alice-orchestrator").exists()
     report = json.loads(capsys.readouterr().out.split("\nStart scripts")[0])
     assert set(report["configs"]) == {"alice", "bob", "charlie"}
+
+
+def _alice_bridge_env(run_dir: Path, harness: str) -> Any:
+    """Alice's bridge env for ``harness``, whatever config file carries it (#402)."""
+    if harness == "codex":
+        config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
+        return config["mcp_servers"]["robomate"]["env"]
+    if harness == "opencode":
+        config = json.loads((run_dir / "configs/alice.opencode.json").read_text())
+        return config["mcp"]["robomate"]["environment"]
+    if harness == "antigravity":
+        path = RUN_COMMON.agy_mcp_path(run_dir / "configs/alice-agy")
+        return json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["robomate"]["env"]
+    if harness == "devin":
+        path = run_dir / "alice-runtime" / ".devin" / "mcp_config.local.json"
+        return json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["robomate"]["env"]
+    config = json.loads((run_dir / "configs/alice.mcp.json").read_text())
+    return config["mcpServers"]["robomate"]["env"]
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
+def test_alice_bridge_carries_declared_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    """#402: every Alice harness branch renders the same declared identity."""
+    alice_model = "claude-opus-5-5"
+    alice_effort = "" if harness == "devin" else "high"
+    run_dir, _ = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness=harness,
+        alice_model=alice_model,
+        alice_effort=alice_effort,
+        bob_model="claude-opus-5-5",
+        bob_effort="max",
+        charlie_effort="medium",
+    )
+    expected_versions = {
+        "claude-code": "2.1",
+        "codex": "0.1",
+        "opencode": "1.18.32",
+        "antigravity": "1.2.7",
+        "devin": "3000.11.3",
+    }
+    env = _alice_bridge_env(run_dir, harness)
+    assert env["HUB_HARNESS"] == harness
+    assert env["HUB_HARNESS_VERSION"] == expected_versions[harness]
+    assert env["HUB_PROVIDER"] == "anthropic"
+    assert env["HUB_MODEL"] == alice_model
+    assert env["HUB_EFFORT"] == alice_effort
+    # Workers keep their identity and now carry effort too.
+    bob = json.loads((run_dir / "configs/bob.mcp.json").read_text())["mcpServers"]["robomate"][
+        "env"
+    ]
+    assert bob["HUB_HARNESS"] == "claude-code"
+    assert bob["HUB_MODEL"] == "claude-opus-5-5"
+    assert bob["HUB_EFFORT"] == "max"
+    charlie_home = run_dir / "configs/codex"
+    if (charlie_home / "config.toml").exists():
+        charlie_env = tomllib.loads((charlie_home / "config.toml").read_text())["mcp_servers"][
+            "robomate"
+        ]["env"]
+    else:
+        charlie_env = json.loads((run_dir / "configs/charlie.mcp.json").read_text())["mcpServers"][
+            "robomate"
+        ]["env"]
+    assert charlie_env["HUB_EFFORT"] == "medium"
+
+
+def test_worker_env_includes_effort() -> None:
+    """#402: profile_from_env already reads HUB_EFFORT, so worker_env must supply it."""
+    env = PREPARE_RUN.worker_env(
+        "bob",
+        "claude-code",
+        "2.1",
+        "anthropic",
+        "claude-opus-5-5",
+        "",
+        "/tmp/bob",
+        "/tmp/token",
+        "/tmp/bob-telemetry.jsonl",
+        "http://127.0.0.1:8521",
+        "max",
+    )
+    assert env["HUB_EFFORT"] == "max"
+    assert PREPARE_RUN.bridge_identity_env("opencode", "1.18.32", "anthropic", "m", "high") == {
+        "HUB_HARNESS": "opencode",
+        "HUB_HARNESS_VERSION": "1.18.32",
+        "HUB_PROVIDER": "anthropic",
+        "HUB_MODEL": "m",
+        "HUB_EFFORT": "high",
+    }
 
 
 def test_all_claude_run_renders_start_scripts_prompts_and_manifest(
