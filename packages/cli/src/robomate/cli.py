@@ -1241,6 +1241,13 @@ def _status(as_json: bool, selector: str | None) -> None:
         )
         if agent.get("stalled"):
             print(f"    {_stall_evidence(agent['activity'])}")
+        activity = agent.get("activity") or {}
+        if activity.get("redelivery_count", 0) >= 2:
+            print(
+                f"    repeated assignment: task {agent['current_task']} "
+                f"redelivered {activity['redelivery_count']} times "
+                f"(last {activity['last_redelivery_age_s']}s ago)"
+            )
     print(f"Open tasks: {len(status['tasks'])}")
     for task in status["tasks"]:
         print(

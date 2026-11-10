@@ -239,8 +239,11 @@ async def test_worker_mcp_tool_boundary_writes_telemetry(tmp_path: Path) -> None
     client.await_assignment = AsyncMock(return_value={"timeout": True})  # type: ignore[method-assign]
     server = create_worker_mcp(client)
 
-    result = await server.call_tool("await_assignment", {"timeout_s": 0.1})
+    result = await server.call_tool(
+        "await_assignment", {"timeout_s": 0.1, "include_instructions": True}
+    )
 
+    client.await_assignment.assert_awaited_once_with(0.1, include_instructions=True)
     assert isinstance(result, tuple)
     records = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
     calls = [record for record in records if record.get("event") == "tool_call"]

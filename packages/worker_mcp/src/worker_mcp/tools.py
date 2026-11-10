@@ -151,7 +151,9 @@ def create_worker_mcp(
         )
 
     @server.tool()
-    async def await_assignment(timeout_s: Timeout | None = None) -> dict[str, Any]:
+    async def await_assignment(
+        timeout_s: Timeout | None = None, include_instructions: bool = False
+    ) -> dict[str, Any]:
         """Poll the hub for the next task assignment.
 
         Returns {task_id, role, instructions}, {release: true}, {timeout: true},
@@ -162,7 +164,11 @@ def create_worker_mcp(
         named in the run's first implementer assignment and reused afterwards, plus
         run_id and statement_sha256 for the run's identity and statement.
         A redelivery of a task you already hold carries already_held true: it is not
-        new work, so continue it instead of starting over (#326).
+        new work, so continue it instead of starting over (#326). Compare its
+        task_id with your local ID. Repeat reminders hold for timeout_s and contain
+        only task_id, title and already_held; the first recovery after a bridge
+        restart includes the full assignment again (#434). Set include_instructions=true
+        to recover the full text and assignment fields again without restarting.
         On timeout, call again.
         timeout_s: Optional wait timeout in seconds (defaults to HUB_DEFAULT_WAIT_S if omitted).
         """
@@ -171,8 +177,8 @@ def create_worker_mcp(
         return await invoke(
             resolved,
             "await_assignment",
-            resolved.await_assignment(timeout_s),
-            {"timeout_s": timeout_s},
+            resolved.await_assignment(timeout_s, include_instructions=include_instructions),
+            {"timeout_s": timeout_s, "include_instructions": include_instructions},
         )
 
     @server.tool()
