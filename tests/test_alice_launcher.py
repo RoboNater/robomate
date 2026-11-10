@@ -22,8 +22,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import fake_harness
 import pytest
-from fake_harness import PIDS_ENV, bounded, supervision
+from fake_harness import bounded
+
+# One shared autouse fixture (fake_harness.py), re-exported by alias (#464 r1-3).
+fake_supervision = fake_harness.fake_supervision
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -99,17 +103,6 @@ class ScriptedReader:
 
 def wf(status: str, workflow: str = WORKFLOW, hub: str = HUB) -> tuple[str, dict[str, Any]]:
     return hub, {"id": workflow, "status": status}
-
-
-@pytest.fixture(autouse=True)
-def fake_supervision(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Any]:
-    """Bound a hung fake child by LIVENESS_S and clean up only this test's own."""
-    pids = tmp_path_factory.mktemp("fake-harness-pids") / "pids"
-    monkeypatch.setenv(PIDS_ENV, str(pids))
-    with supervision(pids) as sup:
-        yield sup
 
 
 @pytest.fixture

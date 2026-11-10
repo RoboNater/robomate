@@ -17,23 +17,26 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import fake_harness
 import pytest
 from fake_harness import (
-    PIDS_ENV,
     SUPERVISED_MAX_RESUMES,
     attempts,
     bounded,
     exit_codes,
     live_own_pids,
-    supervision,
 )
 from test_alice_launcher import ID_LINES, IDS, LAUNCHER, ROOT
 from timing import wait_until_sync
+
+# One shared autouse fixture (fake_harness.py), re-exported here by alias so
+# ruff does not treat the pytest fixture as an unused import (#464 r1-3).
+fake_supervision = fake_harness.fake_supervision
 
 SPEC = importlib.util.spec_from_file_location(
     "agent_launcher_cli", ROOT / "scripts/agent-launcher.py"
@@ -104,19 +107,6 @@ def git(cwd: Path, *words: str) -> str:
     return subprocess.run(
         ["git", "-C", str(cwd), *words], check=True, capture_output=True, text=True
     ).stdout.strip()
-
-
-@pytest.fixture(autouse=True)
-def fake_supervision(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Any]:
-    """Bound a hung fake child by LIVENESS_S and clean up only this test's own."""
-    # Outside the test's tmp_path: files() checks scan tmp_path as the hub
-    # checkout root and would otherwise see the supervision's pids file.
-    pids = tmp_path_factory.mktemp("fake-harness-pids") / "pids"
-    monkeypatch.setenv(PIDS_ENV, str(pids))
-    with supervision(pids) as sup:
-        yield sup
 
 
 @pytest.fixture
@@ -294,7 +284,11 @@ def workspace_of(
 @pytest.mark.parametrize("harness", HARNESSES)
 @pytest.mark.parametrize("role", ["orchestrator", "implementer"])
 def test_start_sends_the_join_line_and_resumes_with_takeover(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, harness: str, role: str
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    role: str,
+    fake_supervision: Any,
 ) -> None:
     use_harness(harness, monkeypatch)
     monkeypatch.setenv("ROBOMATE_HUB_URL", "http://another-hub:1")
@@ -316,6 +310,16 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
         programs=programs(area),
         reader=hub,
         workspace=workspace_of(area, calls),
+    )
+
+    # Wire the diagnostic guard into a real supervision scenario (#464 r1-2):
+    # a fixture that dies before its marker fails clearly here too, not only in
+    # the dedicated regressions. A passing scenario has all its markers.
+    fake_supervision.check(
+        expect=2,
+        markers=len(launches(area)),
+        sessions=(area["sessions"] / f"{agent}.jsonl",),
+        output="",
     )
 
     assert code == 0
@@ -1073,4 +1077,53 @@ def test_broken_fake_child_fails_with_finite_attempts_and_diagnostics(
     assert evidence in message
 
     # Cleanup leaves only this test's own children, all of them gone.
+    assert live_own_pids(fake_supervision.pids) == []
+
+
+# A child that hangs on every attempt and never writes its launch marker. The
+# watchdog must keep sweeping across automatic resumes, not fire once (#464
+# r1-1); otherwise the resumed child hangs with no watchdog left.
+HANG_FAKE_CHILD = """\
+import os, sys, time
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+print("fake child hanging before its launch marker", file=sys.stderr, flush=True)
+time.sleep(10**6)
+"""
+
+
+def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+) -> None:
+    """#464 r1-1: the LIVENESS_S watchdog keeps sweeping across resumes."""
+    # Shorten this instance's hang bound so the test is fast; the sweep reads
+    # liveness_s fresh each poll, so the change takes effect mid-run.
+    fake_supervision.liveness_s = 0.3
+    area["fake"].write_text(HANG_FAKE_CHILD, encoding="utf-8")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    hub = FakeHub(after_launches(area, active))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+    sessions = (area["sessions"] / "bob.jsonl",)
+
+    # Termination by the finite resume count, with no external timeout: every
+    # hung child (including the resumed ones) was swept by the watchdog. Count
+    # attempts and exit codes, never assert a short wall-clock duration.
+    assert code == LAUNCHER.EXIT_RESUMES_SPENT
+    assert attempts(*sessions) == SUPERVISED_MAX_RESUMES + 1
+    assert launches(area) == []
+    codes = exit_codes(*sessions)
+    assert len(codes) == SUPERVISED_MAX_RESUMES + 1 and all(code != 0 for code in codes)
+
+    # Cleanup swept only this test's own children; none remain alive.
     assert live_own_pids(fake_supervision.pids) == []

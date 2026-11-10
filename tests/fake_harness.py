@@ -11,8 +11,9 @@ or rapid spin. Supervision scenarios therefore:
     finite ``--resume-total-s``) instead of the unlimited production count and
     ~12-hour budget;
   * run under :func:`supervision`, which bounds a genuinely hung child with
-    ``LIVENESS_S`` and cleans up only the fake children this test started
-    (recorded in its per-test pids file);
+    ``LIVENESS_S``, keeps sweeping after the deadline so a child that hangs
+    again after a resume is also killed, and cleans up only the fake children
+    this test started (recorded in its per-test pids file);
   * use :class:`Supervision` to count launch attempts and raise a diagnostic
     failure when a child dies before its marker.
 
@@ -26,11 +27,13 @@ import json
 import os
 import signal
 import threading
+import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from timing import LIVENESS_S
+import pytest
+from timing import LIVENESS_S, POLL_INTERVAL_S
 
 # A small, explicit resume count: enough for every supervision scenario (a
 # healthy run resumes at most twice), but finite, so a broken fixture cannot
@@ -96,14 +99,17 @@ def live_own_pids(pids: Path) -> list[int]:
 def _still_ours(pid: int, token: str) -> bool:
     """Best-effort check that ``pid`` is still one of this test's fake children.
 
-    On POSIX the child's command line names its fake-harness script. Windows
-    has no /proc, so a recorded pid is trusted: these are short-lived children
-    the launcher started for this test alone.
+    Where /proc exists (Linux) the child's command line names its fake-harness
+    script, and an unreadable cmdline means the process is gone or its pid was
+    reused: not ours to kill. Hosts without /proc (Windows, macOS) trust the
+    recorded pid of a short-lived child the launcher started for this test.
     """
+    if not Path("/proc").is_dir():
+        return True
     try:
         return token.encode() in Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
-        return True
+        return False
 
 
 def kill_own(pids: Path) -> None:
@@ -162,14 +168,34 @@ class Supervision:
 
     def __init__(self, pids: Path) -> None:
         self.pids = pids
-        self._watchdog = threading.Timer(LIVENESS_S, kill_own, args=(pids,))
-        self._watchdog.daemon = True
+        # The hang bound. A regression shortens it on this instance; the sweep
+        # reads it fresh each poll so the change takes effect mid-run.
+        self.liveness_s = LIVENESS_S
+        self._stop = threading.Event()
+        self._watchdog = threading.Thread(target=self._sweep, daemon=True)
 
     def start(self) -> None:
         self._watchdog.start()
 
+    def _sweep(self) -> None:
+        """Sweep own children once the LIVENESS_S deadline passes.
+
+        A single one-shot kill is not enough (#464 r1-1): a child that hangs
+        again after an automatic resume would be unbounded, because max_resumes
+        is only checked after an exit. Keep sweeping at the poll interval until
+        close(), so every later hung child is killed promptly and the finite
+        resume count ends the launcher's loop.
+        """
+        started = time.monotonic()
+        while not self._stop.is_set():
+            if time.monotonic() - started >= self.liveness_s:
+                kill_own(self.pids)
+            if self._stop.wait(POLL_INTERVAL_S):
+                return
+
     def close(self) -> None:
-        self._watchdog.cancel()
+        self._stop.set()
+        self._watchdog.join(timeout=POLL_INTERVAL_S * 4)
         kill_own(self.pids)
 
     def check(self, *, expect: int, markers: int, sessions: Iterable[Path], output: str) -> None:
@@ -197,3 +223,19 @@ def supervision(pids: Path) -> Iterator[Supervision]:
         yield sup
     finally:
         sup.close()
+
+
+@pytest.fixture(autouse=True)
+def fake_supervision(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Supervision]:
+    """One shared autouse fixture, re-exported by alias in the three launcher
+    test modules (an import would trip ruff F401/F811 on pytest fixture params).
+
+    The pids file lives outside the test's tmp_path: files() checks scan
+    tmp_path as the hub checkout root and would otherwise see it.
+    """
+    pids = tmp_path_factory.mktemp("fake-harness-pids") / "pids"
+    monkeypatch.setenv(PIDS_ENV, str(pids))
+    with supervision(pids) as sup:
+        yield sup
