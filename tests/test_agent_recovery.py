@@ -443,7 +443,11 @@ def test_original_run_metadata_is_essential(recovery_args: argparse.Namespace, c
     elif case == "manifest-harness":
         manifest = {"launch": {"agents": {"bob": {"harness": "opencode"}}}}
     elif case == "manifest-workspace":
-        manifest = {"workspaces": {"bob": {"path": str(recovery_args.sessions.parent)}}}
+        # A path that differs from cwd whatever directory the suite runs from
+        # (#461 autouse chdir): recovery must refuse the workspace mismatch.
+        manifest = {
+            "workspaces": {"bob": {"path": str(recovery_args.sessions.parent / "original-run")}}
+        }
     else:
         manifest = {"hub_id": "other"}
     (recovery_args.sessions.parent / "run.json").write_text(json.dumps(manifest))

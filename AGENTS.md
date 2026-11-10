@@ -125,6 +125,19 @@ Tests that drive the app use conftest's `hub_store`, not `store`: a second
 `HubStore` on one database has its own `Signals`, so writes through one never
 wake a waiter on the other.
 
+An autouse conftest fixture (`isolated_cwd`) chdirs every test to its own clean
+`tmp_path`. `WorkerHubClient.join` and `OrchestratorBridge` fall back to
+`Path.cwd()` when built without `cwd=`; a prepared worker clone (or a
+`bootstrap-workspace` clone) carries `.git/robo-agents-workspace.json` there, so
+without the fixture a no-`cwd` bridge would adopt — or refuse — that lane's clone
+identity, unlike a plain CI checkout (#461). `tmp_path` is outside any git
+checkout, so the no-`cwd` default always joins via a worktree on both kinds of
+checkout and the full suite gives the same counts in either. A test that needs a
+specific checkout passes `cwd=` or `monkeypatch.chdir` itself; the fixture leaves
+`join`'s clone detection as shipped. The regression is
+`test_workspace.py::test_no_cwd_bridge_ignores_lane_clone_identity`, covering both
+a same-agent and a different-agent identity.
+
 Time in tests ([policy](docs/development/testing-time-and-waits.md)): put any
 deadline the hub enforces on the `frozen_clock` fixture and pass it with
 `advance`, never by moving only the wall clock; wait for conditions with

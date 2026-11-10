@@ -737,3 +737,63 @@ def test_clone_destination_error_names_flag(tmp_path: Path) -> None:
         create_clone(destination, "unused-origin", "bob")
     assert "HUB_WORKSPACE" not in str(error.value)
     assert list(destination.iterdir()) == []
+
+
+@pytest.mark.parametrize("identity_agent", ["bob", "charlie"])
+async def test_no_cwd_bridge_ignores_lane_clone_identity(
+    repository: Path,
+    tmp_path: Path,
+    client: httpx.AsyncClient,
+    settings: HubSettings,
+    identity_agent: str,
+) -> None:
+    """#461: a bridge built without ``cwd=`` must not adopt a lane identity.
+
+    A prepared worker clone (``bootstrap-workspace``) carries
+    ``.git/robo-agents-workspace.json`` in its checkout. Before the autouse
+    cwd-isolation fixture, ``WorkerHubClient.join`` resolved
+    ``settings.cwd or Path.cwd()`` to that checkout: a same-agent identity was
+    silently adopted (the clone path), a different-agent identity raised
+    "detected clone identity ... invalid". Plain CI checkouts saw neither, so
+    one commit could be green for one agent and red for another. The fixture
+    chdirs every test to a clean, identity-free ``tmp_path``, so a no-``cwd``
+    bridge always joins without an explicit clone on both kinds of checkout.
+    Both identities from #461 are covered: one naming the joined agent and one
+    naming a different agent.
+    """
+    from agent_hub_common.workspace import read_identity
+    from conftest import BASE_URL, TOKEN
+    from worker_mcp.client import WorkerHubClient
+
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# Worker\n", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# Implementer\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Forge\n", encoding="utf-8")
+
+    # A synthetic provisioned clone: exactly the identity a worker lane carries.
+    lane = tmp_path / "lane"
+    identity = bootstrap(repository, lane, identity_agent)
+    assert read_identity(lane, identity_agent)["workspace_id"] == identity["workspace_id"]
+
+    cwd = Path.cwd()
+
+    # Join first, so both pre-fix behaviours fail here: a same-agent identity is
+    # silently adopted (``workspace_kind == "clone"``), a different-agent identity
+    # raises "detected clone identity ... invalid". The autouse cwd fixture makes
+    # each no-cwd join a plain, non-explicit one on either kind of checkout.
+    unjoined = WorkerSettings.unjoined(
+        environ={"ROBOMATE_HUB_URL": BASE_URL, "ROBOMATE_TOKEN": TOKEN}
+    )
+    async with WorkerHubClient(unjoined, http_client=client) as bridge:
+        result = await bridge.join("bob", "implementer")
+
+    assert result["workspace_kind"] != "clone"
+    assert result["workspace_id"] is None
+    assert result["workspace_id"] != identity["workspace_id"]
+    assert result["workspace_path"] == str(cwd)
+
+    # The fixture keeps the process out of any identity-bearing checkout, so a
+    # bridge's ``settings.cwd or Path.cwd()`` never sees one.
+    assert cwd != lane and not cwd.is_relative_to(lane)
+    assert not (cwd / ".git" / IDENTITY_FILE).exists()
