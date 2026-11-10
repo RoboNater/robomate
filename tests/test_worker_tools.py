@@ -344,6 +344,5 @@ async def test_submit_result_schema_carries_commits_pattern() -> None:
     tools = await server.list_tools()
     tool = next(t for t in tools if t.name == "submit_result")
     schema = tool.inputSchema
-    found = json.dumps(schema)
-    assert r"^[0-9a-fA-F]{40}$" in found
-    assert "commits" in found
+    commits = schema["$defs"]["ImplementerResult"]["properties"]["commits"]
+    assert commits["items"]["pattern"] == r"^[0-9a-fA-F]{40}$"
