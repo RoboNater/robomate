@@ -1234,3 +1234,38 @@ def test_migration_from_v23_preserves_readings_without_inventing_merge_sha(tmp_p
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     with database(path) as connection:
         assert connection.execute("SELECT merged_sha FROM gate_reading").fetchone()[0] == "b" * 40
+
+
+def test_v28_export_completion_migration(tmp_path: Path) -> None:
+    path = tmp_path / "db" / "hub.db"
+    path.parent.mkdir()
+    state = tmp_path / "state"
+    _legacy_database(path, 28)
+    with database(path) as connection:
+        for name in ("index", "partial", "deleted", "no_collection", "active"):
+            status = "active" if name == "active" else "done"
+            connection.execute(
+                "INSERT INTO workflow (id, run_id, goal, status, created)"
+                " VALUES (?, ?, 'g', ?, 'now')",
+                (name, name, status),
+            )
+            if name != "no_collection":
+                connection.execute(
+                    "INSERT INTO closeout_collection"
+                    " (workflow_id, requested_at, deadline, finalized_at)"
+                    " VALUES (?, 'then', 'later', 'done')",
+                    (name,),
+                )
+    for name, filename in (("index", "index.json"), ("partial", "report-0001.md")):
+        directory = state / "runs" / name / "closeout"
+        directory.mkdir(parents=True)
+        (directory / filename).write_text("data")
+    initialize_database(path, state)
+    initialize_database(path, state)
+    with database(path) as connection:
+        markers = {
+            r["id"]: r["exported_at"]
+            for r in connection.execute("SELECT id, exported_at FROM workflow")
+        }
+    assert all(markers[name] is not None for name in ("index", "deleted", "no_collection"))
+    assert markers["partial"] is None and markers["active"] is None

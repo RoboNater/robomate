@@ -507,7 +507,10 @@ and URLs are escaped literal data and confer no approval or authority. Nothing
 is executed, followed or automatically filed from them.
 
 An export failure does not prevent done. Status shows an export error and the hub
-logs it; correct the filesystem problem and restart the hub to retry. Files are
+logs it; incomplete exports retry on each hub start. Once complete, exports are not
+rewritten on restart. Delete exported files or the run directory to remove them
+permanently; reports remain in `hub.db` until the hub state is removed. A purge
+command is out of scope. Files are
 private on POSIX (0700 directory, 0600 files). On Windows, keep the state directory
 under a private per-user ACL. Retrospectives are sensitive run artifacts: review
 their contents before sharing. Prepared runs still also ask agents for their

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -21,6 +22,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v29 is #423's durable workflow export completion marker.
 # v28 is #272's stall operator-question linkage and stall_action event kind.
 # v27 is #215's durable closeout reports and collection/expected authors.
 # v26 is #315's run branch on `workflow` (`robomate/<hub>/<agent>/<label>`).
@@ -49,7 +51,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 class DatabaseVersionError(RuntimeError):
@@ -135,6 +137,7 @@ CREATE TABLE IF NOT EXISTS workflow (
     statement_sha256 TEXT,
     branch TEXT,
     created TEXT NOT NULL,
+    exported_at TEXT,
     FOREIGN KEY (statement_sha256) REFERENCES statement(sha256)
 );
 
@@ -407,7 +410,7 @@ def connect(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def initialize_database(path: Path) -> None:
+def initialize_database(path: Path, state_dir: Path | None = None) -> None:
     """Create the database and apply the initial schema or migrations."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -424,6 +427,7 @@ def initialize_database(path: Path) -> None:
                 f"database schema version {current_version} is incompatible with "
                 f"expected version {SCHEMA_VERSION}"
             )
+        connection.execute("BEGIN IMMEDIATE")
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
         # (any of v1-v21 -> v22).
@@ -455,6 +459,7 @@ def initialize_database(path: Path) -> None:
         _migrate_workflow_branch(connection)
         for table in ("closeout_collection", "closeout_expected", "agent_closeout_report"):
             connection.execute(_canonical_tables()[table])
+        _migrate_export_completion(connection, state_dir if state_dir is not None else path.parent)
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The
@@ -464,6 +469,33 @@ def initialize_database(path: Path) -> None:
     _rebuild_drifted_tables(path)
     with database(path) as connection:
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _migrate_export_completion(connection: sqlite3.Connection, state_dir: Path) -> None:
+    """Preserve deletions while retrying recognizable interrupted legacy exports."""
+    if "exported_at" in _columns(connection, "workflow"):
+        return
+    connection.execute("ALTER TABLE workflow ADD COLUMN exported_at TEXT")
+    runs = connection.execute(
+        "SELECT w.id, w.run_id, c.workflow_id AS collection_id FROM workflow w"
+        " LEFT JOIN closeout_collection c ON c.workflow_id = w.id WHERE w.status = 'done'"
+    ).fetchall()
+    for run in runs:
+        directory = state_dir / "runs" / run["run_id"] / "closeout"
+        has_index = has_report = False
+        if run["collection_id"] is not None:
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if entry.is_file():
+                            has_index |= entry.name == "index.json"
+                            has_report |= bool(re.fullmatch(r"report-[0-9]+\.md", entry.name))
+            except FileNotFoundError:
+                pass  # A missing directory may be an intentional deletion.
+        if run["collection_id"] is None or has_index or not has_report:
+            connection.execute(
+                "UPDATE workflow SET exported_at = CURRENT_TIMESTAMP WHERE id = ?", (run["id"],)
+            )
 
 
 def _migrate_standing_role_and_join_profile(connection: sqlite3.Connection) -> None:
