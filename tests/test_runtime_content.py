@@ -938,3 +938,27 @@ def test_nonblocking_exception_requires_every_finding_to_qualify() -> None:
             "An explicit acceptance item that is unmet is blocking even when the behaviour is safe",
         ),
     )
+
+
+def test_agent_stalled_with_pushed_head_inspects_pr_and_state() -> None:
+    """#444: stalled worker with a pushed head inspects PR comments and state, grants nothing."""
+    skill = read("guides/orchestrator.md")
+    stalled = section(skill, "- `agent_stalled`:", "- `stall_action`:")
+    assert_fragments(
+        stalled,
+        (
+            "a diagnostic, not a lifecycle change",
+            "pushed head or an open PR",
+            "latest PR comments",
+            "current worker/task state (`get_state`)",
+            "reported failure or blocker the hub never received",
+            "stuck rather than busy",
+            "reported a failed task call",
+            "manual recovery guidance (#223)",
+            "escalate with `ask_user`",
+            "consult the manual recovery guidance (#223) and escalate with `ask_user`",
+            "otherwise keep waiting as now",
+            "grants no new authority",
+            "no cancel, fail, reassign, lease change, or process control",
+        ),
+    )
