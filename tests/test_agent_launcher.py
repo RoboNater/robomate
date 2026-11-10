@@ -1127,3 +1127,70 @@ def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
 
     # Cleanup swept only this test's own children; none remain alive.
     assert live_own_pids(fake_supervision.pids) == []
+
+
+# -- Windows-safe liveness (#464 r2-1) --------------------------------------------
+
+
+def test_windows_liveness_uses_still_active_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Liveness is OpenProcess + GetExitCodeProcess == STILL_ACTIVE, never
+    os.kill(pid, 0) (CTRL_C_EVENT on Windows). Exercise the ctypes path on
+    Linux with a stand-in kernel32."""
+    import ctypes
+    from types import SimpleNamespace
+
+    import fake_harness
+
+    calls: list[tuple[Any, ...]] = []
+
+    class Fn:
+        def __init__(self, result: Any) -> None:
+            self.result = result
+
+        def __call__(self, *args: Any) -> Any:
+            calls.append(args)
+            return self.result(*args) if callable(self.result) else self.result
+
+    def kernel(handle: Any, code: int, exit_ok: bool = True) -> Any:
+        def get_exit(_handle: Any, pcode: Any) -> int:
+            pcode._obj.value = code
+            return int(exit_ok)
+
+        return SimpleNamespace(
+            OpenProcess=Fn(lambda access, inherit, pid: handle),
+            GetExitCodeProcess=Fn(get_exit),
+            CloseHandle=Fn(lambda _handle: 1),
+        )
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel(1, 259), raising=False)
+    assert fake_harness._windows_alive(4242) is True
+    assert (0x1000, False, 4242) in calls
+
+    calls.clear()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel(1, 0), raising=False)
+    assert fake_harness._windows_alive(4242) is False  # exited (code 0)
+
+    calls.clear()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel(0, 259), raising=False)
+    assert fake_harness._windows_alive(4242) is False  # OpenProcess failed
+
+
+def test_windows_supervision_never_sends_console_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Windows path must never call os.kill(pid, 0) and must terminate only
+    with a specific-pid SIGTERM, so no console or unrelated process is hit."""
+    import fake_harness
+
+    pids = tmp_path / "pids"
+    pids.write_text("4242\tC:\\fake.py\n", encoding="utf-8")
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(fake_harness, "_IS_WINDOWS", True)
+    monkeypatch.setattr(fake_harness, "_windows_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kills.append((pid, sig)))
+
+    assert fake_harness.live_own_pids(pids) == [4242]
+    fake_harness.kill_own(pids)
+
+    assert all(sig != 0 for _, sig in kills), "os.kill(pid, 0) would Ctrl-C the console"
+    assert (4242, signal.SIGTERM) in kills

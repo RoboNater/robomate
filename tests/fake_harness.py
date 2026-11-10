@@ -13,7 +13,9 @@ or rapid spin. Supervision scenarios therefore:
   * run under :func:`supervision`, which bounds a genuinely hung child with
     ``LIVENESS_S``, keeps sweeping after the deadline so a child that hangs
     again after a resume is also killed, and cleans up only the fake children
-    this test started (recorded in its per-test pids file);
+    this test started (recorded in its per-test pids file). Liveness is queried
+    with a native Windows STILL_ACTIVE check, never ``os.kill(pid, 0)`` (which
+    is CTRL_C_EVENT on Windows);
   * use :class:`Supervision` to count launch attempts and raise a diagnostic
     failure when a child dies before its marker.
 
@@ -76,6 +78,67 @@ def bounded(words: list[str], *, total: bool = False) -> list[str]:
     return [*result[:cut], *additions, *result[cut:]]
 
 
+# On Windows signal.CTRL_C_EVENT == 0, so os.kill(pid, 0) is NOT an existence
+# check: Python routes it to GenerateConsoleCtrlEvent, which can send Ctrl-C to
+# every process on the console (breaking CI and interrupting unrelated work).
+# Liveness there must be queried natively instead (#464 r2-1).
+_IS_WINDOWS = os.name == "nt"
+_STILL_ACTIVE = 259
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _windows_alive(pid: int) -> bool:
+    """Windows liveness: OpenProcess + GetExitCodeProcess == STILL_ACTIVE.
+
+    Never calls os.kill(pid, 0). Only called when _IS_WINDOWS is true. The
+    OpenProcess signature mirrors the production agent_recovery.process_exists,
+    which is exercised on the project's Windows CI.
+    """
+    import ctypes
+
+    # ctypes.WinDLL is Windows-only, so resolve it by name: mypy on POSIX does
+    # not see the attribute, and a type: ignore would be unused on Windows.
+    kernel = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)  # noqa: B009
+    kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    kernel.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    kernel.GetExitCodeProcess.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_uint32()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == _STILL_ACTIVE
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def process_alive(pid: int) -> bool:
+    """Liveness probe that never sends a console Ctrl-C on Windows."""
+    if _IS_WINDOWS:
+        return _windows_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def terminate_own(pid: int) -> None:
+    """Terminate one confirmed own child.
+
+    On Windows SIGTERM is TerminateProcess for that specific pid; on POSIX
+    SIGKILL is used. Neither is CTRL_C_EVENT/0, so no console or unrelated
+    process is ever interrupted.
+    """
+    sig = signal.SIGTERM if _IS_WINDOWS else getattr(signal, "SIGKILL", signal.SIGTERM)
+    with contextlib.suppress(OSError):
+        os.kill(pid, sig)
+
+
 def live_own_pids(pids: Path) -> list[int]:
     """Recorded fake children of this test that are still running."""
     if not pids.is_file():
@@ -87,9 +150,7 @@ def live_own_pids(pids: Path) -> list[int]:
             pid = int(pid_text)
         except ValueError:
             continue
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not process_alive(pid):
             continue
         if _still_ours(pid, token):
             alive.append(pid)
@@ -101,10 +162,11 @@ def _still_ours(pid: int, token: str) -> bool:
 
     Where /proc exists (Linux) the child's command line names its fake-harness
     script, and an unreadable cmdline means the process is gone or its pid was
-    reused: not ours to kill. Hosts without /proc (Windows, macOS) trust the
-    recorded pid of a short-lived child the launcher started for this test.
+    reused: not ours to kill. On Windows/macOS (no /proc) the pid was recorded
+    by a child of this test and liveness was confirmed natively by
+    process_alive (STILL_ACTIVE), so terminate only that confirmed process.
     """
-    if not Path("/proc").is_dir():
+    if _IS_WINDOWS or not Path("/proc").is_dir():
         return True
     try:
         return token.encode() in Path(f"/proc/{pid}/cmdline").read_bytes()
@@ -115,8 +177,7 @@ def _still_ours(pid: int, token: str) -> bool:
 def kill_own(pids: Path) -> None:
     """Terminate only the fake children this test started."""
     for pid in live_own_pids(pids):
-        with contextlib.suppress(OSError):
-            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        terminate_own(pid)
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
