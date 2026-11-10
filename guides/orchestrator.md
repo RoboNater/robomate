@@ -283,7 +283,14 @@ Handle events as follows:
   still heartbeats, but it made no hub call or task progress for
   `stall_after_min` (the payload names the reasons and ages); it may be in a
   long command such as a test run. Its task stays assigned. Log it and keep
-  waiting; do not cancel, fail or reassign on this event alone. Its
+  waiting; do not cancel, fail or reassign on this event alone. When the
+  stalled worker's task already has a pushed head or an open PR, inspect the
+  latest PR comments and the current worker/task state (`get_state`) for a
+  reported failure or blocker the hub never received; if that shows the worker
+  is stuck rather than busy (for example, it reported a failed task call),
+  follow the manual recovery guidance (#223) or escalate with `ask_user`,
+  otherwise keep waiting as now. This grants no new authority: no cancel,
+  fail, reassign, lease change, or process control on this event. Its
   `lease_expired` or `agent_lost` follows if it has really stopped. If the
   stall blocks the workflow, escalate with `ask_user`. One event arrives per
   stall episode.
