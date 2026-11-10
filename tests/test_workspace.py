@@ -801,6 +801,7 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
     copied in so the real fixture (present or removed) governs the inner run.
     """
     from agent_hub_common.workspace import read_identity
+    from timing import LIVENESS_S
 
     lane = tmp_path / "lane"
     identity = bootstrap(repository, lane, identity_agent)
@@ -811,7 +812,12 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
     tests_dir = Path(__file__).resolve().parent
     for name in ("conftest.py", "timing.py"):
         (inner / name).write_text((tests_dir / name).read_text(encoding="utf-8"), encoding="utf-8")
-    (inner / "pytest.ini").write_text("[pytest]\nasyncio_mode = auto\n", encoding="utf-8")
+    # Use the repo's real pytest config for the inner run (#127/#123 warnings
+    # policy, marker registration, asyncio defaults), not a minimal ini, so the
+    # nested suite is configured exactly like the main one (r2-1 on #466).
+    (inner / "pyproject.toml").write_text(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     (inner / "test_inner.py").write_text(_INNER_NO_CWD_JOIN, encoding="utf-8")
 
     # A fresh master: drop the outer run's xdist/current-test markers so the
@@ -828,7 +834,7 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
             "-p",
             "no:cacheprovider",
             "-c",
-            str(inner / "pytest.ini"),
+            str(inner / "pyproject.toml"),
             "--basetemp",
             str(inner / "run"),
             str(inner / "test_inner.py"),
@@ -837,7 +843,7 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
         env=env,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=3 * LIVENESS_S,
     )
     assert result.returncode == 0, (
         f"nested no-cwd join in the {identity_agent}-identity lane failed "
