@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fake_harness import PIDS_ENV, bounded, supervision
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -52,6 +53,10 @@ ID_LINES = {
 
 FAKE_HARNESS = """\
 import json, os, sys, time
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 record = {
@@ -96,6 +101,17 @@ def wf(status: str, workflow: str = WORKFLOW, hub: str = HUB) -> tuple[str, dict
     return hub, {"id": workflow, "status": status}
 
 
+@pytest.fixture(autouse=True)
+def fake_supervision(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Any]:
+    """Bound a hung fake child by LIVENESS_S and clean up only this test's own."""
+    pids = tmp_path_factory.mktemp("fake-harness-pids") / "pids"
+    monkeypatch.setenv(PIDS_ENV, str(pids))
+    with supervision(pids) as sup:
+        yield sup
+
+
 @pytest.fixture
 def run_dir(tmp_path: Path) -> Path:
     # Spaces in every path the launcher passes on (#146).
@@ -128,29 +144,33 @@ def use_harness(harness: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:
-    return [
-        "--harness",
-        harness,
-        "--hub-url",
-        "http://127.0.0.1:9",
-        "--token-file",
-        str(run_dir / "token"),
-        "--sessions",
-        str(run_dir / "alice-sessions.jsonl"),
-        "--resume-delay-s",
-        "0",
-        "--read-retry-delay-s",
-        "0",
-        *extra,
-        "--",
-        sys.executable,
-        str(fake),
-        "--model",
-        "m-1",
-        "--flag",
-        # Devin's session ID is read back from its export (#224).
-        *(["--export", str(run_dir / "devin-export.json")] if harness == "devin" else []),
-    ]
+    # Finite, explicit resume bounds (#464): a broken fake child must not loop
+    # through the launcher's unlimited production count / ~12-hour budget.
+    return bounded(
+        [
+            "--harness",
+            harness,
+            "--hub-url",
+            "http://127.0.0.1:9",
+            "--token-file",
+            str(run_dir / "token"),
+            "--sessions",
+            str(run_dir / "alice-sessions.jsonl"),
+            "--resume-delay-s",
+            "0",
+            "--read-retry-delay-s",
+            "0",
+            *extra,
+            "--",
+            sys.executable,
+            str(fake),
+            "--model",
+            "m-1",
+            "--flag",
+            # Devin's session ID is read back from its export (#224).
+            *(["--export", str(run_dir / "devin-export.json")] if harness == "devin" else []),
+        ]
+    )
 
 
 def start_args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:

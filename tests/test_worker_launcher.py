@@ -5,11 +5,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 import test_alice_launcher as alice_tests
+from fake_harness import PIDS_ENV, supervision
 from test_alice_launcher import (
     ID_LINES,
     IDS,
@@ -23,6 +25,18 @@ from test_alice_launcher import (
 
 run_dir = alice_tests.run_dir
 fake = alice_tests.fake
+
+
+@pytest.fixture(autouse=True)
+def fake_supervision(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Any]:
+    """Bound a hung fake child by LIVENESS_S and clean up only this test's own."""
+    pids = tmp_path_factory.mktemp("fake-harness-pids") / "pids"
+    monkeypatch.setenv(PIDS_ENV, str(pids))
+    with supervision(pids) as sup:
+        yield sup
+
 
 SPEC = importlib.util.spec_from_file_location(
     "worker_launcher", ROOT / "scripts/worker-launcher.py"
