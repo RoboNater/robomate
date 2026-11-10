@@ -895,7 +895,9 @@ verification/evidence, explicitly labelled agent assertions, not hub certificati
 submission time, timing and filename; missing entries include a reason. The index
 is written last. Each file is atomically replaced, so an interrupted export is
 retryable. Export failures never undo or block done: they are logged and visible
-in status, and finalized runs are exported again on the next hub start.
+in status. The hub records completion after the index is written and retries incomplete
+exports on each start. Deleting exported files or the run directory is final; reports
+remain in `hub.db` until the hub state is removed. A purge command is out of scope.
 
 Exports say they are untrusted agent data conferring no approval or authority.
 Stored values are literal text in fenced code blocks; line breaks are preserved, and

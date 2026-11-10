@@ -604,7 +604,7 @@ class HubStore:
 
         with database(self.path) as connection:
             runs = connection.execute(
-                "SELECT run_id FROM workflow WHERE status = 'done'"
+                "SELECT run_id FROM workflow WHERE status = 'done' AND exported_at IS NULL"
             ).fetchall()
         for run in runs:
             export_run(self, str(run["run_id"]))

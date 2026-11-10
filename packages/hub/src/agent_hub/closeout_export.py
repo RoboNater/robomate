@@ -136,7 +136,7 @@ def atomic_write(path: Path, text: str) -> None:
 
 
 def export_run(store: HubStore, run_id: str) -> None:
-    """Best effort after commit; finalized rows remain the restart retry queue.
+    """Best effort after commit; unmarked done rows remain the restart retry queue.
 
     Write the index last as the completion marker. Filenames are ordinal, never
     derived from authors, so even colliding or hostile author names stay inert.
@@ -146,11 +146,21 @@ def export_run(store: HubStore, run_id: str) -> None:
         with database(store.path) as connection:
             connection.execute("BEGIN")
             run = connection.execute(
-                "SELECT w.id FROM workflow w JOIN closeout_collection c ON c.workflow_id = w.id"
-                " WHERE w.run_id = ? AND w.status = 'done' AND c.finalized_at IS NOT NULL",
+                "SELECT w.id, c.workflow_id AS collection_id, c.finalized_at FROM workflow w"
+                " LEFT JOIN closeout_collection c ON c.workflow_id = w.id"
+                " WHERE w.run_id = ? AND w.status = 'done' AND w.exported_at IS NULL",
                 (run_id,),
             ).fetchone()
             if run is None:
+                return
+            if run["collection_id"] is None:
+                connection.execute(
+                    "UPDATE workflow SET exported_at = ? WHERE id = ?",
+                    (store._now_iso(), run["id"]),
+                )
+                store.closeout_export_errors.pop(run_id, None)
+                return
+            if run["finalized_at"] is None:
                 return
             rows = connection.execute(
                 "SELECT e.author, e.author_kind, e.missing_reason, r.* FROM closeout_expected e"
@@ -187,6 +197,10 @@ def export_run(store: HubStore, run_id: str) -> None:
             )
             + "\n",
         )
+        with database(store.path) as connection:
+            connection.execute(
+                "UPDATE workflow SET exported_at = ? WHERE id = ?", (store._now_iso(), run["id"])
+            )
         store.closeout_export_errors.pop(run_id, None)
     except Exception as exc:
         # Keep filesystem paths and report contents out of the status error field.
