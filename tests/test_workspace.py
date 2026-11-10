@@ -739,61 +739,107 @@ def test_clone_destination_error_names_flag(tmp_path: Path) -> None:
     assert list(destination.iterdir()) == []
 
 
-@pytest.mark.parametrize("identity_agent", ["bob", "charlie"])
-async def test_no_cwd_bridge_ignores_lane_clone_identity(
-    repository: Path,
-    tmp_path: Path,
-    client: httpx.AsyncClient,
-    settings: HubSettings,
-    identity_agent: str,
-) -> None:
-    """#461: a bridge built without ``cwd=`` must not adopt a lane identity.
+_INNER_NO_CWD_JOIN = """\
+from pathlib import Path
+import os
 
-    A prepared worker clone (``bootstrap-workspace``) carries
-    ``.git/robo-agents-workspace.json`` in its checkout. Before the autouse
-    cwd-isolation fixture, ``WorkerHubClient.join`` resolved
-    ``settings.cwd or Path.cwd()`` to that checkout: a same-agent identity was
-    silently adopted (the clone path), a different-agent identity raised
-    "detected clone identity ... invalid". Plain CI checkouts saw neither, so
-    one commit could be green for one agent and red for another. The fixture
-    chdirs every test to a clean, identity-free ``tmp_path``, so a no-``cwd``
-    bridge always joins without an explicit clone on both kinds of checkout.
-    Both identities from #461 are covered: one naming the joined agent and one
-    naming a different agent.
-    """
-    from agent_hub_common.workspace import read_identity
-    from conftest import BASE_URL, TOKEN
-    from worker_mcp.client import WorkerHubClient
+from worker_mcp.client import WorkerHubClient
+from worker_mcp.config import WorkerSettings
 
+
+async def test_no_cwd_join_in_lane(client, settings) -> None:
     settings.guides_dir.mkdir(parents=True, exist_ok=True)
-    (settings.guides_dir / "worker.md").write_text("# Worker\n", encoding="utf-8")
-    (settings.guides_dir / "implementer.md").write_text("# Implementer\n", encoding="utf-8")
+    (settings.guides_dir / "worker.md").write_text("# Worker", encoding="utf-8")
+    (settings.guides_dir / "implementer.md").write_text("# Implementer", encoding="utf-8")
     (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
-    (settings.guides_dir / "forge" / "github.md").write_text("# Forge\n", encoding="utf-8")
+    (settings.guides_dir / "forge" / "github.md").write_text("# Forge", encoding="utf-8")
 
-    # A synthetic provisioned clone: exactly the identity a worker lane carries.
-    lane = tmp_path / "lane"
-    identity = bootstrap(repository, lane, identity_agent)
-    assert read_identity(lane, identity_agent)["workspace_id"] == identity["workspace_id"]
+    lane = Path(os.environ["ROBO_LANE"])
 
-    cwd = Path.cwd()
-
-    # Join first, so both pre-fix behaviours fail here: a same-agent identity is
-    # silently adopted (``workspace_kind == "clone"``), a different-agent identity
-    # raises "detected clone identity ... invalid". The autouse cwd fixture makes
-    # each no-cwd join a plain, non-explicit one on either kind of checkout.
     unjoined = WorkerSettings.unjoined(
-        environ={"ROBOMATE_HUB_URL": BASE_URL, "ROBOMATE_TOKEN": TOKEN}
+        environ={"ROBOMATE_HUB_URL": "http://hub.test", "ROBOMATE_TOKEN": "test-token"}
     )
+    # Join FIRST so a missing autouse isolated_cwd fixture fails here: the
+    # no-cwd default resolves to this lane, silently adopting the clone (bob)
+    # or refusing a foreign identity (charlie) — the two cases are distinct.
     async with WorkerHubClient(unjoined, http_client=client) as bridge:
         result = await bridge.join("bob", "implementer")
 
     assert result["workspace_kind"] != "clone"
     assert result["workspace_id"] is None
-    assert result["workspace_id"] != identity["workspace_id"]
-    assert result["workspace_path"] == str(cwd)
+    assert result["workspace_path"] != str(lane)
 
-    # The fixture keeps the process out of any identity-bearing checkout, so a
-    # bridge's ``settings.cwd or Path.cwd()`` never sees one.
+    # Host-independent invariant: the fixture keeps cwd off the identity-bearing
+    # lane, so the no-cwd bridge could not have detected its identity file.
+    cwd = Path.cwd()
     assert cwd != lane and not cwd.is_relative_to(lane)
-    assert not (cwd / ".git" / IDENTITY_FILE).exists()
+    assert not (cwd / ".git" / "robo-agents-workspace.json").exists()
+"""
+
+
+@pytest.mark.parametrize("identity_agent", ["bob", "charlie"])
+def test_no_cwd_bridge_ignores_lane_clone_identity(
+    repository: Path,
+    tmp_path: Path,
+    identity_agent: str,
+) -> None:
+    """#461: a no-``cwd`` bridge must not adopt a worker-lane clone identity.
+
+    ``WorkerHubClient.join`` resolves ``settings.cwd or Path.cwd()`` and detects
+    ``.git/robo-agents-workspace.json`` there. A prepared worker clone carries
+    that file, so a bridge built without ``cwd=`` would adopt the lane identity
+    (same agent, the clone path) or refuse it (different agent) — behaviour a
+    plain CI checkout never shows (#461).
+
+    To make the regression host-independent, the no-``cwd`` join runs in a
+    *nested pytest* whose invocation directory IS a synthetic provisioned clone
+    carrying the identity for ``identity_agent``. Without the autouse
+    ``isolated_cwd`` fixture the inner ``Path.cwd()`` stays that lane, so the
+    inner join adopts (bob) or raises (charlie): both cases fail in any outer
+    checkout, including a plain CI checkout. With the fixture the inner cwd is a
+    clean temp dir and the join is a plain worktree. The repo's conftest is
+    copied in so the real fixture (present or removed) governs the inner run.
+    """
+    from agent_hub_common.workspace import read_identity
+
+    lane = tmp_path / "lane"
+    identity = bootstrap(repository, lane, identity_agent)
+    assert read_identity(lane, identity_agent)["workspace_id"] == identity["workspace_id"]
+
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    tests_dir = Path(__file__).resolve().parent
+    for name in ("conftest.py", "timing.py"):
+        (inner / name).write_text((tests_dir / name).read_text(encoding="utf-8"), encoding="utf-8")
+    (inner / "pytest.ini").write_text("[pytest]\nasyncio_mode = auto\n", encoding="utf-8")
+    (inner / "test_inner.py").write_text(_INNER_NO_CWD_JOIN, encoding="utf-8")
+
+    # A fresh master: drop the outer run's xdist/current-test markers so the
+    # nested pytest does not try to rejoin it, and give it its own basetemp.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env.pop("PYTHONPATH", None)
+    env["ROBO_LANE"] = str(lane)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-c",
+            str(inner / "pytest.ini"),
+            "--basetemp",
+            str(inner / "run"),
+            str(inner / "test_inner.py"),
+        ],
+        cwd=lane,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, (
+        f"nested no-cwd join in the {identity_agent}-identity lane failed "
+        f"(rc={result.returncode}):\n{result.stdout}\n{result.stderr}"
+    )

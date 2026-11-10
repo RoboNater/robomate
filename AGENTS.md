@@ -134,9 +134,14 @@ identity, unlike a plain CI checkout (#461). `tmp_path` is outside any git
 checkout, so the no-`cwd` default always joins via a worktree on both kinds of
 checkout and the full suite gives the same counts in either. A test that needs a
 specific checkout passes `cwd=` or `monkeypatch.chdir` itself; the fixture leaves
-`join`'s clone detection as shipped. The regression is
-`test_workspace.py::test_no_cwd_bridge_ignores_lane_clone_identity`, covering both
-a same-agent and a different-agent identity.
+`join`'s clone detection as shipped. The regression
+`test_workspace.py::test_no_cwd_bridge_ignores_lane_clone_identity` runs a no-`cwd`
+join in a nested pytest whose invocation directory is a synthetic lane carrying a
+same-agent or different-agent identity, with the repo's conftest copied in. The
+identity-bearing directory is therefore the one the fixture-less default would
+resolve, so removing the fixture fails the test in a plain CI checkout too (silent
+clone adoption for the same agent, a foreign-identity refusal for the other),
+rather than the outcome depending on which lane happens to run the suite.
 
 Time in tests ([policy](docs/development/testing-time-and-waits.md)): put any
 deadline the hub enforces on the `frozen_clock` fixture and pass it with
