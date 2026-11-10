@@ -7,7 +7,7 @@ from sqlite3 import Connection
 from typing import Any
 
 import pytest
-from agent_hub.database import database, initialize_database
+from agent_hub.database import SCHEMA_VERSION, database, initialize_database
 from agent_hub.store import EventRecord, HubStore
 from agent_hub_common import AgentStatus, EventKind, TaskState, WorkflowPolicy
 from pydantic import ValidationError
@@ -257,7 +257,7 @@ def test_schema_migrates_stall_action_link(tmp_path: Path) -> None:
     assert store.stall_episodes()[0]["event_id"] == 1
     store.append_event(EventKind.STALL_ACTION, {"action": "operator_question"})
     with database(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 28
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert "escalation_question_id" in {
             r["name"] for r in connection.execute("PRAGMA table_info(stall_episode)")
         }
