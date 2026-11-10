@@ -1,4 +1,219 @@
-# Alice, Bob, and Charlie recovery
+# Agent recovery: join takeover and the launcher
+
+Use this guide after an ordinary harness or hub interruption. The deliberate
+M1 Step 7 kill and evidence protocol is in [M1 restart and recovery](m1-restart-recovery.md).
+There are two kinds of run until M2 Step 11 removes the second:
+
+- **Joined agents** (M2): the operator starts a harness in the agent's worktree
+  and it joins with one line, by hand or under the optional
+  `scripts/agent-launcher.py`. Recovery is `join` with `takeover=true` and the
+  launcher's `resume` and `ask`. See [Joined agents](#joined-agents).
+- **Prepared runs**: `prepare-run.py` generated configs and `start-*`,
+  `resume-*` and `ask-*` scripts in a run directory. They keep working until
+  Step 11; see [Prepared runs](#prepared-runs-until-step-11).
+
+[An agent that stops working but keeps running](#an-agent-that-stops-working-but-keeps-running)
+applies to both.
+
+## Joined agents
+
+<!-- Join takeover: §5, §7.5. Launcher: M2 Step 10, #247. -->
+
+### Join takeover
+
+A joined agent recovers by joining again under the same name with
+`takeover=true` (§5). The new session supersedes the old one at once (its
+heartbeats are ignored), and a worker holding a live task gets the task
+reattached and returned in the join response, instead of failing it as
+`worker_lost`. An orchestrator's takeover fences the old session and releases
+its event leases for redelivery; the guide's On resume section reconciles with
+the forge before acting. Takeover grants no workflow authority: an escalated
+or paused workflow stays as it is.
+
+By hand, stop the old harness, start the same harness in the same worktree
+(`robomate workspace <agent>` prints it) on the saved conversation if you have
+it, and ask it to `join` with its name, role and `takeover=true`. Without the
+saved conversation, a fresh conversation can join with takeover too: it gets
+the task back, but not the context the old conversation held.
+
+### Starting under the launcher
+
+`scripts/agent-launcher.py` is optional and outside the core (§9.4). Run it
+from the hub's checkout, or name the hub with `--hub <name | hub_id | checkout>`:
+
+```sh
+uv run --project <robomate checkout> python scripts/agent-launcher.py start alice \
+    --role orchestrator --harness claude-code
+uv run --project <robomate checkout> python scripts/agent-launcher.py start bob \
+    --role implementer --harness codex --model MODEL --effort EFFORT
+```
+
+`start` creates or reuses the worktree with `robomate workspace <agent>` (the
+operator credential), starts the harness there with the join line
+(`Join robomate as bob, implementer.`) as its only prompt, and writes nothing
+but `sessions/<agent>.jsonl` (with its `.lock`, and Devin's export) in the
+hub's state directory. The harness finds the hub through its static
+`robomate mcp` entry and the worktree's binding: there is no rendered config,
+prompt file or run directory. An inherited `ROBOMATE_HUB_URL` or
+`ROBOMATE_TOKEN*` would override that binding, so the launcher clears them
+for every harness it starts. The sandbox grants measured in the
+[user guide](../user-guide.md#linux-sandbox-grants) are passed as flags:
+Claude Code's sandbox (`--settings` with the forge hosts and a read-deny on
+the hub's token directory) and Codex's `workspace-write` with network and the
+linked worktree's own git roots plus the uv cache. Other harnesses get no
+grants until M3 measures them (§9.2). The run's permission flags are those of
+the prepared runs; extra harness words go after `--harness-args`.
+
+The session log is the operator's data, which agents never read. Each launch,
+exit, conversation ID, wait and stop is one JSON line carrying the agent,
+role, harness, conversation ID, hub ID, workflow ID and the hub's `run_id`;
+launch rows add the model, effort and worktree that `resume` and `ask` reuse.
+Starting an agent on a different harness keeps the earlier harness's log
+beside it as `<agent>.<n>.jsonl`.
+
+### When the harness exits
+
+The launcher supervises as the prepared launchers do: the exact conversation
+ID (the one it chose for Claude Code, or the one the harness prints), bearer
+reads of `hub.info` and `hub.status` pinned to the hub and the workflow it
+first sees, and #158 backoff (`--resume-delay-s`, `--resume-max-delay-s`,
+`--resume-total-s`, `--resume-series-reset-s`, `--max-resumes`; the defaults
+of [Alice exits before the workflow is done](#alice-exits-before-the-workflow-is-done)).
+A run that was already `done` when the launcher started is an earlier run and
+is never pinned; a worker released in an earlier run is not treated as
+released until its new session is.
+
+Every automatic resume sends one fixed continuation, which carries no state
+or decision: call `join` with the agent's name, role and `takeover=true`
+first; then an orchestrator calls `get_state` and follows On resume, and a
+worker finishes its reattached task or returns to `await_assignment`. Because
+takeover supersedes a bridge the exited harness left behind and keeps its
+task, an automatic resume does not wait for that bridge to become lost, as
+the prepared worker launcher does. The launcher stops on `done` or the
+worker's release (0), spent resumes (1), an unreadable or different hub or
+workflow (3), nothing safe to resume (4), a pause (5) or Ctrl-C (130), and
+then names `agent-launcher.py resume <agent>`.
+
+### Resuming by hand
+
+```sh
+uv run --project <robomate checkout> python scripts/agent-launcher.py resume bob
+```
+
+`resume` takes the harness, role, model, effort and worktree from the newest
+launch row; with no saved session it refuses (exit 4) and never replays the
+join line over a conversation it does not know. It applies the guards of
+[Manual recovery controls](#manual-recovery-controls) unchanged: an exact saved
+conversation ID, the same hub, a recorded exit or `--confirm-stopped`, no
+surviving recorded PID, a detached predecessor, and pause and open-question
+advisories that `--force` overrides. A log written before the workflow
+existed takes the workflow from the hub only with #223's evidence. The same
+options apply: `--resume-session`, `--hub-id`, `--workflow-id`,
+`--stopped-at`, `--confirm-stopped`, `--force`. What recovery captured is
+kept for the operator in `sessions/<agent>-resume.md`; the agent receives
+only the one-line continuation, never a path into the hub's state. After the
+first launch, supervision continues with a fresh backoff budget.
+
+### Asking an agent
+
+```sh
+uv run --project <robomate checkout> python scripts/agent-launcher.py ask bob [ID] [--fork]
+```
+
+`ask` opens the newest saved conversation (or the given exact ID)
+interactively in its worktree with its hub tools switched off, and needs no
+hub and changes no run file: Claude Code with `--strict-mcp-config` and no
+MCP config, Codex with `mcp_servers.robomate.enabled=false`, OpenCode through
+`OPENCODE_CONFIG_CONTENT`. AntiGravity and Devin have no flag or variable for
+it, so `ask` refuses them rather than leave the hub tools live.
+
+### Interactive starts and resumes
+
+`--interactive` (#222) on `start` or `resume` runs the harness in the
+terminal with no automatic resume, and still records its start and exit in
+the session log. Interactive launches use the run's permission flags;
+`--safe-mode` restores the harness's prompting defaults, and the launcher
+prints the mode and extra words first (#335). Claude Code, Codex and OpenCode
+get the join line as their initial prompt; for AntiGravity and Devin the
+launcher prints it for you to type. An interactive `resume` applies the same
+guards, opens the conversation, and prints the continuation to send.
+
+An interactive harness owns the terminal, so its output cannot be read for a
+conversation ID. The ID is exact for Claude Code, which takes the one the
+launcher chooses. For Codex, the launcher looks after the session in Codex's
+own session store (`$CODEX_HOME/sessions`) for the single rollout that the
+session created: files that existed before the launch never count, even if
+appended to meanwhile, and the rollout's `session_meta` line must name the
+same ID and this worktree. It records that ID as a `conversation` row.
+Elsewhere, and whenever that lookup finds no single candidate, the launcher
+says so before and after the session and names the remedy: find the exact ID
+in the harness's own session list (`codex resume`, `opencode session list`)
+and pass it to `resume <agent> --resume-session ID`, which records it with
+`conversation_source: operator` before the usual guards, or to
+`ask <agent> ID`. Recovery refuses to guess an ID, and never uses `--last` or
+`--continue`.
+
+### Remote hosts
+
+On a host without the hub, create the clone with
+`robomate workspace <agent> --clone <path> --hub-url <url> --token-file <file>`
+(§6), then pass the same hub details, a local sessions directory and the clone:
+
+```sh
+uv run --project <robomate checkout> python scripts/agent-launcher.py start bob \
+    --role implementer --harness claude-code --hub-url <url> --token-file <file> \
+    --sessions-dir <dir> --workdir <clone>
+```
+
+`resume` and `ask` on that host take `--hub-url`, `--token-file` and
+`--sessions-dir` (`ask` needs only `--sessions-dir`). A clone has no hub
+binding, so the launcher hands its bridge the same selection: every harness
+it starts or resumes there gets `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN_FILE`
+from these options, and no inherited `ROBOMATE_TOKEN`, which would otherwise
+take precedence over the file.
+
+### Denise's doctor entry
+
+```sh
+uv run --project <robomate checkout> python scripts/agent-launcher.py doctor \
+    --hub <hub> --run <run_id> --harness claude|codex [--target <checkout>]
+```
+
+`doctor` is separate from `start`: it never calls `workspace` or `join`,
+starts no supervision, and makes no HTTP call, so it works with the hub
+stopped. It reads the hub's state location and `runs/<run_id>/manifest.json`
+locally; a missing run lists the hub's runs and creates nothing. In that
+run's `denise/` it refreshes `context.json` (the run, the robomate checkout
+and the target checkout as separate references, and an access inventory) and
+`startup.md`, and creates a new report under `reports/`; earlier reports are
+kept. Denise starts interactively in `denise/workspace` with her own
+harness profile, `denise/configs/claude` (`CLAUDE_CONFIG_DIR`) or
+`denise/configs/codex` (`CODEX_HOME`, whose `config.toml` holds no MCP server
+and no approval policy), never the operator's or a team agent's. She gets no
+MCP server (`--strict-mcp-config` for Claude Code, `mcp_servers={}` for
+Codex), no unattended flags, no inherited `ROBOMATE_HUB_URL` or
+`ROBOMATE_TOKEN*`, the local guide `docs/denise/guide.md`, and directory
+grants only on the inventory's write roots: the selected run, the target
+checkout and its git common directory, and the hub's state. A new profile has
+no login: the launcher says how to log in to it (`CODEX_HOME=<profile> codex
+login`, or Claude Code's own prompt). M7 Step 2's
+generated wrappers for prepared runs remain until Step 11 proves this entry
+on Bash and PowerShell.
+
+### Limits
+
+- A worker whose workflow ends with `on_done: standby` stays joined, but its
+  launcher is pinned to the finished workflow: once that harness exits, the
+  launcher stops instead of following the next run. Start it again for the
+  next run; M3 decides on a supervisor command (§9.4).
+- Grants for OpenCode, AntiGravity and Devin, and all grants on Windows and
+  macOS, are not measured; M3's `robomate certify` measures them.
+- Codex `-c` values reach a Windows npm `.cmd` shim through `cmd.exe`, which
+  may alter quoted words such as the writable-roots list (#287).
+- Fake-harness tests cover the launcher; live kills on each harness and the
+  doctor's real grants are operator evidence.
+
+## Prepared runs (until Step 11)
 
 Use this guide after an ordinary harness or hub interruption. The deliberate
 M1 Step 7 kill and evidence protocol is in [M1 restart and recovery](m1-restart-recovery.md).
@@ -545,7 +760,9 @@ covers active task, pending question retry, and event redelivery;
 `tests/test_mock_alice.py` covers simulated delivery/ack crash paths;
 `tests/test_worker_client.py::test_a_restarted_worker_checks_in_at_once_and_finishes_its_task`
 covers the detach, and `tests/test_worker_launcher.py` the four-harness worker
-resumes and predecessor waits. `tests/test_prepare_run.py` executes generated
+resumes and predecessor waits. `tests/test_agent_launcher.py` covers the joined
+launcher: the join line and grants on every harness, a mid-task kill resumed
+with takeover, guarded `resume`, `ask`, `--interactive` and the doctor entry. `tests/test_prepare_run.py` executes generated
 start and resume scripts for every agent/harness pair. These
 fixtures do not prove a real operator kill, Codex conversation resumption,
 cross-host worker relaunch, or PR merge sequencing. [M2 join/takeover](../mvp-spec.md)

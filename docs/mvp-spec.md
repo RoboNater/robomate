@@ -1143,6 +1143,16 @@ Results are summarized in `docs/harnesses.md`.
 Continuation: CLI harnesses that end turns get a thin, policy-free supervisor where one exists
 (PoC `supervise-claude-code.sh`); others rely on "not listening" detection and a nudge.
 
+Headless launch is optional and outside the core (M2 Step 10): `scripts/agent-launcher.py
+start|resume|ask <agent>` starts a harness in the worktree `robomate workspace` returns, with
+the join line as its only prompt and the harness's grants as flags (no generated files),
+resumes the same conversation with a fixed join-with-`takeover` continuation and backoff, and
+logs each launch with the hub's `run_id` to `sessions/<agent>.jsonl` in the hub's state
+directory (or `--sessions-dir` on a remote host). It holds no policy, and `robomate` gains
+no launch command in M2. Its separate `doctor` entry starts Denise (§5.1) from the selected
+run's local files, without join or MCP. M3 decides, with the harness profiles (§9.2), whether
+the launcher becomes a `robomate` supervisor subcommand.
+
 ---
 
 ## 10. Forge support — GitHub and GitLab
@@ -1511,6 +1521,7 @@ milestone shown, linking the robo-agents original for history.
 | `docs/poc-spec.md`, PoC evidence, plans for Steps 6/7 | Frozen; historical record |
 | `scripts/step5*`, `step6*`, `step7*`, `launch-step*`, `verify-step*`, `run-step6-disturbances.py`, their tests | Move to `scripts/poc/`; not maintained; tests moved out of the default CI run |
 | `scripts/prepare-run.py`, `bootstrap-workspace.*` | Kept until M2 covers their topologies (incl. remote workers) and M7's optional Denise startup/context, then removed |
+| `scripts/alice-launcher.py`, `worker-launcher.py`, `agent-recovery.py`, `agent-ask.py` and the generated `start-*`, `resume-*` and `ask-*` scripts | Replaced for joined agents by the optional `scripts/agent-launcher.py` (`start`, `resume`, `ask`, and Denise's `doctor`), outside the core (M2 Step 10, §9.4); kept for prepared runs until M2 Step 11. The supervisor command is decided in M3 |
 | `scripts/mock-alice.py`, `mock-worker.py` | Kept; become the engine of `robomate certify` and the scripted E2E tests |
 | `scripts/supervise-claude-code.sh` | Kept; referenced from the Claude Code harness profile |
 | `scripts/hub-report.py` | Folded into `robomate log` / `robomate status` |

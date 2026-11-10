@@ -102,15 +102,26 @@ def instruction(path: Path) -> str:
 def start_launch(harness: str, base: list[str], prompt: Path, session_id: str) -> Launch:
     """The first launch, with the kickoff prompt."""
 
-    if harness == "claude-code":
-        return Launch([*base, "--session-id", session_id, "-p", instruction(prompt)], None)
     if harness == "codex":
-        return Launch([*base, "-"], prompt.read_text(encoding="utf-8"))
+        return text_launch(harness, base, prompt.read_text(encoding="utf-8"), session_id)
+    return text_launch(harness, base, instruction(prompt), session_id)
+
+
+def text_launch(harness: str, base: list[str], text: str, session_id: str) -> Launch:
+    """The first launch with ``text`` as the prompt: one line, or Codex's standard input.
+
+    agent-launcher.py sends the join line this way (#247): no prompt file.
+    """
+
+    if harness == "claude-code":
+        return Launch([*base, "--session-id", session_id, "-p", text], None)
+    if harness == "codex":
+        return Launch([*base, "-"], text)
     if harness == "opencode":
-        return Launch([*base, "--format", "json", instruction(prompt)], None)
+        return Launch([*base, "--format", "json", text], None)
     if harness == "devin":
-        return Launch([*base, "-p", instruction(prompt)], None)
-    return Launch([*base, "--output-format", "stream-json", "-p", instruction(prompt)], None)
+        return Launch([*base, "-p", text], None)
+    return Launch([*base, "--output-format", "stream-json", "-p", text], None)
 
 
 def resume_launch(harness: str, base: list[str], conversation: str, text: str) -> Launch:
@@ -217,7 +228,8 @@ class HubReader:
         return result
 
     def read(self) -> tuple[str, dict[str, Any] | None]:
-        """The hub ID and the workflow (``id``, ``status``), or None before initialization."""
+        """The hub ID and the workflow (``id``, ``status``, ``run_id`` when the hub
+        names one), or None before initialization."""
 
         info = self.call("hub.info")
         hub_id = info.get("hub_id")
@@ -233,12 +245,17 @@ class HubReader:
             or workflow.get("status") not in ("active", "paused", "escalated", "done", "queued")
         ):
             raise ValueError("hub.status has a malformed workflow")
-        return hub_id, {"id": workflow["id"], "status": workflow["status"]}
+        found = {"id": workflow["id"], "status": workflow["status"]}
+        if isinstance(workflow.get("run_id"), str) and workflow["run_id"]:
+            found["run_id"] = workflow["run_id"]
+        return hub_id, found
 
 
 class Launcher:
     agent = "alice"
     continue_prompt = CONTINUE_PROMPT
+    #: Whether recovery treats this agent as the orchestrator; None decides by name.
+    orchestrator: bool | None = None
 
     def __init__(self, args: argparse.Namespace, reader: HubReader | None = None) -> None:
         self.args = args
@@ -252,6 +269,24 @@ class Launcher:
         self.child_exit_at: str | None = None
         self.interrupted = False
         self.resume_deadline: float | None = None
+
+    def resume_name(self) -> str:
+        """How the operator resumes this agent by hand, for stop messages."""
+        return f"resume-{self.agent}"
+
+    def start_name(self) -> str:
+        """How the operator starts a new workflow, for stop messages."""
+        return "start-alice"
+
+    def first_launch(self) -> Launch:
+        """The first launch of a new conversation: the kickoff prompt file."""
+        return start_launch(self.harness, self.base, self.args.prompt, self.conversation or "")
+
+    def manual_resume_text(self) -> str:
+        """The operator's manual resume prompt, once; Codex reads it on stdin."""
+        if self.harness == "codex":
+            return str(self.args.resume_prompt.read_text(encoding="utf-8"))
+        return instruction(self.args.resume_prompt)
 
     def log(self, event: str, **fields: object) -> None:
         log_session(
@@ -304,7 +339,7 @@ class Launcher:
             "hub_unreadable",
             f"{problem}. Not guessing the workflow's state and not launching again. Check "
             f"`robomate status` in the target repository, then resume by hand with "
-            f"resume-{self.agent} and conversation {self.conversation or '(unknown)'}.",
+            f"{self.resume_name()} and conversation {self.conversation or '(unknown)'}.",
         )
 
     def refresh_workflow_id_best_effort(self) -> None:
@@ -354,6 +389,11 @@ class Launcher:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            # agent-launcher.py runs the harness in the agent's worktree (#247);
+            # the prepared-run scripts `cd` there before starting the launcher.
+            cwd=getattr(self.args, "cwd", None),
+            # agent-launcher.py hands every joining child its hub selection (#247 r1-3).
+            env=getattr(self.args, "env", None),
         )
         if self.interrupted:
             # A signal that landed just before this launch.
@@ -439,7 +479,7 @@ class Launcher:
                 "no_workflow",
                 f"the harness exited (code {exit_code}) before initializing the workflow. "
                 "Not replaying the kickoff prompt. Inspect the harness output, then rerun "
-                "start-alice if nothing was done, or resume by hand.",
+                f"{self.start_name()} if nothing was done, or resume by hand.",
             )
         status = workflow["status"]
         if status == "done":
@@ -452,14 +492,14 @@ class Launcher:
                 "no_conversation",
                 f"the harness exited (code {exit_code}) without printing its conversation "
                 "ID, so there is nothing exact to resume. Find it in the harness's session "
-                "list and resume by hand with resume-alice.",
+                f"list and resume by hand with {self.resume_name()}.",
             )
         if status == "paused":
             raise Stop(
                 EXIT_PAUSED,
                 "paused",
                 f"the workflow is paused; not restarting Alice while it is. Resume by hand "
-                f"with resume-{self.agent} {self.conversation} when the operator is ready.",
+                f"with {self.resume_name()} {self.conversation} when the operator is ready.",
             )
         if self.args.max_resumes is not None and resumes >= self.args.max_resumes:
             raise Stop(
@@ -467,7 +507,7 @@ class Launcher:
                 "resumes_spent",
                 f"the harness exited (code {exit_code}) with the workflow {status} and the "
                 f"{self.args.max_resumes} automatic resume(s) are spent. Run "
-                f"resume-{self.agent} with no arguments to capture the snapshot and "
+                f"{self.resume_name()} with no arguments to capture the snapshot and "
                 "prepare recovery automatically; follow its prerequisite recommendations. "
                 "(docs/development/agent-recovery.md).",
             )
@@ -481,7 +521,9 @@ class Launcher:
         if self.args.recover:
             from agent_recovery import prepare
 
-            self.conversation, _ = prepare(self.args, self.reader, self.agent)
+            self.conversation, _ = prepare(
+                self.args, self.reader, self.agent, orchestrator=self.orchestrator
+            )
             self.args.resume_session = self.conversation
             # Saved pins survive a new launcher process, including its first read.
             from agent_recovery import pin, records
@@ -497,8 +539,8 @@ class Launcher:
                 raise Stop(
                     EXIT_CANNOT_RESUME,
                     "no_workflow",
-                    "the hub has no workflow, so there is nothing to resume; run start-alice "
-                    "for a new workflow",
+                    "the hub has no workflow, so there is nothing to resume; run "
+                    f"{self.start_name()} for a new workflow",
                 )
             if workflow["status"] == "done":
                 self.log("stop", reason="done", workflow_status="done", resumes=0)
@@ -513,13 +555,9 @@ class Launcher:
                     "while preserving pause.",
                 )
             self.conversation = self.args.resume_session.strip()
-            # The operator's manual resume prompt, once; Codex reads it on stdin.
-            text = (
-                self.args.resume_prompt.read_text(encoding="utf-8")
-                if self.harness == "codex"
-                else instruction(self.args.resume_prompt)
+            launch = resume_launch(
+                self.harness, self.base, self.conversation, self.manual_resume_text()
             )
-            launch = resume_launch(self.harness, self.base, self.conversation, text)
             action = "manual_resume"
         else:
             if self.harness == "claude-code":
@@ -528,9 +566,7 @@ class Launcher:
             if stale is not None:
                 # An earlier start's export must not name this start's session.
                 stale.unlink(missing_ok=True)
-            launch = start_launch(
-                self.harness, self.base, self.args.prompt, self.conversation or ""
-            )
+            launch = self.first_launch()
             action = "start"
         resumes = 0
         failures_in_series = 0
@@ -584,7 +620,7 @@ class Launcher:
                     "time_budget_spent",
                     f"the harness exited (code {exit_code}) and the resume time budget "
                     f"of {self.args.resume_total_s:g} s is spent after {resumes} "
-                    f"automatic resume(s). Run resume-{self.agent} with no arguments to "
+                    f"automatic resume(s). Run {self.resume_name()} with no arguments to "
                     "capture the snapshot and prepare recovery automatically; "
                     "follow its prerequisite recommendations. "
                     "(docs/development/agent-recovery.md).",
