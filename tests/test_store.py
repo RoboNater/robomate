@@ -2256,3 +2256,30 @@ async def test_terminal_rollback_preserves_worker_diagnostics(
     evidence = store.assess_activity()["agents"]["bob"]
     assert "redelivery_count" not in evidence
     assert "failed_task_call_count" not in evidence
+
+
+def test_pre_change_short_commits_still_read_back(store: HubStore) -> None:
+    """#371: rows stored before commits validation still load via get_state/get_task.
+
+    The read path returns the stored JSON verbatim without re-validating it as
+    ImplementerResult, so a short SHA stored before the change keeps reading.
+    """
+    store.check_in("bob")
+    task_id = assign(store)
+    short_result = {
+        "outcome": "completed",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "head_sha": "0123456789abcdef0123456789abcdef01234567",
+        "commits": ["a29763c"],
+        "summary": "stored before #371",
+    }
+    with database(store.path) as connection:
+        connection.execute(
+            "UPDATE task SET state = 'completed', result_json = ? WHERE id = ?",
+            (json.dumps(short_result), task_id),
+        )
+    task = store.get_task(task_id)
+    assert task is not None and task.result is not None
+    assert task.result["commits"] == ["a29763c"]
+    state = store.get_state()
+    assert state["tasks"][0]["result"]["commits"] == ["a29763c"]

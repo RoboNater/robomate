@@ -698,6 +698,40 @@ async def test_a_result_ends_the_task_and_carries_its_artifacts(
     assert event.payload["summary"] == "PR ready for review"
 
 
+async def test_a_result_with_short_commits_is_rejected_naming_commits(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#371: short commits SHAs are rejected at submit time with the field named."""
+    context_id, task_id = await assigned_context(client, hub_store)
+
+    body = await post(
+        client,
+        "message/send",
+        message(
+            "done",
+            context_id=context_id,
+            task_id=task_id,
+            metadata={
+                MetaKeys.KIND: "result",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.OPERATION_ID: "op-proto-short-commits",
+                MetaKeys.RESULT: {
+                    "outcome": "completed",
+                    "summary": "Done",
+                    "pr_url": "https://example.test/pr/1",
+                    "head_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "commits": ["a29763c"],
+                },
+            },
+        ),
+        status_code=400,
+    )
+
+    assert body["error"]["code"] == -32602
+    assert "commits" in body["error"]["message"]
+    assert hub_store.get_task(task_id).state is TaskState.WORKING  # type: ignore[union-attr]
+
+
 async def test_an_oversized_typed_result_is_rejected_with_a_compaction_hint(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
