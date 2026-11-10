@@ -956,6 +956,7 @@ def test_agent_stalled_with_pushed_head_inspects_pr_and_state() -> None:
             "reported a failed task call",
             "manual recovery guidance (#223)",
             "escalate with `ask_user`",
+            "consult the manual recovery guidance (#223) and escalate with `ask_user`",
             "otherwise keep waiting as now",
             "grants no new authority",
             "no cancel, fail, reassign, lease change, or process control",
