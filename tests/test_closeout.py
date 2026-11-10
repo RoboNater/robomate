@@ -579,10 +579,16 @@ def test_closeout_default_uses_policy_300_and_explicit_overrides(
 ) -> None:
     """#386: omitted timeout uses run closeout_wait_s (default 300); explicit wins."""
 
+    import itertools
+
     from agent_hub.database import initialize_database
 
+    # #448: unique names independent of directory contents; SQLite -wal/-shm
+    # side files come and go with GC timing, so len(iterdir()) can reuse a name.
+    _db_names = itertools.count()
+
     def fresh(policy: dict[str, Any] | None) -> tuple[HubStore, str]:
-        path = Path(tmp_path) / f"{len(list(tmp_path.iterdir()))}.db"
+        path = tmp_path / f"{next(_db_names)}.db"
         initialize_database(path)
         hub_store = HubStore(path)
         frozen_clock.install(hub_store)
