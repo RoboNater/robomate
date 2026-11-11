@@ -16,6 +16,7 @@
         "HUB_HARNESS_VERSION": "",
         "HUB_PROVIDER": "google",
         "HUB_MODEL": "",
+        "HUB_EFFORT": "",
         "HUB_CAPABILITIES": ""
       }
     }
