@@ -88,6 +88,7 @@ from agent_hub_common.registry import (
     forget as forget_entry,
 )
 from agent_hub_common.relocation import relocate_hub, relocation_targets
+from agent_hub_common.sharing import SHARING_RETRY_DELAYS_S, retry_sharing_violation
 from agent_hub_common.startup import stage
 from agent_hub_common.startup import stages as startup_stages
 from agent_hub_common.stdio import escape_unencodable_output
@@ -433,14 +434,28 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
             )
         )
     except RegistryError:
-        if old:
-            write_hub_json(directory, old)
-        else:
-            (directory / "hub.json").unlink(missing_ok=True)
-        if previous_binding is not None:
-            write_binding(git_dir, previous_binding)
-        else:
-            (git_dir / BINDING_FILENAME).unlink(missing_ok=True)
+        # Attempt both restorations even if one fails; neither may hide the
+        # registry error that caused startup to fail.
+        try:
+            if old:
+                write_hub_json(directory, old)
+            else:
+                retry_sharing_violation(
+                    lambda: (directory / "hub.json").unlink(missing_ok=True),
+                    SHARING_RETRY_DELAYS_S,
+                )
+        except OSError as exc:
+            print(f"Warning: could not restore hub metadata: {exc}", file=sys.stderr)
+        try:
+            if previous_binding is not None:
+                write_binding(git_dir, previous_binding)
+            else:
+                retry_sharing_violation(
+                    lambda: (git_dir / BINDING_FILENAME).unlink(missing_ok=True),
+                    SHARING_RETRY_DELAYS_S,
+                )
+        except OSError as exc:
+            print(f"Warning: could not restore checkout binding: {exc}", file=sys.stderr)
         raise
     stage("registered")
     if args.port is not None:

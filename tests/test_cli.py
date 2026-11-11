@@ -486,7 +486,7 @@ def test_startup_stages_reach_the_diagnostics_of_a_failed_up(
     message = str(caught.value)
     listed = message.split("--- startup stages ---\n", 1)[1].split("--- hub stdout ---", 1)[0]
     stages = [re.sub(r" at \S+ \(\+[\d.]+ s\)$", "", line) for line in listed.splitlines()]
-    assert stages == [
+    expected = [
         f"{STAGE_PREFIX}{name}"
         for name in (
             "command started",
@@ -496,8 +496,42 @@ def test_startup_stages_reach_the_diagnostics_of_a_failed_up(
             "identity written",
         )
     ]
-    assert f"last startup stage: {STAGE_PREFIX}identity written at " in message
-    assert "timed out waiting for registry lock" in message
+    if (
+        stages != expected
+        or f"last startup stage: {STAGE_PREFIX}identity written at " not in message
+    ):
+        pytest.fail(
+            f"Unexpected startup stages: {stages!r}\nFull diagnostics:\n{message}", pytrace=False
+        )
+    if "timed out waiting for registry lock" not in message:
+        pytest.fail(f"Missing registry lock timeout in full diagnostics:\n{message}", pytrace=False)
+
+
+def test_up_preserves_registry_error_when_rollback_fails(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from agent_hub_common.registry import RegistryError
+
+    root, env = repository
+    original_unlink = Path.unlink
+
+    def fail_register(entry: dict[str, Any]) -> None:
+        raise RegistryError("timed out waiting for registry lock")
+
+    def fail_hub_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path.name == "hub.json":
+            raise PermissionError("rollback denied")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "register", fail_register)
+    monkeypatch.setattr(Path, "unlink", fail_hub_unlink)
+    result = _inproc_cli(monkeypatch, capsys, root, env, "up")
+    assert result.returncode == 1
+    assert "timed out waiting for registry lock" in result.stderr
+    assert "rollback denied" in result.stderr
+    assert read_binding(checkout_git_dir(root)) is None
 
 
 def _failed_down(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
