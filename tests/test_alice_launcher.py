@@ -55,12 +55,12 @@ ID_LINES = {
     "antigravity": json.dumps({"type": "init", "conversation_id": IDS["antigravity"]}),
 }
 
-FAKE_HARNESS = """\
+FAKE_HARNESS = (
+    """\
 import json, os, sys, time
-_pids = os.environ.get("FAKE_PIDS")
-if _pids:
-    with open(_pids, "a", encoding="utf-8") as _stream:
-        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+"""
+    + fake_harness.CHILD_PID_RECORD
+    + """\
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 record = {
@@ -82,6 +82,7 @@ if line:
 time.sleep(float(os.environ.get("FAKE_SLEEP_S", "0")))
 sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 """
+)
 
 
 class ScriptedReader:

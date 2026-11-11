@@ -29,9 +29,9 @@ import json
 import os
 import signal
 import threading
-import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from time import monotonic as _monotonic
 from typing import Any
 
 import pytest
@@ -46,7 +46,7 @@ SUPERVISED_MAX_RESUMES = 4
 SUPERVISED_TOTAL_S = LIVENESS_S
 
 # Set by the per-test ``fake_supervision`` fixture; the fake harness appends
-# ``<pid>\t<its own path>`` here so cleanup can find only this test's children.
+# ``<pid>\t<its own path>\t<creation time>`` for ownership checks.
 PIDS_ENV = "FAKE_PIDS"
 
 
@@ -85,6 +85,57 @@ def bounded(words: list[str], *, total: bool = False) -> list[str]:
 _IS_WINDOWS = os.name == "nt"
 _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# Prepended to every executable fake child. An empty timestamp means the
+# Windows API was unavailable and cleanup falls back to the recorded PID.
+CHILD_PID_RECORD = r"""
+import os, sys
+_created = ""
+if os.name == "nt":
+    try:
+        import ctypes
+        from ctypes import wintypes
+        _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        _kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        _kernel.GetProcessTimes.argtypes = ([wintypes.HANDLE]
+                                             + [ctypes.POINTER(wintypes.FILETIME)] * 4)
+        _times = [wintypes.FILETIME() for _ in range(4)]
+        if _kernel.GetProcessTimes(_kernel.GetCurrentProcess(), *(ctypes.byref(t) for t in _times)):
+            _created = str((_times[0].dwHighDateTime << 32) | _times[0].dwLowDateTime)
+    except Exception:  # Unavailable creation time must not prevent cleanup.
+        pass
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\t{sys.argv[0]}\t{_created}\n")
+"""
+
+
+def _windows_creation_time(pid: int) -> int | None:
+    """Return a process creation FILETIME, or None when unavailable."""
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        kernel = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)  # noqa: B009
+        kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.GetProcessTimes.argtypes = [ctypes.c_void_p] + [
+            ctypes.POINTER(wintypes.FILETIME)
+        ] * 4
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                return None
+            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        finally:
+            kernel.CloseHandle(handle)
+    except Exception:  # Native query failures must leave cleanup operational.
+        return None
 
 
 def _windows_alive(pid: int) -> bool:
@@ -145,28 +196,38 @@ def live_own_pids(pids: Path) -> list[int]:
         return []
     alive: list[int] = []
     for line in pids.read_text(encoding="utf-8").splitlines():
-        pid_text, _, token = line.partition("\t")
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[1]:
+            continue
+        pid_text, token = parts[:2]
+        created = parts[2] if len(parts) == 3 else ""
         try:
             pid = int(pid_text)
         except ValueError:
             continue
-        if not process_alive(pid):
+        if pid <= 0 or not process_alive(pid):
             continue
-        if _still_ours(pid, token):
+        if _still_ours(pid, token, created):
             alive.append(pid)
     return alive
 
 
-def _still_ours(pid: int, token: str) -> bool:
+def _still_ours(pid: int, token: str, created: str = "") -> bool:
     """Best-effort check that ``pid`` is still one of this test's fake children.
 
     Where /proc exists (Linux) the child's command line names its fake-harness
     script, and an unreadable cmdline means the process is gone or its pid was
-    reused: not ours to kill. On Windows/macOS (no /proc) the pid was recorded
-    by a child of this test and liveness was confirmed natively by
-    process_alive (STILL_ACTIVE), so terminate only that confirmed process.
+    reused: not ours to kill. Windows compares creation times when available;
+    macOS and unavailable Windows timestamps fall back to the recorded PID.
     """
-    if _IS_WINDOWS or not Path("/proc").is_dir():
+    if _IS_WINDOWS:
+        try:
+            expected = int(created)
+        except ValueError:
+            return True
+        actual = _windows_creation_time(pid)
+        return actual is None or actual == expected
+    if not Path("/proc").is_dir():
         return True
     try:
         return token.encode() in Path(f"/proc/{pid}/cmdline").read_bytes()
@@ -247,9 +308,9 @@ class Supervision:
         close(), so every later hung child is killed promptly and the finite
         resume count ends the launcher's loop.
         """
-        started = time.monotonic()
+        started = _monotonic()
         while not self._stop.is_set():
-            if time.monotonic() - started >= self.liveness_s:
+            if _monotonic() - started >= self.liveness_s:
                 kill_own(self.pids)
             if self._stop.wait(POLL_INTERVAL_S):
                 return
