@@ -52,12 +52,12 @@ RUN = "20261109_abcdef12"
 WORKFLOW = "wf-1"
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
-FAKE_HARNESS = """\
+FAKE_HARNESS = (
+    """\
 import json, os, sys, time
-_pids = os.environ.get("FAKE_PIDS")
-if _pids:
-    with open(_pids, "a", encoding="utf-8") as _stream:
-        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+"""
+    + fake_harness.CHILD_PID_RECORD
+    + """\
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
@@ -101,6 +101,7 @@ if step == "hang":
     time.sleep(600)
 sys.exit(int(step.split(":")[1]))
 """
+)
 
 
 def git(cwd: Path, *words: str) -> str:
@@ -1009,15 +1010,16 @@ def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
 
 # An immediately failing child that records its pid (so cleanup is checkable)
 # and prints a diagnostic, but dies before writing its launch marker.
-IMMEDIATE_FAIL_CHILD = """\
+IMMEDIATE_FAIL_CHILD = (
+    """\
 import os, sys
-_pids = os.environ.get("FAKE_PIDS")
-if _pids:
-    with open(_pids, "a", encoding="utf-8") as _stream:
-        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+"""
+    + fake_harness.CHILD_PID_RECORD
+    + """\
 print("fake child failed before its launch marker", file=sys.stderr, flush=True)
 sys.exit(7)
 """
+)
 
 # The real incident (#464): a malformed script (nested Python/heredoc escaping).
 # Python cannot even compile it, so no child code runs, no marker is written and
@@ -1083,15 +1085,16 @@ def test_broken_fake_child_fails_with_finite_attempts_and_diagnostics(
 # A child that hangs on every attempt and never writes its launch marker. The
 # watchdog must keep sweeping across automatic resumes, not fire once (#464
 # r1-1); otherwise the resumed child hangs with no watchdog left.
-HANG_FAKE_CHILD = """\
+HANG_FAKE_CHILD = (
+    """\
 import os, sys, time
-_pids = os.environ.get("FAKE_PIDS")
-if _pids:
-    with open(_pids, "a", encoding="utf-8") as _stream:
-        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+"""
+    + fake_harness.CHILD_PID_RECORD
+    + """\
 print("fake child hanging before its launch marker", file=sys.stderr, flush=True)
 time.sleep(10**6)
 """
+)
 
 
 def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
@@ -1130,6 +1133,68 @@ def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
 
 
 # -- Windows-safe liveness (#464 r2-1) --------------------------------------------
+
+
+def test_watchdog_ignores_patched_monotonic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_supervision: Any
+) -> None:
+    """A healthy recorded child survives a clock patch after supervision starts (#475)."""
+    import time
+
+    child = tmp_path / "healthy.py"
+    child.write_text(fake_harness.CHILD_PID_RECORD + "\nimport time\ntime.sleep(0.3)\n")
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
+    process = subprocess.Popen([sys.executable, str(child)])
+    assert process.wait() == 0
+
+
+def test_windows_pid_creation_guards_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A reused PID is excluded; unavailable timestamps retain the fallback (#473)."""
+    pids = tmp_path / "pids"
+    pids.write_text(
+        "42\tfake.py\t123\n43\tfake.py\t123\n44\tfake.py\tbad\n"
+        "45\tfake.py\t123\ninvalid\n0\tfake.py\t123\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fake_harness, "_IS_WINDOWS", True)
+    monkeypatch.setattr(fake_harness, "_windows_alive", lambda pid: True)
+    monkeypatch.setattr(
+        fake_harness, "_windows_creation_time", lambda pid: {42: 123, 43: 124}.get(pid)
+    )
+    assert fake_harness.live_own_pids(pids) == [42, 44, 45]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows process creation times")
+def test_windows_child_records_creation_time(tmp_path: Path, fake_supervision: Any) -> None:
+    child = tmp_path / "child.py"
+    child.write_text(fake_harness.CHILD_PID_RECORD + "\ninput()\n", encoding="utf-8")
+    process = subprocess.Popen([sys.executable, str(child)], stdin=subprocess.PIPE)
+    try:
+        wait_until_sync(
+            lambda: (
+                fake_supervision.pids.is_file()
+                and fake_supervision.pids.read_text(encoding="utf-8").endswith("\n")
+            ),
+            "child PID record",
+        )
+        parts = fake_supervision.pids.read_text(encoding="utf-8").strip().split("\t")
+        recorded_pid = int(parts[0])
+        assert int(parts[2]) == fake_harness._windows_creation_time(recorded_pid)
+        assert fake_harness.live_own_pids(fake_supervision.pids) == [recorded_pid]
+    finally:
+        process.communicate(input=b"\n")
+
+
+def test_windows_creation_time_query_failure_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ctypes
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise ctypes.ArgumentError("unavailable")
+
+    monkeypatch.setattr(ctypes, "WinDLL", fail, raising=False)
+    assert fake_harness._windows_creation_time(42) is None
 
 
 def test_windows_liveness_uses_still_active_query(monkeypatch: pytest.MonkeyPatch) -> None:
