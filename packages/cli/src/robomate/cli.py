@@ -444,7 +444,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
                     lambda: (directory / "hub.json").unlink(missing_ok=True),
                     SHARING_RETRY_DELAYS_S,
                 )
-        except OSError as exc:
+        except Exception as exc:
             print(f"Warning: could not restore hub metadata: {exc}", file=sys.stderr)
         try:
             if previous_binding is not None:
@@ -454,7 +454,7 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
                     lambda: (git_dir / BINDING_FILENAME).unlink(missing_ok=True),
                     SHARING_RETRY_DELAYS_S,
                 )
-        except OSError as exc:
+        except Exception as exc:
             print(f"Warning: could not restore checkout binding: {exc}", file=sys.stderr)
         raise
     stage("registered")
