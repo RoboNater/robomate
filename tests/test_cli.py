@@ -29,6 +29,7 @@ from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
 from agent_hub_common.discovery import (
+    BINDING_FILENAME,
     Binding,
     GitTimeoutError,
     HubEndpoint,
@@ -507,31 +508,44 @@ def test_startup_stages_reach_the_diagnostics_of_a_failed_up(
         pytest.fail(f"Missing registry lock timeout in full diagnostics:\n{message}", pytrace=False)
 
 
+@pytest.mark.parametrize("failure", ["hub_unlink", "hub_restore", "binding_unlink"])
 def test_up_preserves_registry_error_when_rollback_fails(
     repository: tuple[Path, dict[str, str]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    failure: str,
 ) -> None:
     from agent_hub_common.registry import RegistryError
 
     root, env = repository
     original_unlink = Path.unlink
+    original_write_hub_json = write_hub_json
+    if failure == "hub_restore":
+        write_hub_json(legacy_state_dir(root), {"hub_id": "old", "name": "repo"})
 
     def fail_register(entry: dict[str, Any]) -> None:
         raise RegistryError("timed out waiting for registry lock")
 
-    def fail_hub_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
-        if path.name == "hub.json":
+    def fail_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        if (failure == "hub_unlink" and path.name == "hub.json") or (
+            failure == "binding_unlink" and path.name == BINDING_FILENAME
+        ):
             raise PermissionError("rollback denied")
         original_unlink(path, *args, **kwargs)
 
+    def fail_restore(path: Path, value: Any) -> None:
+        if failure == "hub_restore" and value == {"hub_id": "old", "name": "repo"}:
+            raise PermissionError("rollback denied")
+        original_write_hub_json(path, value)
+
     monkeypatch.setattr(cli, "register", fail_register)
-    monkeypatch.setattr(Path, "unlink", fail_hub_unlink)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    monkeypatch.setattr(cli, "write_hub_json", fail_restore)
     result = _inproc_cli(monkeypatch, capsys, root, env, "up")
     assert result.returncode == 1
     assert "timed out waiting for registry lock" in result.stderr
     assert "rollback denied" in result.stderr
-    assert read_binding(checkout_git_dir(root)) is None
+    assert (read_binding(checkout_git_dir(root)) is not None) == (failure == "binding_unlink")
 
 
 def _failed_down(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
