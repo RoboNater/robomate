@@ -13,6 +13,11 @@
       ],
       "command": "uv",
       "env": {
+        "HUB_EFFORT": "",
+        "HUB_HARNESS": "claude-code",
+        "HUB_HARNESS_VERSION": "2.1.277",
+        "HUB_MODEL": "",
+        "HUB_PROVIDER": "anthropic",
         "PYTHONUTF8": "1",
         "ROBOMATE_HUB_URL": "http://127.0.0.1:8420",
         "ROBOMATE_TOKEN_FILE": "$HUB_REPO/.robomate/token"

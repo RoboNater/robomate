@@ -15,6 +15,7 @@
       "env": {
         "AGENT_NAME": "bob",
         "HUB_CAPABILITIES": "",
+        "HUB_EFFORT": "",
         "HUB_HARNESS": "claude-code",
         "HUB_HARNESS_VERSION": "2.1.277",
         "HUB_MODEL": "",

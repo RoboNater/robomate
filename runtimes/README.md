@@ -29,6 +29,7 @@ Before using a template:
    | `HUB_HARNESS_VERSION` | Harness version, e.g. from `claude --version` | empty |
    | `HUB_PROVIDER` | Model maker (`anthropic`, `openai`, `google`, etc.) | `anthropic` / `openai` / `google` / empty (multi-vendor) |
    | `HUB_MODEL` | Exact model ID, when the launcher pins one | empty |
+   | `HUB_EFFORT` | Reasoning effort, as passed to the harness CLI | empty |
    | `HUB_CAPABILITIES` | Comma-separated capabilities matched against `implementer_capabilities` / `reviewer_capabilities` | empty |
 
    An empty or unset variable is reported as `unknown` (capabilities as none), never guessed.

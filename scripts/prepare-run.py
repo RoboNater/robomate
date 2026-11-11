@@ -162,6 +162,27 @@ DEFAULT_HUB_PORT = 8420
 DEFAULT_HUB_URL = f"http://127.0.0.1:{DEFAULT_HUB_PORT}"
 
 
+def bridge_identity_env(
+    harness: str,
+    version: str,
+    provider: str,
+    model: str,
+    effort: str,
+) -> dict[str, str]:
+    """The declared identity every bridge (Alice or worker) carries (#402).
+
+    A single shared path so no Alice harness branch is missed: ``worker_env``
+    and Alice's ``hub_env`` both build from here.
+    """
+    return {
+        "HUB_HARNESS": harness,
+        "HUB_HARNESS_VERSION": version,
+        "HUB_PROVIDER": provider,
+        "HUB_MODEL": model,
+        "HUB_EFFORT": effort,
+    }
+
+
 def worker_env(
     name: str,
     harness: str,
@@ -173,16 +194,14 @@ def worker_env(
     token_file: str,
     telemetry: str,
     hub_url: str = DEFAULT_HUB_URL,
+    effort: str = "",
 ) -> dict[str, str]:
     return {
         "ROBOMATE_HUB_URL": hub_url,
         "ROBOMATE_TOKEN_FILE": token_file,
         "AGENT_NAME": name,
         "HUB_WORKSPACE": workspace,
-        "HUB_HARNESS": harness,
-        "HUB_HARNESS_VERSION": version,
-        "HUB_PROVIDER": provider,
-        "HUB_MODEL": model,
+        **bridge_identity_env(harness, version, provider, model, effort),
         "HUB_CAPABILITIES": capabilities,
         "HUB_TELEMETRY_LOG": telemetry,
         "PYTHONUTF8": "1",
@@ -2545,6 +2564,7 @@ def render_worker_bundle(
         token_file,
         (run_dir / f"{name}-telemetry.jsonl").as_posix(),
         hub_url,
+        effort,
     )
     exposures: dict[str, Any] = {}
     written = write_worker_config(
@@ -2915,6 +2935,8 @@ def prepare(
         "bob": resolve_provider(bob_harness, bob_model, bob_provider),
         "charlie": resolve_provider(charlie_harness, charlie_model, charlie_provider),
     }
+    # No --alice-provider flag: Alice's maker comes from her harness/model alone (#402).
+    alice_provider = resolve_provider(alice_harness, alice_model)
 
     bob_path = bob_dir or (run_dir / "bob")
     charlie_path = charlie_dir or (run_dir / "charlie")
@@ -2966,7 +2988,10 @@ def prepare(
     harnesses = {"bob": bob_harness, "charlie": charlie_harness}
     # Harness versions come from the CLIs themselves, never placeholders; a
     # remote worker's version is probed on its own host by --worker-only.
-    versions, parsed_versions = probe_versions({harnesses[name] for name in local})
+    # Alice's harness is probed too so her bridge can declare it (#402).
+    versions, parsed_versions = probe_versions(
+        {alice_harness} | {harnesses[name] for name in local}
+    )
 
     policy_allow_no_ci = False
     merge_note = "skipped (local repository or --skip-github-checks)"
@@ -3138,6 +3163,7 @@ def prepare(
 
     models = {"bob": bob_model, "charlie": charlie_model}
     capabilities = {"bob": bob_capabilities, "charlie": charlie_capabilities}
+    efforts = {"bob": bob_effort, "charlie": charlie_effort}
     rendered_configs: dict[str, str] = {}
 
     for name in local:
@@ -3156,6 +3182,7 @@ def prepare(
             str(hub_token),
             telemetry,
             network["hub_url"],
+            efforts[name],
         )
         rendered_configs[name] = str(
             write_worker_config(
@@ -3175,6 +3202,15 @@ def prepare(
         "ROBOMATE_HUB_URL": live_url,
         "ROBOMATE_TOKEN_FILE": str(hub_token),
         "PYTHONUTF8": "1",
+        # Declared identity so the hub records Alice instead of unknown (#402).
+        # Built once here so every Alice harness branch below carries it.
+        **bridge_identity_env(
+            alice_harness,
+            parsed_versions[alice_harness],
+            alice_provider,
+            alice_model,
+            alice_effort,
+        ),
     }
     hub_args = [
         "run",
