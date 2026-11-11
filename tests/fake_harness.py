@@ -102,7 +102,7 @@ if os.name == "nt":
         _times = [wintypes.FILETIME() for _ in range(4)]
         if _kernel.GetProcessTimes(_kernel.GetCurrentProcess(), *(ctypes.byref(t) for t in _times)):
             _created = str((_times[0].dwHighDateTime << 32) | _times[0].dwLowDateTime)
-    except (OSError, AttributeError):
+    except Exception:  # Unavailable creation time must not prevent cleanup.
         pass
 _pids = os.environ.get("FAKE_PIDS")
 if _pids:
@@ -134,7 +134,7 @@ def _windows_creation_time(pid: int) -> int | None:
             return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
         finally:
             kernel.CloseHandle(handle)
-    except (OSError, AttributeError):
+    except Exception:  # Native query failures must leave cleanup operational.
         return None
 
 

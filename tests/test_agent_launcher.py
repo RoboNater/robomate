@@ -1180,11 +1180,21 @@ def test_windows_child_records_creation_time(tmp_path: Path, fake_supervision: A
             "child PID record",
         )
         parts = fake_supervision.pids.read_text(encoding="utf-8").strip().split("\t")
-        assert int(parts[0]) == process.pid
-        assert int(parts[2]) == fake_harness._windows_creation_time(process.pid)
-        assert fake_harness.live_own_pids(fake_supervision.pids) == [process.pid]
+        recorded_pid = int(parts[0])
+        assert int(parts[2]) == fake_harness._windows_creation_time(recorded_pid)
+        assert fake_harness.live_own_pids(fake_supervision.pids) == [recorded_pid]
     finally:
         process.communicate(input=b"\n")
+
+
+def test_windows_creation_time_query_failure_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ctypes
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise ctypes.ArgumentError("unavailable")
+
+    monkeypatch.setattr(ctypes, "WinDLL", fail, raising=False)
+    assert fake_harness._windows_creation_time(42) is None
 
 
 def test_windows_liveness_uses_still_active_query(monkeypatch: pytest.MonkeyPatch) -> None:
