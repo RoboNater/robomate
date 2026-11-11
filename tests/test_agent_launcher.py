@@ -22,9 +22,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import fake_harness
 import pytest
+from fake_harness import (
+    SUPERVISED_MAX_RESUMES,
+    attempts,
+    bounded,
+    exit_codes,
+    live_own_pids,
+)
 from test_alice_launcher import ID_LINES, IDS, LAUNCHER, ROOT
 from timing import wait_until_sync
+
+# One shared autouse fixture (fake_harness.py), re-exported here by alias so
+# ruff does not treat the pytest fixture as an unused import (#464 r1-3).
+fake_supervision = fake_harness.fake_supervision
 
 SPEC = importlib.util.spec_from_file_location(
     "agent_launcher_cli", ROOT / "scripts/agent-launcher.py"
@@ -42,6 +54,10 @@ HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
 FAKE_HARNESS = """\
 import json, os, sys, time
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
@@ -220,23 +236,37 @@ def files(root: Path, skip: Path) -> dict[str, float]:
 def start_words(
     area: dict[str, Path], agent: str, role: str, harness: str, *extra: str
 ) -> list[str]:
-    return [
-        "start",
-        agent,
-        "--role",
-        role,
-        "--harness",
-        harness,
-        "--hub",
-        str(area["checkout"]),
-        "--resume-delay-s",
-        "0",
-        "--read-retry-delay-s",
-        "0",
-        "--predecessor-poll-s",
-        "0.01",
-        *extra,
-    ]
+    # A broken fake child must not loop through the launcher's unlimited
+    # production resume count / ~12-hour budget (#464). `bounded` keeps the
+    # production defaults unchanged and gives every scenario a finite, explicit
+    # count. `invoke` below also bounds the inline start/resume word lists.
+    return bounded(
+        [
+            "start",
+            agent,
+            "--role",
+            role,
+            "--harness",
+            harness,
+            "--hub",
+            str(area["checkout"]),
+            "--resume-delay-s",
+            "0",
+            "--read-retry-delay-s",
+            "0",
+            "--predecessor-poll-s",
+            "0.01",
+            *extra,
+        ],
+        total=True,
+    )
+
+
+def invoke(words: list[str], **kwargs: Any) -> int:
+    """Bound every supervised start/resume command; leave ask/doctor untouched."""
+    if words and words[0] in ("start", "resume"):
+        words = bounded(words, total=True)
+    return int(CLI.main(words, **kwargs))
 
 
 def workspace_of(
@@ -254,7 +284,11 @@ def workspace_of(
 @pytest.mark.parametrize("harness", HARNESSES)
 @pytest.mark.parametrize("role", ["orchestrator", "implementer"])
 def test_start_sends_the_join_line_and_resumes_with_takeover(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, harness: str, role: str
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    role: str,
+    fake_supervision: Any,
 ) -> None:
     use_harness(harness, monkeypatch)
     monkeypatch.setenv("ROBOMATE_HUB_URL", "http://another-hub:1")
@@ -271,11 +305,21 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     before = files(area["root"], area["harness_dir"])
     calls: list[str] = []
 
-    code = CLI.main(
+    code = invoke(
         start_words(area, agent, role, harness, "--model", "m-1"),
         programs=programs(area),
         reader=hub,
         workspace=workspace_of(area, calls),
+    )
+
+    # Wire the diagnostic guard into a real supervision scenario (#464 r1-2):
+    # a fixture that dies before its marker fails clearly here too, not only in
+    # the dedicated regressions. A passing scenario has all its markers.
+    fake_supervision.check(
+        expect=2,
+        markers=len(launches(area)),
+        sessions=(area["sessions"] / f"{agent}.jsonl",),
+        output="",
     )
 
     assert code == 0
@@ -370,7 +414,7 @@ def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
 
     killer = threading.Thread(target=kill)
     killer.start()
-    code = CLI.main(
+    code = invoke(
         start_words(area, "bob", "implementer", "claude-code")
         + ["--resume-delay-s", "0.05", "--predecessor-wait-s", "0"],
         programs=programs(area),
@@ -400,7 +444,7 @@ def test_an_earlier_release_and_finished_run_do_not_stop_a_new_start(
     joined = {"workflow": workflow(), "agents": [agent_row("released", context="new")]}
     hub = FakeHub(after_launches(area, earlier, joined))
 
-    code = CLI.main(
+    code = invoke(
         start_words(area, "bob", "implementer", "claude-code"),
         programs=programs(area),
         reader=hub,
@@ -421,7 +465,7 @@ def test_resume_with_an_empty_log_refuses(area: dict[str, Path], content: str | 
         (area["sessions"] / "bob.jsonl").write_text(content, encoding="utf-8")
     hub = FakeHub(lambda method: pytest.fail(f"read the hub: {method}"))
 
-    code = CLI.main(
+    code = invoke(
         ["resume", "bob", "--hub", str(area["checkout"])], programs=programs(area), reader=hub
     )
 
@@ -480,7 +524,7 @@ def test_resume_of_a_log_from_before_the_workflow_takes_the_run_from_the_hub(
             return {"questions": []}
         return status(method)
 
-    code = CLI.main(
+    code = invoke(
         ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"],
         programs=programs(area),
         reader=FakeHub(answer),
@@ -517,7 +561,7 @@ def test_interactive_start_does_not_resume_but_records_the_session(
     words = start_words(area, "bob", "implementer", "codex", "--interactive")
     words += ["--safe-mode"] if safe else []
 
-    code = CLI.main(
+    code = invoke(
         [*words, "--harness-args", "--extra", "x y"],
         programs=programs(area),
         reader=hub,
@@ -555,7 +599,7 @@ def test_ask_opens_the_saved_conversation_without_hub_tools(
     log.write_text(json.dumps(row) + "\n", encoding="utf-8")
     before = log.read_bytes()
 
-    code = CLI.main(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area))
+    code = invoke(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area))
 
     assert code == 0
     (launch,) = launches(area)
@@ -586,7 +630,7 @@ def test_ask_refuses_a_harness_whose_hub_tools_cannot_be_switched_off(
     }
     (area["sessions"] / "bob.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
 
-    assert CLI.main(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 2
+    assert invoke(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 2
     assert launches(area) == []
 
 
@@ -614,7 +658,7 @@ def test_a_remote_host_hands_its_hub_selection_to_the_joining_harness(
     words = ["start", "bob", "--role", "implementer", "--harness", "claude-code", *remote]
     words += ["--workdir", str(area["worktree"]), "--predecessor-poll-s", "0.01"]
     words += ["--resume-delay-s", "0"]
-    code = CLI.main(
+    code = invoke(
         words + (["--interactive"] if interactive else []),
         programs=programs(area),
         reader=hub,
@@ -625,7 +669,7 @@ def test_a_remote_host_hands_its_hub_selection_to_the_joining_harness(
     if interactive:
         # The guarded resume on that host hands on the same selection.
         assert (
-            CLI.main(["resume", "bob", *remote], programs=programs(area), reader=snapshotting(hub))
+            invoke(["resume", "bob", *remote], programs=programs(area), reader=snapshotting(hub))
             == 0
         )
     assert len(launches(area)) == 2
@@ -650,7 +694,7 @@ def test_interactive_codex_start_captures_its_conversation_for_resume_and_ask(
     hub = FakeHub(after_launches(area, active, active, released))
     words = start_words(area, "bob", "implementer", "codex", "--interactive")
 
-    assert CLI.main(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 1
+    assert invoke(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 1
 
     log = rows(area)
     assert [row["event"] for row in log] == ["start", "conversation", "exit"]
@@ -658,9 +702,9 @@ def test_interactive_codex_start_captures_its_conversation_for_resume_and_ask(
     assert log[1]["conversation_source"] == "codex session store"
     monkeypatch.delenv("FAKE_CODEX_ROLLOUT")
     resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
-    assert CLI.main(resume, programs=programs(area), reader=snapshotting(hub)) == 0
+    assert invoke(resume, programs=programs(area), reader=snapshotting(hub)) == 0
     assert launches(area)[1]["argv"][-3:] == ["resume", conversation, "-"]
-    assert CLI.main(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 0
+    assert invoke(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 0
     assert launches(area)[2]["argv"][-1] == conversation
 
 
@@ -696,13 +740,13 @@ def test_interactive_codex_never_takes_a_session_it_did_not_create(
     hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": [agent_row()]}))
     words = start_words(area, "bob", "implementer", "codex", "--interactive")
 
-    assert CLI.main(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 0
+    assert invoke(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 0
 
     assert [row["event"] for row in rows(area)] == ["start", "exit"]
     assert all(row["conversation_id"] is None for row in rows(area))
     assert "no conversation ID was captured" in capsys.readouterr().err
     resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
-    assert CLI.main(resume, programs=programs(area), reader=snapshotting(hub)) == 4
+    assert invoke(resume, programs=programs(area), reader=snapshotting(hub)) == 4
     assert len(launches(area)) == 1
 
 
@@ -740,19 +784,19 @@ def test_interactive_start_without_capture_warns_and_takes_the_operators_exact_i
     hub = FakeHub(after_launches(area, active, active, released))
     words = start_words(area, "bob", "reviewer", harness, "--interactive")
 
-    assert CLI.main(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 0
+    assert invoke(words, programs=programs(area), reader=hub, workspace=workspace_of(area)) == 0
 
     out = capsys.readouterr()
     assert "does not tell an interactive launcher its conversation ID" in out.out
     assert "--resume-session ID" in out.out and "no conversation ID was captured" in out.err
     resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
     # Without an ID, recovery refuses rather than guess one.
-    assert CLI.main(resume, programs=programs(area), reader=snapshotting(hub)) == 4
+    assert invoke(resume, programs=programs(area), reader=snapshotting(hub)) == 4
     assert len(launches(area)) == 1
     exact = str(IDS[harness])
-    assert CLI.main([*resume, "--resume-session", "not an id"], programs=programs(area)) == 2
+    assert invoke([*resume, "--resume-session", "not an id"], programs=programs(area)) == 2
     assert (
-        CLI.main(
+        invoke(
             [*resume, "--resume-session", exact], programs=programs(area), reader=snapshotting(hub)
         )
         == 0
@@ -805,7 +849,7 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
     team_log = (area["sessions"] / "bob.jsonl").read_bytes()
     before = files(area["root"], area["harness_dir"])
 
-    code = CLI.main(
+    code = invoke(
         [
             "doctor",
             "--hub",
@@ -854,7 +898,7 @@ def test_doctor_context_keeps_robomate_and_target_apart(
     area: dict[str, Path], run: dict[str, Path]
 ) -> None:
     assert (
-        CLI.main(
+        invoke(
             [
                 "doctor",
                 "--hub",
@@ -885,11 +929,11 @@ def test_doctor_context_keeps_robomate_and_target_apart(
 
 def test_doctor_keeps_earlier_reports(area: dict[str, Path], run: dict[str, Path]) -> None:
     words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"]
-    assert CLI.main(words, programs=programs(area), reader=no_hub()) == 0
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 0
     (first,) = (run["denise"] / "reports").iterdir()
     first.write_text("# Earlier findings\n", encoding="utf-8")
 
-    assert CLI.main(words, programs=programs(area), reader=no_hub()) == 0
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 0
 
     reports = sorted((run["denise"] / "reports").iterdir())
     assert len(reports) == 2 and first in reports
@@ -906,7 +950,7 @@ def test_doctor_refuses_an_unknown_run_without_creating_one(
     words = ["doctor", "--hub", str(area["checkout"]), "--harness", "codex"]
     words += ["--run", selected] if selected else []
 
-    assert CLI.main(words, programs=programs(area), reader=no_hub()) == 2
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 2
 
     assert launches(area) == []
     assert RUN in capsys.readouterr().err
@@ -918,7 +962,7 @@ def test_doctor_supports_only_its_ready_harnesses(
     area: dict[str, Path], run: dict[str, Path]
 ) -> None:
     with pytest.raises(SystemExit) as refused:
-        CLI.main(["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "opencode"])
+        invoke(["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "opencode"])
     assert refused.value.code == 2
     assert launches(area) == []
 
@@ -937,7 +981,7 @@ def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
         monkeypatch.setenv(name, value)
 
     words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", harness]
-    assert CLI.main(words, programs=programs(area), reader=no_hub()) == 0
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 0
 
     (launch,) = launches(area)
     env = launch["env"]
@@ -958,3 +1002,195 @@ def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
     assert env[other] == str(
         area["root"] / ("team claude config" if other == "CLAUDE_CONFIG_DIR" else "team codex home")
     )
+
+
+# -- a broken fake child (#464) --------------------------------------------------------
+
+
+# An immediately failing child that records its pid (so cleanup is checkable)
+# and prints a diagnostic, but dies before writing its launch marker.
+IMMEDIATE_FAIL_CHILD = """\
+import os, sys
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+print("fake child failed before its launch marker", file=sys.stderr, flush=True)
+sys.exit(7)
+"""
+
+# The real incident (#464): a malformed script (nested Python/heredoc escaping).
+# Python cannot even compile it, so no child code runs, no marker is written and
+# the interpreter's SyntaxError is the diagnostic evidence.
+SYNTAX_ERROR_CHILD = """\
+def broken(:
+    pass
+"""
+
+BROKEN_FAKE_CHILDREN = {
+    "immediate-fail": (IMMEDIATE_FAIL_CHILD, "fake child failed before its launch marker"),
+    "syntax-error": (SYNTAX_ERROR_CHILD, "SyntaxError"),
+}
+
+
+@pytest.mark.parametrize("case", list(BROKEN_FAKE_CHILDREN))
+def test_broken_fake_child_fails_with_finite_attempts_and_diagnostics(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+    capfd: pytest.CaptureFixture[str],
+    case: str,
+) -> None:
+    """#464: a child that dies before its marker fails clearly, and never loops."""
+    child, evidence = BROKEN_FAKE_CHILDREN[case]
+    area["fake"].write_text(child, encoding="utf-8")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    # A single scripted phase stays active/busy however many launches happen,
+    # so only the finite resume count can end the supervision.
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    hub = FakeHub(after_launches(area, active))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+    output = capfd.readouterr().out
+    sessions = (area["sessions"] / "bob.jsonl",)
+
+    # One start plus the bounded resumes, then EXIT_RESUMES_SPENT: counted as a
+    # finite attempt count, never asserted as a short wall-clock duration.
+    assert code == LAUNCHER.EXIT_RESUMES_SPENT
+    assert attempts(*sessions) == SUPERVISED_MAX_RESUMES + 1
+    assert launches(area) == []
+    codes = exit_codes(*sessions)
+    assert len(codes) == SUPERVISED_MAX_RESUMES + 1 and all(code != 0 for code in codes)
+
+    # The failure is clear and preserves the child's exit code and output.
+    with pytest.raises(AssertionError) as raised:
+        fake_supervision.check(
+            expect=1, markers=len(launches(area)), sessions=sessions, output=output
+        )
+    message = str(raised.value)
+    assert "before writing its launch marker" in message
+    assert evidence in message
+
+    # Cleanup leaves only this test's own children, all of them gone.
+    assert live_own_pids(fake_supervision.pids) == []
+
+
+# A child that hangs on every attempt and never writes its launch marker. The
+# watchdog must keep sweeping across automatic resumes, not fire once (#464
+# r1-1); otherwise the resumed child hangs with no watchdog left.
+HANG_FAKE_CHILD = """\
+import os, sys, time
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
+print("fake child hanging before its launch marker", file=sys.stderr, flush=True)
+time.sleep(10**6)
+"""
+
+
+def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+) -> None:
+    """#464 r1-1: the LIVENESS_S watchdog keeps sweeping across resumes."""
+    # Shorten this instance's hang bound so the test is fast; the sweep reads
+    # liveness_s fresh each poll, so the change takes effect mid-run.
+    fake_supervision.liveness_s = 0.3
+    area["fake"].write_text(HANG_FAKE_CHILD, encoding="utf-8")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    hub = FakeHub(after_launches(area, active))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+    sessions = (area["sessions"] / "bob.jsonl",)
+
+    # Termination by the finite resume count, with no external timeout: every
+    # hung child (including the resumed ones) was swept by the watchdog. Count
+    # attempts and exit codes, never assert a short wall-clock duration.
+    assert code == LAUNCHER.EXIT_RESUMES_SPENT
+    assert attempts(*sessions) == SUPERVISED_MAX_RESUMES + 1
+    assert launches(area) == []
+    codes = exit_codes(*sessions)
+    assert len(codes) == SUPERVISED_MAX_RESUMES + 1 and all(code != 0 for code in codes)
+
+    # Cleanup swept only this test's own children; none remain alive.
+    assert live_own_pids(fake_supervision.pids) == []
+
+
+# -- Windows-safe liveness (#464 r2-1) --------------------------------------------
+
+
+def test_windows_liveness_uses_still_active_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Liveness is OpenProcess + GetExitCodeProcess == STILL_ACTIVE, never
+    os.kill(pid, 0) (CTRL_C_EVENT on Windows). Exercise the ctypes path on
+    Linux with a stand-in kernel32."""
+    import ctypes
+    from types import SimpleNamespace
+
+    import fake_harness
+
+    calls: list[tuple[Any, ...]] = []
+
+    class Fn:
+        def __init__(self, result: Any) -> None:
+            self.result = result
+
+        def __call__(self, *args: Any) -> Any:
+            calls.append(args)
+            return self.result(*args) if callable(self.result) else self.result
+
+    def kernel(handle: Any, code: int, exit_ok: bool = True) -> Any:
+        def get_exit(_handle: Any, pcode: Any) -> int:
+            pcode._obj.value = code
+            return int(exit_ok)
+
+        return SimpleNamespace(
+            OpenProcess=Fn(lambda access, inherit, pid: handle),
+            GetExitCodeProcess=Fn(get_exit),
+            CloseHandle=Fn(lambda _handle: 1),
+        )
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel(1, 259), raising=False)
+    assert fake_harness._windows_alive(4242) is True
+    assert (0x1000, False, 4242) in calls
+
+    calls.clear()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel(1, 0), raising=False)
+    assert fake_harness._windows_alive(4242) is False  # exited (code 0)
+
+    calls.clear()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel(0, 259), raising=False)
+    assert fake_harness._windows_alive(4242) is False  # OpenProcess failed
+
+
+def test_windows_supervision_never_sends_console_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Windows path must never call os.kill(pid, 0) and must terminate only
+    with a specific-pid SIGTERM, so no console or unrelated process is hit."""
+    import fake_harness
+
+    pids = tmp_path / "pids"
+    pids.write_text("4242\tC:\\fake.py\n", encoding="utf-8")
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(fake_harness, "_IS_WINDOWS", True)
+    monkeypatch.setattr(fake_harness, "_windows_alive", lambda pid: True)
+    monkeypatch.setattr("os.kill", lambda pid, sig: kills.append((pid, sig)))
+
+    assert fake_harness.live_own_pids(pids) == [4242]
+    fake_harness.kill_own(pids)
+
+    assert all(sig != 0 for _, sig in kills), "os.kill(pid, 0) would Ctrl-C the console"
+    assert (4242, signal.SIGTERM) in kills

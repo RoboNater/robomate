@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import fake_harness
 import pytest
 import test_alice_launcher as alice_tests
 from test_alice_launcher import (
@@ -23,6 +24,9 @@ from test_alice_launcher import (
 
 run_dir = alice_tests.run_dir
 fake = alice_tests.fake
+
+# One shared autouse fixture (fake_harness.py), re-exported by alias (#464 r1-3).
+fake_supervision = fake_harness.fake_supervision
 
 SPEC = importlib.util.spec_from_file_location(
     "worker_launcher", ROOT / "scripts/worker-launcher.py"
