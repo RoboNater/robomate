@@ -22,7 +22,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import fake_harness
 import pytest
+from fake_harness import bounded
+
+# One shared autouse fixture (fake_harness.py), re-exported by alias (#464 r1-3).
+fake_supervision = fake_harness.fake_supervision
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -52,6 +57,10 @@ ID_LINES = {
 
 FAKE_HARNESS = """\
 import json, os, sys, time
+_pids = os.environ.get("FAKE_PIDS")
+if _pids:
+    with open(_pids, "a", encoding="utf-8") as _stream:
+        _stream.write(f"{os.getpid()}\\t{sys.argv[0]}\\n")
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 record = {
@@ -128,29 +137,33 @@ def use_harness(harness: str, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:
-    return [
-        "--harness",
-        harness,
-        "--hub-url",
-        "http://127.0.0.1:9",
-        "--token-file",
-        str(run_dir / "token"),
-        "--sessions",
-        str(run_dir / "alice-sessions.jsonl"),
-        "--resume-delay-s",
-        "0",
-        "--read-retry-delay-s",
-        "0",
-        *extra,
-        "--",
-        sys.executable,
-        str(fake),
-        "--model",
-        "m-1",
-        "--flag",
-        # Devin's session ID is read back from its export (#224).
-        *(["--export", str(run_dir / "devin-export.json")] if harness == "devin" else []),
-    ]
+    # Finite, explicit resume bounds (#464): a broken fake child must not loop
+    # through the launcher's unlimited production count / ~12-hour budget.
+    return bounded(
+        [
+            "--harness",
+            harness,
+            "--hub-url",
+            "http://127.0.0.1:9",
+            "--token-file",
+            str(run_dir / "token"),
+            "--sessions",
+            str(run_dir / "alice-sessions.jsonl"),
+            "--resume-delay-s",
+            "0",
+            "--read-retry-delay-s",
+            "0",
+            *extra,
+            "--",
+            sys.executable,
+            str(fake),
+            "--model",
+            "m-1",
+            "--flag",
+            # Devin's session ID is read back from its export (#224).
+            *(["--export", str(run_dir / "devin-export.json")] if harness == "devin" else []),
+        ]
+    )
 
 
 def start_args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:
