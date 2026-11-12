@@ -50,7 +50,8 @@ def settings(*words: str) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def write(path: Path, text: str) -> Path:
-    path.write_text(text, encoding="utf-8")
+    """Exactly these bytes: text mode would write CRLF on Windows, which start-run keeps."""
+    path.write_bytes(text.encode("utf-8"))
     return path
 
 
@@ -62,7 +63,7 @@ def test_the_command_line_overrides_the_file_which_overrides_the_defaults(
 ) -> None:
     configs = tmp_path / "configs"
     configs.mkdir()
-    (configs / "work.md").write_text("Do it.\n", encoding="utf-8")
+    write(configs / "work.md", "Do it.\n")
     config = write(
         configs / "run.toml",
         'run_parent_dir = "parent"\nrun_dir = "first"\naccount = "file-bot"\n'
