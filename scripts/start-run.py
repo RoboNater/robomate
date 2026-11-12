@@ -194,6 +194,10 @@ def parser() -> argparse.ArgumentParser:
         else:
             kind = float if key in FLOAT_KEYS else int if isinstance(default, int) else str
             group.add_argument(flag, type=kind, default=None)
+    for key in POLICY_SHORTHANDS:
+        result.add_argument(
+            "--" + key.replace("_", "-"), type=float, default=None, help=f"[policy] {key}"
+        )
     return result
 
 
@@ -278,6 +282,9 @@ def settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         value = getattr(args, key)
         if value is not None:
             values[key] = value
+    for key in POLICY_SHORTHANDS:
+        if getattr(args, key) is not None:
+            policy[key] = getattr(args, key)
     for spec in args.policy:
         key, value = parse_policy_override(spec)
         policy[key] = value
@@ -487,22 +494,35 @@ def operator_environment() -> dict[str, str]:
 def robomate(
     checkout: Path, *words: str, stdin: str | None = None, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    done = subprocess.run(
+    """One ``robomate`` command in the checkout; ``stdin`` goes as UTF-8 bytes, unchanged.
+
+    Bytes, not text mode, so Windows does not turn the statement's line feeds
+    into CRLF on the way to ``robomate submit -``.
+    """
+
+    raw = subprocess.run(
         [sys.executable, "-m", "robomate", *words],
         cwd=checkout,
         env=operator_environment(),
-        input=stdin,
+        input=None if stdin is None else stdin.encode("utf-8"),
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         timeout=CLI_TIMEOUT_S,
         check=False,
+    )
+    done = subprocess.CompletedProcess(
+        raw.args,
+        raw.returncode,
+        raw.stdout.decode("utf-8", errors="replace"),
+        raw.stderr.decode("utf-8", errors="replace"),
     )
     if check and done.returncode != 0:
         detail = (done.stderr.strip() or done.stdout.strip() or f"exit {done.returncode}")[-2000:]
         raise RuntimeError(f"robomate {words[0]} failed: {detail}")
     return done
+
+
+def same_path(left: str | Path, right: str | Path) -> bool:
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
 
 
 def hub_status(checkout: Path) -> dict[str, Any] | None:
@@ -519,7 +539,7 @@ def hub_status(checkout: Path) -> dict[str, Any] | None:
     if not isinstance(status, dict) or status.get("running") is False:
         return None
     reported = status.get("checkout") or status.get("repo_root")
-    if not reported or os.path.realpath(str(reported)) != os.path.realpath(checkout):
+    if not reported or not same_path(str(reported), checkout):
         return None
     return status
 
@@ -889,10 +909,12 @@ def start(values: dict[str, Any], policy: dict[str, Any]) -> int:
             code = 1
     except (Interrupted, KeyboardInterrupt):
         say("interrupted; stopping the agents and the hub this command started")
-        stop_agents(run)
         code = launcher_defaults.EXIT_INTERRUPTED
     finally:
         try:
+            # A no-op once every launcher has exited; after an interrupt or an
+            # error it stops the ones still running before their hub goes.
+            stop_agents(run)
             stop_hub(run)
         finally:
             for stream in run.logs:

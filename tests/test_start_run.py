@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -24,7 +25,7 @@ from typing import Any
 
 import pytest
 from conftest import reserve_port_block
-from timing import LIVENESS_S
+from timing import LIVENESS_S, wait_until_sync
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -214,6 +215,12 @@ def test_a_prep_standard_run_config_is_read_as_it_is(tmp_path: Path) -> None:
     # Its top-level stall keys are policy keys now.
     assert policy == {"stall_after_min": 25, "stall_action_after_min": 0}
     assert set(PREP.DEFAULTS) - set(START.DEFAULTS) == set(START.POLICY_SHORTHANDS)
+    # So are its stall options, and --policy, given later, wins.
+    _, policy = settings(
+        "--config", str(path), "--stall-action-after-min", "60", "--stall-after-min", "30",
+        "--policy", "stall_after_min=40",
+    )  # fmt: skip
+    assert policy == {"stall_after_min": 40, "stall_action_after_min": 60.0}
 
 
 def test_starting_requires_the_run_inputs_and_refuses_unsafe_ones(tmp_path: Path) -> None:
@@ -464,7 +471,7 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
         assert not any("--mcp-config" in word or "prompt" in word.lower() for word in argv)
         assert record["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
         cache = Path(record["env"]["UV_CACHE_DIR"])
-        assert cache == run_dir / "tmp" / agent / "uv-cache"
+        assert cache.resolve() == (run_dir / "tmp" / agent / "uv-cache").resolve()
         if os.name != "nt":
             assert cache.stat().st_mode & 0o777 == 0o700
         assert record["bridge_env"]["HUB_HARNESS_VERSION"] == versions[harness]
@@ -517,3 +524,54 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
         "hub.log",
     ]
     assert sorted(path.name for path in (run_dir / "tmp").iterdir()) == ["alice", "bob", "charlie"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGTERM is TerminateProcess on Windows")
+def test_without_auto_start_it_prints_the_starts_and_sigterm_stops_its_hub(
+    smoke: dict[str, Any],
+) -> None:
+    root: Path = smoke["root"]
+    output = root / "start-run.out"
+    with output.open("w", encoding="utf-8") as stream:
+        process = subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts/start-run.py"), "--config", str(smoke["config"]),
+             "--issue", "7", "--no-auto-start"],
+            cwd=root,
+            env=smoke["env"],
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+        )  # fmt: skip
+    try:
+        wait_until_sync(
+            lambda: (
+                "waiting until the run is done" in output.read_text(encoding="utf-8")
+                or process.poll() is not None
+            ),
+            "start-run waits for the run",
+            # A hub start on a starved runner, then a submit: a hang bound.
+            timeout_s=3 * LIVENESS_S,
+        )
+        assert process.poll() is None, output.read_text(encoding="utf-8")
+        process.send_signal(signal.SIGTERM)
+        code = process.wait(timeout=3 * LIVENESS_S)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    printed = output.read_text(encoding="utf-8")
+    assert code == 130, printed
+    for agent, role in START.AGENTS.items():
+        line = next(text for text in printed.splitlines() if f"start {agent} --role" in text)
+        assert f"--role {role}" in line and line.endswith("--interactive")
+    assert "hub scripted stopped" in printed
+    # Nothing was launched, and the hub this command started is down.
+    assert not (root / "harness.jsonl").exists()
+    status = subprocess.run(
+        [sys.executable, "-m", "robomate", "status", "--json"],
+        cwd=root / "runs" / "scripted" / "scripted",
+        env=smoke["env"],
+        capture_output=True,
+        text=True,
+        timeout=2 * LIVENESS_S,
+    )
+    assert status.returncode == 1 and json.loads(status.stdout)["running"] is False
