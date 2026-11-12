@@ -42,10 +42,10 @@ change request, or merge it.
    when the bug can depend on the environment. Name in the change request what
    was reverted and the failure it produced (see the repair-checklist step 5 in
    [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
-   Before submitting, run the
-   full `uv run --locked pytest -n auto` suite once, the issue's named acceptance
-   commands, other repository validation, and every touched entry point. Re-read each edited function in final
-   form. Record the exact commands and outcomes.
+   Before submitting, run the full `uv run --locked pytest -n auto` suite once,
+   the issue's named acceptance commands, other repository validation, and every
+   touched entry point. Re-read each edited function in final form. Record the
+   exact commands and outcomes.
 
 <!-- Progress visibility: #170. -->
 

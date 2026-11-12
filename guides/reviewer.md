@@ -37,18 +37,20 @@ merge the change request, or rely on the implementer's summary as evidence.
    repository validation, and touched entry points. CI supplies the full suite
    on the reviewed head on Linux and Windows; run it locally with
    `uv run --locked pytest -n auto` only when CI is absent on that head or the
-   change risks the test harness itself. Independently confirm that at least one
-   regression test fails with the fix removed: copy the reviewed head to a
-   scratch checkout outside your workspace (a detached `git worktree` in the
-   harness temporary directory), revert or remove the fix there, and run the
-   test. Temporary edits in such a scratch copy are allowed and are not
-   "altering production files" as long as nothing is committed or pushed; when a
-   production file must stay untouched, use the `sitecustomize.py` route instead.
-   A regression test that passes with and without the fix is a blocking finding
-   against the issue's regression-test acceptance item (see the repair-checklist
-   step 5 in [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
-   Do not alter,
-   commit, or push production files. Record exact commands and outcomes.
+   change risks the test harness itself. When the change adds or the issue names
+   a regression test, independently confirm that at least one regression test
+   fails with the fix removed: copy the reviewed head to a scratch checkout
+   outside your workspace (a detached `git worktree` in the harness temporary
+   directory), revert or remove the fix there, and run the test. Temporary edits
+   in such a scratch copy are allowed and are not "altering production files" as
+   long as nothing is committed or pushed; when a production file must stay
+   untouched, use a test-only `sitecustomize.py` shim in a scratch directory on
+   `PYTHONPATH`, gated by an environment variable, that patches the fix out at
+   interpreter start instead (see #4). A regression test that passes with and
+   without the fix is a blocking finding against the issue's regression-test
+   acceptance item (see the repair-checklist step 5 in
+   [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
+   Do not alter, commit, or push production files. Record exact commands and outcomes.
 
 <!-- Progress visibility: #170. -->
 
