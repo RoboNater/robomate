@@ -61,7 +61,9 @@ import json, os, sys, time
 argv = sys.argv[1:]
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
-        "ROBOMATE_TOKEN_FILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR")
+        "ROBOMATE_TOKEN_FILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
+        "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
           "env": {k: os.environ.get(k) for k in keys}}
 log = os.environ["FAKE_LOG"]
@@ -476,7 +478,11 @@ def test_resume_with_an_empty_log_refuses(area: dict[str, Path], content: str | 
 
 
 def saved_log(
-    area: dict[str, Path], conversation: str, started: datetime, exited: datetime
+    area: dict[str, Path],
+    conversation: str,
+    started: datetime,
+    exited: datetime,
+    **launch: object,
 ) -> None:
     area["sessions"].mkdir(exist_ok=True)
     common = {
@@ -498,6 +504,7 @@ def saved_log(
             "effort": "",
             "workdir": str(area["worktree"]),
             "interactive": False,
+            **launch,
         },
         common | {"event": "exit", "timestamp": exited.isoformat(), "exit_code": 1},
     ]
@@ -548,6 +555,184 @@ def test_resume_of_a_log_from_before_the_workflow_takes_the_run_from_the_hub(
     # The agent is never pointed at a file in the hub's state; the record stays there.
     assert not any("resume.md" in word for word in launch["argv"])
     assert "Before-snapshot" in (area["sessions"] / "bob-resume.md").read_text(encoding="utf-8")
+
+
+IDENTITY = ("HUB_HARNESS", "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT")
+
+
+@pytest.mark.parametrize(
+    ("harness", "provider"), [("claude-code", "anthropic"), ("codex", "openai")]
+)
+def test_start_exports_identity_uv_cache_and_workers_to_every_launch(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, harness: str, provider: str
+) -> None:
+    """#402 and #285 carried into the joined launcher, which start-run.py uses (#268)."""
+
+    use_harness(harness, monkeypatch)
+    monkeypatch.setenv("HUB_MODEL", "an-ambient-claim")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    final = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, final))
+    cache = area["root"] / "run" / "tmp" / "bob" / "uv-cache"
+
+    code = invoke(
+        start_words(
+            area,
+            "bob",
+            "implementer",
+            harness,
+            "--model",
+            "m-1",
+            "--effort",
+            "high",
+            "--harness-version",
+            "9.9.9",
+            "--uv-cache-dir",
+            str(cache),
+            "--pytest-workers",
+            "3",
+        ),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    expected = {
+        "HUB_HARNESS": harness,
+        "HUB_HARNESS_VERSION": "9.9.9",
+        "HUB_PROVIDER": provider,
+        # The launcher's setting, never an ambient claim.
+        "HUB_MODEL": "m-1",
+        "HUB_EFFORT": "high",
+    }
+    for launch in launches(area):
+        assert {key: launch["env"][key] for key in IDENTITY} == expected
+        assert launch["env"]["UV_CACHE_DIR"] == str(cache.resolve())
+        assert launch["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+        forwarded = [word for word in launch["argv"] if word.startswith("mcp_servers.robomate")]
+        if harness == "codex":
+            # Codex forwards nothing to an MCP server unless the entry names it.
+            assert forwarded == [
+                f"mcp_servers.robomate.env.{key}={json.dumps(value)}"
+                for key, value in expected.items()
+            ]
+            roots = next(
+                word for word in launch["argv"] if word.startswith("sandbox_workspace_write.wr")
+            )
+            assert json.loads(roots.split("=", 1)[1])[-1] == str(cache.resolve())
+        else:
+            assert forwarded == []
+            settings = launch["argv"][launch["argv"].index("--settings") + 1]
+            assert json.loads(settings)["sandbox"]["filesystem"]["allowWrite"] == [
+                str(cache.resolve())
+            ]
+    assert cache.is_dir()
+    if os.name != "nt":
+        assert cache.stat().st_mode & 0o777 == 0o700
+    launch_rows = [row for row in rows(area) if row["event"] in ("start", "resume")]
+    assert len(launch_rows) == 2
+    for row in launch_rows:
+        assert row["harness_version"] == "9.9.9"
+        assert row["uv_cache_dir"] == str(cache.resolve())
+        assert row["pytest_workers"] == 3
+
+
+@pytest.mark.parametrize(("option", "expected"), [([], "7"), (["--pytest-workers", "0"], None)])
+def test_pytest_workers_zero_clears_an_inherited_budget(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    option: list[str],
+    expected: str | None,
+) -> None:
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "7")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    joined = {"workflow": workflow(), "agents": [agent_row("released", context="c1")]}
+    hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": []}, joined))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code", *option),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    (launch,) = launches(area)
+    assert launch["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == expected
+    # Without --harness-version the bridge reports the version as unknown, never a guess.
+    assert launch["env"]["HUB_HARNESS_VERSION"] == ""
+    assert rows(area)[0]["uv_cache_dir"] is None
+
+
+def test_negative_pytest_workers_is_refused(area: dict[str, Path]) -> None:
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code", "--pytest-workers", "-1"),
+        programs=programs(area),
+        reader=FakeHub(lambda method: pytest.fail(f"read the hub: {method}")),
+        workspace=workspace_of(area),
+    )
+
+    assert code == 2
+    assert launches(area) == []
+
+
+def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A guarded resume of a start-run agent keeps #402's identity and #285's cache (#268)."""
+
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00002"
+    now = datetime.now(UTC)
+    cache = area["root"] / "run" / "tmp" / "bob" / "uv-cache"
+    saved_log(
+        area,
+        conversation,
+        now - timedelta(minutes=10),
+        now - timedelta(minutes=1),
+        model="claude-sonnet-5-5",
+        effort="max",
+        harness_version="2.1.999",
+        uv_cache_dir=str(cache),
+        pytest_workers=2,
+    )
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    status = after_launches(
+        area,
+        {"workflow": live, "agents": [agent_row()]},
+        {"workflow": live, "agents": [agent_row("released", context="c2")]},
+    )
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.snapshot":
+            return {"hub_id": HUB, "workflow": live, "tasks": [], "taken_at": now.isoformat()}
+        if method == "hub.questions":
+            return {"questions": []}
+        return status(method)
+
+    code = invoke(
+        ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"],
+        programs=programs(area),
+        reader=FakeHub(answer),
+    )
+
+    assert code == 0
+    (launch,) = launches(area)
+    assert {key: launch["env"][key] for key in IDENTITY} == {
+        "HUB_HARNESS": "claude-code",
+        "HUB_HARNESS_VERSION": "2.1.999",
+        "HUB_PROVIDER": "anthropic",
+        "HUB_MODEL": "claude-sonnet-5-5",
+        "HUB_EFFORT": "max",
+    }
+    assert launch["env"]["UV_CACHE_DIR"] == str(cache)
+    assert launch["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "2"
+    assert cache.is_dir()
+    if os.name != "nt":
+        assert cache.stat().st_mode & 0o777 == 0o700
+    manual = next(row for row in rows(area) if row["event"] == "manual_resume")
+    assert manual["uv_cache_dir"] == str(cache) and manual["pytest_workers"] == 2
 
 
 @pytest.mark.parametrize("safe", [False, True])
