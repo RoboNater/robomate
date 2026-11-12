@@ -312,8 +312,8 @@ For an agent-driven check without real harnesses, `scripts/mock-harness.py
 --install DIR` writes `claude` and `codex` shims: scripted stand-ins that join
 through `robomate mcp` and play their roles to a `done` run. Put `DIR` first on
 `PATH`, inside the isolated smoke recipe. A local-path repository has forge
-`unknown`, which has no orchestrator guide appendix, so set `forge = "github"`
-for such a check.
+`unknown`, which has no orchestrator guide appendix (#481), so set
+`forge = "github"` for such a check.
 
 ### Standard run helper (until M2)
 
