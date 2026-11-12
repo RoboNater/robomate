@@ -205,9 +205,49 @@ def canonical_path(value: str, base: Path) -> str:
     return str((base / Path(value).expanduser()).resolve())
 
 
+def policy_table(model: type[Any], key: str) -> type[Any] | None:
+    """The model of the policy field ``key`` when that field is itself a table."""
+
+    from pydantic import BaseModel
+
+    field = model.model_fields.get(key)
+    annotation = getattr(field, "annotation", None)
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
+def check_tables(
+    table: Mapping[str, Any], model: type[Any] | None = None, prefix: str = ""
+) -> None:
+    """Refuse a table where the policy model has none, even an empty one that flattens to nothing.
+
+    Flattening keeps only leaves, so ``[policy.typo]`` or ``max_review_rounds = {}``
+    would otherwise vanish before the policy model could refuse it.
+    """
+
+    from agent_hub_common import RolePolicy, WorkflowPolicy
+
+    model = model or WorkflowPolicy
+    for key, value in table.items():
+        if not isinstance(value, dict):
+            continue
+        name = f"{prefix}{key}"
+        nested = policy_table(model, key)
+        if nested is None:
+            # The hub also takes role_policy's keys bare at the top level.
+            bare = model is WorkflowPolicy and key in RolePolicy.model_fields
+            if key in model.model_fields or bare:
+                raise ValueError(f"policy {name} is a value, not a table")
+            raise ValueError(f"unknown policy table {name}")
+        check_tables(value, nested, f"{name}.")
+
+
 def flatten(table: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
     """``[policy]`` as the dotted keys ``robomate submit --policy`` takes."""
 
+    if not prefix:
+        check_tables(table)
     flat: dict[str, Any] = {}
     for key, value in table.items():
         name = f"{prefix}{key}"
@@ -220,15 +260,24 @@ def flatten(table: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
     return flat
 
 
-def parse_policy_override(spec: str) -> tuple[str, Any]:
-    """One ``--policy k=v``, typed as ``robomate submit`` types it (TOML, else a string)."""
+def parse_policy_override(spec: str) -> dict[str, Any]:
+    """One ``--policy k=v``, typed as ``robomate submit`` types it (TOML, else a string).
+
+    A table value (``role_policy={reviewer_harness_differs=false}``) becomes
+    dotted keys, checked like a ``[policy]`` table.
+    """
 
     from robomate.cli import _parse_policy_override
 
     key, value = _parse_policy_override(spec)
     if not _POLICY_KEY.fullmatch(key):
         raise ValueError(f"invalid policy key {key!r}")
-    return key, value
+    if not isinstance(value, dict):
+        return {key: value}
+    nested: dict[str, Any] = value
+    for part in reversed(key.split(".")):
+        nested = {part: nested}
+    return flatten(nested)
 
 
 def load_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -286,8 +335,7 @@ def settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         if getattr(args, key) is not None:
             policy[key] = getattr(args, key)
     for spec in args.policy:
-        key, value = parse_policy_override(spec)
-        policy[key] = value
+        policy |= parse_policy_override(spec)
     if values["repository"] and Path(values["repository"]).expanduser().is_dir():
         values["repository"] = canonical_path(values["repository"], Path.cwd())
     # Selecting work on the command line replaces the config's selection.
@@ -317,12 +365,32 @@ def hub_name(values: Mapping[str, Any]) -> str:
 
 
 def validate_policy(policy: Mapping[str, Any]) -> None:
-    """The hub's own policy check, over the built-in defaults: unknown keys are refused."""
+    """Check every key and value with the hub's policy model before anything starts.
 
-    from agent_hub.submit import _resolve_policy
+    Unknown keys and wrong types are refused here. Rules that compare fields,
+    such as ``stall_action_after_min`` above ``stall_after_min``, are left to
+    ``robomate submit``: it merges this run's values over the hub, repository
+    and user layers, so a layer may supply the other field.
+    """
+
+    from agent_hub.submit import _apply_policy_override
     from agent_hub_common import WorkflowPolicy
+    from pydantic import ValidationError
 
-    _resolve_policy(WorkflowPolicy(), dict(policy))
+    merged: dict[str, Any] = WorkflowPolicy().model_dump(mode="json")
+    for key, value in policy.items():
+        _apply_policy_override(merged, key, value)
+    try:
+        WorkflowPolicy.model_validate(merged)
+    except ValidationError as exc:
+        # A model-level error has no field location: it compares fields.
+        fields = [error for error in exc.errors() if error["loc"]]
+        if fields:
+            details = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in fields
+            )
+            raise ValueError(f"invalid workflow policy: {details}") from None
 
 
 def denise(values: Mapping[str, Any]) -> dict[str, str]:

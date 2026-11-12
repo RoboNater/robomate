@@ -132,6 +132,73 @@ def test_unknown_or_invalid_policy_overrides_are_refused() -> None:
         settings("--policy", "max_review_rounds")
 
 
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("[policy.typo]\n", "unknown policy table typo"),
+        ("[policy]\nmax_review_rounds = {}\n", "policy max_review_rounds is a value, not a table"),
+        ("[policy]\nreviewer_harness_differs = {}\n", "reviewer_harness_differs is a value"),
+        ("[policy.role_policy.extra]\n", "unknown policy table role_policy.extra"),
+        ("[policy.role_policy]\nreviewer_capabilities = {}\n", "role_policy.reviewer_cap"),
+    ],
+)
+def test_empty_unknown_or_mistyped_policy_tables_are_refused(
+    tmp_path: Path, text: str, message: str
+) -> None:
+    """r1-2: flattening keeps leaves, so an empty table must be refused before it vanishes."""
+
+    config = write(tmp_path / "run.toml", text)
+    merged = tmp_path / "merged.toml"
+
+    with pytest.raises(ValueError, match=message):
+        settings("--config", str(config))
+    # The operator's command refuses it too, and writes nothing.
+    assert START.main(["--config", str(config), "--generate-config", str(merged)]) == 1
+    assert not merged.exists()
+
+
+def test_policy_tables_the_model_has_are_kept_even_empty(tmp_path: Path) -> None:
+    config = write(tmp_path / "run.toml", "[policy.role_policy]\n")
+
+    _, policy = settings("--config", str(config))
+    assert policy == {}
+    _, policy = settings("--policy", "role_policy={reviewer_harness_differs=false}")
+    assert policy == {"role_policy.reviewer_harness_differs": False}
+    _, policy = settings("--policy", "role_policy={}")
+    assert policy == {}
+    with pytest.raises(ValueError, match="unknown policy table typo"):
+        settings("--policy", "typo={}")
+    with pytest.raises(ValueError, match="max_review_rounds is a value, not a table"):
+        settings("--policy", "max_review_rounds={}")
+
+
+def test_cross_field_policy_rules_wait_for_the_layers_submit_reads(tmp_path: Path) -> None:
+    """r1-1: a layer may lower stall_after_min, so start-run leaves the comparison to submit."""
+
+    from agent_hub.submit import _resolve_policy
+    from agent_hub_common import WorkflowPolicy, load_config_layers
+
+    _, policy = settings("--policy", "stall_action_after_min=10")
+    assert policy == {"stall_action_after_min": 10}
+    common = tmp_path / "common.git"
+    (common / "robomate").mkdir(parents=True)
+    write(common / "robomate" / "config.toml", "stall_after_min = 5\n")
+    layers = load_config_layers(
+        git_common_dir=common,
+        environ={"XDG_CONFIG_HOME": str(tmp_path / "xdg"), "APPDATA": str(tmp_path / "appdata")},
+    )
+
+    # What submit does: the run's values over the configuration layers.
+    resolved = _resolve_policy(layers.policy, policy)
+    assert (resolved["stall_after_min"], resolved["stall_action_after_min"]) == (5, 10)
+    # The rule is deferred, not dropped: over the built-in default submit refuses it.
+    with pytest.raises(ValueError, match="stall_action_after_min"):
+        _resolve_policy(WorkflowPolicy(), policy)
+    # Key and type checks still happen before anything starts.
+    with pytest.raises(ValueError, match="stall_action_after_min"):
+        settings("--policy", "stall_action_after_min=-1")
+
+
 def test_issue_and_work_file_are_mutually_exclusive(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -411,6 +478,15 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
     root: Path = smoke["root"]
     work = write(root / "statement.md", "Scripted work: change nothing.\n")
     select = ["--issue", "7"] if selection == "issue" else ["--work-file", str(work)]
+    if selection == "work_file":
+        # A clone that already exists is reused. Its repository layer lowers
+        # stall_after_min, which makes this run's stall_action_after_min valid (r1-1).
+        clone = root / "runs" / "scripted" / "scripted"
+        git("clone", "-q", "--", str(smoke["origin"].resolve()), str(clone))
+        layer = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=clone))
+        (layer / "robomate").mkdir()
+        write(layer / "robomate" / "config.toml", "stall_after_min = 5\n")
+        select += ["--policy", "stall_action_after_min=10"]
 
     done = subprocess.run(
         [sys.executable, str(ROOT / "scripts/start-run.py"), "--config", str(smoke["config"]),
@@ -503,7 +579,11 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
     )
     assert goal.startswith(expected_start)
     assert goal.endswith("Forge comment identity account: `example-bot`.")
-    assert json.loads(policy)["max_review_rounds"] == 2
+    stored = json.loads(policy)
+    assert stored["max_review_rounds"] == 2
+    if selection == "work_file":
+        assert "reusing checkout" in done.stdout
+        assert (stored["stall_after_min"], stored["stall_action_after_min"]) == (5, 10)
 
     # Closeout reports were collected in the hub and exported (#215).
     run_id = next(path.name for path in (state / "runs").iterdir())

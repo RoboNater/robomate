@@ -295,10 +295,12 @@ Policy, prepare-run's `merge_method`, `max_review_rounds`, `allow_no_ci`,
 `reviewer_harness_differs` and `stall_after_min` among others, is set per run
 in `[policy]` or with `--policy k=v` (repeatable, TOML values). It goes to
 `robomate submit --policy` over the hub, repository and user configuration
-layers, and is checked against the hub's own policy model before anything
-starts. The launcher's resume bounds are top-level keys: `max_resumes` (-1,
-the default, is unlimited), `resume_delay_s`, `resume_max_delay_s`,
-`resume_total_s` and `resume_series_reset_s`.
+layers. Its keys, tables and value types are checked against the hub's own
+policy model before anything starts. Rules that compare two fields, such as
+`stall_action_after_min` above `stall_after_min`, are left to `submit`, because
+a layer may set the other field. The launcher's resume bounds are top-level
+keys: `max_resumes` (-1, the default, is unlimited), `resume_delay_s`,
+`resume_max_delay_s`, `resume_total_s` and `resume_series_reset_s`.
 
 Two prepared-run features have new homes. Per-agent `RUN_DIR/closeout/<agent>.md`
 reports are collected by the hub before release (#215). It exports them to
