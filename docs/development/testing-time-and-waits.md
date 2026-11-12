@@ -268,18 +268,22 @@ matches the CI history is which tests fail. To repair a flaky test:
    # Only if the loops above passed:
    ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_closeout.py
    ```
-5. Passing is half the check when the test's point is that something does
-   **not** happen: no loss, no expiry, no event. Such a test passes just as
-   well if it never reaches the case it guards. Break the code that protects
-   against it in a scratch copy of the checkout (remove the heartbeat, the
-   grace suppression in `HubStore.sweep`, the expiry guard), run the test, and
-   confirm it fails. If it still passes, it is vacuous: change what it waits
-   for or counts (see [Wait for the behaviour](#wait-for-the-behaviour-not-a-side-effect-that-precedes-it))
+5. Passing is half the check for any regression test, especially when its point
+   is that something does **not** happen: no loss, no expiry, no event. Such a
+   test passes just as well if it never reaches the case it guards. Break the
+   code that protects against it in a scratch copy of the checkout (remove the
+   heartbeat, the grace suppression in `HubStore.sweep`, the expiry guard), run
+   the test, and confirm it fails. If it still passes, it is vacuous: change
+   what it waits for or counts (see [Wait for the behaviour](#wait-for-the-behaviour-not-a-side-effect-that-precedes-it))
    until the mutation fails it. Name the mutation, and the failure it
    produced, in the PR. Reading the test doesn't substitute: the first #354
    liveness test passed with every heartbeat removed, because all its sweeps
    fell inside the first pause's grace (#379 r1-1), and only deleting the
-   heartbeats showed it.
+   heartbeats showed it. For the role-guide form of this check, see
+   [guides/implementer.md step 5](../../guides/implementer.md) (demonstrate each
+   new regression test fails without the fix in a CI-like checkout) and
+   [guides/reviewer.md step 4](../../guides/reviewer.md) (independently confirm
+   at least one).
 
 ### Reproducing a subprocess-hub flake
 
