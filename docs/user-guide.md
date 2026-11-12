@@ -196,6 +196,9 @@ resume with their original goals; do not regenerate the goal to resume. `--alice
 
 ### Scripted run start (M2)
 
+Before starting a run, configure the harness MCP entries using the
+[interim setup prompt](mcp-setup-prompt.md).
+
 `scripts/start-run.py` (#268) is the joined successor of the standard run
 helper below: one command, with no interactive step, starts the hub of a fresh
 checkout, the three agents' worktrees, the submitted work and Alice, Bob and
@@ -443,6 +446,8 @@ clone. Each host needs access to the origin with its own git credentials.
 For prepared runs, pass `--remote-worker bob` when preparing on the hub host. The printed `--worker-only bob` command is run from the robomate checkout on Bob's host, with `--hub-url` set to the public URL and `--token-file` set to the readable path to the hub's token file (`robomate status --json` reports it as `token_file`). The worker host reads that file; the generated config records the path, not the token value. `--worker-only` bootstraps the clone using that host's git and probes that host's harness version. Keep the token file available to the bridge at runtime.
 
 ## Manual MCP configuration
+
+For the current user-level setup, see the [interim MCP setup prompt](mcp-setup-prompt.md).
 
 A Claude Code Alice can use a config like this (replace all absolute paths):
 
