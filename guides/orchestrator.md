@@ -397,6 +397,8 @@ comment, not native approval.
 Use finding IDs beginning with <assigned r<number>- prefix>.
 ```
 
+When an issue names a regression test, ask the reviewer to report the mutation result.
+
 The finding-prefix number is a monotonically increasing review-task sequence,
 including confirmation and rebase passes. It is separate from the remediation
 round count below, so a reviewer never has to infer that count and IDs remain
