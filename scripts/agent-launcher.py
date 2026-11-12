@@ -36,6 +36,17 @@ interactively with its hub tools disabled; it needs no hub. ``--interactive``
 session. ``doctor`` is Denise's optional entry, separate from all of this: it
 reads the selected run locally, works with the hub stopped, and never joins.
 
+Every start and resume gives the harness, and so its ``robomate mcp`` bridge,
+the agent's declared identity (#402): ``HUB_HARNESS``, ``HUB_HARNESS_VERSION``
+(``--harness-version``, the CLI's own ``--version``), ``HUB_PROVIDER`` (from the
+model, as ``run_common.resolve_provider``), ``HUB_MODEL`` and ``HUB_EFFORT``.
+Codex forwards no variable to an MCP server unless told, so a Codex launch also
+names them in ``-c mcp_servers.robomate.env.*``. ``--uv-cache-dir`` gives the
+agent an isolated ``UV_CACHE_DIR`` (#285), created owner-only and granted to the
+sandbox, and ``--pytest-workers`` its ``PYTEST_XDIST_AUTO_NUM_WORKERS`` (0 clears
+an inherited one). The launch rows record them, so ``resume`` applies them again.
+``start-run.py`` (#268) starts every agent of a scripted run this way.
+
 Exit codes as the prepared launchers: 0 done or released; 1 resumes spent;
 2 usage; 3 hub unreadable; 4 nothing safe to resume; 5 paused; 130 interrupted.
 An interactive or ask session returns the harness's own exit code.
@@ -68,6 +79,7 @@ from agent_recovery import agent_lock, prepare  # noqa: E402
 from agent_sessions import conversation as saved_conversation  # noqa: E402
 from agent_sessions import exact_id  # noqa: E402
 from agent_worker import WorkerLauncher, WorkerReader  # noqa: E402
+from run_common import bridge_identity_env, resolve_provider  # noqa: E402
 
 ROLES = ("orchestrator", "implementer", "reviewer", "worker")
 LAUNCH_EVENTS = ("start", "resume", "manual_resume")
@@ -92,6 +104,8 @@ SAFE_PERMISSIONS = {"codex": ["-a", "on-request"]}
 ASK_HARNESSES = ("claude-code", "codex", "opencode")
 DOCTOR_HARNESSES = ("claude-code", "codex")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+#: The xdist budget a scripted run gives each agent (prepare-run's ``pytest_workers``).
+PYTEST_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 
 Programs = Mapping[str, list[str]]
 
@@ -207,6 +221,91 @@ def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> d
     return cleared_environment() | forwarded | dict(extra or {})
 
 
+@dataclass(frozen=True)
+class Identity:
+    """What a joined agent's launch exports beside its hub selection (#402, #285, #268).
+
+    The bridge reads the declared identity from its environment, as the
+    prepared runs' rendered configs gave it; the harness's shell commands
+    inherit the isolated uv cache and the xdist budget. Launch rows record
+    the parts a later ``resume`` cannot derive, so it exports them again.
+    """
+
+    harness: str
+    model: str = ""
+    effort: str = ""
+    version: str = ""
+    uv_cache: Path | None = None
+    pytest_workers: int | None = None
+
+    def environment(self) -> dict[str, str]:
+        provider = resolve_provider(self.harness, self.model)
+        values = bridge_identity_env(self.harness, self.version, provider, self.model, self.effort)
+        if self.uv_cache is not None:
+            values["UV_CACHE_DIR"] = str(self.uv_cache)
+        if self.pytest_workers:
+            values[PYTEST_WORKERS] = str(self.pytest_workers)
+        return values
+
+    def apply(self, environment: Mapping[str, str]) -> dict[str, str]:
+        """``environment`` with this identity; ``pytest_workers`` 0 clears an inherited budget."""
+
+        result = dict(environment) | self.environment()
+        if self.pytest_workers == 0:
+            result.pop(PYTEST_WORKERS, None)
+        return result
+
+    def bridge_flags(self) -> list[str]:
+        """Codex starts MCP servers with a fixed environment allowlist: name the identity."""
+
+        if self.harness != "codex":
+            return []
+        words: list[str] = []
+        for key, value in bridge_identity_env(
+            self.harness,
+            self.version,
+            resolve_provider(self.harness, self.model),
+            self.model,
+            self.effort,
+        ).items():
+            # A TOML string, so a version like 1.0 is never read as a number.
+            words += ["-c", f"mcp_servers.robomate.env.{key}={json.dumps(value)}"]
+        return words
+
+    def row(self) -> dict[str, object]:
+        return {
+            "harness_version": self.version or None,
+            "uv_cache_dir": str(self.uv_cache) if self.uv_cache is not None else None,
+            "pytest_workers": self.pytest_workers,
+        }
+
+    def prepare(self) -> None:
+        """Create the isolated uv cache owner-only (#285), as prepare-run did."""
+
+        if self.uv_cache is None:
+            return
+        for directory in (self.uv_cache.parent, self.uv_cache):
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if os.name != "nt":
+            self.uv_cache.chmod(0o700)
+
+
+def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: str) -> Identity:
+    """The identity a launch row recorded, for ``resume`` (#268)."""
+
+    cache = saved.get("uv_cache_dir")
+    workers = saved.get("pytest_workers")
+    version = saved.get("harness_version")
+    return Identity(
+        harness,
+        model,
+        effort,
+        version if isinstance(version, str) else "",
+        Path(cache) if isinstance(cache, str) and cache else None,
+        workers if type(workers) is int and workers >= 0 else None,
+    )
+
+
 def robomate_workspace(agent: str, selector: str | None) -> Path:
     """The agent's worktree, created ahead of join by the operator's ``robomate workspace``."""
 
@@ -237,7 +336,7 @@ def git_text(workdir: Path, *words: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 and done.stdout.strip() else None
 
 
-def uv_cache() -> str | None:
+def default_uv_cache() -> str | None:
     if os.environ.get("UV_CACHE_DIR"):
         return os.environ["UV_CACHE_DIR"]
     uv = shutil.which("uv")
@@ -262,13 +361,17 @@ def forge_hosts(workdir: Path) -> list[str]:
     return ["github.com", "api.github.com"] if host == "github.com" else [host]
 
 
-def grants(harness: str, workdir: Path, token_file: Path | None) -> list[str]:
+def grants(
+    harness: str, workdir: Path, token_file: Path | None, uv_cache: Path | None = None
+) -> list[str]:
     """The measured Linux sandbox grants (docs/user-guide.md), as flags; no files.
 
     Claude Code: its sandbox with the forge hosts and a read-deny on the hub's
     token directory. Codex: workspace-write with network and the linked
     worktree's own git roots plus the uv cache, never the whole common
     directory. Other harnesses' grants are measured in M3 (§9.2): none here.
+    An agent's own isolated ``uv_cache`` (#285) replaces the shared one and is
+    also writable inside Claude Code's sandbox.
     """
 
     if harness == "claude-code":
@@ -276,8 +379,13 @@ def grants(harness: str, workdir: Path, token_file: Path | None) -> list[str]:
             "enabled": True,
             "network": {"allowedDomains": forge_hosts(workdir)},
         }
+        filesystem: dict[str, list[str]] = {}
         if token_file is not None:
-            sandbox["filesystem"] = {"denyRead": [str(token_file.parent)]}
+            filesystem["denyRead"] = [str(token_file.parent)]
+        if uv_cache is not None:
+            filesystem["allowWrite"] = [str(uv_cache)]
+        if filesystem:
+            sandbox["filesystem"] = filesystem
         return ["--settings", json.dumps({"sandbox": sandbox}, separators=(",", ":"))]
     if harness != "codex":
         return []
@@ -287,7 +395,7 @@ def grants(harness: str, workdir: Path, token_file: Path | None) -> list[str]:
     if git_dir and common_dir and Path(git_dir) != Path(common_dir):
         common_path = Path(common_dir)
         roots += [git_dir, *(str(common_path / leaf) for leaf in ("objects", "refs", "logs"))]
-    cache = uv_cache()
+    cache = str(uv_cache) if uv_cache is not None else default_uv_cache()
     if cache:
         roots.append(cache)
     return [
@@ -519,6 +627,7 @@ class Joined(common.Launcher):
                 "effort": self.args.effort,
                 "workdir": str(self.args.cwd),
                 "interactive": False,
+                **self.args.identity.row(),
             }
         super().log(event, **extra, **fields)
 
@@ -874,7 +983,17 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     log = log_path(place.sessions, args.agent)
     program = program_for(tools, args.harness)
     flags = model_flags(args.harness, args.model, args.effort, interactive=args.interactive)
-    granted = grants(args.harness, workdir, place.token_file)
+    identity = Identity(
+        args.harness,
+        args.model,
+        args.effort,
+        args.harness_version,
+        Path(args.uv_cache_dir).resolve() if args.uv_cache_dir else None,
+        args.pytest_workers,
+    )
+    identity.prepare()
+    granted = grants(args.harness, workdir, place.token_file, identity.uv_cache)
+    granted += identity.bridge_flags()
     with agent_lock(log):
         set_aside(log, args.harness)
     if args.interactive:
@@ -884,11 +1003,13 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         argv, prompted = interactive_start(
             args.harness, program, flags, granted, perms, extra, prompt=line, session_id=session_id
         )
-        env = child_environment(
-            place,
-            opencode_environment(args.effort, safe=args.safe_mode)
-            if args.harness == "opencode"
-            else {},
+        env = identity.apply(
+            child_environment(
+                place,
+                opencode_environment(args.effort, safe=args.safe_mode)
+                if args.harness == "opencode"
+                else {},
+            )
         )
         announce(args.harness, args.safe_mode, extra)
         if not prompted:
@@ -912,6 +1033,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             "effort": args.effort,
             "workdir": str(workdir),
             "conversation_id": session_id or None,
+            **identity.row(),
             **best_effort_hub(place, tools, args.agent, args.role),
         }
         with agent_lock(log):
@@ -936,7 +1058,8 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         command=base,
         sessions=log,
         cwd=workdir,
-        env=child_environment(place),
+        env=identity.apply(child_environment(place)),
+        identity=identity,
     )
     reader = make_reader(tools, place, args.agent, args.role)
     kind = JoinedOrchestrator if args.role == "orchestrator" else JoinedWorker
@@ -959,7 +1082,10 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         )
     program = program_for(tools, harness)
     flags = model_flags(harness, model, effort, interactive=args.interactive)
-    granted = grants(harness, workdir, place.token_file)
+    identity = saved_identity(saved, harness, model, effort)
+    identity.prepare()
+    granted = grants(harness, workdir, place.token_file, identity.uv_cache)
+    granted += identity.bridge_flags()
     # The operator's record of what recovery captured; the agent is never pointed at it.
     record = place.sessions / f"{args.agent}-resume.md"
     record.write_text(
@@ -997,9 +1123,13 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 extra,
                 conversation,
             )
-            env = child_environment(
-                place,
-                opencode_environment(effort, safe=args.safe_mode) if harness == "opencode" else {},
+            env = identity.apply(
+                child_environment(
+                    place,
+                    opencode_environment(effort, safe=args.safe_mode)
+                    if harness == "opencode"
+                    else {},
+                )
             )
             announce(harness, args.safe_mode, extra)
             print(
@@ -1014,6 +1144,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 "effort": effort,
                 "workdir": str(workdir),
                 "conversation_id": conversation,
+                **identity.row(),
                 **best_effort_hub(place, tools, args.agent, role),
             }
             return run_interactive(
@@ -1039,7 +1170,8 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         command=base,
         sessions=log,
         cwd=workdir,
-        env=child_environment(place),
+        env=identity.apply(child_environment(place)),
+        identity=identity,
         **recovery,
     )
     kind = JoinedOrchestrator if role == "orchestrator" else JoinedWorker
@@ -1269,6 +1401,19 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--model", default="")
     begin.add_argument("--effort", default="")
     begin.add_argument("--workdir", help="a remote host's clone from robomate workspace --clone")
+    begin.add_argument(
+        "--harness-version",
+        default="",
+        help="the harness CLI's own --version, declared to the hub as HUB_HARNESS_VERSION",
+    )
+    begin.add_argument(
+        "--uv-cache-dir", help="the agent's own isolated UV_CACHE_DIR, created owner-only (#285)"
+    )
+    begin.add_argument(
+        "--pytest-workers",
+        type=int,
+        help="the agent's PYTEST_XDIST_AUTO_NUM_WORKERS; 0 clears an inherited one",
+    )
     hub_options(begin)
     interactive_options(begin)
     backoff_options(begin)
@@ -1336,6 +1481,10 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
             raise Usage("--predecessor-poll-s must be positive")
         if args.safe_mode and not args.interactive:
             raise Usage("--safe-mode applies to --interactive launches")
+    if args.action == "start":
+        if args.pytest_workers is not None and args.pytest_workers < 0:
+            raise Usage("--pytest-workers must not be negative (0 means CPU count)")
+        args.harness_version = args.harness_version.strip()
     return args, extra
 
 

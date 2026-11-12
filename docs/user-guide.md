@@ -194,6 +194,129 @@ now fails with an error naming `--reservations`; rename `roadmap` to
 `reservations` in standard-run TOML too. Old `run.json` files still load and
 resume with their original goals; do not regenerate the goal to resume. `--alice-harness`, `--bob-harness`, and `--charlie-harness` select Claude Code or Codex; model and effort flags pass through to the launchers. `--no-auto-start` launches interactive sessions and leaves you to give each agent its rendered prompt.
 
+### Scripted run start (M2)
+
+`scripts/start-run.py` (#268) is the joined successor of the standard run
+helper below: one command, with no interactive step, starts the hub of a fresh
+checkout, the three agents' worktrees, the submitted work and Alice, Bob and
+Charlie headless under the launcher's supervision. The run then proceeds to a
+merged PR without further input. Nothing is rendered: no team config, prompt
+file or start script. The command runs `robomate up`, `robomate workspace`,
+`robomate submit` and `scripts/agent-launcher.py start` in order. The same
+Python runs in Bash and PowerShell; only the line continuation differs:
+
+```sh
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/start-run.py \
+  --generate-default-config ./run-config.toml
+# Edit repository, run_dir and account.
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/start-run.py \
+  --config ./run-config.toml --issue 42
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/start-run.py \
+  --config ./run-config.toml --work-file ./statement.md --run-dir 02-work
+# Save the merged settings, policy included, for the next run:
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/start-run.py \
+  --config ./run-config.toml --issue 43 --run-dir 03-issue-43 --generate-config ./next-run.toml
+```
+
+```powershell
+uv run --locked --project C:/robomate python C:/robomate/scripts/start-run.py `
+  --config .\run-config.toml --issue 42
+```
+
+The config is the standard helper's flat TOML; an existing standard-run file
+works as it is. Keys match CLI options with underscores, the command line
+overrides the file, and `--issue` and `--work-file` exclude each other (a CLI
+selection replaces the file's). Unknown keys and wrong types are errors, and
+generation refuses to overwrite a file. Paths resolve as in the helper below.
+
+```toml
+repository = "git@github.com:your-org/your-repo.git"
+run_parent_dir = "~/working"
+run_dir = "01-issue-42"
+account = "your-user"
+reservations = "409"
+bob_harness = "claude"
+bob_model = "claude-opus-5-5"
+bob_effort = "high"
+charlie_harness = "codex"
+pytest_workers = 4
+
+[policy]
+merge_method = "squash"
+max_review_rounds = 3
+allow_no_ci = "auto"
+```
+
+A start clones `repository` into `<run_dir>/<hub_name>`. `hub_name` defaults
+to the run directory's name and appears in branch names
+(`robomate/<hub>/<agent>/<label>`). The hub keeps its state, token and the
+agents' worktrees beside the clone, in `<hub_name>.robomate/<hub_name>/`. An
+existing clone is reused only if its origin is `repository`; a live hub of
+that clone is reused and left running, and a hub with a live or queued run is
+refused. Each agent's launcher writes to `<run_dir>/logs/<agent>.log`, and
+the hub's log is `logs/hub.log`. The command stays in the foreground until
+every launcher exits. It then reports the run's status, where its closeout
+reports are and Denise's doctor command, and stops the hub if it started it.
+Restart that hub with `robomate up` in the clone; its state is kept.
+After a launcher fails, the command prints the
+`agent-launcher.py resume <agent>` line to run while the hub is up. Ctrl-C
+stops the agents and the hub this command started.
+
+Every agent's harness, and so its `robomate mcp` bridge, gets the agent's
+declared identity: `HUB_HARNESS`, `HUB_HARNESS_VERSION` (from the CLI's own
+`--version`, probed before anything starts), `HUB_PROVIDER` (from the model, as
+`run_common.resolve_provider` reads it), `HUB_MODEL` and `HUB_EFFORT` (#402). A
+pinned model is recorded with source `env`. Codex forwards no variable to an
+MCP server unless told, so its launch names them in `-c mcp_servers.robomate.env.*`.
+Each agent also gets an owner-only `UV_CACHE_DIR=<run_dir>/tmp/<agent>/uv-cache`
+(#285), granted to its sandbox, and the run's `PYTEST_XDIST_AUTO_NUM_WORKERS`.
+The launcher sets them in the harness's environment directly, with the
+host's own path spelling, so no shell needs an export line. Its launch rows
+record them, and `agent-launcher.py resume` applies them again.
+
+The standard helper's keys, and what replaces each:
+
+| Standard helper | `start-run.py` |
+|---|---|
+| `repository`, `run_parent_dir`, `run_dir` | Same keys. The clone is `<run_dir>/<hub_name>`; new optional `hub_name` and `hub_port` (0: first free from 8420). |
+| `issue` / `work_file` | Same, mutually exclusive. The statement goes to `robomate submit`, with the counter text below. |
+| `account` | Same key, required. The statement ends with `Forge comment identity account: <account>.`, which Alice uses for comment identities, as prepare-run put it in her prompt. |
+| `reservations` (was `roadmap`) | Same key. The statement names the reservations issue and adds prepare-run's counter and close-out text; without the key it says no issue was supplied. |
+| `forge` | Same key, passed to `robomate up --forge`. Empty (the new default) detects the forge from the origin. |
+| `alice_*`, `bob_*`, `charlie_*` harness, model, effort | Same keys, passed to `agent-launcher.py start`. Names and roles stay fixed: Alice orchestrator, Bob implementer, Charlie reviewer. |
+| `denise_settings_from`, `denise_*` | Same keys, validated at start. At the end the command prints `agent-launcher.py doctor --run <run_id>` with Denise's resolved harness, model and effort. She is consulted on demand, never started with the team. |
+| `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done or Ctrl-C. |
+| `pytest_workers` | Same key, the agents' `PYTEST_XDIST_AUTO_NUM_WORKERS`; 0 clears an inherited value. |
+| `stall_after_min`, `stall_action_after_min` | Read as `[policy]` keys. |
+| `--yes` (the hub is already running) | Not needed: the command starts or reuses the hub itself and never prompts. |
+| `--generate-default-config`, `--generate-config` | Same options. A merged config also saves `[policy]`. |
+
+Policy, prepare-run's `merge_method`, `max_review_rounds`, `allow_no_ci`,
+`reviewer_harness_differs` and `stall_after_min` among others, is set per run
+in `[policy]` or with `--policy k=v` (repeatable, TOML values). It goes to
+`robomate submit --policy` over the hub, repository and user configuration
+layers. Its keys, tables and value types are checked against the hub's own
+policy model before anything starts. Rules that compare two fields, such as
+`stall_action_after_min` above `stall_after_min`, are left to `submit`, because
+a layer may set the other field. The launcher's resume bounds are top-level
+keys: `max_resumes` (-1, the default, is unlimited), `resume_delay_s`,
+`resume_max_delay_s`, `resume_total_s` and `resume_series_reset_s`.
+
+Two prepared-run features have new homes. Per-agent `RUN_DIR/closeout/<agent>.md`
+reports are collected by the hub before release (#215). It exports them to
+`<state>/runs/<run_id>/closeout/`, and the command prints that path. Per-run
+instructions, which prepared runs added to the rendered prompts, go in the
+statement of work: write them in a `--work-file`. Every assignment carries
+the statement's SHA-256, and agents read it verbatim. Agents need no
+closeout-report instruction now that the hub requests the reports.
+
+For an agent-driven check without real harnesses, `scripts/mock-harness.py
+--install DIR` writes `claude` and `codex` shims: scripted stand-ins that join
+through `robomate mcp` and play their roles to a `done` run. Put `DIR` first on
+`PATH`, inside the isolated smoke recipe. A local-path repository has forge
+`unknown`, which has no orchestrator guide appendix (#481), so set
+`forge = "github"` for such a check.
+
 ### Standard run helper (until M2)
 
 `scripts/prep-standard-run-area.py` combines creating the run directory, cloning

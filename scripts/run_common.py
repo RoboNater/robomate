@@ -142,6 +142,28 @@ def resolve_provider(harness: str, model: str = "", provider: str | None = None)
     return "unknown"
 
 
+def bridge_identity_env(
+    harness: str,
+    version: str,
+    provider: str,
+    model: str,
+    effort: str,
+) -> dict[str, str]:
+    """The declared identity every bridge (Alice or worker) carries (#402).
+
+    A single shared path so no Alice harness branch is missed: prepare-run's
+    ``worker_env`` and Alice's ``hub_env`` and the joined launcher
+    (``agent-launcher.py``, used by ``start-run.py``, #268) all build from here.
+    """
+    return {
+        "HUB_HARNESS": harness,
+        "HUB_HARNESS_VERSION": version,
+        "HUB_PROVIDER": provider,
+        "HUB_MODEL": model,
+        "HUB_EFFORT": effort,
+    }
+
+
 def executable(name: str) -> str:
     """Resolve PATHEXT shims (npm .cmd, pyenv .bat) that CreateProcess cannot find alone."""
     return shutil.which(name) or name

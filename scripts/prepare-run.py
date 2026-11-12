@@ -86,6 +86,7 @@ from run_common import (  # noqa: E402
     agy_home,
     agy_mcp_path,
     bootstrap_clone,
+    bridge_identity_env,
     clone_source,
     codex_home,
     codex_mcp,
@@ -160,27 +161,6 @@ ALICE_TOOLS = [
 DEFAULT_HUB_HOST = "127.0.0.1"
 DEFAULT_HUB_PORT = 8420
 DEFAULT_HUB_URL = f"http://127.0.0.1:{DEFAULT_HUB_PORT}"
-
-
-def bridge_identity_env(
-    harness: str,
-    version: str,
-    provider: str,
-    model: str,
-    effort: str,
-) -> dict[str, str]:
-    """The declared identity every bridge (Alice or worker) carries (#402).
-
-    A single shared path so no Alice harness branch is missed: ``worker_env``
-    and Alice's ``hub_env`` both build from here.
-    """
-    return {
-        "HUB_HARNESS": harness,
-        "HUB_HARNESS_VERSION": version,
-        "HUB_PROVIDER": provider,
-        "HUB_MODEL": model,
-        "HUB_EFFORT": effort,
-    }
 
 
 def worker_env(
