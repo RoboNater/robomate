@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -43,24 +44,64 @@ def test_baseline_and_changes(
     assert "removed since baseline: a" in out
 
 
+@pytest.mark.parametrize(
+    ("problem", "expected"),
+    [
+        ("missing", 'Codex: no approval_mode = "approve" for: b'),
+        ("stale", "Codex: approvals for tools the bridge no longer serves: stale"),
+        ("project", "Codex: entry runs --project /wrong, not "),
+    ],
+)
 def test_codex_problems(
+    setup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    problem: str,
+    expected: str,
+) -> None:
+    config = tmp_path / "codex/config.toml"
+    config.parent.mkdir()
+    project = "/wrong" if problem == "project" else setup.as_posix()
+    approvals = ["a"] if problem == "missing" else ["a", "b"]
+    if problem == "stale":
+        approvals.append("stale")
+    config.write_text(
+        f'[mcp_servers.robomate]\nargs = ["--project", "{project}"]\n'
+        + "".join(
+            f'[mcp_servers.robomate.tools.{name}]\napproval_mode = "approve"\n'
+            for name in approvals
+        )
+    )
+    assert run(monkeypatch, setup, "--save") == 1
+    assert expected in capsys.readouterr().out
+
+
+def test_missing_codex_entry(
     setup: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config = tmp_path / "codex/config.toml"
     config.parent.mkdir()
-    config.write_text(
-        '[mcp_servers.robomate]\nargs = ["--project", "/wrong"]\n'
-        '[mcp_servers.robomate.tools.a]\napproval_mode = "approve"\n'
-        '[mcp_servers.robomate.tools.stale]\napproval_mode = "approve"\n'
-    )
-    assert run(monkeypatch, setup, "--save") == 1
-    out = capsys.readouterr().out
-    assert all(s in out for s in ("b", "stale", "/wrong"))
     config.write_text("")
-    assert run(monkeypatch, setup) == 0
+    assert run(monkeypatch, setup, "--save") == 0
     monkeypatch.setattr(check.shutil, "which", lambda _: "/bin/codex")
     assert run(monkeypatch, setup) == 1
     assert "no [mcp_servers.robomate]" in capsys.readouterr().out
+
+
+def test_symlinked_project(setup: Path, tmp_path: Path) -> None:
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(setup, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    config = tmp_path / "codex/config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        f'[mcp_servers.robomate]\nargs = ["--project", "{link.as_posix()}"]\n'
+        '[mcp_servers.robomate.tools.a]\napproval_mode = "approve"\n'
+    )
+    assert check.check_codex(setup, {"a"}) == ([], True)
 
 
 def test_separate_checkouts_and_list(
@@ -84,7 +125,23 @@ def test_separate_checkouts_and_list(
 def test_real_bridge(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("ROBOMATE_HUB_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("ROBOMATE_TOKEN", "invalid")
+    monkeypatch.setenv("ROBOMATE_TOKEN_FILE", "invalid")
+    monkeypatch.setenv("ROBOMATE_TOKEN_EXTRA", "invalid")
+    monkeypatch.setenv("PROBE_SENTINEL", "present")
+    popen = check.subprocess.Popen
+    observed: dict[str, Any] = {}
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        observed.update(kwargs)
+        return popen(*args, **kwargs)
+
+    monkeypatch.setattr(check.subprocess, "Popen", capture)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--list"])
     assert check.main() == 0
     result = json.loads(capsys.readouterr().out)
+    env = observed["env"]
+    assert env["PROBE_SENTINEL"] == "present"
+    assert "ROBOMATE_HUB_URL" not in env
+    assert not any(key.startswith("ROBOMATE_TOKEN") for key in env)
+    assert observed["stderr"] != check.subprocess.PIPE
     assert {"join", "whoami", "await_assignment", "assign_task"} <= set(result["tools"])

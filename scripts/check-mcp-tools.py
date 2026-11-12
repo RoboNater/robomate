@@ -75,14 +75,17 @@ def probe(checkout: Path, harness: str) -> tuple[dict, list[str]]:
         "--harness",
         harness,
     ]
-    with tempfile.TemporaryDirectory() as cwd:
+    with (
+        tempfile.TemporaryDirectory() as cwd,
+        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr,
+    ):
         p = subprocess.Popen(
             cmd,
             cwd=cwd,
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=stderr,
             text=True,
             encoding="utf-8",
         )
@@ -98,7 +101,8 @@ def probe(checkout: Path, harness: str) -> tuple[dict, list[str]]:
                 message = json.loads(line)
                 if "id" in message:
                     return message
-            raise RuntimeError("bridge exited early; stderr:\n" + p.stderr.read()[-3000:])
+            stderr.seek(0)
+            raise RuntimeError("bridge exited early; stderr:\n" + stderr.read()[-3000:])
 
         try:
             send(
@@ -177,7 +181,8 @@ def check_codex(checkout: Path, tools: set[str]) -> tuple[list[str], bool]:
     args = [str(a) for a in entry.get("args", [])]
     project = args[args.index("--project") + 1] if "--project" in args[:-1] else None
     if project is None or (
-        os.path.normcase(os.path.abspath(project)) != os.path.normcase(str(checkout))
+        os.path.normcase(str(Path(project).expanduser().resolve()))
+        != os.path.normcase(str(checkout))
     ):
         problems.append(f"Codex: entry runs --project {project}, not {checkout}")
     return problems, True
@@ -210,9 +215,6 @@ def main() -> int:
     )
     parser.add_argument("--harness", default="codex", help="--harness passed to the bridge")
     ns = parser.parse_args()
-    if not ns.checkout:
-        parser.error("give the checkout path or set ROBOMATE_CHECKOUT")
-
     checkout = Path(os.path.expandvars(ns.checkout)).expanduser().resolve()
     if not (checkout / "pyproject.toml").is_file() or not (checkout / "uv.lock").is_file():
         print(f"error: {checkout} doesn't look like a robomate checkout", file=sys.stderr)
