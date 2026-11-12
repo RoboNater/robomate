@@ -77,7 +77,7 @@ def probe(checkout: Path, harness: str) -> tuple[dict, list[str]]:
     ]
     with (
         tempfile.TemporaryDirectory() as cwd,
-        tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr,
+        open(Path(cwd) / "stderr.log", "w+", encoding="utf-8") as stderr,
     ):
         p = subprocess.Popen(
             cmd,
@@ -125,8 +125,11 @@ def probe(checkout: Path, harness: str) -> tuple[dict, list[str]]:
         finally:
             watchdog.cancel()
             p.stdin.close()
-            p.terminate()
-            p.wait(timeout=15)
+            try:
+                p.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
 
 
 def git_head(checkout: Path) -> str | None:

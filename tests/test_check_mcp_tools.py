@@ -133,7 +133,8 @@ def test_real_bridge(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 
     def capture(*args: Any, **kwargs: Any) -> Any:
         observed.update(kwargs)
-        return popen(*args, **kwargs)
+        observed["process"] = popen(*args, **kwargs)
+        return observed["process"]
 
     monkeypatch.setattr(check.subprocess, "Popen", capture)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--list"])
@@ -144,4 +145,5 @@ def test_real_bridge(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     assert "ROBOMATE_HUB_URL" not in env
     assert not any(key.startswith("ROBOMATE_TOKEN") for key in env)
     assert observed["stderr"] != check.subprocess.PIPE
+    assert observed["process"].returncode == 0
     assert {"join", "whoami", "await_assignment", "assign_task"} <= set(result["tools"])
