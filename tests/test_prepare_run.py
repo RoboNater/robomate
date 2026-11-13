@@ -382,6 +382,7 @@ async def test_codex_alice_uses_orchestrator_bridge(
     config = tomllib.loads((run_dir / "configs/alice-codex/config.toml").read_text())
     server = config["mcp_servers"]["robomate"]
     assert server["args"][-3:] == ["mcp", "--role", "orchestrator"]
+    assert server["env"]["HUB_TELEMETRY_LOG"] == str(run_dir / "alice-telemetry.jsonl")
     assert set(server["enabled_tools"]) == set(PREPARE_RUN.ALICE_TOOLS)
     served = {
         tool.name for tool in await create_orchestrator_mcp(OrchestratorBridge()).list_tools()

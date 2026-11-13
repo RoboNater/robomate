@@ -3180,6 +3180,7 @@ def prepare(
 
     hub_env = {
         "ROBOMATE_HUB_URL": live_url,
+        "HUB_TELEMETRY_LOG": str(run_dir / "alice-telemetry.jsonl"),
         "ROBOMATE_TOKEN_FILE": str(hub_token),
         "PYTHONUTF8": "1",
         # Declared identity so the hub records Alice instead of unknown (#402).

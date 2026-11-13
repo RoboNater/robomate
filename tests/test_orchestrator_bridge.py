@@ -171,33 +171,125 @@ async def test_bridge_checks_the_local_hub_identity_before_connecting(
         await bridge.close()
 
 
-@pytest.mark.parametrize(("key", "retries"), [(None, False), ("decision-key", True)])
-async def test_log_decision_retries_only_with_an_idempotency_key(
-    key: str | None, retries: bool
+@pytest.mark.parametrize("key", [None, "decision-key"])
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout])
+async def test_log_decision_retries_connection_failure(
+    key: str | None, error: type[httpx.TransportError], app: FastAPI, hub_store: HubStore
 ) -> None:
+    class FailFirstTransport(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.requests = 0
+            self.inner = httpx.ASGITransport(app=app)
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.requests += 1
+            if self.requests == 1:
+                raise error("connection lost", request=request)
+            return await self.inner.handle_async_request(request)
+
+        async def aclose(self) -> None:
+            await self.inner.aclose()
+
+    transport = FailFirstTransport()
+    bridge = OrchestratorBridge()
+    bridge._client = httpx.AsyncClient(
+        transport=transport, base_url=BASE_URL, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    try:
+        async with app.router.lifespan_context(app):
+            await bridge.call("log_decision", {"summary": "s", "rationale": "r", "key": key})
+            assert transport.requests == 2
+            with database(hub_store.path) as connection:
+                assert (
+                    connection.execute(
+                        "SELECT COUNT(*) FROM decision WHERE summary = 's'"
+                    ).fetchone()[0]
+                    == 1
+                )
+    finally:
+        await bridge.close()
+
+
+async def test_empty_read_error_is_reported_and_logged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("HUB_TELEMETRY_LOG", str(path))
     requests = 0
 
     def respond(request: httpx.Request) -> httpx.Response:
         nonlocal requests
         requests += 1
-        if requests == 1:
-            raise httpx.ConnectError("connection lost", request=request)
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": "x", "result": {"id": 1}})
+        raise httpx.ReadError("", request=request)
 
     bridge = OrchestratorBridge()
     bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url=BASE_URL)
     try:
-        if retries:
-            assert await bridge.call(
-                "log_decision", {"summary": "s", "rationale": "r", "key": key}
-            ) == {"id": 1}
-            assert requests == 2
-        else:
-            with pytest.raises(httpx.ConnectError):
-                await bridge.call("log_decision", {"summary": "s", "rationale": "r"})
-            assert requests == 1
+        server = create_orchestrator_mcp(bridge)
+        with pytest.raises(ToolError, match="ReadError"):
+            await _call(server, "log_decision", summary="s", rationale="r")
+        assert requests == 1  # An unkeyed write may already have been dispatched.
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        assert any(e.get("phase") == "error" and e.get("error_type") == "ReadError" for e in events)
     finally:
         await bridge.close()
+
+
+@pytest.mark.parametrize("message", ["", "deadline exceeded"])
+async def test_read_timeout_preserves_or_supplies_message(message: str) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(message, request=request)
+
+    bridge = OrchestratorBridge()
+    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url=BASE_URL)
+    try:
+        with pytest.raises(httpx.ReadTimeout) as exc:
+            await bridge.call("log_decision", {"summary": "s", "rationale": "r"})
+        assert str(exc.value) == (message or "ReadTimeout (hub transport timeout)")
+    finally:
+        await bridge.close()
+
+
+async def test_idle_connections_expire_before_hub_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_hub_common.discovery import HubEndpoint
+
+    connections = 0
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        nonlocal connections
+        connections += 1
+        try:
+            while await reader.readuntil(b"\r\n\r\n"):
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    endpoint = cast(
+        HubEndpoint, type("Endpoint", (), {"url": f"http://127.0.0.1:{port}", "token": TOKEN})()
+    )
+    monkeypatch.setattr("worker_mcp.orchestrator.discover", lambda *args, **kwargs: endpoint)
+    bridge = OrchestratorBridge()
+    try:
+        client = bridge._http()
+        pool = client._transport._pool  # type: ignore[attr-defined]
+        assert pool._keepalive_expiry < 5.0
+        await client.get("/")
+        assert connections == 1
+        # Simulate an idle age over the hub's five-second timeout without sleeping.
+        connection = pool._connections[0]._connection
+        connection._expire_at -= 6
+        await client.get("/")
+        assert connections == 2
+    finally:
+        await bridge.close()
+        server.close()
+        await server.wait_closed()
 
 
 async def test_superseded_heartbeat_stops_without_repeating_error_logs(

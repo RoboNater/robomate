@@ -519,6 +519,30 @@ async def test_stream_rpc_json_error_raises_protocol_error(
     assert "not assigned to bob" in exc_info.value.message.lower()
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (httpx.ReadError, "ReadError (hub connection dropped)"),
+        (httpx.ReadTimeout, "ReadTimeout (hub transport timeout)"),
+    ],
+)
+async def test_empty_transport_error_names_type(
+    worker_settings: WorkerSettings, stream: bool, error: type[httpx.TransportError], message: str
+) -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise error("", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(fail), base_url=BASE_URL) as client:
+        worker = WorkerHubClient(replace(worker_settings, max_retries=0), http_client=client)
+        with pytest.raises(error) as exc:
+            if stream:
+                await worker._stream_rpc("test", {}, 1)
+            else:
+                await worker._request_with_retry("GET", "/")
+        assert str(exc.value) == message
+
+
 async def test_retry_on_503(worker_settings: WorkerSettings, tmp_path: Path) -> None:
     attempts = 0
 
