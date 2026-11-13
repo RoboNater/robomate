@@ -98,7 +98,7 @@ licenses.
 ## Inventory (generated)
 
 <!-- generated-inventory -->
-Lock SHA256: `0efdfce6a1e018fc96314f87eba365495e4627b3c736f588a9b3d03cbfa1f736`. Artifact and notice digests, metadata,
+Lock SHA256: `b1a85859eedbd470e261a57d6475b074dca84dca310c8e1522118fff43d61934`. Artifact and notice digests, metadata,
 markers, and every runtime/dev graph path are in
 [dependency-license-facts.json](dependency-license-facts.json).
 
@@ -111,7 +111,7 @@ markers, and every runtime/dev graph path are in
 | annotated-types | 0.8.0 | runtime | 2 / 2 | permissive |
 | anyio | 4.15.0 | dev, runtime | 2 / 2 | permissive |
 | attrs | 26.1.0 | runtime | 2 / 2 | permissive |
-| certifi | 2026.7.22 | dev, runtime | 2 / 2 | approved exception |
+| certifi | 2026.10.23 | dev, runtime | 2 / 2 | approved exception |
 | cffi | 2.1.1 | runtime | 19 / 75 | permissive |
 | charset-normalizer | 3.5.1 | runtime | 23 / 124 | approved exception |
 | click | 8.5.0 | runtime | 2 / 2 | permissive |
@@ -143,7 +143,7 @@ markers, and every runtime/dev graph path are in
 | proto-plus | 1.28.4 | runtime | 2 / 2 | permissive |
 | protobuf | 7.36.1 | runtime | 4 / 8 | permissive |
 | pyasn1-modules | 0.4.2 | runtime | 2 / 2 | permissive |
-| pyasn1 | 0.6.4 | runtime | 2 / 2 | permissive |
+| pyasn1 | 0.6.5 | runtime | 2 / 2 | permissive |
 | pycparser | 3.0 | runtime | 2 / 2 | permissive |
 | pydantic-core | 2.46.5 | runtime | 13 / 65 | permissive |
 | pydantic-settings | 2.15.0 | runtime | 2 / 2 | permissive |
@@ -287,14 +287,14 @@ review_date = "2026-10-12"
 
 [[review]]
 name = "certifi"
-version = "2026.7.22"
+version = "2026.10.23"
 expression = "MPL-2.0"
-fingerprint = "e93700a455bc5ec09b52902ab432b50f02148899cdde943bfb55e3222d4a921d"
-renewal_fingerprint = "4736dcd6639d807e724a09542bd083b3d9ce2dbff6ab41b355457d7df3693803"
-reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+fingerprint = "f19ff85e0d26563edd99b38e923fb7979daf84abbc28e496be7d6fdd0fe19db0"
+renewal_fingerprint = "0e2f839f6b4076b410e6f399f7052284fc7064b9287794d9c7fbc113da81e691"
+reviewer = "Maintenance agent (deepseek-v4.1-flash in opencode) on behalf of RoboNater"
+review_date = "2026-11-13"
 exception = true
-owner_approval = "operator question #1, answered 2026-10-12T00:40:18.892Z; verified through get_operator_answer(1); reachability refresh approved in operator question #6, answered 2026-10-12T10:18:50.929Z; verified through get_operator_answer(6)"
+owner_approval = "owner comment on RoboNater/robomate#499, 2026-11-13T20:35:58Z: https://github.com/RoboNater/robomate/issues/499#issuecomment-6864263067; renews the operator question #1 approval of 2026-10-12 for version 2026.10.23"
 
 [[review]]
 name = "cffi"
@@ -835,6 +835,16 @@ review_date = "2026-10-17"
 ```
 
 ## Review log
+
+2026-11-13 — Maintenance agent (deepseek-v4.1-flash in opencode) on behalf of
+RoboNater renewed the certifi MPL-2.0 exception for 2026.10.23, which the owner
+approved in
+https://github.com/RoboNater/robomate/issues/499#issuecomment-6864263067.
+Both locked archives' LICENSE files are byte-identical to 2026.7.22's
+(`e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7`). The
+metadata is still MPL-2.0. The only metadata change is the added
+`Programming Language :: Python :: 3.15` classifier. Reachability is unchanged.
+pyasn1 0.6.4 → 0.6.5 renewed as permissive with no evidence change.
 
 2026-10-17 - Implementation agent bob on behalf of RoboNater reviewed execnet
 2.1.2 and pytest-xdist 3.8.0: both locked sdists and universal wheels contain
