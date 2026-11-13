@@ -60,6 +60,7 @@ class WorkflowPolicy(BaseModel):
     stall_action_after_min: Annotated[int | float, Field(ge=0, allow_inf_nan=False)] = 0
     # Bounded pre-release closeout collection window (#386): omitted
     # `request_closeout_reports` timeout uses this run policy value.
+    closeout: bool = True
     closeout_wait_s: CloseoutWait = CLOSEOUT_WAIT_DEFAULT_S
     # What happens when a run ends with the queue empty (mvp-spec §7.2, M2 Step 3).
     # `release` releases workers; `standby` keeps them joined for the next run.
@@ -115,6 +116,7 @@ class TaskRole(StrEnum):
     IMPLEMENTER = "implementer"
     REVIEWER = "reviewer"
     REBASE = "rebase"
+    CLOSEOUT = "closeout"
 
 
 class StandingRole(StrEnum):
@@ -255,7 +257,79 @@ class RebaseResult(BaseModel):
         return self
 
 
-TaskResult = ImplementerResult | ReviewerResult | RebaseResult
+class CloseoutFindingProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    task_id: str
+    summary: str
+
+
+class CloseoutFinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    id: str = Field(pattern=r"^r\d+-\d+$")
+    summary: str
+    provenance: list[CloseoutFindingProvenance]
+
+
+class CloseoutStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    index: int = Field(ge=0)
+    text: str
+
+
+class CloseoutContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    pending_findings: list[CloseoutFinding]
+    steps: list[CloseoutStep]
+    nits_issue: int | str | None
+    followup_label: str
+    pr_url: str | None
+    original_instructions: str
+
+
+class CloseoutItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: str = Field(min_length=1, pattern=r"\S")
+    summary: str = Field(min_length=1, pattern=r"\S")
+    action: Literal["issue", "nit", "none"]
+    url: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def required_destination(self) -> Self:
+        if self.action in ("issue", "nit") and not (self.url or "").strip():
+            raise ValueError("issue and nit require a URL")
+        if self.action == "none" and not (self.reason or "").strip():
+            raise ValueError("none requires a reason")
+        return self
+
+
+class CloseoutStepResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    index: int = Field(ge=0)
+    done: bool
+    url: str | None = None
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def incomplete_note(self) -> Self:
+        if not self.done and not (self.note or "").strip():
+            raise ValueError("a false step requires a note")
+        return self
+
+
+class CloseoutResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    outcome: Literal["completed", "blocked", "failed"]
+    items: list[CloseoutItem] = Field(default_factory=list)
+    steps: list[CloseoutStepResult] = Field(default_factory=list)
+    summary: str = Field(min_length=1, pattern=r"\S")
+    blocker: str | None = None
+
+
+TaskResult = ImplementerResult | ReviewerResult | RebaseResult | CloseoutResult
 
 IMPLEMENTER_RESULT_SCHEMA: dict[str, Any] = ImplementerResult.model_json_schema()
 REVIEWER_RESULT_SCHEMA: dict[str, Any] = ReviewerResult.model_json_schema()

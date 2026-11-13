@@ -20,6 +20,7 @@ from agent_hub_common import (
     SCHEMA_VERSION,
     UNKNOWN,
     AgentProfile,
+    CloseoutResult,
     ImplementerResult,
     MetaKeys,
     ModelSource,
@@ -1144,6 +1145,9 @@ class WorkerHubClient:
         branch = metadata.get(MetaKeys.BRANCH)
         if isinstance(branch, str) and branch:
             assignment["branch"] = branch
+        context = metadata.get(MetaKeys.CLOSEOUT_CONTEXT)
+        if isinstance(context, dict):
+            assignment["closeout_context"] = context
         # Redelivery marker (#326): the hub returns the task the caller
         # already holds instead of timing out, flagged so the worker knows
         # it is not new work. Additive metadata; wire version stays 1.
@@ -1303,7 +1307,12 @@ class WorkerHubClient:
     async def submit_result(
         self,
         task_id: str,
-        result: ImplementerResult | ReviewerResult | RebaseResult | dict[str, Any] | str,
+        result: ImplementerResult
+        | ReviewerResult
+        | RebaseResult
+        | CloseoutResult
+        | dict[str, Any]
+        | str,
         summary: str | None = None,
         artifacts: list[Any] | None = None,
         operation_id: str | None = None,
@@ -1314,7 +1323,7 @@ class WorkerHubClient:
 
         self._pending_questions.pop(task_id, None)
 
-        if isinstance(result, (ImplementerResult, ReviewerResult, RebaseResult)):
+        if isinstance(result, (ImplementerResult, ReviewerResult, RebaseResult, CloseoutResult)):
             result_dict = result.model_dump(mode="json")
             summary_text = result.summary
         elif isinstance(result, dict):
@@ -1336,7 +1345,8 @@ class WorkerHubClient:
                         result_dict["head_sha"] = "0" * 40
         else:
             raise TypeError(
-                "result must be ImplementerResult, ReviewerResult, RebaseResult, dict, or str, "
+                "result must be ImplementerResult, ReviewerResult, RebaseResult, "
+                "CloseoutResult, dict, or str, "
                 f"got {type(result)}"
             )
 

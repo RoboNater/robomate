@@ -153,7 +153,14 @@ async def test_isolated_collection_scenario(
                     "role"
                 ] == "closeout"
                 hub_store.submit_result(
-                    closeout.id, "bob", TaskState.COMPLETED, "Dispositions recorded"
+                    closeout.id,
+                    "bob",
+                    {
+                        "outcome": "completed",
+                        "items": [],
+                        "steps": [],
+                        "summary": "Dispositions recorded",
+                    },
                 )
             await call(
                 alice, "submit_closeout_report", run_id=run_id, report=report("Orchestrated.")

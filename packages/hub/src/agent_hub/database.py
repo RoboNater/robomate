@@ -22,6 +22,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 
+# v30 is #450's stored closeout task context.
 # v29 is #423's durable workflow export completion marker.
 # v28 is #272's stall operator-question linkage and stall_action event kind.
 # v27 is #215's durable closeout reports and collection/expected authors.
@@ -51,7 +52,7 @@ from agent_hub_common import (
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 class DatabaseVersionError(RuntimeError):
@@ -170,6 +171,7 @@ CREATE TABLE IF NOT EXISTS task (
     updated TEXT NOT NULL,
     pr_head_sha TEXT,
     source_event_id INTEGER,
+    closeout_context_json TEXT,
     FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE,
     FOREIGN KEY (assignee) REFERENCES agent(name) ON DELETE SET NULL,
     FOREIGN KEY (source_event_id) REFERENCES event(id)
@@ -438,6 +440,8 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
         _migrate_decision_key(connection)
         _migrate_task_pr_head_sha(connection)
         _migrate_task_source_event_id(connection)
+        if "closeout_context_json" not in _columns(connection, "task"):
+            connection.execute("ALTER TABLE task ADD COLUMN closeout_context_json TEXT")
         _migrate_call_log(connection)
         _migrate_declared_model(connection)
         _migrate_peer_addresses(connection)

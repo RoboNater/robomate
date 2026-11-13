@@ -48,6 +48,7 @@ _POLICY_SCALAR_KEYS: frozenset[str] = frozenset(
         "stall_after_min",
         "stall_action_after_min",
         "closeout_wait_s",
+        "closeout",
         "on_done",
     }
 )

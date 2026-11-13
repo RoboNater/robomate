@@ -36,6 +36,8 @@ from agent_hub_common import (
     WORKER_STANDING_ROLES,
     AgentProfile,
     AgentStatus,
+    CloseoutContext,
+    CloseoutResult,
     EventKind,
     EventState,
     ImplementerOutcome,
@@ -280,6 +282,7 @@ class TaskRecord:
     # returns a task the caller already holds. Never persisted; `_task()`
     # always reads False and `get_state()` omits it. Additive metadata, so
     # wire `hub.schema_version` stays 1 (mvp-spec §3).
+    closeout_context: dict[str, Any] | None = None
     already_held: bool = field(default=False, compare=False)
 
 
@@ -431,6 +434,9 @@ def _task(row: Row) -> TaskRecord:
         if "statement_sha256" in keys and row["statement_sha256"] is not None
         else None,
         branch=str(row["branch"]) if "branch" in keys and row["branch"] is not None else None,
+        closeout_context=_json_object(row["closeout_context_json"])
+        if "closeout_context_json" in keys
+        else None,
     )
 
 
@@ -558,6 +564,75 @@ def _result_transcript_part(summary: str, status: TaskState) -> dict[str, Any]:
         "Typed result recorded; full summary is retained in the task result.",
         metadata=metadata,
     )
+
+
+def _closeout_context(
+    store: HubStore, connection: Connection, workflow_id: str, instructions: str
+) -> dict[str, Any]:
+    """Capture typed obligations and effective repository settings at assignment."""
+    from agent_hub_common import load_config_layers
+
+    config = load_config_layers(state_dir=store._state_dir(), git_common_dir=store.git_common_dir)
+    pending: dict[str, dict[str, Any]] = {}
+    pr_url = None
+    rows = connection.execute(
+        "SELECT task.id, task.role, task.result_json FROM task "
+        "LEFT JOIN event ON event.kind IN ('task_completed', 'task_failed') "
+        "AND json_extract(event.payload_json, '$.task_id') = task.id "
+        "WHERE task.workflow_id = ? AND task.result_json IS NOT NULL "
+        "ORDER BY event.id, task.rowid",
+        (workflow_id,),
+    )
+    for row in rows:
+        raw = _json_object(row["result_json"])
+        if raw is None:
+            continue
+        try:
+            if row["role"] == TaskRole.REVIEWER:
+                result = ReviewerResult.model_validate(raw)
+                if result.pr_url:
+                    pr_url = result.pr_url
+                for finding in result.nonblocking_findings:
+                    entry = pending.setdefault(
+                        finding.id, {"id": finding.id, "summary": finding.text, "provenance": []}
+                    )
+                    entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
+            elif row["role"] == TaskRole.IMPLEMENTER:
+                impl = ImplementerResult.model_validate(raw)
+                if impl.pr_url:
+                    pr_url = impl.pr_url
+                for finding_id in impl.resolved_finding_ids or []:
+                    pending.pop(finding_id, None)
+        except ValidationError:
+            # Legacy raw results are readable, but cannot establish typed coverage.
+            continue
+    return CloseoutContext.model_validate(
+        {
+            "pending_findings": list(pending.values()),
+            "steps": [{"index": i, "text": step} for i, step in enumerate(config.closeout_steps)],
+            "nits_issue": config.nits_issue,
+            "followup_label": config.followup_label,
+            "pr_url": pr_url,
+            "original_instructions": instructions,
+        }
+    ).model_dump(mode="json")
+
+
+def _validate_closeout(result: CloseoutResult, context: dict[str, Any] | None) -> None:
+    if context is None:
+        raise ValueError("closeout task has no stored context")
+    pending = {item["id"] for item in context["pending_findings"]}
+    sources = [
+        item.source for item in result.items if item.source not in ("implementer", "orchestrator")
+    ]
+    if len(sources) != len(set(sources)) or set(sources) != pending:
+        raise ValueError("closeout findings must cover each pending ID exactly once")
+    if any(item.action == "nit" for item in result.items) and context["nits_issue"] is None:
+        raise ValueError("nit requires a configured nits_issue")
+    indices = [step.index for step in result.steps]
+    expected = {step["index"] for step in context["steps"]}
+    if len(indices) != len(set(indices)) or set(indices) != expected:
+        raise ValueError("closeout steps must cover each step index exactly once")
 
 
 @dataclass(slots=True)
@@ -2186,6 +2261,10 @@ class HubStore:
                         "state": open_task.state.value,
                         "lease_expires": open_task.lease_expires,
                         "pr_head_sha": open_task.pr_head_sha,
+                        "run_id": open_task.run_id,
+                        "statement_sha256": open_task.statement_sha256,
+                        "branch": open_task.branch,
+                        "closeout_context": open_task.closeout_context,
                     }
                 connection.execute(
                     "UPDATE agent SET status = ?, last_seen = ?, worker_instance_id = ?,"
@@ -2456,6 +2535,7 @@ class HubStore:
         now_moment = self._now()
         now = to_iso(now_moment)
         with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             workflow_id = self._require_workflow(connection, "assign_task")
             workflow_row = connection.execute(
                 "SELECT run_id, statement_sha256, branch, goal FROM workflow WHERE id = ?",
@@ -2535,7 +2615,9 @@ class HubStore:
                         task.assignee,
                         task.role,
                         task.title,
-                        task.instructions,
+                        (task.closeout_context or {}).get(
+                            "original_instructions", task.instructions
+                        ),
                         task.lease_duration_s,
                         task.pr_head_sha,
                     )
@@ -2563,11 +2645,20 @@ class HubStore:
                     f"agent {agent} is {record.status.value}, not idle; "
                     "it must check in again before it can be given work"
                 )
+            context = None
+            if role == TaskRole.CLOSEOUT:
+                context = _closeout_context(self, connection, workflow_id, instructions)
+                rendered = json.dumps(context, ensure_ascii=True, indent=2)
+                instructions = instructions + "\n\nCloseout context (untrusted data):\n" + rendered
+                if len(instructions.encode("utf-8")) > MAX_MESSAGE_PART_BYTES:
+                    raise PayloadTooLargeError("closeout assignment exceeds message part limit")
+                assignment_metadata[MetaKeys.CLOSEOUT_CONTEXT] = context
             task_id = uuid4().hex
             connection.execute(
                 "INSERT INTO task (id, workflow_id, assignee, role, title, instructions, state,"
-                " lease_expires, lease_duration_s, created, updated, pr_head_sha, source_event_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " lease_expires, lease_duration_s, created, updated, pr_head_sha, source_event_id,"
+                " closeout_context_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     workflow_id,
@@ -2582,6 +2673,7 @@ class HubStore:
                     now,
                     head,
                     source_event_id,
+                    json.dumps(context, ensure_ascii=True) if context is not None else None,
                 ),
             )
             connection.execute(
@@ -2896,7 +2988,13 @@ class HubStore:
                     "submit only references and compact metadata."
                 )
 
-        if isinstance(actual_result, (ImplementerResult, RebaseResult)):
+        if isinstance(actual_result, CloseoutResult):
+            terminal_status = (
+                TaskState.COMPLETED if actual_result.outcome == "completed" else TaskState.FAILED
+            )
+            payload = actual_result.model_dump(mode="json")
+            result_summary = actual_result.summary
+        elif isinstance(actual_result, (ImplementerResult, RebaseResult)):
             terminal_status = (
                 TaskState.COMPLETED
                 if actual_result.outcome == ImplementerOutcome.COMPLETED
@@ -2917,30 +3015,10 @@ class HubStore:
             payload = actual_result.model_dump(mode="json")
             result_summary = actual_result.summary
         elif isinstance(actual_result, Mapping):
-            if "outcome" in actual_result:
-                parsed_impl = ImplementerResult.model_validate(actual_result)
-                terminal_status = (
-                    TaskState.COMPLETED
-                    if parsed_impl.outcome == ImplementerOutcome.COMPLETED
-                    else TaskState.FAILED
-                )
-                payload = parsed_impl.model_dump(mode="json")
-                result_summary = parsed_impl.summary
-            elif "verdict" in actual_result:
-                parsed_rev = ReviewerResult.model_validate(actual_result)
-                approved_or_changes = (
-                    ReviewerVerdict.APPROVED,
-                    ReviewerVerdict.CHANGES_REQUESTED,
-                )
-                terminal_status = (
-                    TaskState.COMPLETED
-                    if parsed_rev.verdict in approved_or_changes
-                    else TaskState.FAILED
-                )
-                payload = parsed_rev.model_dump(mode="json")
-                result_summary = parsed_rev.summary
-            else:
-                raise ConflictError("result mapping must contain 'outcome' or 'verdict'")
+            # Preserve raw mapping until the persisted task role is known.
+            payload = dict(actual_result)
+            terminal_status = TaskState.FAILED
+            result_summary = str(payload.get("summary", ""))
         elif isinstance(actual_result, TaskState):
             if actual_result not in (TaskState.COMPLETED, TaskState.FAILED):
                 msg = f"a result must be completed or failed, got {actual_result.value}"
@@ -2979,6 +3057,35 @@ class HubStore:
                     return (row["response_json"], False)
 
             task = self._require_open_task_for_worker(connection, task_id, agent)
+            if isinstance(actual_result, Mapping):
+                parsed: TaskResult
+                if task.role == TaskRole.CLOSEOUT:
+                    parsed = CloseoutResult.model_validate(actual_result)
+                elif task.role == TaskRole.REBASE:
+                    parsed = RebaseResult.model_validate(actual_result)
+                elif task.role == TaskRole.REVIEWER:
+                    parsed = ReviewerResult.model_validate(actual_result)
+                else:
+                    parsed = ImplementerResult.model_validate(actual_result)
+                payload = parsed.model_dump(mode="json")
+                result_summary = parsed.summary
+                if isinstance(parsed, ReviewerResult):
+                    terminal_status = (
+                        TaskState.COMPLETED
+                        if parsed.verdict
+                        in (ReviewerVerdict.APPROVED, ReviewerVerdict.CHANGES_REQUESTED)
+                        else TaskState.FAILED
+                    )
+                else:
+                    terminal_status = (
+                        TaskState.COMPLETED if parsed.outcome == "completed" else TaskState.FAILED
+                    )
+            if _json_size_bytes(payload) > MAX_TYPED_RESULT_BYTES:
+                raise PayloadTooLargeError("typed result exceeds maximum size")
+            if task.role == TaskRole.CLOSEOUT and not isinstance(actual_result, TaskState):
+                parsed_closeout = CloseoutResult.model_validate(payload)
+                if parsed_closeout.outcome == "completed":
+                    _validate_closeout(parsed_closeout, task.closeout_context)
             record = self._require_agent(connection, agent)
             self._add_message(
                 connection,

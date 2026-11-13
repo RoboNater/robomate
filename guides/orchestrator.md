@@ -718,14 +718,16 @@ Your report may arrive after the worker deadline, until run finalization.
 Missing reports are recorded explicitly, not reconstructed for another author.
 
 Ordinary runs require no roadmap decision, adjudication, post-merge completion
-edit or roadmap CLOSE-OUT task. The PR's `Closes` reference closes the issue;
-triage maintains the plan. A supplied reservations target alone adds no task.
-Collect retrospectives as above even when no close-out task is needed. Other
-explicit close-out requirements and follow-up findings still apply; use the
-source-event routes above when such a task is needed.
+edit or roadmap update. The PR's `Closes` reference closes the issue; triage
+maintains the plan. After verified merge, assign the implementer a typed
+`closeout` task even when no findings or steps are pending, unless this run's
+policy explicitly sets `closeout: false`. The hub snapshots pending findings,
+indexed steps and effective repository settings into the assignment. The worker
+returns `CloseoutResult`; inspect failed or blocked outcomes and route correction.
+Retrospective reports are observations and do not replace this task.
 
-Only when the run used a counter, assign the implementer a CLOSE-OUT task after
-verified merge to mark only its claim shipped in the run's reservations issue.
+When the run used a counter, include in the CLOSE-OUT task the instruction to
+mark only its claim shipped in the run's reservations issue.
 Include the target, claimed value, merged PR URL and final SHA. Preserve the next
 value and every other in-flight claim. If a counter was dropped or the run is
 abandoned, release its unused claim without rewinding over other claims.
