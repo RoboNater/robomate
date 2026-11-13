@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -21,6 +22,7 @@ from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from mcp.server.fastmcp import FastMCP
 
 from .accounting import McpAccounting
+from .telemetry import HttpIO, TelemetryLog, count_http_exchange, count_http_retry, current_http_io
 
 logger = logging.getLogger(__name__)
 RETRYABLE = frozenset({"get_state", "wait_for_event", "check_merge_gate", "assign_task", "reply"})
@@ -52,6 +54,13 @@ class OrchestratorBridge:
         self._calls: asyncio.Queue[CallRecord] = asyncio.Queue(maxsize=256)
         self._accounting_disabled = False
         self.dropped_calls = 0
+        from .config import _optional_absolute_path
+
+        self.telemetry = TelemetryLog(
+            _optional_absolute_path(os.environ, "HUB_TELEMETRY_LOG"),
+            agent=name,
+            worker_instance_id=self.session,
+        )
 
     async def accounting(self, server: FastMCP) -> McpAccounting:
         tools = frozenset(tool.name for tool in await server.list_tools())
@@ -124,6 +133,7 @@ class OrchestratorBridge:
             self._endpoint = discover(self.cwd or Path.cwd())
             self._client = httpx.AsyncClient(
                 base_url=self._endpoint.url,
+                limits=httpx.Limits(keepalive_expiry=4.0),
                 headers={
                     "Authorization": f"Bearer {self._endpoint.token}",
                     "X-Robomate-Actor": self.name,
@@ -151,6 +161,7 @@ class OrchestratorBridge:
                     response.raise_for_status()
                     # Streaming keeps the response-start boundary explicit for retry safety.
                     body = json.loads(await response.aread())
+                    count_http_exchange(response)
                     if "error" in body:
                         message = str(body["error"]["message"])
                         if message == "superseded by a newer orchestrator session":
@@ -168,12 +179,18 @@ class OrchestratorBridge:
                     ):
                         self._accounting_task = asyncio.create_task(self._accounting_loop())
                     return result
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
+                # A read/write failure before response headers can follow dispatch;
+                # only connection establishment failures prove an unkeyed write safe.
                 retryable = method in RETRYABLE or (
-                    method == "log_decision" and params.get("key") is not None
+                    method == "log_decision"
+                    and (params.get("key") is not None or isinstance(exc, httpx.ConnectError))
                 )
                 if response_started or not retryable or attempts >= 3:
+                    if not str(exc):
+                        exc.args = (f"{type(exc).__name__} (hub connection dropped)",)
                     raise
+                count_http_retry()
                 await asyncio.sleep(0.5 * 2**attempts)
                 attempts += 1
 
@@ -227,9 +244,11 @@ class OrchestratorBridge:
                 self._endpoint = endpoint
                 self._client = httpx.AsyncClient(
                     base_url=endpoint.url,
+                    limits=httpx.Limits(keepalive_expiry=4.0),
                     headers={"Authorization": f"Bearer {endpoint.token}"},
                 )
         self.name = name
+        self.telemetry.agent = name
         settings = replace(
             WorkerSettings.unjoined(harness=harness, cwd=self.cwd),
             telemetry_log=None,
@@ -269,8 +288,8 @@ def create_orchestrator_mcp(bridge: OrchestratorBridge) -> FastMCP:
     for name in OPERATIONS:
         forward = _forward(name, getattr(OrchestratorTools, name))
         # The bound method hides `self`, just as the hub's bound methods do.
-        server.add_tool(MethodType(forward, bridge))
-    server.add_tool(bridge.join)
+        server.add_tool(_observed(bridge, name, MethodType(forward, bridge)))
+    server.add_tool(_observed(bridge, "join", bridge.join))
     return server
 
 
@@ -280,3 +299,26 @@ def _forward(name: str, tool: Any) -> Any:
         return await self.call(name, kwargs)
 
     return forward
+
+
+def _observed(bridge: OrchestratorBridge, name: str, tool: Any) -> Any:
+    @wraps(tool)
+    async def observed(**kwargs: Any) -> Any:
+        call_id, started = bridge.telemetry.start_tool(name)
+        http = HttpIO()
+        token = current_http_io.set(http)
+        try:
+            result = await tool(**kwargs)
+        except BaseException as exc:
+            bridge.telemetry.finish_tool(
+                name, call_id, started, error=exc, arguments=kwargs, http=http
+            )
+            raise
+        finally:
+            current_http_io.reset(token)
+        bridge.telemetry.finish_tool(
+            name, call_id, started, result=result, arguments=kwargs, http=http
+        )
+        return result
+
+    return observed
