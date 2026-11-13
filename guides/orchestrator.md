@@ -157,6 +157,7 @@ Read `get_state.workflow.policy` and apply these defaults for omitted values:
   "max_task_lease_min": 120,
   "stall_after_min": 20,
   "stall_action_after_min": 0,
+  "closeout": true,
   "closeout_wait_s": 300,
   "on_done": "release"
 }
@@ -726,7 +727,7 @@ indexed steps and effective repository settings into the assignment. The worker
 returns `CloseoutResult`; inspect failed or blocked outcomes and route correction.
 Retrospective reports are observations and do not replace this task.
 
-When the run used a counter, include in the CLOSE-OUT task the instruction to
+Only when the run used a counter, include in the CLOSE-OUT task the instruction to
 mark only its claim shipped in the run's reservations issue.
 Include the target, claimed value, merged PR URL and final SHA. Preserve the next
 value and every other in-flight claim. If a counter was dropped or the run is
