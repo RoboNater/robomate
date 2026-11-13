@@ -732,6 +732,53 @@ async def test_a_result_with_short_commits_is_rejected_naming_commits(
     assert hub_store.get_task(task_id).state is TaskState.WORKING  # type: ignore[union-attr]
 
 
+async def test_a_reviewer_result_with_duplicate_ids_is_rejected(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    """#478: duplicate finding IDs are rejected at submit time, task stays WORKING."""
+    context_id = await check_in(client, "bob")
+    task = hub_store.assign_task(
+        "bob",
+        "reviewer",
+        "Review #1",
+        "Review it",
+        pr_head_sha="0123456789abcdef0123456789abcdef01234567",
+    )
+    stream = await client.post(
+        "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
+    )
+    assert sse_results(stream)[0]["id"] == task.id
+
+    body = await post(
+        client,
+        "message/send",
+        message(
+            "done",
+            context_id=context_id,
+            task_id=task.id,
+            metadata={
+                MetaKeys.KIND: "result",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.OPERATION_ID: "op-proto-dup-findings",
+                MetaKeys.RESULT: {
+                    "verdict": "changes_requested",
+                    "summary": "Duplicate r1-1",
+                    "reviewed_head_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "blocking_findings": [
+                        {"id": "r1-1", "text": "First"},
+                        {"id": "r1-1", "text": "duplicate-guard"},
+                    ],
+                },
+            },
+        ),
+        status_code=400,
+    )
+
+    assert body["error"]["code"] == -32602
+    assert "duplicate finding id" in body["error"]["message"]
+    assert hub_store.get_task(task.id).state is TaskState.WORKING  # type: ignore[union-attr]
+
+
 async def test_an_oversized_typed_result_is_rejected_with_a_compaction_hint(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:

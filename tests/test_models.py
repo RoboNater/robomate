@@ -279,3 +279,100 @@ def test_implementer_commits_schema_carries_40_hex_pattern() -> None:
     commits_schema = IMPLEMENTER_RESULT_SCHEMA["properties"]["commits"]
     assert commits_schema["type"] == "array"
     assert commits_schema["items"]["pattern"] == r"^[0-9a-fA-F]{40}$"
+
+
+def test_reviewer_duplicate_within_blocking_fails() -> None:
+    with pytest.raises(ValidationError, match="duplicate finding id"):
+        ReviewerResult(
+            verdict=ReviewerVerdict.CHANGES_REQUESTED,
+            reviewed_head_sha=VALID_SHA,
+            blocking_findings=[
+                Finding(id="r1-1", text="First"),
+                Finding(id="r1-1", text="duplicate-guard"),
+            ],
+            summary="Duplicate within blocking",
+        )
+
+
+def test_reviewer_duplicate_within_nonblocking_fails() -> None:
+    with pytest.raises(ValidationError, match="duplicate finding id"):
+        ReviewerResult(
+            verdict=ReviewerVerdict.CHANGES_REQUESTED,
+            reviewed_head_sha=VALID_SHA,
+            blocking_findings=[],
+            nonblocking_findings=[
+                Finding(id="r1-2", text="First"),
+                Finding(id="r1-2", text="duplicate"),
+            ],
+            summary="Duplicate within nonblocking",
+        )
+
+
+def test_reviewer_duplicate_across_lists_fails() -> None:
+    with pytest.raises(ValidationError, match="duplicate finding id"):
+        ReviewerResult(
+            verdict=ReviewerVerdict.CHANGES_REQUESTED,
+            reviewed_head_sha=VALID_SHA,
+            blocking_findings=[Finding(id="r1-1", text="Blocking")],
+            nonblocking_findings=[Finding(id="r1-1", text="Nonblocking")],
+            summary="Duplicate across lists",
+        )
+
+
+def test_reviewer_distinct_ids_across_lists_accepted() -> None:
+    res = ReviewerResult(
+        verdict=ReviewerVerdict.CHANGES_REQUESTED,
+        reviewed_head_sha=VALID_SHA,
+        blocking_findings=[Finding(id="r1-1", text="Blocking")],
+        nonblocking_findings=[Finding(id="r1-2", text="Nonblocking")],
+        summary="Distinct ids",
+    )
+    assert len(res.blocking_findings) == 1
+    assert len(res.nonblocking_findings) == 1
+
+
+def test_implementer_duplicate_within_resolved_fails() -> None:
+    with pytest.raises(ValidationError, match="duplicate finding id"):
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://github.com/org/repo/pull/1",
+            head_sha=VALID_SHA,
+            resolved_finding_ids=["r1-1", "r1-1"],
+            summary="Duplicate within resolved",
+        )
+
+
+def test_implementer_duplicate_within_disputed_fails() -> None:
+    with pytest.raises(ValidationError, match="duplicate finding id"):
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://github.com/org/repo/pull/1",
+            head_sha=VALID_SHA,
+            disputed_finding_ids=["r1-2", "r1-2"],
+            summary="Duplicate within disputed",
+        )
+
+
+def test_implementer_duplicate_across_resolved_and_disputed_fails() -> None:
+    with pytest.raises(ValidationError, match="duplicate finding id"):
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://github.com/org/repo/pull/1",
+            head_sha=VALID_SHA,
+            resolved_finding_ids=["r1-1"],
+            disputed_finding_ids=["r1-1"],
+            summary="Duplicate across resolved/disputed",
+        )
+
+
+def test_implementer_distinct_finding_ids_accepted() -> None:
+    res = ImplementerResult(
+        outcome=ImplementerOutcome.COMPLETED,
+        pr_url="https://github.com/org/repo/pull/1",
+        head_sha=VALID_SHA,
+        resolved_finding_ids=["r1-1"],
+        disputed_finding_ids=["r1-2"],
+        summary="Distinct ids",
+    )
+    assert res.resolved_finding_ids == ["r1-1"]
+    assert res.disputed_finding_ids == ["r1-2"]
