@@ -11,7 +11,9 @@ follow-ups with the configured label and reference the PR/MR and finding ID;
 verify the forge write and supply its URL. Use `nit` only when `nits_issue` is
 configured; add the item there, verify it and provide its URL. For `none`,
 provide a reason. Additional observations use source `implementer` or
-`orchestrator`. Follow the shared-body procedure for edits to shared issues.
+`orchestrator`. A finding's `contradictions` markers identify the source task
+and conflicting classifications or dispositions; it still needs exactly one
+item. Follow the shared-body procedure for edits to shared issues.
 
 For every indexed step submit its index and `done`. Include a URL when useful;
 if `done` is false, explain it in `note`. Empty lists are valid when there are
