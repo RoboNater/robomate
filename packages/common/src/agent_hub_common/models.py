@@ -207,6 +207,23 @@ class ImplementerResult(BaseModel):
                 raise ValueError("completed implementer result requires head_sha")
         return self
 
+    @model_validator(mode="after")
+    def validate_finding_ids_unique(self) -> Self:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for fid in (self.resolved_finding_ids or []) + (self.disputed_finding_ids or []):
+            if fid in seen:
+                duplicates.add(fid)
+            seen.add(fid)
+        if duplicates:
+            dup_list = ", ".join(sorted(duplicates))
+            raise ValueError(
+                f"duplicate finding id(s) {dup_list} in "
+                "resolved_finding_ids/disputed_finding_ids; "
+                "each finding id may appear at most once"
+            )
+        return self
+
 
 class ReviewerResult(BaseModel):
     verdict: ReviewerVerdict
@@ -225,6 +242,23 @@ class ReviewerResult(BaseModel):
                 raise ValueError("approved reviewer result requires reviewed_head_sha")
             if len(self.blocking_findings) > 0:
                 raise ValueError("approved reviewer result requires blocking_findings to be empty")
+        return self
+
+    @model_validator(mode="after")
+    def validate_finding_ids_unique(self) -> Self:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for finding in (*self.blocking_findings, *self.nonblocking_findings):
+            if finding.id in seen:
+                duplicates.add(finding.id)
+            seen.add(finding.id)
+        if duplicates:
+            dup_list = ", ".join(sorted(duplicates))
+            raise ValueError(
+                f"duplicate finding id(s) {dup_list} across "
+                "blocking_findings/nonblocking_findings; "
+                "each finding id may appear at most once"
+            )
         return self
 
 

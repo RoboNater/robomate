@@ -2283,3 +2283,33 @@ def test_pre_change_short_commits_still_read_back(store: HubStore) -> None:
     assert task.result["commits"] == ["a29763c"]
     state = store.get_state()
     assert state["tasks"][0]["result"]["commits"] == ["a29763c"]
+
+
+def test_pre_change_duplicate_findings_still_read_back(store: HubStore) -> None:
+    """#478: rows stored before duplicate validation still load via get_state/get_task.
+
+    The read path returns the stored JSON verbatim without re-validating it as
+    ReviewerResult, so the duplicate r1-1 stored by run 20261111_8b63f8c6 keeps reading.
+    """
+    store.check_in("bob")
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    task_id = store.assign_task("bob", "reviewer", "Review", "Review it", pr_head_sha=sha).id
+    dup_result = {
+        "verdict": "changes_requested",
+        "reviewed_head_sha": sha,
+        "blocking_findings": [
+            {"id": "r1-1", "text": "First"},
+            {"id": "r1-1", "text": "duplicate-guard"},
+        ],
+        "summary": "stored before #478",
+    }
+    with database(store.path) as connection:
+        connection.execute(
+            "UPDATE task SET state = 'completed', result_json = ? WHERE id = ?",
+            (json.dumps(dup_result), task_id),
+        )
+    task = store.get_task(task_id)
+    assert task is not None and task.result is not None
+    assert task.result["blocking_findings"] == dup_result["blocking_findings"]
+    state = store.get_state()
+    assert state["tasks"][0]["result"]["blocking_findings"] == dup_result["blocking_findings"]
