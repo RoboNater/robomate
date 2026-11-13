@@ -521,3 +521,75 @@ def test_finding_reintroduced_after_resolution_keeps_prior_provenance(hub_store:
     assert close.closeout_context is not None
     finding = close.closeout_context["pending_findings"][0]
     assert [p["summary"] for p in finding["provenance"]] == ["A finding", "Reintroduced"]
+
+
+def _assert_open_without_completion(store: HubStore, task_id: str) -> None:
+    from agent_hub.database import database
+
+    task = store.get_task(task_id)
+    assert task is not None and task.state is TaskState.SUBMITTED and task.result is None
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM event WHERE kind = 'task_completed' "
+                "AND json_extract(payload_json, '$.task_id') = ?",
+                (task_id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_nit_with_url_requires_configured_target(hub_store: HubStore) -> None:
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert task.closeout_context is not None and task.closeout_context["nits_issue"] is None
+    result = _result([_item(action="nit", url="https://example.test/issues/4#comment")], [])
+    with pytest.raises(ValueError, match="configured nits_issue"):
+        hub_store.submit_result(task.id, "bob", result)
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_unknown_id_rejected_even_when_all_pending_covered(hub_store: HubStore) -> None:
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    result = _result([_item(reason="deferred"), _item("r9-9", reason="unknown")], [])
+    with pytest.raises(ValueError, match="pending ID exactly once"):
+        hub_store.submit_result(task.id, "bob", result)
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_legacy_reviewer_result_stays_readable_without_creating_obligations(
+    hub_store: HubStore,
+) -> None:
+    hub_store.check_in("legacy")
+    legacy = hub_store.assign_task(
+        "legacy", "reviewer", "Old review", "Review", pr_head_sha="a" * 40
+    )
+    hub_store.submit_result(legacy.id, "legacy", TaskState.COMPLETED, "Legacy review")
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    saved = hub_store.get_task(legacy.id)
+    assert saved is not None and saved.result is not None
+    assert saved.result["status"] == "completed" and saved.result["summary"] == "Legacy review"
+    assert task.closeout_context is not None
+    assert [item["id"] for item in task.closeout_context["pending_findings"]] == ["r1-1"]
+    assert (
+        hub_store.submit_result(task.id, "bob", _result([_item(reason="declined")], [])).state
+        is TaskState.COMPLETED
+    )
+
+
+def test_legacy_closeout_status_is_not_a_typed_result(hub_store: HubStore) -> None:
+    from agent_hub_common import CloseoutResult
+    from pydantic import ValidationError
+
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    finished = hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Legacy closeout")
+    assert finished.state is TaskState.COMPLETED and finished.result is not None
+    assert finished.result["status"] == "completed"
+    with pytest.raises(ValidationError):
+        CloseoutResult.model_validate(finished.result)

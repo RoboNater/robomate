@@ -964,7 +964,8 @@ Follow-up issues carry `followup_label` and reference the PR/MR and the finding 
 
 **The `done` check.** `set_workflow_status(done)` is refused, naming what is missing, unless:
 1. `check_merge_gate` reports the PR/MR `merged` (`deliver: merge`) or `open` (`deliver: pr`); and
-2. a `closeout` task for this workflow is `completed` (unless `closeout: false`).
+2. a `closeout` task for this workflow has a completed typed `CloseoutResult` (unless
+   `closeout: false`); a legacy raw task result does not satisfy this check.
 
 No other close-out rule is enforced in code for the MVP. Steps reported `done: false` do not
 block; they are highlighted in the report.
