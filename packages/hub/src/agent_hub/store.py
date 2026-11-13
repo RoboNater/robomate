@@ -574,6 +574,7 @@ def _closeout_context(
 
     config = load_config_layers(state_dir=store._state_dir(), git_common_dir=store.git_common_dir)
     pending: dict[str, dict[str, Any]] = {}
+    history: dict[str, dict[str, Any]] = {}
     pr_url = None
     rows = connection.execute(
         "SELECT task.id, task.role, task.result_json FROM task "
@@ -593,19 +594,32 @@ def _closeout_context(
                 if result.pr_url:
                     pr_url = result.pr_url
                 for finding in result.nonblocking_findings:
-                    entry = pending.setdefault(
+                    entry = history.setdefault(
                         finding.id, {"id": finding.id, "summary": finding.text, "provenance": []}
                     )
                     entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
+                    pending[finding.id] = entry
             elif row["role"] == TaskRole.IMPLEMENTER:
                 impl = ImplementerResult.model_validate(raw)
                 if impl.pr_url:
                     pr_url = impl.pr_url
                 for finding_id in impl.resolved_finding_ids or []:
                     pending.pop(finding_id, None)
+            elif row["role"] == TaskRole.REBASE:
+                rebase = RebaseResult.model_validate(raw)
+                if rebase.pr_url:
+                    pr_url = rebase.pr_url
         except ValidationError:
             # Legacy raw results are readable, but cannot establish typed coverage.
             continue
+    gate = connection.execute(
+        "SELECT pr_url FROM gate_reading WHERE workflow_id = ? AND error_code IS NULL "
+        "AND pr_state IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (workflow_id,),
+    ).fetchone()
+    if gate is not None:
+        pr_url = gate["pr_url"]
     return CloseoutContext.model_validate(
         {
             "pending_findings": list(pending.values()),
@@ -2653,6 +2667,11 @@ class HubStore:
                 if len(instructions.encode("utf-8")) > MAX_MESSAGE_PART_BYTES:
                     raise PayloadTooLargeError("closeout assignment exceeds message part limit")
                 assignment_metadata[MetaKeys.CLOSEOUT_CONTEXT] = context
+                if (
+                    _json_size_bytes(text_part(instructions, metadata=assignment_metadata))
+                    > MAX_MESSAGE_PART_BYTES
+                ):
+                    raise PayloadTooLargeError("closeout assignment exceeds message part limit")
             task_id = uuid4().hex
             connection.execute(
                 "INSERT INTO task (id, workflow_id, assignee, role, title, instructions, state,"
@@ -3065,8 +3084,10 @@ class HubStore:
                     parsed = RebaseResult.model_validate(actual_result)
                 elif task.role == TaskRole.REVIEWER:
                     parsed = ReviewerResult.model_validate(actual_result)
-                else:
+                elif task.role == TaskRole.IMPLEMENTER or "outcome" in actual_result:
                     parsed = ImplementerResult.model_validate(actual_result)
+                else:
+                    parsed = ReviewerResult.model_validate(actual_result)
                 payload = parsed.model_dump(mode="json")
                 result_summary = parsed.summary
                 if isinstance(parsed, ReviewerResult):

@@ -402,3 +402,122 @@ def test_resolution_order_follows_completion_not_assignment(hub_store: HubStore)
     close = hub_store.assign_task("bob", "closeout", "Close", "Close")
     assert close.closeout_context is not None
     assert [item["id"] for item in close.closeout_context["pending_findings"]] == ["r1-1"]
+
+
+async def test_mock_worker_executes_closeout(app: Any, hub_store: HubStore) -> None:
+    import asyncio
+
+    import httpx
+    from conftest import BASE_URL, TOKEN
+    from test_mock_worker import mock_worker
+    from timing import LIVENESS_S, wait_until
+    from worker_mcp.config import WorkerSettings
+
+    _seed_finding(hub_store)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+
+        async def assign_and_release() -> None:
+            await wait_until(lambda: hub_store.agent_by_name("bob") is not None, "bob joins")
+            task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+            await wait_until(
+                lambda: bool((t := hub_store.get_task(task.id)) and t.state == TaskState.COMPLETED),
+                "closeout completes",
+            )
+            hub_store.release_agent("bob")
+
+        worker = mock_worker.run_worker(
+            WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"),
+            http_client=http,
+            timeout_s=LIVENESS_S,
+        )
+        _, result = await asyncio.gather(assign_and_release(), worker)
+        assert result["result"]["items"][0]["source"] == "r1-1"
+
+
+def test_pr_url_from_rebase_and_verified_gate(hub_store: HubStore) -> None:
+    from agent_hub.merge_gate import CiStatus, GateReport, Mergeable, PrState
+    from agent_hub_common import ImplementerOutcome, RebaseResult
+
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "rebase", "Rebase", "Rebase", pr_head_sha="a" * 40)
+    hub_store.submit_result(
+        task.id,
+        "bob",
+        RebaseResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            head_sha="b" * 40,
+            pr_url="https://example.test/pull/1",
+            summary="Rebased",
+        ),
+    )
+    close = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert close.closeout_context is not None
+    assert close.closeout_context["pr_url"] == "https://example.test/pull/1"
+    hub_store.submit_result(close.id, "bob", {"outcome": "blocked", "summary": "Wait"})
+    gate = GateReport(
+        pr_url="https://example.test/pull/2",
+        pr_state=PrState.MERGED,
+        expected_head_sha="b" * 40,
+        current_head_sha="b" * 40,
+        head_matches=True,
+        ci=CiStatus.PASS,
+        checks=[],
+        base_ref="main",
+        base_sha="a" * 40,
+        main_sha="a" * 40,
+        base_behind_main=False,
+        mergeable=Mergeable.CLEAN,
+        merge_state_status="clean",
+    )
+    hub_store.record_gate_reading(gate.pr_url, gate.expected_head_sha, report=gate, elapsed_s=0)
+    close = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert close.closeout_context is not None
+    assert close.closeout_context["pr_url"] == gate.pr_url
+
+
+def test_finding_reintroduced_after_resolution_keeps_prior_provenance(hub_store: HubStore) -> None:
+    from agent_hub_common import (
+        Finding,
+        ImplementerOutcome,
+        ImplementerResult,
+        ReviewerResult,
+        ReviewerVerdict,
+    )
+
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    work = hub_store.assign_task("bob", "implementer", "Fix", "Fix")
+    hub_store.submit_result(
+        work.id,
+        "bob",
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://example.test/pull/1",
+            head_sha="a" * 40,
+            resolved_finding_ids=["r1-1"],
+            summary="Resolved",
+        ),
+    )
+    review = hub_store.assign_task(
+        "charlie", "reviewer", "Review again", "Review", pr_head_sha="a" * 40
+    )
+    hub_store.submit_result(
+        review.id,
+        "charlie",
+        ReviewerResult(
+            verdict=ReviewerVerdict.CHANGES_REQUESTED,
+            nonblocking_findings=[Finding(id="r1-1", text="Reintroduced")],
+            summary="Review",
+        ),
+    )
+    close = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert close.closeout_context is not None
+    finding = close.closeout_context["pending_findings"][0]
+    assert [p["summary"] for p in finding["provenance"]] == ["A finding", "Reintroduced"]
