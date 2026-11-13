@@ -297,11 +297,18 @@ class CloseoutFindingProvenance(BaseModel):
     summary: str
 
 
+class CloseoutContradiction(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    task_id: str
+    kind: Literal["resolved_and_disputed", "blocking_and_nonblocking"]
+
+
 class CloseoutFinding(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     id: str = Field(pattern=r"^r\d+-\d+$")
     summary: str
     provenance: list[CloseoutFindingProvenance]
+    contradictions: list[CloseoutContradiction] = Field(default_factory=list)
 
 
 class CloseoutStep(BaseModel):

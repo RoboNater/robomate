@@ -938,6 +938,10 @@ The hub appends to the orchestrator's instructions, and stores on the task:
 The snapshot is returned as `closeout_context` on assignment, full held redelivery,
 and takeover reattachment; the hub validates completion against this stored context,
 not later configuration edits. Duplicate finding IDs retain their review provenance.
+A historical reviewer result using the same ID as blocking and nonblocking carries a
+`blocking_and_nonblocking` marker. A historical implementer result listing an ID as both
+resolved and disputed leaves it pending with a `resolved_and_disputed` marker. Both
+markers identify their source task.
 The orchestrator may add items of its own as free text. Out-of-scope observations by the
 reviewer arrive as non-blocking findings (reviewer guide), so they flow through automatically.
 

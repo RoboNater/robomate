@@ -58,7 +58,7 @@ from agent_hub_common import (
     utcnow,
     validate_agent_name,
 )
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 
 from .activity import (
     ACTIVE,
@@ -572,9 +572,22 @@ def _closeout_context(
     """Capture typed obligations and effective repository settings at assignment."""
     from agent_hub_common import load_config_layers
 
+    # #478 rejects duplicate IDs on new results. Historical typed results may
+    # contain them, so override only that validator when reading this snapshot.
+    class StoredReviewerResult(ReviewerResult):
+        @model_validator(mode="after")
+        def validate_finding_ids_unique(self) -> StoredReviewerResult:
+            return self
+
+    class StoredImplementerResult(ImplementerResult):
+        @model_validator(mode="after")
+        def validate_finding_ids_unique(self) -> StoredImplementerResult:
+            return self
+
     config = load_config_layers(state_dir=store._state_dir(), git_common_dir=store.git_common_dir)
     pending: dict[str, dict[str, Any]] = {}
     history: dict[str, dict[str, Any]] = {}
+    contradictions: dict[str, list[dict[str, str]]] = {}
     pr_url = None
     rows = connection.execute(
         "SELECT task.id, task.role, task.result_json FROM task "
@@ -590,21 +603,46 @@ def _closeout_context(
             continue
         try:
             if row["role"] == TaskRole.REVIEWER:
-                result = ReviewerResult.model_validate(raw)
+                result = StoredReviewerResult.model_validate(raw)
                 if result.pr_url:
                     pr_url = result.pr_url
                 for finding in result.nonblocking_findings:
                     entry = history.setdefault(
-                        finding.id, {"id": finding.id, "summary": finding.text, "provenance": []}
+                        finding.id,
+                        {
+                            "id": finding.id,
+                            "summary": finding.text,
+                            "provenance": [],
+                            "contradictions": contradictions.setdefault(finding.id, []),
+                        },
                     )
                     entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
                     pending[finding.id] = entry
+                nonblocking_ids = {finding.id for finding in result.nonblocking_findings}
+                flagged: set[str] = set()
+                for finding in result.blocking_findings:
+                    if finding.id in nonblocking_ids:
+                        entry = history[finding.id]
+                        entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
+                        if finding.id not in flagged:
+                            entry["contradictions"].append(
+                                {"task_id": row["id"], "kind": "blocking_and_nonblocking"}
+                            )
+                            flagged.add(finding.id)
             elif row["role"] == TaskRole.IMPLEMENTER:
-                impl = ImplementerResult.model_validate(raw)
+                impl = StoredImplementerResult.model_validate(raw)
                 if impl.pr_url:
                     pr_url = impl.pr_url
-                for finding_id in impl.resolved_finding_ids or []:
-                    pending.pop(finding_id, None)
+                disputed = set(impl.disputed_finding_ids or [])
+                for finding_id in set(impl.resolved_finding_ids or []):
+                    if finding_id in disputed:
+                        contradictions.setdefault(finding_id, []).append(
+                            {"task_id": row["id"], "kind": "resolved_and_disputed"}
+                        )
+                        if finding_id in history:
+                            pending[finding_id] = history[finding_id]
+                    else:
+                        pending.pop(finding_id, None)
             elif row["role"] == TaskRole.REBASE:
                 rebase = RebaseResult.model_validate(raw)
                 if rebase.pr_url:

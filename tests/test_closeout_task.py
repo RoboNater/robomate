@@ -593,3 +593,95 @@ def test_legacy_closeout_status_is_not_a_typed_result(hub_store: HubStore) -> No
     assert finished.result["status"] == "completed"
     with pytest.raises(ValidationError):
         CloseoutResult.model_validate(finished.result)
+
+
+def test_stored_duplicate_reviewer_findings_keep_all_legacy_provenance(hub_store: HubStore) -> None:
+    import json
+
+    from agent_hub.database import database
+    from agent_hub_common import Finding, ReviewerResult, ReviewerVerdict
+
+    hub_store.check_in("reviewer")
+    review = hub_store.assign_task("reviewer", "reviewer", "Review", "Review", pr_head_sha="a" * 40)
+    hub_store.submit_result(
+        review.id,
+        "reviewer",
+        ReviewerResult(
+            verdict=ReviewerVerdict.CHANGES_REQUESTED,
+            nonblocking_findings=[
+                Finding(id="r1-1", text="First"),
+                Finding(id="r1-2", text="Other"),
+            ],
+            summary="Review",
+        ),
+    )
+    # This typed record was accepted before #478 tightened submission validation.
+    with database(hub_store.path) as connection:
+        row = connection.execute(
+            "SELECT result_json FROM task WHERE id = ?", (review.id,)
+        ).fetchone()
+        legacy = json.loads(row["result_json"])
+        legacy["nonblocking_findings"].append({"id": "r1-1", "text": "Second"})
+        legacy["blocking_findings"].append({"id": "r1-1", "text": "Blocking variant"})
+        connection.execute(
+            "UPDATE task SET result_json = ? WHERE id = ?", (json.dumps(legacy), review.id)
+        )
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert task.closeout_context is not None
+    findings = {item["id"]: item for item in task.closeout_context["pending_findings"]}
+    assert set(findings) == {"r1-1", "r1-2"}
+    assert [p["summary"] for p in findings["r1-1"]["provenance"]] == [
+        "First",
+        "Second",
+        "Blocking variant",
+    ]
+    assert findings["r1-1"]["contradictions"] == [
+        {"task_id": review.id, "kind": "blocking_and_nonblocking"}
+    ]
+
+
+def test_stored_resolved_and_disputed_id_is_pending_and_flagged(hub_store: HubStore) -> None:
+    import json
+
+    from agent_hub.database import database
+    from agent_hub_common import ImplementerOutcome, ImplementerResult
+
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    earlier = hub_store.assign_task("bob", "implementer", "Earlier", "Address")
+    hub_store.submit_result(
+        earlier.id,
+        "bob",
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://example.test/pull/1",
+            head_sha="a" * 40,
+            resolved_finding_ids=["r1-1"],
+            summary="Previously resolved",
+        ),
+    )
+    work = hub_store.assign_task("bob", "implementer", "Address", "Address")
+    hub_store.submit_result(
+        work.id,
+        "bob",
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url="https://example.test/pull/1",
+            head_sha="a" * 40,
+            resolved_finding_ids=["r1-1"],
+            summary="Address",
+        ),
+    )
+    with database(hub_store.path) as connection:
+        row = connection.execute("SELECT result_json FROM task WHERE id = ?", (work.id,)).fetchone()
+        legacy = json.loads(row["result_json"])
+        legacy["disputed_finding_ids"] = ["r1-1"]
+        connection.execute(
+            "UPDATE task SET result_json = ? WHERE id = ?", (json.dumps(legacy), work.id)
+        )
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert task.closeout_context is not None
+    findings = task.closeout_context["pending_findings"]
+    assert [finding["id"] for finding in findings] == ["r1-1"]
+    assert findings[0]["contradictions"] == [{"task_id": work.id, "kind": "resolved_and_disputed"}]
