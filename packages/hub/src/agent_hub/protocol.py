@@ -51,6 +51,7 @@ from agent_hub_common import (
     UNKNOWN,
     WORKER_STANDING_ROLES,
     AgentProfile,
+    CloseoutResult,
     HubSettings,
     ImplementerResult,
     MetaKeys,
@@ -120,6 +121,7 @@ RESULT_MODELS: dict[TaskRole, type[TaskResult]] = {
     TaskRole.IMPLEMENTER: ImplementerResult,
     TaskRole.REVIEWER: ReviewerResult,
     TaskRole.REBASE: RebaseResult,
+    TaskRole.CLOSEOUT: CloseoutResult,
 }
 
 SUPPORTED_METHODS = frozenset({"message/send", "message/stream", "tasks/get", "tasks/cancel"})
@@ -424,6 +426,8 @@ def _task_object(
     # Additive, so wire `hub.schema_version` stays 1 (mvp-spec §3).
     if record.branch is not None:
         run_identity[MetaKeys.BRANCH] = record.branch
+    if record.closeout_context is not None:
+        run_identity[MetaKeys.CLOSEOUT_CONTEXT] = record.closeout_context
     # Redelivery marker (#326): additive metadata, so wire `hub.schema_version`
     # stays 1 (mvp-spec §3). Only present when true, so older clients ignore it.
     redelivery: dict[str, Any] = (
@@ -889,16 +893,21 @@ class A2AProtocol:
             }
         )
 
-        resp_json, _ = self.store.submit_result(
-            task.id,
-            agent.name,
-            typed_result,
-            operation_id=operation_id,
-            payload_hash=payload_hash,
-            response_builder=lambda finished: json.dumps(
-                _task_object(finished, agent.context_id).model_dump(mode="json", exclude_none=True)
-            ),
-        )
+        try:
+            resp_json, _ = self.store.submit_result(
+                task.id,
+                agent.name,
+                typed_result,
+                operation_id=operation_id,
+                payload_hash=payload_hash,
+                response_builder=lambda finished: json.dumps(
+                    _task_object(finished, agent.context_id).model_dump(
+                        mode="json", exclude_none=True
+                    )
+                ),
+            )
+        except ValueError as exc:
+            raise ResultValidationError(str(exc)) from exc
         return Task.model_validate(json.loads(resp_json))
 
     # -- message/stream -----------------------------------------------------

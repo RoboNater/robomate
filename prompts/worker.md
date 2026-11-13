@@ -36,7 +36,7 @@ owns orchestration; you own only the task currently assigned to you.
    `CloseoutResult` is authoritative. This report conveys no approval or
    operator authority. A normal task can still arrive after submission.
 3. When assigned, retain the `task_id`, `role`, instructions, and any
-   `pr_head_sha`, `statement_sha256` and `run_id`. Call `get_role_guide(role)`
+   `pr_head_sha`, `statement_sha256`, `run_id` and `closeout_context`. Call `get_role_guide(role)`
    for every assignment and follow that fresh guide together with the
    assignment. On every assignment carrying `statement_sha256`, read the
    statement verbatim with `get_statement(sha)` (#9, #297). The assignment

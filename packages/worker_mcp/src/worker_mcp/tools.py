@@ -7,7 +7,13 @@ from functools import wraps
 from types import MethodType
 from typing import Annotated, Any, TypeVar
 
-from agent_hub_common import ImplementerResult, RebaseResult, ReviewerResult, StandingRole
+from agent_hub_common import (
+    CloseoutResult,
+    ImplementerResult,
+    RebaseResult,
+    ReviewerResult,
+    StandingRole,
+)
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -159,6 +165,7 @@ def create_worker_mcp(
         Returns {task_id, role, instructions}, {release: true}, {timeout: true},
         or {closeout_requested: true, run_id, deadline, instructions}. On a
         closeout request submit_closeout_report, then await again; do not exit.
+        A closeout assignment carries closeout_context, the stored obligations and settings.
         A review or rebase assignment also carries pr_head_sha, the head it is bound to.
         An implementer assignment carries branch (`robomate/<hub>/<agent>/<label>`)
         named in the run's first implementer assignment and reused afterwards, plus
@@ -298,7 +305,7 @@ def create_worker_mcp(
         task_id: str,
         # RebaseResult last: a body that fits several models validates as the
         # first, and the hub re-validates against the task's role either way.
-        result: ImplementerResult | ReviewerResult | RebaseResult,
+        result: CloseoutResult | ImplementerResult | ReviewerResult | RebaseResult,
     ) -> dict[str, Any]:
         """Submit the final result for a task, validated against the role's schema."""
         resolved = await resolve()

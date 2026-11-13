@@ -52,6 +52,7 @@ Policy:
   "max_task_lease_min": 120,
   "stall_after_min": 20,
   "stall_action_after_min": 0,
+  "closeout": true,
   "closeout_wait_s": 300,
   "on_done": "release"
 }

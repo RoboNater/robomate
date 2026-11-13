@@ -33,6 +33,7 @@ from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common import (
     AgentProfile,
+    CloseoutResult,
     ConfigurationError,
     Finding,
     HubSettings,
@@ -577,7 +578,28 @@ async def run_worker(
         await client.report_progress(task_id, "Completed task execution, preparing result")
 
         dummy_sha = "0123456789abcdef0123456789abcdef01234567"
-        if role == "reviewer":
+        if role == "closeout":
+            context = assignment["closeout_context"]
+            result = CloseoutResult.model_validate(
+                {
+                    "outcome": "failed" if fail else "completed",
+                    "summary": "Mock closeout failed" if fail else "Mock closeout completed",
+                    "items": [
+                        {
+                            "source": finding["id"],
+                            "summary": "Mock finding",
+                            "action": "none",
+                            "reason": "Mock scenario",
+                        }
+                        for finding in context["pending_findings"]
+                    ],
+                    "steps": [
+                        {"index": step["index"], "done": False, "note": "Mock scenario"}
+                        for step in context["steps"]
+                    ],
+                }
+            )
+        elif role == "reviewer":
             if fail:
                 result = ReviewerResult(
                     verdict=ReviewerVerdict.FAILED,

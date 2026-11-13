@@ -74,5 +74,6 @@ class MetaKeys(StrEnum):
     STATEMENT_SHA256 = "hub.statement_sha256"
     BRANCH = "hub.branch"
     ALREADY_HELD = "hub.already_held"
+    CLOSEOUT_CONTEXT = "hub.closeout_context"
     CLOSEOUT_REQUESTED = "hub.closeout_requested"
     CLOSEOUT_DEADLINE = "hub.closeout_deadline"

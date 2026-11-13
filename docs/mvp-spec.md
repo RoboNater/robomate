@@ -935,6 +935,13 @@ The hub appends to the orchestrator's instructions, and stores on the task:
 - **steps** — `closeout_steps`, verbatim and indexed.
 - `nits_issue`, `followup_label`, and the PR/MR URL.
 
+The snapshot is returned as `closeout_context` on assignment, full held redelivery,
+and takeover reattachment; the hub validates completion against this stored context,
+not later configuration edits. Duplicate finding IDs retain their review provenance.
+A historical reviewer result using the same ID as blocking and nonblocking carries a
+`blocking_and_nonblocking` marker. A historical implementer result listing an ID as both
+resolved and disputed leaves it pending with a `resolved_and_disputed` marker. Both
+markers identify their source task.
 The orchestrator may add items of its own as free text. Out-of-scope observations by the
 reviewer arrive as non-blocking findings (reviewer guide), so they flow through automatically.
 
@@ -950,16 +957,19 @@ summary
 
 Validation (a `completed` result that fails any rule is rejected with a clear error and the
 task stays open):
-- every pending finding ID appears in `items` exactly once;
+- every pending finding ID appears in `items` exactly once; unknown finding IDs are rejected;
 - `issue` and `nit` require `url`; `nit` requires `nits_issue` to be configured;
   `none` requires `reason`;
-- every step index appears exactly once; `done: false` requires `note`.
+- every step index appears exactly once; `done: false` requires `note`. Empty lists are
+  valid when no findings or steps are pending; blocked and failed outcomes retain their
+  explanation and are not completed close-out.
 
 Follow-up issues carry `followup_label` and reference the PR/MR and the finding ID.
 
 **The `done` check.** `set_workflow_status(done)` is refused, naming what is missing, unless:
 1. `check_merge_gate` reports the PR/MR `merged` (`deliver: merge`) or `open` (`deliver: pr`); and
-2. a `closeout` task for this workflow is `completed` (unless `closeout: false`).
+2. a `closeout` task for this workflow has a completed typed `CloseoutResult` (unless
+   `closeout: false`); a legacy raw task result does not satisfy this check.
 
 No other close-out rule is enforced in code for the MVP. Steps reported `done: false` do not
 block; they are highlighted in the report.
@@ -1041,7 +1051,7 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
-| `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
+| `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub snapshots and appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed; `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
 | `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
