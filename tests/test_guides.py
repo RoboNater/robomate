@@ -612,3 +612,21 @@ def test_worker_guide_explains_held_task_id_recovery() -> None:
     assert "compare the delivered `task_id`" in guide
     assert "your local copy of the ID is wrong" in guide
     assert "restarted bridge" in guide
+
+
+def test_worker_smoke_documents_submit_limit_and_alternatives() -> None:
+    """#403 Option 2: isolated smoke hides gh login; name credential-free routes."""
+    guide = (Path(__file__).parents[1] / "guides" / "worker.md").read_text()
+    normalized = " ".join(guide.split())
+    for fragment in (
+        "Forge-bound `robomate submit` is not available in the smoke",
+        "isolated `XDG_CONFIG_HOME`/`APPDATA` hides `gh`'s login",
+        "hub's preflight cannot read repository settings",
+        "call `start_workflow(statement=...)` directly",
+        "local-path clone (forge `unknown`, gate unbound)",
+        "pytest hub fixture with the preflight stubbed",
+        "prefer a GitHub origin for a realistic smoke",
+    ):
+        assert fragment in normalized
+    # No credential spread toward #404: the GH_CONFIG_DIR workaround stays out.
+    assert "GH_CONFIG_DIR" not in guide
