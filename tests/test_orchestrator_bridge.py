@@ -172,8 +172,9 @@ async def test_bridge_checks_the_local_hub_identity_before_connecting(
 
 
 @pytest.mark.parametrize("key", [None, "decision-key"])
+@pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout])
 async def test_log_decision_retries_connection_failure(
-    key: str | None, app: FastAPI, hub_store: HubStore
+    key: str | None, error: type[httpx.TransportError], app: FastAPI, hub_store: HubStore
 ) -> None:
     class FailFirstTransport(httpx.AsyncBaseTransport):
         def __init__(self) -> None:
@@ -183,7 +184,7 @@ async def test_log_decision_retries_connection_failure(
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             self.requests += 1
             if self.requests == 1:
-                raise httpx.ConnectError("connection lost", request=request)
+                raise error("connection lost", request=request)
             return await self.inner.handle_async_request(request)
 
         async def aclose(self) -> None:
@@ -230,6 +231,21 @@ async def test_empty_read_error_is_reported_and_logged(
         assert requests == 1  # An unkeyed write may already have been dispatched.
         events = [json.loads(line) for line in path.read_text().splitlines()]
         assert any(e.get("phase") == "error" and e.get("error_type") == "ReadError" for e in events)
+    finally:
+        await bridge.close()
+
+
+@pytest.mark.parametrize("message", ["", "deadline exceeded"])
+async def test_read_timeout_preserves_or_supplies_message(message: str) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(message, request=request)
+
+    bridge = OrchestratorBridge()
+    bridge._client = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url=BASE_URL)
+    try:
+        with pytest.raises(httpx.ReadTimeout) as exc:
+            await bridge.call("log_decision", {"summary": "s", "rationale": "r"})
+        assert str(exc.value) == (message or "ReadTimeout (hub transport timeout)")
     finally:
         await bridge.close()
 

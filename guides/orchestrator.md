@@ -252,8 +252,9 @@ gate, each call kept under 120 s on Claude Code.
 Before a delivered event causes more than one action, call `log_decision` first
 with the checkpoint in `key`, not in `summary`, for example
 `log_decision(summary="...", rationale="...", key="event:<event-id>:<action>")`.
-The hub deduplicates on `key`, and the bridge retries a transport error only
-for a keyed call. On
+The hub deduplicates on `key`. The bridge retries pre-response transport errors
+for keyed calls; unkeyed calls retry only connection or pool failures that occur
+before dispatch. On
 redelivery, call `get_state`, repeat the same checkpoint call, and inspect
 whether the action already happened before retrying it. The current delivery ID
 can be acknowledged even after its lease expires. A stale delivery ID cannot

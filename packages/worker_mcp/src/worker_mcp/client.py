@@ -310,7 +310,12 @@ class WorkerHubClient:
                     await asyncio.sleep(delay)
                     continue
                 if not str(exc):
-                    exc.args = (f"{type(exc).__name__} (hub connection dropped)",)
+                    hint = (
+                        "hub transport timeout"
+                        if isinstance(exc, httpx.TimeoutException)
+                        else "hub connection dropped"
+                    )
+                    exc.args = (f"{type(exc).__name__} ({hint})",)
                 raise
 
     async def _post_rpc(self, method: str, params: dict[str, Any], *, path: str = "/a2a") -> Any:
@@ -495,7 +500,12 @@ class WorkerHubClient:
                     await asyncio.sleep(delay)
                     continue
                 if not str(exc):
-                    exc.args = (f"{type(exc).__name__} (hub connection dropped)",)
+                    hint = (
+                        "hub transport timeout"
+                        if isinstance(exc, httpx.TimeoutException)
+                        else "hub connection dropped"
+                    )
+                    exc.args = (f"{type(exc).__name__} ({hint})",)
                 raise
 
     async def _bind_hub(self, hub: str | None = None) -> None:

@@ -184,11 +184,21 @@ class OrchestratorBridge:
                 # only connection establishment failures prove an unkeyed write safe.
                 retryable = method in RETRYABLE or (
                     method == "log_decision"
-                    and (params.get("key") is not None or isinstance(exc, httpx.ConnectError))
+                    and (
+                        params.get("key") is not None
+                        or isinstance(
+                            exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+                        )
+                    )
                 )
                 if response_started or not retryable or attempts >= 3:
                     if not str(exc):
-                        exc.args = (f"{type(exc).__name__} (hub connection dropped)",)
+                        hint = (
+                            "hub transport timeout"
+                            if isinstance(exc, httpx.TimeoutException)
+                            else "hub connection dropped"
+                        )
+                        exc.args = (f"{type(exc).__name__} ({hint})",)
                     raise
                 count_http_retry()
                 await asyncio.sleep(0.5 * 2**attempts)
