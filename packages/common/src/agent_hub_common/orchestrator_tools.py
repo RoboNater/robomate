@@ -189,8 +189,9 @@ class OrchestratorTools:
 
         Pass an event checkpoint as `key` (for example
         `key="event:<event-id>:<action>"`), not in `summary`: the hub
-        deduplicates on `key`, and the bridge retries a transport error only
-        for a keyed call.
+        deduplicates on `key`. The bridge retries pre-response transport errors
+        for keyed calls; unkeyed calls retry only connection or pool failures
+        that occur before dispatch.
         """
         raise NotImplementedError
 
