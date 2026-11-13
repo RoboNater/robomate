@@ -345,6 +345,13 @@ allowed, only under all of these limits:
   `origin/HEAD` unset, fails fast instead of serving. A local-path clone
   serves with forge `unknown` (unbound gate), so prefer a GitHub origin for
   a realistic smoke.
+- Forge-bound `robomate submit` is not available in the smoke: the isolated
+  `XDG_CONFIG_HOME`/`APPDATA` hides `gh`'s login, so the hub's preflight
+  cannot read repository settings. Prefer a GitHub origin for a realistic
+  smoke, but queue statements with a credential-free route instead: call
+  `start_workflow(statement=...)` directly; use a local-path clone (forge
+  `unknown`, gate unbound); or use a pytest hub fixture with the preflight
+  stubbed.
 - Its own port, never the run hub's.
 - Stopped before the task ends, with `robomate down` in the same isolated
   environment, or by stopping the `hub` process you started.
