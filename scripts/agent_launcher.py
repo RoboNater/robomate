@@ -494,7 +494,7 @@ class Launcher:
             status_dir = Path(
                 environment.get("ROBOMATE_PERMISSION_STATUS_DIR", self.args.sessions.parent)
             )
-            previous: list[dict[str, Any]] | None = None
+            previous: list[dict[str, Any]] = []
             try:
                 while True:
                     try:
@@ -533,7 +533,8 @@ class Launcher:
                     except subprocess.TimeoutExpired:
                         pass
             finally:
-                self.log("permission_observation", launch_id=launch_id, pending=[])
+                if previous:
+                    self.log("permission_observation", launch_id=launch_id, pending=[])
                 try:
                     write_observation(status_dir, self.agent, {})
                 except OSError:
