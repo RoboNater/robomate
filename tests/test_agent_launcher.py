@@ -1295,9 +1295,12 @@ def test_doctor_refuses_unverified_codex_mcp(
         return subprocess.CompletedProcess(argv, 0, stdout=body)
 
     monkeypatch.setattr(CLI.subprocess, "run", listing)
+    words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"]
+    if failure == "exit":
+        words += ["--harness-args", "session-only-argument"]
     assert (
         invoke(
-            ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"],
+            words,
             programs=programs(area),
             reader=no_hub(),
         )
@@ -1306,6 +1309,10 @@ def test_doctor_refuses_unverified_codex_mcp(
     assert launches(area) == []
     error = capsys.readouterr().err
     assert "--clean-login" in error and "secret transport" not in error
+    if failure != "enabled":
+        assert "configuration probe failed" in error and "harness arguments" in error
+    if failure == "exit":
+        assert "session-only-argument" in calls[0]
 
 
 def test_doctor_codex_disables_special_names_with_same_launch_settings(

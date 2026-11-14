@@ -1268,7 +1268,11 @@ def doctor_codex_mcp_flags(argv: list[str], *, environment: dict[str, str], cwd:
                 raise ValueError("invalid MCP listing")
             return entries
         except (OSError, subprocess.SubprocessError, ValueError):
-            raise Usage(remedy) from None
+            raise Usage(
+                "Codex MCP configuration probe failed; check configuration and harness arguments "
+                "(remove positional or session-only arguments that codex mcp list cannot accept); "
+                + remedy
+            ) from None
 
     flags = []
     table = []
@@ -1401,7 +1405,6 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     )
     if login:
         print(login, flush=True)
-
     return subprocess.call(argv, cwd=doctor_dir["workdir"], env=environment)
 
 
