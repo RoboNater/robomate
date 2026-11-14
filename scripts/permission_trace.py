@@ -25,7 +25,10 @@ class PermissionTrace:
         before = self.pending.copy()
         with self.path.open("rb") as stream:
             if self.path.stat().st_size < self.offset:
-                self.offset = 0
+                # Never replay a rewritten trace as fresh evidence. Only bytes
+                # appended after this reset can establish a new pending ask.
+                stream.seek(0, 2)
+                self.offset = stream.tell()
                 self.buffer = b""
                 self.discarding = False
                 self.pending.clear()

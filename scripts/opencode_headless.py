@@ -97,8 +97,10 @@ def prepare(
     command = [
         word for word in argv if word != "--auto" and not word.startswith(("--auto=", "--agent="))
     ]
-    if "--agent" in command:
+    while "--agent" in command:
         index = command.index("--agent")
+        if index + 1 >= len(command):
+            raise ValueError("OpenCode --agent requires a value")
         del command[index : index + 2]
     command[run_index + 1 : run_index + 1] = ["--agent", name]
     return command, env

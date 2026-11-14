@@ -505,6 +505,11 @@ class Launcher:
                             if session == self.conversation
                         ]
                         if pending != previous:
+                            if pending and self.workflow_id is None:
+                                # Alice can create the workflow after her first
+                                # child starts. Correlate that run before exposing
+                                # a diagnosis, without changing hub activity.
+                                self.refresh_workflow_id_best_effort()
                             self.log("permission_observation", launch_id=launch_id, pending=pending)
                             previous = pending
                         write_observation(

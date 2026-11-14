@@ -11,6 +11,7 @@ with legacy state, so `--hub <checkout>` finds the state directory and
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -119,6 +121,57 @@ def test_opencode_roots_use_git_common_dir_without_broadening_missing_metadata(
     assert allowed_roots(worktree, worktree, worktree).count(worktree.resolve()) == 1
 
 
+def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_harness("opencode", monkeypatch)
+    inherited: dict[str, Any] = {
+        "agent": {
+            "build": {
+                "variant": "high",
+                "permission": {
+                    "external_directory": {"/too-broad/*": "allow"},
+                    "*": "allow",
+                },
+            }
+        },
+        "mcp": {"custom": {"enabled": False}},
+        "plugin": ["file:///existing.mjs"],
+    }
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    monkeypatch.setenv("FAKE_OPENCODE_CONFIG", json.dumps(inherited))
+    detached = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released")]}
+    hub = FakeHub(after_launches(area, detached, detached, released))
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    names = []
+    for launch in launches(area):
+        argv = launch["argv"]
+        assert "--auto" not in argv
+        name = argv[argv.index("--agent") + 1]
+        names.append(name)
+        content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+        assert content["mcp"] == inherited["mcp"]
+        assert "file:///existing.mjs" in content["plugin"]
+        assert any(p.endswith("/permission-events.mjs") for p in content["plugin"])
+        assert content["agent"][name]["variant"] == "high"
+        rules = content["agent"][name]["permission"]["external_directory"]
+        assert rules["*"] == "deny" and "/too-broad/*" not in rules
+        assert rules[area["worktree"].as_posix() + "/*"] == "allow"
+        assert rules[area["checkout"].as_posix() + "/*"] == "allow"
+        assert launch["cwd"] == launch["env"]["PWD"] == str(area["worktree"])
+    assert len(names) == len(set(names)) == 2
+
+
 def test_permission_trace_is_incremental_and_matches_session_request(tmp_path: Path) -> None:
     from permission_trace import PermissionTrace  # type: ignore[import-not-found]
 
@@ -200,6 +253,40 @@ def test_hanging_opencode_reports_pending_before_exit(
     released = {"workflow": workflow(), "agents": [agent_row("released")]}
     hub = FakeHub(after_launches(area, detached, released))
     errors: list[BaseException] = []
+    from agent_hub_common.discovery import HubEndpoint
+    from robomate import cli as status_cli
+
+    status = {
+        "hub_id": HUB,
+        "workflow": workflow(headline="work"),
+        "repo_root": str(area["checkout"]),
+        "url": "http://hub.test",
+        "origin": "o/r",
+        "forge": "github",
+        "default_branch": "main",
+        "orchestrator": None,
+        "agents": [
+            {
+                "name": "bob",
+                "harness": "opencode",
+                "model": "test",
+                "status": "busy",
+                "alive": True,
+                "stalled": True,
+                "activity": {},
+                "current_task": "task",
+            }
+        ],
+        "tasks": [],
+        "pending_questions": [],
+    }
+    monkeypatch.setattr(
+        status_cli, "find_hub", lambda *a, **kw: HubEndpoint("http://hub.test", "t")
+    )
+    monkeypatch.setattr(status_cli, "_rpc", lambda *a, **kw: status)
+    monkeypatch.setattr(
+        status_cli, "_hub_location", lambda *a: (area["state"], area["state"] / "token")
+    )
 
     def inspect_and_kill() -> None:
         pid_file = area["harness_dir"] / "pid"
@@ -214,6 +301,10 @@ def test_hanging_opencode_reports_pending_before_exit(
             assert (
                 diagnostic == "opencode permission ask pending: external_directory /outside/path/*"
             )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status_cli._status(False, None)
+            assert f"STALLED — {diagnostic}" in output.getvalue()
             assert any(
                 row["event"] == "permission_observation" and row["pending"] for row in rows(area)
             )
