@@ -434,7 +434,8 @@ class Launcher:
             # 2.1.325 is the first version verified by #517. Older/unknown
             # versions retain their supported argv rather than receiving a new flag.
             if match and tuple(map(int, match.groups())) >= (2, 1, 325):
-                argv = [*argv, "--permission-prompts", "none"]
+                position = argv.index("-p") if "-p" in argv else len(argv)
+                argv = [*argv[:position], "--permission-prompts", "none", *argv[position:]]
         if self.harness == "opencode":
             from opencode_headless import prepare
             from permission_trace import PermissionTrace
