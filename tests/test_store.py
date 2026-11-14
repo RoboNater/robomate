@@ -1738,6 +1738,20 @@ def test_claimant_clone_requires_matching_workspace_id(store: HubStore) -> None:
             claimant=_claimant("/clone/bob", workspace_id="clone-2", explicit=True),
         )
 
+    # A clone row is defined by an explicit HUB_WORKSPACE, so a claimant that
+    # did not name one is not in that clone even with a matching id.
+    with pytest.raises(TakeoverRefusedError, match="workspace:"):
+        store.check_in(
+            "bob",
+            replace(CODEX, workspace_id="clone-1"),
+            standing_role="implementer",
+            worker_instance_id="bob-2b",
+            takeover=True,
+            workspace_path="/clone/bob",
+            workspace_kind="clone",
+            claimant=_claimant("/clone/bob", workspace_id="clone-1", explicit=False),
+        )
+
     agent = store.check_in(
         "bob",
         replace(CODEX, workspace_id="clone-1"),

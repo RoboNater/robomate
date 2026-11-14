@@ -4682,11 +4682,11 @@ def _claimant_mismatches(row: Row, profile: AgentProfile, claimant: Claimant) ->
             )
     elif kind == "clone" and row["workspace_id"]:
         held_id = row["workspace_id"]
-        if claimant.bridge_workspace_id != held_id:
-            mismatches.append(
-                f"workspace: held {held_id}, claimant "
-                f"{claimant.bridge_workspace_id or '(unreported)'}"
-            )
+        # A clone row is only ever recorded from an explicit `HUB_WORKSPACE`
+        # join, so a claimant that did not name one is not in that clone.
+        claimed = claimant.bridge_workspace_id if claimant.explicit else None
+        if claimed != held_id:
+            mismatches.append(f"workspace: held {held_id}, claimant {claimed or '(unreported)'}")
     for key, held, incoming in (
         ("harness", row["harness"], profile.harness),
         ("provider", row["provider"], profile.provider),
