@@ -741,10 +741,12 @@ async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
             await client.close()
 
 
-async def test_unjoined_whoami_reports_discovery_failure_and_live_hubs(
+async def test_unjoined_whoami_fails_closed_without_listing_hubs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """#511: an unbound bridge never leaks hub names or suggests hub= to an agent."""
+
     def missing(*args: Any, **kwargs: Any) -> None:
         raise DiscoveryError(
             "outside a checkout; Registered and live hubs: repo-a, repo-b; use hub="
@@ -756,6 +758,10 @@ async def test_unjoined_whoami_reports_discovery_failure_and_live_hubs(
     try:
         who = await _call(server, "whoami")
         assert who["joined"] is False and who["hub"] is None
-        assert "repo-a, repo-b" in who["discovery_error"]
+        error = who["discovery_error"]
+        assert "this robomate bridge has no hub" in error
+        assert "report blocked" in error
+        assert "repo-a, repo-b" not in error
+        assert "hub=" not in error
     finally:
         await client.close()

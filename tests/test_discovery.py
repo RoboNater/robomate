@@ -328,6 +328,134 @@ def test_a_name_shared_by_two_repositories_needs_a_hub_id(repository: Path, tmp_
     assert isinstance(hub, LocalHub) and hub.checkout == other
 
 
+# -- #511: a launcher pins the bridge to one registered hub by id ---------------
+
+
+def _register_live_hub(
+    tmp_path: Path,
+    hub_id: str,
+    name: str,
+    env: dict[str, str],
+    healthz: Callable[[str], str],
+) -> tuple[Path, str]:
+    """Register a hub whose recorded URL answers /healthz with its hub_id."""
+
+    checkout = init_repository(tmp_path / name)
+    url = healthz(hub_id)
+    state = legacy_state_dir(checkout)
+    write_hub_json(state, {"url": url, "hub_id": hub_id, "name": name, "pid": None})
+    (state / "token").write_text(f"{name}-token\n", encoding="utf-8")
+    register(
+        {
+            "hub_id": hub_id,
+            "name": name,
+            "checkout": str(checkout),
+            "git_common_dir": str(resolve_checkout(checkout)[1]),
+            "url": url,
+            "pid": None,
+        },
+        env,
+    )
+    return checkout, url
+
+
+def test_hub_id_selects_a_registered_hub_from_an_unbound_cwd(
+    tmp_path: Path, healthz: Callable[[str], str]
+) -> None:
+    """ROBOMATE_HUB_ID picks one of several registered hubs without a binding (#511)."""
+
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "LOCALAPPDATA": str(tmp_path / "local")}
+    _, url_a = _register_live_hub(tmp_path, "id-a", "hub-a", env, healthz)
+    _, url_b = _register_live_hub(tmp_path, "id-b", "hub-b", env, healthz)
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    pinned = env | {"ROBOMATE_HUB_ID": "id-b"}
+
+    hub = find_hub(unbound, pinned)
+    assert isinstance(hub, LocalHub)
+    assert (hub.hub_id, hub.url, hub.name) == ("id-b", url_b, "hub-b")
+    assert hub.url != url_a
+    endpoint = discover(unbound, pinned)
+    assert (endpoint.url, endpoint.token) == (url_b, "hub-b-token")
+
+
+def test_unknown_hub_id_is_refused(tmp_path: Path) -> None:
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    with pytest.raises(DiscoveryError, match="no registered hub has that name or hub_id"):
+        find_hub(unbound, env | {"ROBOMATE_HUB_ID": "missing"})
+    # The bridge path keeps the refusal but never enumerates the hubs.
+    with pytest.raises(DiscoveryError, match="no registered hub has that name or hub_id") as err:
+        find_hub(unbound, env | {"ROBOMATE_HUB_ID": "missing"}, list_hubs=False)
+    assert "Live hubs:" not in str(err.value) and "Registered hubs:" not in str(err.value)
+
+
+def test_pinned_local_hub_refuses_a_mismatched_healthz_id(
+    tmp_path: Path, healthz: Callable[[str], str]
+) -> None:
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    checkout = init_repository(tmp_path / "hub")
+    state = legacy_state_dir(checkout)
+    url = healthz("squatter-id")  # answers /healthz as a different hub
+    write_hub_json(state, {"url": url, "hub_id": "pinned-id", "name": "hub", "pid": None})
+    (state / "token").write_text("hub-token\n", encoding="utf-8")
+    register(
+        {
+            "hub_id": "pinned-id",
+            "name": "hub",
+            "checkout": str(checkout),
+            "git_common_dir": str(resolve_checkout(checkout)[1]),
+            "url": url,
+            "pid": None,
+        },
+        env,
+    )
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    with pytest.raises(DiscoveryError, match="answers as hub squatter-id, not pinned-id"):
+        discover(unbound, env | {"ROBOMATE_HUB_ID": "pinned-id"})
+
+
+def test_pinned_id_must_match_an_explicit_remote_hub(
+    tmp_path: Path, healthz: Callable[[str], str]
+) -> None:
+    """A remote host keeps its explicit URL and checks the pinned id on /healthz (#511)."""
+
+    matching = healthz("remote-id")
+    other = healthz("other-id")
+    env = {"ROBOMATE_HUB_ID": "remote-id", "ROBOMATE_HUB_URL": matching, "ROBOMATE_TOKEN": "t"}
+    assert discover(tmp_path, env) == HubEndpoint(matching, "t")
+    with pytest.raises(DiscoveryError, match="ROBOMATE_HUB_ID remote-id does not match"):
+        discover(tmp_path, env | {"ROBOMATE_HUB_URL": other})
+
+
+def test_cli_listing_is_unchanged_and_bridge_lists_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI keeps its live-hub listing; the bridge's list_hubs=False omits it (#511)."""
+
+    one = {
+        "name": "one",
+        "checkout": str(tmp_path),
+        "url": "http://registry:8420",
+        "hub_id": "one",
+    }
+    monkeypatch.setattr("agent_hub_common.registry.live_entries", lambda env: [one])
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg")}
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    with pytest.raises(DiscoveryError, match="Live hubs:") as cli:
+        find_hub(unbound, env)  # the CLI's default: list_hubs=True
+    assert "one  " in str(cli.value)
+    assert "http://registry:8420" in str(cli.value)
+    with pytest.raises(DiscoveryError) as bridge:
+        find_hub(unbound, env, list_hubs=False)
+    assert "Live hubs:" not in str(bridge.value)
+    assert "http://registry:8420" not in str(bridge.value)
+    assert "hub_id one" not in str(bridge.value)
+
+
 @pytest.mark.parametrize("denials", [2, 3])
 def test_hub_json_read_retries_transient_permission_error(
     repository: Path, monkeypatch: pytest.MonkeyPatch, denials: int

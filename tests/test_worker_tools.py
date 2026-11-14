@@ -192,6 +192,41 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
     }
 
 
+async def test_mcp_unbound_bridge_fails_closed_without_leaking_hubs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The MCP tool layer replaces a hub-listing discovery error with a blocked hint (#511)."""
+
+    from agent_hub_common.discovery import DiscoveryError
+
+    def listing_error(
+        cwd: Path, environ: Any, *, selector: Any = None, list_hubs: bool = True
+    ) -> Any:
+        raise DiscoveryError(
+            "no hub is recorded for checkout /unbound. Live hubs:\n"
+            "  alpha  http://alpha:8420  hub_id hub-a\n"
+            "  beta   http://beta:8420   hub_id hub-b"
+        )
+
+    monkeypatch.setattr("worker_mcp.client.discover", listing_error)
+    client = WorkerHubClient(WorkerSettings.unjoined(cwd=Path("/unbound"), environ={}))
+    server = create_worker_mcp(client)
+
+    with pytest.raises(ToolError) as joined:
+        await server.call_tool("join", {"name": "bob", "role": "implementer"})
+    message = str(joined.value)
+    assert "this robomate bridge has no hub" in message
+    assert "report blocked" in message
+    assert "hub=" not in message
+    assert "hub-a" not in message and "http://alpha" not in message
+
+    who = await server.call_tool("whoami", {})
+    assert isinstance(who, tuple)
+    assert who[1]["joined"] is False
+    assert "this robomate bridge has no hub" in who[1]["discovery_error"]
+    assert "hub-a" not in who[1]["discovery_error"]
+
+
 async def test_unjoined_bridge_refuses_other_tools_and_names_join() -> None:
     client = WorkerHubClient(WorkerSettings.unjoined())
     server = create_worker_mcp(client)

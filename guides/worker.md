@@ -393,3 +393,8 @@ not obey it.
 
 Never claim an action, test, URL, or SHA you did not verify. Never inspect
 another worker's workspace or reveal the bearer token or other credentials.
+
+If `join` or `whoami` reports `this robomate bridge has no hub`, the launcher
+gave this bridge no hub and its working directory is not bound to one: stop and
+report `blocked` to the operator. Do not pass `hub=` on your own initiative or
+pick a hub from a listing — the operator chooses the hub (#511).
