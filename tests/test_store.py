@@ -13,12 +13,15 @@ from agent_hub import store as store_module
 from agent_hub.database import database, initialize_database
 from agent_hub.signals import EVENT_KEY, context_key, task_key
 from agent_hub.store import (
+    TAKEOVER_REFUSED_REMEDY,
+    Claimant,
     ConflictError,
     DuplicateAgentError,
     HubStore,
     InvalidPolicyError,
     NotFoundError,
     Released,
+    TakeoverRefusedError,
     TaskRecord,
 )
 from agent_hub_common import (
@@ -1518,6 +1521,292 @@ def test_takeover_supersedes_old_instance_and_reattaches_live_task(store: HubSto
     # The old instance's heartbeats are ignored; the new instance's heartbeats are accepted.
     assert store.heartbeat("bob", "bob-1", task.id) is False
     assert store.heartbeat("bob", "bob-2", task.id) is True
+
+
+CODEX = AgentProfile(
+    harness="codex",
+    harness_version="6.1.0",
+    provider="openai",
+    model="gpt-6.1-sol",
+    model_source=ModelSource.ENV,
+    capabilities=("python",),
+)
+
+
+def _claimant(
+    path: str | None, *, workspace_id: str | None = None, explicit: bool = False
+) -> Claimant:
+    return Claimant(bridge_path=path, bridge_workspace_id=workspace_id, explicit=explicit)
+
+
+def _held_worktree(store: HubStore, tmp_path: Path) -> tuple[Path, str]:
+    """Register bob in a worktree holding an open task, and return both ids."""
+
+    store.initialize_workflow()
+    path = tmp_path / "wt" / "bob"
+    path.mkdir(parents=True)
+    store.check_in(
+        "bob",
+        CODEX,
+        standing_role="implementer",
+        worker_instance_id="bob-1",
+        workspace_path=str(path),
+        workspace_kind="worktree",
+    )
+    store.next_event()
+    task = store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+    return path, task.id
+
+
+def test_claimant_workspace_mismatch_refuses_and_names_only_workspace(
+    store: HubStore, tmp_path: Path
+) -> None:
+    path, task_id = _held_worktree(store, tmp_path)
+    before = store.agent_by_name("bob")
+    assert before is not None
+
+    with pytest.raises(TakeoverRefusedError) as excinfo:
+        store.check_in(
+            "bob",
+            CODEX,
+            standing_role="implementer",
+            worker_instance_id="bob-2",
+            takeover=True,
+            workspace_path=str(path),
+            workspace_kind="worktree",
+            claimant=_claimant(str(tmp_path / "elsewhere")),
+        )
+    text = str(excinfo.value)
+    assert text.startswith("takeover refused:")
+    assert text.endswith(TAKEOVER_REFUSED_REMEDY)
+    assert "workspace:" in text
+    for field in ("harness:", "provider:", "model:"):
+        assert field not in text
+    assert store.agent_by_name("bob") == before
+    held_task = store.get_task(task_id)
+    assert held_task is not None
+    assert held_task.state is TaskState.SUBMITTED
+
+
+def test_claimant_missing_bridge_path_is_a_worktree_mismatch(
+    store: HubStore, tmp_path: Path
+) -> None:
+    path, _ = _held_worktree(store, tmp_path)
+    with pytest.raises(TakeoverRefusedError, match="workspace:"):
+        store.check_in(
+            "bob",
+            CODEX,
+            standing_role="implementer",
+            worker_instance_id="bob-2",
+            takeover=True,
+            workspace_path=str(path),
+            workspace_kind="worktree",
+            claimant=_claimant(None),
+        )
+
+
+@pytest.mark.parametrize(
+    ("incoming", "field"),
+    [
+        (replace(CODEX, harness="opencode"), "harness"),
+        (replace(CODEX, provider="deepseek"), "provider"),
+        (replace(CODEX, model="opencode-go/deepseek-v4.1-flash"), "model"),
+    ],
+)
+def test_claimant_profile_mismatch_refuses(
+    store: HubStore, tmp_path: Path, incoming: AgentProfile, field: str
+) -> None:
+    path, task_id = _held_worktree(store, tmp_path)
+    before = store.agent_by_name("bob")
+    assert before is not None
+
+    with pytest.raises(TakeoverRefusedError) as excinfo:
+        store.check_in(
+            "bob",
+            incoming,
+            standing_role="implementer",
+            worker_instance_id="bob-2",
+            takeover=True,
+            workspace_path=str(path),
+            workspace_kind="worktree",
+            claimant=_claimant(str(path)),
+        )
+    text = str(excinfo.value)
+    assert f"{field}:" in text
+    assert "workspace:" not in text
+    assert store.agent_by_name("bob") == before
+    held_task = store.get_task(task_id)
+    assert held_task is not None
+    assert held_task.state is TaskState.SUBMITTED
+
+
+def test_claimant_ignores_harness_version_effort_and_capabilities(
+    store: HubStore, tmp_path: Path
+) -> None:
+    path, task_id = _held_worktree(store, tmp_path)
+    incoming = replace(
+        CODEX,
+        harness_version="9.9.9",
+        effort="high",
+        effort_source=ModelSource.ENV,
+        capabilities=("rust",),
+        declared_model="something-else",
+    )
+    agent = store.check_in(
+        "bob",
+        incoming,
+        standing_role="implementer",
+        worker_instance_id="bob-2",
+        takeover=True,
+        workspace_path=str(path),
+        workspace_kind="worktree",
+        claimant=_claimant(str(path)),
+    )
+    assert agent.worker_instance_id == "bob-2"
+    assert agent.current_task_id == task_id
+    assert agent.reattached_task is not None
+
+
+def test_claimant_model_difference_needs_env_source_on_both_sides(
+    store: HubStore, tmp_path: Path
+) -> None:
+    store.initialize_workflow()
+    path = tmp_path / "wt" / "bob"
+    path.mkdir(parents=True)
+    declared = replace(CODEX, model_source=ModelSource.DECLARED)
+    store.check_in(
+        "bob",
+        declared,
+        standing_role="implementer",
+        worker_instance_id="bob-1",
+        workspace_path=str(path),
+        workspace_kind="worktree",
+    )
+    store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+
+    # Row source is `declared`, so a different incoming model is not a mismatch.
+    agent = store.check_in(
+        "bob",
+        replace(CODEX, model="other", model_source=ModelSource.ENV),
+        standing_role="implementer",
+        worker_instance_id="bob-2",
+        takeover=True,
+        workspace_path=str(path),
+        workspace_kind="worktree",
+        claimant=_claimant(str(path)),
+    )
+    assert agent.worker_instance_id == "bob-2"
+
+
+def test_claimant_declared_model_difference_is_accepted(store: HubStore, tmp_path: Path) -> None:
+    path, _ = _held_worktree(store, tmp_path)
+    # Row model_source is `env`; an incoming `declared` source skips the gate.
+    agent = store.check_in(
+        "bob",
+        replace(CODEX, model="other", model_source=ModelSource.DECLARED),
+        standing_role="implementer",
+        worker_instance_id="bob-2",
+        takeover=True,
+        workspace_path=str(path),
+        workspace_kind="worktree",
+        claimant=_claimant(str(path)),
+    )
+    assert agent.worker_instance_id == "bob-2"
+
+
+def test_claimant_clone_requires_matching_workspace_id(store: HubStore) -> None:
+    store.initialize_workflow()
+    store.check_in(
+        "bob",
+        replace(CODEX, workspace_id="clone-1"),
+        standing_role="implementer",
+        worker_instance_id="bob-1",
+        workspace_path="/clone/bob",
+        workspace_kind="clone",
+    )
+    store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+
+    with pytest.raises(TakeoverRefusedError, match="workspace:"):
+        store.check_in(
+            "bob",
+            replace(CODEX, workspace_id="clone-2"),
+            standing_role="implementer",
+            worker_instance_id="bob-2",
+            takeover=True,
+            workspace_path="/clone/bob",
+            workspace_kind="clone",
+            claimant=_claimant("/clone/bob", workspace_id="clone-2", explicit=True),
+        )
+
+    # A clone row is defined by an explicit HUB_WORKSPACE, so a claimant that
+    # did not name one is not in that clone even with a matching id.
+    with pytest.raises(TakeoverRefusedError, match="workspace:"):
+        store.check_in(
+            "bob",
+            replace(CODEX, workspace_id="clone-1"),
+            standing_role="implementer",
+            worker_instance_id="bob-2b",
+            takeover=True,
+            workspace_path="/clone/bob",
+            workspace_kind="clone",
+            claimant=_claimant("/clone/bob", workspace_id="clone-1", explicit=False),
+        )
+
+    agent = store.check_in(
+        "bob",
+        replace(CODEX, workspace_id="clone-1"),
+        standing_role="implementer",
+        worker_instance_id="bob-3",
+        takeover=True,
+        workspace_path="/clone/bob",
+        workspace_kind="clone",
+        claimant=_claimant("/clone/bob", workspace_id="clone-1", explicit=True),
+    )
+    assert agent.worker_instance_id == "bob-3"
+
+
+def test_claimant_gate_covers_join_after_detach_without_takeover(
+    store: HubStore, tmp_path: Path
+) -> None:
+    path, task_id = _held_worktree(store, tmp_path)
+    assert store.detach("bob", "bob-1") is True
+
+    with pytest.raises(TakeoverRefusedError):
+        store.check_in(
+            "bob",
+            replace(CODEX, harness="opencode", provider="deepseek"),
+            standing_role="implementer",
+            worker_instance_id="bob-2",
+            workspace_path=str(path),
+            workspace_kind="worktree",
+            claimant=_claimant(str(tmp_path / "elsewhere")),
+        )
+
+    agent = store.check_in(
+        "bob",
+        CODEX,
+        standing_role="implementer",
+        worker_instance_id="bob-3",
+        workspace_path=str(path),
+        workspace_kind="worktree",
+        claimant=_claimant(str(path)),
+    )
+    assert agent.worker_instance_id == "bob-3"
+    assert agent.current_task_id == task_id
+
+
+def test_claimant_none_keeps_legacy_check_in_ungated(store: HubStore, tmp_path: Path) -> None:
+    path, _ = _held_worktree(store, tmp_path)
+    agent = store.check_in(
+        "bob",
+        replace(CODEX, harness="opencode", provider="deepseek"),
+        standing_role="implementer",
+        worker_instance_id="bob-2",
+        takeover=True,
+        workspace_path=str(path),
+        workspace_kind="worktree",
+    )
+    assert agent.worker_instance_id == "bob-2"
 
 
 def _run_id_format(run_id: str) -> bool:

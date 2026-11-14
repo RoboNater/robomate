@@ -424,7 +424,12 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   worktree paths and branch names (§6). Joining a name whose instance is alive returns 409 unless
   `takeover=true`, which supersedes the old instance at once (its heartbeats are ignored).
   A takeover of an agent holding a live task **reattaches** the task to the new instance and
-  returns it in the join response, instead of failing it as `worker_lost`.
+  returns it in the join response, instead of failing it as `worker_lost`. A takeover or
+  re-registration that would inherit an open task is refused with `takeover refused:` unless
+  the claimant's reported workspace and launcher-supplied `harness`, `provider` and
+  `env`-sourced `model` match the held row (#510); `harness_version`, `effort` and
+  `capabilities` are not compared, and `release_agent` followed by a fresh join is the
+  operator path to a different harness.
 - **Profile** (observational, as in PoC §3): `harness`, `harness_version`, `provider`,
   `model`, `effort`, each with a source (`declared` / `install` / `env` / `unknown`, DB
   schema v21), plus
