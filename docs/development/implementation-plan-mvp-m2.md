@@ -415,7 +415,7 @@ or retired:
 | Generated guarded recovery (`resume-<agent>`) | `join(takeover=true)` reattaches the task in the hub; the launcher's `resume <agent>` resumes the saved conversation with today's guards, taking the run from the hub (#223) | 1, 10 |
 | Generated `ask-<agent>` scripts (#221) | The launcher's `ask <agent>`, reading the same session log | 10 |
 | Remote worker-only bundles | Clone fallback: `robomate workspace <name> --clone` on the remote host, with an explicit URL and token file (§4, §6) | 9 |
-| Isolated team harness homes, credential links and copies (#179, #184) | **Retired for the joined team.** They existed because a rendered config carried per-run identity and URL. A static entry holds neither, so the team harness uses the operator's own home and login. Denise's isolated no-MCP profile is preserved separately below | 11 |
+| Isolated team harness homes, credential links and copies (#179, #184) | **Retired for the joined team.** They existed because a rendered config carried per-run identity and URL. A static entry holds neither, so the team harness uses the operator's own home and login. Denise also uses the operator login by default; a per-run clean profile is opt-in (#496) | 11 |
 | Per-harness sandbox grants rendered per run (Codex `writable_roots`, `--add-dir`; #11) | Static per-repository grants on the worktree and git common directory, recorded for Claude Code and Codex in M2 and for every harness in M3; the launcher passes the same grants as flags | 7d, 10 |
 | `RUN_DIR/closeout/<agent>.md` report paths (#97) | **Retired** with the run directory. Hub collection (#215, M4) replaces it: the hub exports the reports to `<state>/runs/<run_id>/closeout/`, which `scripts/start-run.py` prints (#268) | 11 |
 | Per-run additional agent instructions in rendered prompts (the closeout-report instruction) | The statement of work: a `--work-file` carries them, and every assignment carries its SHA-256. The closeout-report instruction is not needed once the hub requests the reports (#268) | 4 |
@@ -424,7 +424,7 @@ or retired:
 | GitHub and GitLab preflight in `prepare-run.py` | Policy-independent checks at `up` (M5 Step 2); policy-dependent checks at `submit` | 4 |
 | Team Bash and PowerShell wrappers | Not needed: `robomate` and the launcher are Python and run the same on Windows; Denise's optional replacement must be demonstrated before retiring her wrappers | 10, 11 |
 | `prep-standard-run*` (#107) | `scripts/start-run.py` (#268): the same config file and `--issue` or `--work-file`, running `robomate up`, `workspace`, `submit` and the launcher's `start` for the three agents. It adds the account and reservations to the statement. The old helper retires after #268 and #269 | 11 |
-| M7 `start-denise.sh` / `.ps1`, isolated doctor profile and `RUN_DIR/denise/` | Optional doctor entry in the successor launcher, outside join/supervision. Use the state resolver and locally readable `runs/<run_id>/manifest.json` for explicit hub/run selection, robomate/target references and effective settings; keep context, isolated no-MCP config, scoped repair grants and local reports in that run's `denise/` directory. The guide stays local at `docs/denise/guide.md`, outside served `guides/`. Startup and diagnosis work without HTTP/MCP; no new credential or privileged API | 10 integration, 11 proven handoff before removal |
+| M7 `start-denise.sh` / `.ps1`, isolated doctor profile and `RUN_DIR/denise/` | Optional doctor entry in the successor launcher, outside join/supervision. Use the state resolver and locally readable `runs/<run_id>/manifest.json` for explicit hub/run selection, robomate/target references and effective settings; use the operator login by default with explicit no-MCP and interactive permission flags; keep context, opt-in per-run `--clean-login` config, scoped repair grants and local reports in that run's `denise/` directory. The guide stays local at `docs/denise/guide.md`, outside served `guides/`. Startup and diagnosis work without HTTP/MCP; no new credential or privileged API | 10 integration, 11 proven handoff before removal |
 
 The doctor entry is separate from `start <agent>` and never calls `workspace`, `join` or
 an agent's supervision loop to start Denise. It reads saved local metadata when the hub is
@@ -432,7 +432,7 @@ down; absent/stale metadata yields a concrete remedy rather than creating a run.
 its prepared-run first slice while M2 is built. Step 10 provides the launcher integration
 as the doctor implementation becomes available, without waiting for all of M7; Step 11
 completes and verifies the replacement before deleting its generators. Doctor context,
-profile and report files are an intentional exception to the team's no-generated-config
+opt-in clean profile and report files are an intentional exception to the team's no-generated-config
 path. Existing consultation reports remain at their recorded paths; adoption must retain
 or explicitly reference them, never delete or silently move a live consultation.
 

@@ -665,3 +665,29 @@ def test_without_auto_start_it_prints_the_starts_and_sigterm_stops_its_hub(
         timeout=2 * LIVENESS_S,
     )
     assert status.returncode == 1 and json.loads(status.stdout)["running"] is False
+
+
+@pytest.mark.parametrize("clean_login", [False, True])
+def test_final_report_passes_clean_login_from_cli_and_saved_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    clean_login: bool,
+) -> None:
+    values, policy = settings(*(["--denise-clean-login"] if clean_login else []))
+    saved = tmp_path / "run.toml"
+    START.write_config(saved, values, policy)
+    restored, _ = settings("--config", str(saved))
+    assert restored["denise_clean_login"] is clean_login
+    run = START.Run(restored, {}, tmp_path, tmp_path / "checkout", "test")
+    monkeypatch.setattr(
+        START,
+        "hub_status",
+        lambda _: {
+            "workflow": {"status": "done", "run_id": "20261109_abcdef12"},
+        },
+    )
+    assert START.report(run)
+    output = capsys.readouterr().out
+    assert "consult Denise" in output
+    assert ("--clean-login" in output) is clean_login

@@ -9,7 +9,10 @@ M7 Step 1 prepares settings, a context index, a startup briefing and empty local
 report/config/workspace directories. It does **not** supply a functional
 `start-denise` script, harness profile or enforced filesystem grants. Interactive
 Claude Code/Codex startup comes in Step 2; OpenCode/AntiGravity support follows
-in Step 3. Devin is unsupported. Do not rerun preparation to retrofit a live run.
+in Step 3. The joined-run `agent-launcher.py doctor` entry supports Claude Code and
+Codex now: it uses the operator login by default, with a per-run profile only
+when `--clean-login` is requested. Devin is unsupported. Do not rerun
+preparation to retrofit a live run.
 The optional manifest object's `status: ready` means the settings/context are
 eligible; `startup_status: pending-step-2` explicitly means startup is unavailable.
 Unsupported inheritance records `status: skipped`, a reason and an override remedy.
@@ -85,9 +88,36 @@ overrides never bypass identity/attachment guards.
 
 ## Authentication, evidence and reports
 
-Use a dedicated doctor home/config with no robomate MCP entry, copied team
-permissions or unattended bypass flags. Clear inherited `ROBOMATE_HUB_URL` and
-`ROBOMATE_TOKEN*` at launch; scope explicit discovery to each operator command.
+By default, `agent-launcher.py doctor` uses the operator's existing harness
+home and login. It leaves `CLAUDE_CONFIG_DIR` and `CODEX_HOME` unchanged,
+including leaving them absent when unset. User hooks, plugins and skills may
+still load: this is an intentional operator-profile consultation, and those
+customizations are acceptable. Choose `--clean-login` for a separate profile.
+No team session is resumed or team credentials copied.
+
+The launcher passes `--strict-mcp-config` without `--mcp-config` and
+`--permission-mode default` to Claude Code. For Codex it reads
+`codex mcp list --json`, disables each configured server with
+`-c mcp_servers.<name>.enabled=false`, and rechecks with the same launch
+settings and overrides. Special server names use quoted inline-table keys.
+Any enabled server, unreadable listing or failed check refuses startup and
+recommends `--clean-login`. `mcp_servers={}` does **not** clear existing servers
+on codex-cli 0.167.0. Codex also gets explicit `approval_policy=on-request` and
+`sandbox_mode=workspace-write`. Disabled servers can remain visible in the
+configuration listing but supply no tools. These flags override user defaults;
+they do not remove the operator's other customizations.
+
+With `--clean-login`, the profile stays per run under
+`denise/configs/claude` or `denise/configs/codex`, keeping logins independent
+between runs. No user profile is copied. Claude Code needs `/login`; Codex
+needs `CODEX_HOME=<that profile> codex login`. The printed login notice names
+these commands. A clean Codex profile's config is rewritten without MCP or
+approval entries; the launch checks still apply. `start-run.py` accepts
+`--denise-clean-login` / `denise_clean_login = true` and appends `--clean-login`
+to its final consultation command. The default is false.
+
+Clear inherited `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` at launch; scope
+explicit discovery to each operator command.
 Filesystem access is not authentication. Existing CLI actions read the selected
 hub bearer token and machine-wide operator credential through supported local
 paths only as needed. Offline startup/diagnosis require neither. Do not duplicate

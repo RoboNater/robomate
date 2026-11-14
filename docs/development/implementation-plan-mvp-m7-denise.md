@@ -66,6 +66,8 @@ denise_settings_from = "bob"   # alice | bob | charlie | none
 denise_harness = ""           # empty: inherit selected agent's harness
 denise_model = ""             # empty: inherit when using the same harness
 denise_effort = ""            # empty: inherit when using the same harness
+# start-run.py only: append --clean-login to the final doctor command
+denise_clean_login = false
 ```
 
 Resolution: CLI overrides TOML; then resolve against the selected agent's final settings.
@@ -166,7 +168,13 @@ Filesystem permissions cannot enforce conversational authority or make shared gi
 private: inspect effects on sibling worktrees before writing common metadata.
 
 Denise has no robomate MCP entry or inherited worker/orchestrator environment. Use a
-dedicated harness home/config; explicitly disable inherited robomate servers, and clear
+user harness home/login by default in the joined doctor entry (#496), with explicit
+Claude `--strict-mcp-config` / `--permission-mode default` and Codex
+`approval_policy=on-request` / `sandbox_mode=workspace-write`. Codex discovers servers,
+disables each by name and verifies none remains enabled before startup, refusing on any
+failure with a `--clean-login` remedy. `mcp_servers={}` merges instead of clearing on
+codex-cli 0.167.0. User hooks/plugins/skills are intentionally acceptable in default mode;
+`--clean-login` selects a separate per-run profile with its own login instead. Clear
 ambient `ROBOMATE_HUB_URL` / `ROBOMATE_TOKEN*` during launch so another run cannot win
 discovery. Operator CLI inspection/actions get explicit selection from this run's context
 using the existing supported selector/environment, scoped to that command. Verify hub ID
@@ -180,7 +188,8 @@ needs a credential read grant, grant the exact file to the CLI where supported; 
 document trusted-only execution or have the operator run the command. Startup and offline
 diagnosis never require operator authentication. Shell history, logs, reports and forge
 comments must contain no token values or complete environment dumps.
-For the isolated harness profile, reuse the existing owner-only local authentication
+For the opt-in per-run clean harness profile (`/login` in Claude Code,
+`CODEX_HOME=<profile> codex login` in Codex), reuse the existing owner-only local authentication
 patterns; a missing login produces an actionable login recommendation. Inheriting Bob's
 model settings never means sharing his complete harness home, MCP environment or session.
 
@@ -242,7 +251,7 @@ The recovery procedure is:
 | Hub host with remote workers | Generate Denise on the hub host; include remote bundle/session paths as remote references. Local diagnosis/startup must work without contacting remote hosts. Operator may run guarded resume on the worker host or provide an existing trusted SSH connection; no automatic credential distribution or remote process control. |
 | Remote-only doctor terminal | Deferred: not required for M7. Explain how to start Denise on the hub host instead. Do not claim local grants reach remote state. |
 | OpenCode/AntiGravity | Follow the first slice with tested interactive configs and access grants on supported hosts. No MCP and no headless worker loop. Needed before M7 completion. |
-| M2 replacement of preparation | M2 Steps 10/11 provide an optional doctor entry in the successor launcher, reading locally saved context from the state resolver and `runs/<run_id>/manifest.json`. Preserve the guide at `docs/denise/guide.md`; keep the context, isolated doctor profile, scoped access inventory and local reports under that run's `denise/` directory. Startup must work without HTTP or join. Only Step 11 waits for M7 and demonstrated replacement behavior. |
+| M2 replacement of preparation | M2 Steps 10/11 provide an optional doctor entry in the successor launcher, reading locally saved context from the state resolver and `runs/<run_id>/manifest.json`. Preserve the guide at `docs/denise/guide.md`; keep the context, opt-in per-run clean doctor profile, scoped access inventory and local reports under that run's `denise/` directory. Startup must work without HTTP or join. Only Step 11 waits for M7 and demonstrated replacement behavior. |
 
 No dependency on future M2 join, state relocation or M3 certification. No new package is
 expected. Changes needing a dependency follow `docs/dependency-licenses.md`. No counters
