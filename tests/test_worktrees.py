@@ -20,7 +20,7 @@ import httpx
 import pytest
 from agent_hub import create_app
 from agent_hub.database import SCHEMA_VERSION, database, initialize_database
-from agent_hub.store import HubStore
+from agent_hub.store import TAKEOVER_REFUSED_REMEDY, HubStore
 from agent_hub.worktrees import (
     WorktreeError,
     WorktreeManager,
@@ -31,8 +31,10 @@ from agent_hub_common import (
 )
 from agent_hub_common import (
     AgentProfile,
+    AgentStatus,
     HubSettings,
     MetaKeys,
+    TaskState,
 )
 from agent_hub_common.discovery import (
     checkout_git_dir,
@@ -256,6 +258,62 @@ async def _a2a_join(
         return result, store
 
 
+CODEX_PROFILE: dict[str, Any] = {
+    MetaKeys.HARNESS: "codex",
+    MetaKeys.HARNESS_VERSION: "6.1.0",
+    MetaKeys.HARNESS_SOURCE: "env",
+    MetaKeys.PROVIDER: "openai",
+    MetaKeys.MODEL: "gpt-6.1-sol",
+    MetaKeys.MODEL_SOURCE: "env",
+}
+
+OPENCODE_PROFILE: dict[str, Any] = {
+    MetaKeys.HARNESS: "opencode",
+    MetaKeys.HARNESS_VERSION: "1.19.3",
+    MetaKeys.HARNESS_SOURCE: "env",
+    MetaKeys.PROVIDER: "deepseek",
+    MetaKeys.MODEL: "opencode-go/deepseek-v4.1-flash",
+    MetaKeys.MODEL_SOURCE: "env",
+}
+
+
+async def _send_join(
+    app: Any,
+    *,
+    instance: str,
+    takeover: bool = False,
+    path: str | None = None,
+    explicit: bool = False,
+    profile: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+) -> httpx.Response:
+    metadata: dict[str, Any] = {
+        MetaKeys.AGENT: "bob",
+        MetaKeys.STANDING_ROLE: "implementer",
+        MetaKeys.TAKEOVER: takeover,
+        MetaKeys.CAPABILITIES: ["python"],
+        MetaKeys.SCHEMA_VERSION: 1,
+        MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+        MetaKeys.WORKER_INSTANCE_ID: instance,
+        MetaKeys.WORKSPACE_EXPLICIT: explicit,
+        MetaKeys.WORKSPACE_PATH: path if path is not None else str(Path.cwd()),
+        **(profile or {}),
+    }
+    if workspace_id is not None:
+        metadata[MetaKeys.WORKSPACE_ID] = workspace_id
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        return await client.post(
+            "/a2a", json=rpc("message/send", message("READY", metadata=metadata))
+        )
+
+
 async def test_worker_join_creates_worktree_and_records_path_and_kind(
     tmp_path: Path,
 ) -> None:
@@ -309,7 +367,7 @@ async def test_second_join_reuses_the_worktree(tmp_path: Path) -> None:
             MetaKeys.OPERATION_ID: uuid.uuid4().hex,
             MetaKeys.WORKER_INSTANCE_ID: "bob-second",
             MetaKeys.WORKSPACE_EXPLICIT: False,
-            MetaKeys.WORKSPACE_PATH: str(Path.cwd()),
+            MetaKeys.WORKSPACE_PATH: str(first_meta.get(MetaKeys.WORKSPACE_PATH)),
         }
         payload = rpc("message/send", message("READY", metadata=metadata))
         response = await client.post("/a2a", json=payload)
@@ -317,6 +375,146 @@ async def test_second_join_reuses_the_worktree(tmp_path: Path) -> None:
         second_meta = response.json()["result"].get("metadata") or {}
     assert second_meta.get(MetaKeys.WORKSPACE_PATH) == first_meta.get(MetaKeys.WORKSPACE_PATH)
     assert second_meta.get(MetaKeys.WORKSPACE_ID) == first_meta.get(MetaKeys.WORKSPACE_ID)
+
+
+async def test_foreign_takeover_is_refused_and_leaves_held_row_unchanged(
+    tmp_path: Path,
+) -> None:
+    """A takeover from a different cwd and launcher profile is refused (#510)."""
+
+    app, store, _, _, _ = _hub_app_with_repo(tmp_path)
+    first = await _send_join(app, instance="bob-codex", profile=CODEX_PROFILE)
+    assert first.status_code == 200, first.text
+    task = store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+    before = store.agent_by_name("bob")
+    assert before is not None
+
+    refused = await _send_join(
+        app,
+        instance="bob-opencode",
+        takeover=True,
+        path=str(tmp_path / "prep-checkout"),
+        profile=OPENCODE_PROFILE,
+    )
+    assert refused.status_code == 409, refused.text
+    text = refused.json()["error"]["message"]
+    assert text.startswith("takeover refused:")
+    assert text.endswith(TAKEOVER_REFUSED_REMEDY)
+    for field in ("workspace", "harness", "provider", "model"):
+        assert f"{field}:" in text
+    assert "codex" in text and "opencode" in text
+
+    assert store.agent_by_name("bob") == before
+    held_task = store.get_task(task.id)
+    assert held_task is not None
+    assert held_task.state is TaskState.SUBMITTED
+
+
+async def test_matching_claimant_still_supersedes_and_reattaches(tmp_path: Path) -> None:
+    """A bridge in the worktree with the same profile keeps today's resume path."""
+
+    app, store, _, _, _ = _hub_app_with_repo(tmp_path)
+    first = await _send_join(app, instance="bob-codex", profile=CODEX_PROFILE)
+    assert first.status_code == 200, first.text
+    first_meta = first.json()["result"]["metadata"]
+    task = store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+    worktree = str(first_meta[MetaKeys.WORKSPACE_PATH])
+
+    second = await _send_join(
+        app,
+        instance="bob-codex-2",
+        takeover=True,
+        path=str(Path(worktree) / "subdir"),
+        profile=CODEX_PROFILE,
+    )
+    assert second.status_code == 200, second.text
+    second_meta = second.json()["result"]["metadata"]
+    reattached = second_meta.get(MetaKeys.REATTACHED_TASK) or {}
+    assert reattached.get("task_id") == task.id
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    assert agent.worker_instance_id == "bob-codex-2"
+    assert agent.current_task_id == task.id
+
+
+async def test_takeover_from_outside_the_worktree_names_only_the_workspace(
+    tmp_path: Path,
+) -> None:
+    app, store, _, _, _ = _hub_app_with_repo(tmp_path)
+    first = await _send_join(app, instance="bob-codex", profile=CODEX_PROFILE)
+    assert first.status_code == 200, first.text
+    store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+
+    refused = await _send_join(
+        app,
+        instance="bob-codex-2",
+        takeover=True,
+        path=str(tmp_path / "elsewhere"),
+        profile=CODEX_PROFILE,
+    )
+    assert refused.status_code == 409, refused.text
+    text = refused.json()["error"]["message"]
+    assert "workspace:" in text
+    for field in ("harness:", "provider:", "model:"):
+        assert field not in text
+
+
+async def test_join_after_detach_is_gated_on_the_claimant(tmp_path: Path) -> None:
+    """An open task survives detach, so a foreign non-takeover join is refused."""
+
+    app, store, _, _, _ = _hub_app_with_repo(tmp_path)
+    first = await _send_join(app, instance="bob-codex", profile=CODEX_PROFILE)
+    assert first.status_code == 200, first.text
+    first_meta = first.json()["result"]["metadata"]
+    task = store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+    assert store.detach("bob", "bob-codex") is True
+
+    foreign = await _send_join(
+        app,
+        instance="bob-foreign",
+        takeover=False,
+        path=str(tmp_path / "elsewhere"),
+        profile=OPENCODE_PROFILE,
+    )
+    assert foreign.status_code == 409, foreign.text
+    assert foreign.json()["error"]["message"].startswith("takeover refused:")
+
+    returning = await _send_join(
+        app,
+        instance="bob-returning",
+        takeover=False,
+        path=str(first_meta[MetaKeys.WORKSPACE_PATH]),
+        profile=CODEX_PROFILE,
+    )
+    assert returning.status_code == 200, returning.text
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    assert agent.worker_instance_id == "bob-returning"
+    assert agent.current_task_id == task.id
+
+
+async def test_released_agent_accepts_a_different_harness(tmp_path: Path) -> None:
+    """The operator path: release_agent, then a fresh join with another harness."""
+
+    app, store, _, _, _ = _hub_app_with_repo(tmp_path)
+    first = await _send_join(app, instance="bob-codex", profile=CODEX_PROFILE)
+    assert first.status_code == 200, first.text
+    task = store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, "done")
+    store.release_agent("bob")
+
+    joined = await _send_join(
+        app,
+        instance="bob-opencode",
+        takeover=False,
+        path=str(tmp_path / "elsewhere"),
+        profile=OPENCODE_PROFILE,
+    )
+    assert joined.status_code == 200, joined.text
+    agent = store.agent_by_name("bob")
+    assert agent is not None
+    assert agent.harness == "opencode"
+    assert agent.status is AgentStatus.RELEASED
 
 
 async def test_orchestrator_join_creates_its_own_worktree(tmp_path: Path) -> None:

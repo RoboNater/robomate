@@ -71,6 +71,7 @@ from pydantic import ValidationError
 from .accounting import note_a2a
 from .store import (
     AgentRecord,
+    Claimant,
     ConflictError,
     DuplicateAgentError,
     HubStore,
@@ -694,6 +695,20 @@ class A2AProtocol:
             raise _invalid(f"metadata.{MetaKeys.WORKSPACE_PATH} must be a non-empty string")
         reported_path = raw_path.strip() if isinstance(raw_path, str) else None
 
+        # Where the bridge actually is, captured before the worktree override
+        # replaces `profile.workspace_id` with the hub's id for this agent
+        # name (#510). A legacy `check_in` keeps `claimant=None`, so its
+        # pre-worktree behaviour is unchanged.
+        claimant = (
+            Claimant(
+                bridge_path=reported_path,
+                bridge_workspace_id=profile.workspace_id,
+                explicit=workspace_explicit,
+            )
+            if is_join
+            else None
+        )
+
         workspace_path: str | None = None
         workspace_kind: str | None = None
         if is_join:
@@ -797,6 +812,7 @@ class A2AProtocol:
             remote_addr=remote_addr,
             workspace_path=workspace_path,
             workspace_kind=workspace_kind,
+            claimant=claimant,
         )
         note_a2a(actor=agent_name)
         response = A2AMessage.model_validate(json.loads(resp_json))

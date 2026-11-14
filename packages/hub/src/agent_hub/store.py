@@ -208,6 +208,36 @@ class DuplicateAgentError(ConflictError):
     """Raised when a second live worker claims an existing agent name."""
 
 
+class TakeoverRefusedError(DuplicateAgentError):
+    """Raised when a re-registration would inherit another session's open task (#510)."""
+
+
+# The remedy a refused claimant is told, and that #512's launcher matches on the
+# `takeover refused:` marker above it. Never add holder- or claimant-specific
+# text here: the mismatch details go before it.
+TAKEOVER_REFUSED_REMEDY = (
+    "This seat belongs to another session. Do not retry or take over again: stop and "
+    "report blocked to the operator. The operator can release the agent (release_agent) "
+    "or stop the other session before a fresh join."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Claimant:
+    """Where a re-registering bridge actually is, as reported at check-in (#510).
+
+    `bridge_path` is the cwd the bridge reports (`MetaKeys.WORKSPACE_PATH`);
+    `bridge_workspace_id` is the explicit clone identity it sent *before* the
+    hub replaces it with a worktree id; `explicit` records whether it named
+    `HUB_WORKSPACE`. `None` as a whole means a legacy/prepared check-in with
+    no gate.
+    """
+
+    bridge_path: str | None
+    bridge_workspace_id: str | None
+    explicit: bool
+
+
 class PayloadTooLargeError(StoreError):
     """Raised when transcript or typed-result data exceeds the contract cap."""
 
@@ -2182,6 +2212,7 @@ class HubStore:
         remote_addr: str | None = None,
         workspace_path: str | None = None,
         workspace_kind: str | None = None,
+        claimant: Claimant | None = None,
     ) -> Any:
         """Register a worker, or re-admit a returning one on its own context.
 
@@ -2192,6 +2223,12 @@ class HubStore:
         addresses; a replayed check-in records nothing. `workspace_path` and
         `workspace_kind` (`worktree` or `clone`, M2 Step 7a #244) replace the
         recorded workspace location; None leaves a legacy row without one.
+
+        `claimant` describes where the bridge actually is (#510). When a
+        re-registration would inherit an open task or supersede a live
+        instance, a claimant that does not match the held row's workspace and
+        harness profile is refused before any write. `None` skips the gate
+        for legacy/prepared check-ins and direct store callers.
         """
 
         name = validate_agent_name(name)
@@ -2300,6 +2337,25 @@ class HubStore:
                 # unbroken thread per agent across restarts.
                 context_id = row["context_id"]
                 current = self._open_task_id(connection, row["current_task_id"])
+                # A re-registration that would inherit an open task, or that
+                # supersedes a live instance, is a takeover of another session
+                # unless the claimant is in the same place with the same
+                # launcher profile (#510). Refuse before the UPDATE so the
+                # held instance, task and context stay untouched.
+                reclaim = (
+                    takeover
+                    and previous in (AgentStatus.IDLE, AgentStatus.BUSY)
+                    and bool(previous_instance)
+                ) or current is not None
+                if reclaim and claimant is not None:
+                    mismatches = _claimant_mismatches(row, profile, claimant)
+                    if mismatches:
+                        raise TakeoverRefusedError(
+                            "takeover refused: "
+                            + "; ".join(mismatches)
+                            + ". "
+                            + TAKEOVER_REFUSED_REMEDY
+                        )
                 if takeover and current is not None:
                     open_task = self._require_task(connection, current)
                     if open_task.state is TaskState.SUBMITTED:
@@ -4600,6 +4656,50 @@ class HubStore:
         with database(self.path) as connection:
             rows = connection.execute(query + " ORDER BY id").fetchall()
         return [_stall_episode(row) for row in rows]
+
+
+def _path_within(candidate: str, root: str) -> bool:
+    """True when `candidate` resolves to `root` or a directory below it."""
+
+    try:
+        path = os.path.normcase(str(Path(candidate).resolve()))
+        base = os.path.normcase(str(Path(root).resolve()))
+    except (OSError, RuntimeError):
+        return False
+    return path == base or path.startswith(base + os.sep)
+
+
+def _claimant_mismatches(row: Row, profile: AgentProfile, claimant: Claimant) -> list[str]:
+    """Describe each field where a re-registering claimant differs from the row (#510)."""
+
+    mismatches: list[str] = []
+    kind = row["workspace_kind"]
+    if kind == "worktree" and row["workspace_path"]:
+        held = row["workspace_path"]
+        if claimant.bridge_path is None or not _path_within(claimant.bridge_path, held):
+            mismatches.append(
+                f"workspace: held {held}, claimant {claimant.bridge_path or '(unreported)'}"
+            )
+    elif kind == "clone" and row["workspace_id"]:
+        held_id = row["workspace_id"]
+        if claimant.bridge_workspace_id != held_id:
+            mismatches.append(
+                f"workspace: held {held_id}, claimant "
+                f"{claimant.bridge_workspace_id or '(unreported)'}"
+            )
+    for key, held, incoming in (
+        ("harness", row["harness"], profile.harness),
+        ("provider", row["provider"], profile.provider),
+    ):
+        if held != UNKNOWN and incoming != UNKNOWN and held != incoming:
+            mismatches.append(f"{key}: held {held}, claimant {incoming}")
+    if (
+        row["model_source"] == ModelSource.ENV.value
+        and profile.model_source == ModelSource.ENV
+        and row["model"] != profile.model
+    ):
+        mismatches.append(f"model: held {row['model']}, claimant {profile.model}")
+    return mismatches
 
 
 def _readmitted(previous: AgentStatus, open_task: str | None) -> AgentStatus:
