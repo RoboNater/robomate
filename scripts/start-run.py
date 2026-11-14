@@ -549,14 +549,20 @@ def compose_statement(values: Mapping[str, Any], *, origin: str, forge: str) -> 
 # -- commands -------------------------------------------------------------------------
 
 
-def operator_environment() -> dict[str, str]:
-    """This environment without an inherited hub selection: commands find the run's hub."""
+def operator_environment(cwd: Path) -> dict[str, str]:
+    """This environment without an inherited hub selection or the launcher's uv venv.
 
-    return {
+    Commands find the run's hub, and PWD names the directory they run in: the
+    launcher and the hub keep the operator's PATH, never the venv ``uv run``
+    made for ``start-run.py`` itself.
+    """
+
+    environment = {
         key: value
         for key, value in os.environ.items()
         if key != "ROBOMATE_HUB_URL" and not key.startswith("ROBOMATE_TOKEN")
     }
+    return launcher_defaults.launch_environment(cwd, environment)
 
 
 def robomate(
@@ -571,7 +577,7 @@ def robomate(
     raw = subprocess.run(
         [sys.executable, "-m", "robomate", *words],
         cwd=checkout,
-        env=operator_environment(),
+        env=operator_environment(checkout),
         input=None if stdin is None else stdin.encode("utf-8"),
         capture_output=True,
         timeout=CLI_TIMEOUT_S,
@@ -700,7 +706,7 @@ def start_hub(run: Run) -> dict[str, Any]:
     run.hub = subprocess.Popen(
         words,
         cwd=run.checkout,
-        env=operator_environment(),
+        env=operator_environment(run.checkout),
         stdin=subprocess.DEVNULL,
         stdout=stream,
         stderr=subprocess.STDOUT,
@@ -794,7 +800,7 @@ def start_agents(run: Run) -> None:
         run.agents[agent] = subprocess.Popen(
             words,
             cwd=run.checkout,
-            env=operator_environment(),
+            env=operator_environment(run.checkout),
             stdin=subprocess.DEVNULL,
             stdout=run.log_file(agent),
             stderr=subprocess.STDOUT,

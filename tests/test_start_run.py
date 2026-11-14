@@ -547,6 +547,15 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
             assert argv[argv.index("--effort") + 1] == values[f"{agent}_effort"]
         assert not any("--mcp-config" in word or "prompt" in word.lower() for word in argv)
         assert record["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+        # The harness works in its own worktree with no launcher venv (#486).
+        assert record["env"]["PWD"] == str(Path(record["cwd"]).resolve())
+        assert record["env"]["VIRTUAL_ENV"] is None
+        if os.environ.get("VIRTUAL_ENV"):
+            venv_bin = (
+                Path(os.environ["VIRTUAL_ENV"]) / ("Scripts" if os.name == "nt" else "bin")
+            ).resolve()
+            entries = [Path(entry).resolve() for entry in record["env"]["PATH"].split(os.pathsep)]
+            assert venv_bin not in entries
         cache = Path(record["env"]["UV_CACHE_DIR"])
         assert cache.resolve() == (run_dir / "tmp" / agent / "uv-cache").resolve()
         if os.name != "nt":
