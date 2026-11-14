@@ -27,6 +27,8 @@ from typing import Any, TextIO
 
 from agent_sessions import ask_hint, ask_hint_from_args
 
+_JOURNAL_LOCK = threading.Lock()
+
 DEFAULT_MAX_RESUMES: int | None = None
 DEFAULT_RESUME_DELAY_S = 5.0
 DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
@@ -181,7 +183,7 @@ def exported_conversation(base: list[str]) -> str | None:
 
 def log_session(path: Path, **fields: object) -> None:
     record = {"timestamp": datetime.now(UTC).isoformat(timespec="seconds"), **fields}
-    with path.open("a", encoding="utf-8") as stream:
+    with _JOURNAL_LOCK, path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
 
 
@@ -419,8 +421,45 @@ class Launcher:
         if self.interrupted:
             raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
 
+        cwd = Path(getattr(self.args, "cwd", None) or Path.cwd()).resolve()
+        environment = launch_environment(cwd, getattr(self.args, "env", None))
+        argv = launch.argv
+        if self.harness == "claude-code" and "--permission-prompts" not in argv:
+            version = environment.get("HUB_HARNESS_VERSION", "")
+            manifest = self.args.sessions.parent / "run.json"
+            if manifest.is_file():
+                metadata = json.loads(manifest.read_text(encoding="utf-8"))
+                version = metadata.get("versions", {}).get("claude", "")
+            match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
+            # 2.1.325 is the first version verified by #517. Older/unknown
+            # versions retain their supported argv rather than receiving a new flag.
+            if match and tuple(map(int, match.groups())) >= (2, 1, 325):
+                position = argv.index("-p") if "-p" in argv else len(argv)
+                argv = [*argv[:position], "--permission-prompts", "none", *argv[position:]]
+        if self.harness == "opencode":
+            from opencode_headless import prepare
+            from permission_trace import PermissionTrace
+
+            argv, environment = prepare(
+                argv,
+                environment,
+                cwd,
+                self.args.sessions,
+                agent=self.agent,
+                lane_tmp=getattr(getattr(self.args, "identity", None), "lane_tmp", None),
+            )
+            launch_id = uuid.uuid4().hex
+            trace_path = self.args.sessions.with_name(f"permission-{launch_id}.jsonl")
+            environment["ROBOMATE_PERMISSION_EVENTS"] = str(trace_path)
+            environment["ROBOMATE_PERMISSION_LAUNCH"] = launch_id
+            trace = None
+            try:
+                trace_path.touch(mode=0o600, exist_ok=False)
+                trace = PermissionTrace(trace_path, launch_id)
+            except OSError:
+                say("permission trace creation failed; local permission observation unavailable")
         self.child = subprocess.Popen(
-            launch.argv,
+            argv,
             stdin=subprocess.PIPE if launch.stdin is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -430,14 +469,19 @@ class Launcher:
             bufsize=1,
             # agent-launcher.py runs the harness in the agent's worktree (#247);
             # the prepared-run scripts `cd` there before starting the launcher.
-            cwd=getattr(self.args, "cwd", None),
+            cwd=cwd,
             # agent-launcher.py hands every joining child its hub selection (#247 r1-3).
-            env=getattr(self.args, "env", None),
+            env=environment,
         )
         if self.interrupted:
             # A signal that landed just before this launch.
             self.stop_child(wait=True)
-        self.log(action, resumes=resumes, pid=self.child.pid)
+        self.log(
+            action,
+            resumes=resumes,
+            pid=self.child.pid,
+            **({"launch_id": launch_id} if self.harness == "opencode" else {}),
+        )
         say(
             f"{action} ({self.harness}) pid {self.child.pid},"
             f" conversation {self.conversation or 'pending'}"
@@ -451,7 +495,65 @@ class Launcher:
         # shell) cannot hold recovery up after the harness itself exits.
         relay = threading.Thread(target=self.relay, args=(self.child.stdout,), daemon=True)
         relay.start()
-        code = self.child.wait()
+        if self.harness == "opencode" and trace is not None:
+            from agent_hub_common.launcher_observations import ObservationPublisher
+
+            status_dir = Path(
+                environment.get("ROBOMATE_PERMISSION_STATUS_DIR", self.args.sessions.parent)
+            )
+            previous: list[dict[str, Any]] = []
+            publisher = ObservationPublisher(status_dir, self.agent, say)
+            trace_failed = False
+            try:
+                while True:
+                    try:
+                        trace.read()
+                        pending = [
+                            row
+                            for (session, _), row in trace.pending.items()
+                            if session == self.conversation
+                        ]
+                        if pending != previous:
+                            if pending and self.workflow_id is None:
+                                # Alice can create the workflow after her first
+                                # child starts. Correlate that run before exposing
+                                # a diagnosis, without changing hub activity.
+                                self.refresh_workflow_id_best_effort()
+                            self.log("permission_observation", launch_id=launch_id, pending=pending)
+                            previous = pending
+                        publisher.publish(
+                            {
+                                "hub_id": self.hub_id,
+                                "workflow_id": self.workflow_id,
+                                "launch_id": launch_id,
+                                "session": self.conversation,
+                                "journal": str(self.args.sessions),
+                                "pid": self.child.pid,
+                                "pending": pending,
+                            },
+                        )
+                        trace_failed = False
+                    except (OSError, ValueError) as exc:
+                        if not trace_failed:
+                            say(f"permission trace unavailable: {type(exc).__name__}")
+                        trace_failed = True
+                    try:
+                        code = self.child.wait(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+            finally:
+                try:
+                    if previous:
+                        self.log("permission_observation", launch_id=launch_id, pending=[])
+                finally:
+                    publisher.close()
+                    try:
+                        trace_path.unlink(missing_ok=True)
+                    except OSError:
+                        say("permission trace cleanup failed")
+        else:
+            code = self.child.wait()
         self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")
         relay.join(RELAY_GRACE_S)
         self.child = None

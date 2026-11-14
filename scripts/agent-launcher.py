@@ -163,6 +163,7 @@ class Place:
     """Whether a joining child's bridge needs the URL and token file to find the hub:
     a remote host, or a hub named by ``ROBOMATE_HUB_URL``. A local hub is found
     through the worktree's binding instead."""
+    checkout: Path | None = None
 
 
 def locate(args: argparse.Namespace) -> Place:
@@ -189,7 +190,7 @@ def locate(args: argparse.Namespace) -> Place:
         raise Usage(str(exc)) from None
     if isinstance(hub, LocalHub):
         sessions = Path(args.sessions_dir) if args.sessions_dir else hub.state_dir / "sessions"
-        return Place(hub.url.rstrip("/"), hub.token_file, sessions, args.hub)
+        return Place(hub.url.rstrip("/"), hub.token_file, sessions, args.hub, checkout=hub.checkout)
     if not args.sessions_dir:
         raise Usage("a hub named by ROBOMATE_HUB_URL has no local state: add --sessions-dir")
     return Place(hub.url, hub.token_file, Path(args.sessions_dir), None, explicit=True)
@@ -202,7 +203,12 @@ def is_selection(name: str) -> bool:
 
 def cleared_environment() -> dict[str, str]:
     """This process's environment without an inherited hub selection."""
-    return {key: value for key, value in os.environ.items() if not is_selection(key)}
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not is_selection(key)
+        and not key.startswith(("ROBOMATE_PERMISSION_", "ROBOMATE_LAUNCH_"))
+    }
 
 
 def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -214,6 +220,8 @@ def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> d
     otherwise take precedence over the file.
     """
     forwarded: dict[str, str] = {}
+    if place.checkout is not None:
+        forwarded["ROBOMATE_LAUNCH_HUB_CHECKOUT"] = str(place.checkout)
     if place.explicit:
         if place.token_file is None:
             raise Usage("the hub's token file is unknown: name it with --token-file")
@@ -237,6 +245,7 @@ class Identity:
     version: str = ""
     uv_cache: Path | None = None
     pytest_workers: int | None = None
+    lane_tmp: Path | None = None
 
     def environment(self) -> dict[str, str]:
         provider = resolve_provider(self.harness, self.model)
@@ -277,6 +286,7 @@ class Identity:
             "harness_version": self.version or None,
             "uv_cache_dir": str(self.uv_cache) if self.uv_cache is not None else None,
             "pytest_workers": self.pytest_workers,
+            "lane_tmp_dir": str(self.lane_tmp) if self.lane_tmp is not None else None,
         }
 
     def prepare(self) -> None:
@@ -296,6 +306,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
     cache = saved.get("uv_cache_dir")
     workers = saved.get("pytest_workers")
     version = saved.get("harness_version")
+    lane_tmp = saved.get("lane_tmp_dir")
     return Identity(
         harness,
         model,
@@ -303,6 +314,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
         version if isinstance(version, str) else "",
         Path(cache) if isinstance(cache, str) and cache else None,
         workers if type(workers) is int and workers >= 0 else None,
+        Path(lane_tmp) if isinstance(lane_tmp, str) and lane_tmp else None,
     )
 
 
@@ -453,7 +465,7 @@ def headless_base(
     if harness == "codex":
         return [*program, "exec", "-C", ".", *RUN_PERMISSIONS[harness], *granted, *flags, *extra]
     if harness == "opencode":
-        return [*program, "run", *RUN_PERMISSIONS[harness], *flags, "--title", title, *extra]
+        return [*program, "run", *flags, "--title", title, *extra]
     if harness == "antigravity":
         return [*program, *flags, *RUN_PERMISSIONS[harness], *extra]
     if harness == "devin":
@@ -990,6 +1002,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         args.harness_version,
         Path(args.uv_cache_dir).resolve() if args.uv_cache_dir else None,
         args.pytest_workers,
+        Path(args.lane_tmp_dir).resolve() if args.lane_tmp_dir else None,
     )
     identity.prepare()
     granted = grants(args.harness, workdir, place.token_file, identity.uv_cache)
@@ -1470,6 +1483,7 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument(
         "--uv-cache-dir", help="the agent's own isolated UV_CACHE_DIR, created owner-only (#285)"
     )
+    begin.add_argument("--lane-tmp-dir", help="the agent's explicitly assigned temporary root")
     begin.add_argument(
         "--pytest-workers",
         type=int,

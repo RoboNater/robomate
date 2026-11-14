@@ -34,6 +34,10 @@ returns `unchanged (<hash>)` when the served bytes are identical; retain the
 previous guide. When a workflow is active follow On resume below. Use
 `wait_for_event(timeout_s=100)` for the event loop. The bridge sends heartbeats.
 The forge appendix supplies all forge CLI commands, including merge and read-back.
+Run forge CLI and Git commands from your assigned worktree, and keep the
+harness tool workdir there. For GitHub, use a full PR URL or `--repo OWNER/REPO`
+when needed. Do not set the tool workdir to the hub checkout; if your worktree
+is unavailable, report that condition.
 Fresh prepared runs may still start with `get_state` through their configured bridge.
 
 ## KICKOFF and PLAN

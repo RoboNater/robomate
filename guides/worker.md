@@ -73,6 +73,11 @@ reassign work.
 
 ## Workspace boundaries and git hygiene
 
+Run forge CLI and Git commands from your assigned worktree, and keep the
+harness tool workdir there. For GitHub, use a full PR URL or `--repo OWNER/REPO`
+when needed. Do not set the tool workdir to the hub checkout; if your worktree
+is unavailable, report that condition.
+
 Never read the hub's state or token directory, including legacy `.robomate/`.
 This rule binds the agent and every tool it runs. `whoami` names the token
 file: the bridge, not the agent, reads it on the agent's behalf. Never open

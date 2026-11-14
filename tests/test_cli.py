@@ -4390,3 +4390,92 @@ async def test_status_renders_repeated_assignment_without_changing_stall_state(
     status.update(store.status_summary())
     cli._status(False, None)
     assert "repeated assignment" not in capsys.readouterr().out
+
+
+def test_status_renders_only_current_local_permission_observation(
+    store: HubStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from agent_hub_common.launcher_observations import write_observation
+
+    store.check_in("bob", AgentProfile(harness="opencode"))
+    status = store.status_summary() | {
+        "repo_root": str(tmp_path),
+        "url": "http://hub.test",
+        "origin": "o/r",
+        "forge": "github",
+        "default_branch": "main",
+        "orchestrator": None,
+        "hub_id": "hub",
+        "workflow": {"id": "wf", "status": "active", "headline": "work"},
+    }
+    status["agents"][0]["stalled"] = True
+    status["agents"][0]["activity"] = {}
+    monkeypatch.setattr(cli, "find_hub", lambda *a, **kw: HubEndpoint("http://hub.test", "t"))
+    monkeypatch.setattr(cli, "_rpc", lambda *a, **kw: status)
+    monkeypatch.setattr(cli, "_hub_location", lambda *a: (tmp_path, tmp_path / "token"))
+    observation: dict[str, Any] = {
+        "hub_id": "hub",
+        "workflow_id": "wf",
+        "launch_id": "launch",
+        "session": "session",
+        "pending": [
+            {"session": "session", "permission": "external_directory", "patterns": ["/path/*"]}
+        ],
+    }
+    journal = tmp_path / "journal.jsonl"
+    journal.write_text(json.dumps({"event": "start", "launch_id": "launch"}) + "\n")
+    observation["journal"] = str(journal)
+    observation["pid"] = os.getpid()
+    journal.write_text(
+        journal.read_text()
+        + json.dumps(
+            {
+                "event": "permission_observation",
+                "launch_id": "launch",
+                "pending": observation["pending"],
+            }
+        )
+        + "\n"
+    )
+    write_observation(tmp_path / "sessions", "bob", observation)
+    cli._status(False, None)
+    assert (
+        "STALLED — opencode permission ask pending: external_directory /path/*"
+        in capsys.readouterr().out
+    )
+    original_journal = journal.read_text()
+    journal.write_text(
+        original_journal
+        + json.dumps(
+            {
+                "event": "permission_observation",
+                "launch_id": "launch",
+                "pending": [],
+            }
+        )
+        + "\n"
+    )
+    # A failed projection replacement can leave the old snapshot behind. The
+    # journal's matching reply must invalidate that snapshot immediately.
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out
+    journal.write_text(original_journal)
+    write_observation(tmp_path / "sessions", "bob", observation | {"pending": []})
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out
+    write_observation(tmp_path / "sessions", "bob", observation | {"workflow_id": "old"})
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out
+    write_observation(tmp_path / "sessions", "bob", observation)
+    journal.write_text(json.dumps({"event": "start", "launch_id": "replacement"}) + "\n")
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out
+    journal.write_text(json.dumps({"event": "exit", "launch_id": "launch"}) + "\n")
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out
+    monkeypatch.setattr(cli, "_hub_location", lambda *a: None)
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out

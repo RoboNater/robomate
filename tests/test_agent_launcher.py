@@ -11,6 +11,7 @@ with legacy state, so `--hub <checkout>` finds the state directory and
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -18,12 +19,14 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import fake_harness
 import pytest
+from agent_hub_common.launcher_observations import permission_diagnostic
 from fake_harness import (
     SUPERVISED_MAX_RESUMES,
     attempts,
@@ -52,6 +55,459 @@ RUN = "20261109_abcdef12"
 WORKFLOW = "wf-1"
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
+
+def test_headless_policy_replaces_inherited_external_rules(tmp_path: Path) -> None:
+    from opencode_headless import policy  # type: ignore[import-not-found]
+
+    root = tmp_path / "allowed"
+    inherited: dict[str, Any] = {
+        "agent": {
+            "build": {
+                "variant": "high",
+                "permission": {
+                    "external_directory": {"/broader/*": "allow"},
+                    "*": "allow",
+                    "bash": {"rm *": "deny"},
+                },
+            }
+        },
+        "mcp": {"robomate": {"enabled": True}},
+    }
+    agent = policy(inherited, [root], "unique")["agent"]["unique"]
+    assert agent["variant"] == "high"
+    assert list(agent["permission"])[-1] == "external_directory"
+    assert agent["permission"]["bash"] == {"rm *": "deny"}
+    assert agent["permission"]["external_directory"] == {
+        "*": "deny",
+        root.as_posix() + "/*": "allow",
+    }
+    assert "/broader/*" in inherited["agent"]["build"]["permission"]["external_directory"]
+
+
+def test_opencode_roots_use_git_common_dir_without_broadening_missing_metadata(
+    tmp_path: Path,
+) -> None:
+    from opencode_headless import allowed_roots
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git(checkout, "init", "-q")
+    git(
+        checkout,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "base",
+    )
+    worktree = tmp_path / "worktree"
+    git(checkout, "worktree", "add", "--detach", str(worktree))
+    lane_tmp = tmp_path / "lane" / "tmp"
+    roots = allowed_roots(worktree, checkout, lane_tmp)
+    assert roots == [
+        worktree.resolve(),
+        checkout.resolve(),
+        (checkout / ".git").resolve(),
+        lane_tmp.resolve(),
+    ]
+    assert allowed_roots(worktree, None, None) == [
+        worktree.resolve(),
+        (checkout / ".git").resolve(),
+    ]
+    assert tmp_path not in roots
+    assert allowed_roots(worktree, worktree, worktree).count(worktree.resolve()) == 1
+
+
+def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_harness("opencode", monkeypatch)
+    inherited: dict[str, Any] = {
+        "agent": {
+            "build": {
+                "variant": "high",
+                "permission": {
+                    "external_directory": {"/too-broad/*": "allow"},
+                    "*": "allow",
+                },
+            }
+        },
+        "mcp": {"custom": {"enabled": False}},
+        "plugin": ["file:///existing.mjs"],
+    }
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    monkeypatch.setenv("FAKE_OPENCODE_CONFIG", json.dumps(inherited))
+    lane_tmp = area["root"] / "assigned tmp"
+    detached = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released")]}
+    hub = FakeHub(after_launches(area, detached, detached, released))
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode", "--lane-tmp-dir", str(lane_tmp)),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    names = []
+    for launch in launches(area):
+        argv = launch["argv"]
+        assert "--auto" not in argv
+        name = argv[argv.index("--agent") + 1]
+        names.append(name)
+        content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+        assert content["mcp"] == inherited["mcp"]
+        assert "file:///existing.mjs" in content["plugin"]
+        assert any(p.endswith("/permission-events.mjs") for p in content["plugin"])
+        assert content["agent"][name]["variant"] == "high"
+        rules = content["agent"][name]["permission"]["external_directory"]
+        assert rules["*"] == "deny" and "/too-broad/*" not in rules
+        assert rules[area["worktree"].as_posix() + "/*"] == "allow"
+        assert rules[area["checkout"].as_posix() + "/*"] == "allow"
+        assert rules[lane_tmp.as_posix() + "/*"] == "allow"
+        assert launch["cwd"] == launch["env"]["PWD"] == str(area["worktree"])
+    assert len(names) == len(set(names)) == 2
+    saved = CLI.saved_identity(rows(area)[0], "opencode", "", "")
+    assert saved.lane_tmp == lane_tmp
+
+
+@pytest.mark.parametrize("system_cache", [False, True])
+def test_ambient_uv_cache_never_grants_its_parent(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    system_cache: bool,
+) -> None:
+    import tempfile
+
+    cache = (
+        Path(tempfile.gettempdir()) if system_cache else area["root"] / "unrelated"
+    ) / "uv-cache"
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache))
+    hub = FakeHub(
+        after_launches(
+            area,
+            {"workflow": workflow(), "agents": [agent_row()]},
+            {"workflow": workflow(), "agents": [agent_row("released")]},
+        )
+    )
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    launch = launches(area)[0]
+    content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    name = launch["argv"][launch["argv"].index("--agent") + 1]
+    rules = content["agent"][name]["permission"]["external_directory"]
+    assert cache.parent.resolve().as_posix() + "/*" not in rules
+
+
+@pytest.mark.parametrize("matching_metadata", [False, True])
+def test_prepared_temporary_root_requires_matching_run_metadata(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    matching_metadata: bool,
+) -> None:
+    area["sessions"].mkdir(parents=True)
+    metadata = {
+        "run_dir": str(area["sessions"] if matching_metadata else area["root"]),
+        "hub_repo": str(area["checkout"]),
+        "state_dir": str(area["state"]),
+    }
+    (area["sessions"] / "run.json").write_text(json.dumps(metadata))
+    monkeypatch.setenv("UV_CACHE_DIR", str(area["root"] / "unrelated" / "uv-cache"))
+    hub = FakeHub(
+        after_launches(
+            area,
+            {"workflow": workflow(), "agents": [agent_row()]},
+            {"workflow": workflow(), "agents": [agent_row("released")]},
+        )
+    )
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    launch = launches(area)[0]
+    content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    name = launch["argv"][launch["argv"].index("--agent") + 1]
+    rules = content["agent"][name]["permission"]["external_directory"]
+    assert ((area["sessions"] / "tmp" / "bob").as_posix() + "/*" in rules) == matching_metadata
+    assert (area["root"] / "unrelated").as_posix() + "/*" not in rules
+
+
+def test_permission_trace_is_incremental_and_matches_session_request(tmp_path: Path) -> None:
+    from permission_trace import PermissionTrace  # type: ignore[import-not-found]
+
+    path = tmp_path / "trace"
+    path.touch()
+    observer = PermissionTrace(path, "launch")
+
+    def append(**fields: Any) -> None:
+        with path.open("a") as stream:
+            stream.write(
+                json.dumps({"launch_id": "launch", "session": "s", "request": "r", **fields}) + "\n"
+            )
+
+    append(type="permission.asked", permission="external_directory", patterns=["/path/\x1b[31m*"])
+    assert observer.read() and len(observer.pending) == 1
+    append(type="permission.replied", session="other")
+    append(type="permission.replied", request="other")
+    append(type="permission.replied", launch_id="old")
+    with path.open("a") as stream:
+        stream.write('malformed\n{"type":')
+    assert not observer.read() and len(observer.pending) == 1
+    with path.open("a") as stream:
+        stream.write("null}\n")
+    append(type="permission.replied")
+    assert observer.read() and not observer.pending
+    append(type="permission.asked", permission="external_directory", patterns=["/path/*"])
+    assert observer.read() and observer.pending
+    path.write_text("")
+    assert observer.read() and not observer.pending
+    append(type="permission.asked", launch_id="stale", permission="external_directory", patterns=[])
+    assert not observer.read()
+
+
+@pytest.mark.parametrize("probe", ["config", "git"])
+def test_opencode_probe_timeouts_have_clear_fail_closed_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: str,
+) -> None:
+    from opencode_headless import allowed_roots, prepare
+
+    def timeout(command: list[str], **kwargs: Any) -> Any:
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    expected = "OpenCode effective configuration" if probe == "config" else "Git common-directory"
+    with pytest.raises(ValueError, match=expected + " probe failed or timed out"):
+        if probe == "config":
+            prepare(["opencode", "run"], {}, tmp_path, tmp_path / "journal")
+        else:
+            allowed_roots(tmp_path, None, None)
+
+
+def test_permission_publisher_throttles_and_recovers_transient_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub_common import launcher_observations as observations
+
+    now = [0.0]
+    errors: list[str] = []
+    publisher = observations.ObservationPublisher(
+        tmp_path, "bob", errors.append, clock=lambda: now[0]
+    )
+    pending = {"pending": [{"request": "r"}]}
+    publisher.publish({"pending": []})
+    assert not list(tmp_path.iterdir())
+    original = os.replace
+    attempts = []
+
+    def locked(source: str, target: Path) -> None:
+        attempts.append(now[0])
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(os, "replace", locked)
+    for tick in (0.0, 0.2, 0.4, 1.0, 1.2, 2.0):
+        now[0] = tick
+        publisher.publish(pending)
+    assert attempts == [0.0, 1.0, 2.0]
+    assert len(errors) == 1
+    assert not list(tmp_path.iterdir())  # temporary replace files are removed on failure
+    monkeypatch.setattr(os, "replace", original)
+    now[0] = 3.0
+    publisher.publish(pending)
+    snapshot = tmp_path / "bob.permission.json"
+    assert json.loads(snapshot.read_text())["pending"] == pending["pending"]
+    before = snapshot.read_bytes()
+    now[0] = 3.2
+    publisher.publish(pending)
+    assert snapshot.read_bytes() == before
+    publisher.publish({"pending": []})
+    assert json.loads(snapshot.read_text())["pending"] == []
+    before = snapshot.read_bytes()
+    now[0] = 9.0
+    publisher.publish({"pending": []})
+    assert snapshot.read_bytes() == before
+    publisher.close()
+    assert "pending" not in json.loads(snapshot.read_text())
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_claude_headless_permission_prompts_capability(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    supported: bool,
+) -> None:
+    monkeypatch.setenv("FAKE_CLAUDE_HELP", "--permission-prompts <mode>" if supported else "")
+    hub = FakeHub(
+        after_launches(
+            area,
+            {"workflow": workflow(), "agents": [agent_row()]},
+            {"workflow": workflow(), "agents": [agent_row("released")]},
+        )
+    )
+    assert (
+        invoke(
+            start_words(
+                area,
+                "bob",
+                "implementer",
+                "claude-code",
+                "--harness-version",
+                "2.1.325" if supported else "2.1.100",
+            ),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    argv = launches(area)[0]["argv"]
+    assert ("--permission-prompts" in argv) == supported
+    if supported:
+        assert argv[argv.index("--permission-prompts") + 1] == "none"
+    assert argv[argv.index("--permission-mode") + 1] == "auto"
+
+
+def test_hanging_opencode_reports_pending_before_exit(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_harness("opencode", monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", '["hang"]')
+    monkeypatch.setenv("FAKE_PERMISSION_ASK", "1")
+    detached = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released")]}
+    hub = FakeHub(after_launches(area, detached, released))
+    errors: list[BaseException] = []
+    from agent_hub_common.discovery import HubEndpoint
+    from robomate import cli as status_cli
+
+    status = {
+        "hub_id": HUB,
+        "workflow": workflow(headline="work"),
+        "repo_root": str(area["checkout"]),
+        "url": "http://hub.test",
+        "origin": "o/r",
+        "forge": "github",
+        "default_branch": "main",
+        "orchestrator": None,
+        "agents": [
+            {
+                "name": "bob",
+                "harness": "opencode",
+                "model": "test",
+                "status": "busy",
+                "alive": True,
+                "stalled": True,
+                "activity": {},
+                "current_task": "task",
+            }
+        ],
+        "tasks": [],
+        "pending_questions": [],
+    }
+    monkeypatch.setattr(
+        status_cli, "find_hub", lambda *a, **kw: HubEndpoint("http://hub.test", "t")
+    )
+    monkeypatch.setattr(status_cli, "_rpc", lambda *a, **kw: status)
+    monkeypatch.setattr(
+        status_cli, "_hub_location", lambda *a: (area["state"], area["state"] / "token")
+    )
+
+    def inspect_and_kill() -> None:
+        pid_file = area["harness_dir"] / "pid"
+        pid = None
+        try:
+            wait_until_sync(pid_file.exists, "the fake harness starts")
+            pid = int(wait_until_sync(lambda: pid_file.read_text(), "its pid"))
+            diagnostic = wait_until_sync(
+                lambda: permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW),
+                "the live permission diagnostic",
+            )
+            assert (
+                diagnostic == "opencode permission ask pending: external_directory /outside/path/*"
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status_cli._status(False, None)
+            assert f"STALLED — {diagnostic}" in output.getvalue()
+            assert any(
+                row["event"] == "permission_observation" and row["pending"] for row in rows(area)
+            )
+            trace_path = next(area["sessions"].glob("permission-*.jsonl"))
+            launch_id = trace_path.stem.removeprefix("permission-")
+
+            def reply(session: str, request: str) -> None:
+                with trace_path.open("a") as stream:
+                    stream.write(
+                        json.dumps(
+                            {
+                                "launch_id": launch_id,
+                                "type": "permission.replied",
+                                "session": session,
+                                "request": request,
+                            }
+                        )
+                        + "\n"
+                    )
+
+            snapshot = area["sessions"] / "bob.permission.json"
+            before = json.loads(snapshot.read_text())["observed_at"]
+            reply("unrelated", "per_1")
+            reply("ses_7Fa9b2C", "unrelated")
+            wait_until_sync(
+                lambda: json.loads(snapshot.read_text())["observed_at"] > before,
+                "the observer reads unrelated replies",
+            )
+            assert permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW) == diagnostic
+            reply("ses_7Fa9b2C", "per_1")
+            wait_until_sync(
+                lambda: not permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW),
+                "the matching reply clears the diagnostic",
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if pid is not None:
+                os.kill(pid, signal.SIGTERM)
+
+    inspector = threading.Thread(target=inspect_and_kill)
+    inspector.start()
+    try:
+        assert (
+            invoke(
+                start_words(area, "bob", "implementer", "opencode"),
+                programs=programs(area),
+                reader=hub,
+                workspace=workspace_of(area),
+            )
+            == 0
+        )
+    finally:
+        inspector.join()
+    assert not errors
+    assert permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW) is None
+    assert not list(area["sessions"].glob("permission-*.jsonl"))
+
+
 FAKE_HARNESS = (
     """\
 import json, os, sys, time
@@ -59,6 +515,12 @@ import json, os, sys, time
     + fake_harness.CHILD_PID_RECORD
     + """\
 argv = sys.argv[1:]
+if argv == ["--help"]:
+    print(os.environ.get("FAKE_CLAUDE_HELP", ""))
+    sys.exit(0)
+if argv == ["debug", "config"]:
+    print(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
+    sys.exit(0)
 if "mcp" in argv and "list" in argv and "--json" in argv:
     entries = json.loads(os.environ.get("FAKE_MCP_SERVERS", "[]"))
     if any("enabled=false" in word for word in argv):
@@ -105,6 +567,13 @@ if line:
 plan = json.loads(os.environ.get("FAKE_PLAN", "[]"))
 step = plan[count] if count < len(plan) else "exit:0"
 if step == "hang":
+    if os.environ.get("FAKE_PERMISSION_ASK"):
+        with open(os.environ["ROBOMATE_PERMISSION_EVENTS"], "a", encoding="utf-8") as stream:
+            row = {"launch_id": os.environ["ROBOMATE_PERMISSION_LAUNCH"],
+                   "type": "permission.asked", "session": "ses_7Fa9b2C",
+                   "request": "per_1", "permission": "external_directory",
+                   "patterns": ["/outside/path/*"]}
+            stream.write(json.dumps(row) + "\\n")
     with open(os.environ["FAKE_PID"], "w", encoding="utf-8") as stream:
         stream.write(str(os.getpid()))
     time.sleep(600)

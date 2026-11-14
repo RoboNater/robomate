@@ -394,6 +394,7 @@ def test_each_agent_starts_headless_with_its_harness_model_effort_and_bounds(
         assert option("--harness-version") == run.versions[harness]
         cache = run_dir / "tmp" / agent / "uv-cache"
         assert option("--uv-cache-dir") == str(cache)
+        assert option("--lane-tmp-dir") == str(cache.parent)
         assert cache.parent.is_dir()
         if os.name != "nt":
             assert cache.parent.stat().st_mode & 0o777 == 0o700
@@ -545,7 +546,11 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
             assert argv[-2] == "-p"
             assert argv[-1] == f"Join robomate as {agent}, {START.AGENTS[agent]}."
             assert argv[argv.index("--effort") + 1] == values[f"{agent}_effort"]
-        assert not any("--mcp-config" in word or "prompt" in word.lower() for word in argv)
+            assert argv[argv.index("--permission-prompts") + 1] == "none"
+        assert not any(
+            "--mcp-config" in word or ("prompt" in word.lower() and word != "--permission-prompts")
+            for word in argv
+        )
         assert record["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
         # The harness works in its own worktree with no launcher venv (#486).
         assert record["env"]["PWD"] == str(Path(record["cwd"]).resolve())
