@@ -199,7 +199,9 @@ def launch_environment(
     The launcher's own uv project venv is not handed on either: ``VIRTUAL_ENV`` and
     the ``bin``/``Scripts`` entry ``uv run`` prepended to ``PATH`` belong to the
     launcher, so a harness's own ``uv run`` selects its worktree's environment.
-    Everything else, the operator's ``PATH`` included, is kept.
+    Everything else, the operator's ``PATH`` included, is kept.  If the venv entry
+    was the only one, ``PATH`` is removed rather than left empty, so the child
+    falls back to the OS default search path instead of finding no commands.
     """
 
     result = dict(os.environ if environment is None else environment)
