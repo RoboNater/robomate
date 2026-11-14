@@ -245,6 +245,7 @@ class Identity:
     version: str = ""
     uv_cache: Path | None = None
     pytest_workers: int | None = None
+    lane_tmp: Path | None = None
 
     def environment(self) -> dict[str, str]:
         provider = resolve_provider(self.harness, self.model)
@@ -285,6 +286,7 @@ class Identity:
             "harness_version": self.version or None,
             "uv_cache_dir": str(self.uv_cache) if self.uv_cache is not None else None,
             "pytest_workers": self.pytest_workers,
+            "lane_tmp_dir": str(self.lane_tmp) if self.lane_tmp is not None else None,
         }
 
     def prepare(self) -> None:
@@ -304,6 +306,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
     cache = saved.get("uv_cache_dir")
     workers = saved.get("pytest_workers")
     version = saved.get("harness_version")
+    lane_tmp = saved.get("lane_tmp_dir")
     return Identity(
         harness,
         model,
@@ -311,6 +314,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
         version if isinstance(version, str) else "",
         Path(cache) if isinstance(cache, str) and cache else None,
         workers if type(workers) is int and workers >= 0 else None,
+        Path(lane_tmp) if isinstance(lane_tmp, str) and lane_tmp else None,
     )
 
 
@@ -998,6 +1002,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         args.harness_version,
         Path(args.uv_cache_dir).resolve() if args.uv_cache_dir else None,
         args.pytest_workers,
+        Path(args.lane_tmp_dir).resolve() if args.lane_tmp_dir else None,
     )
     identity.prepare()
     granted = grants(args.harness, workdir, place.token_file, identity.uv_cache)
@@ -1478,6 +1483,7 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument(
         "--uv-cache-dir", help="the agent's own isolated UV_CACHE_DIR, created owner-only (#285)"
     )
+    begin.add_argument("--lane-tmp-dir", help="the agent's explicitly assigned temporary root")
     begin.add_argument(
         "--pytest-workers",
         type=int,

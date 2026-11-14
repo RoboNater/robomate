@@ -141,12 +141,13 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
     }
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
     monkeypatch.setenv("FAKE_OPENCODE_CONFIG", json.dumps(inherited))
+    lane_tmp = area["root"] / "assigned tmp"
     detached = {"workflow": workflow(), "agents": [agent_row()]}
     released = {"workflow": workflow(), "agents": [agent_row("released")]}
     hub = FakeHub(after_launches(area, detached, detached, released))
     assert (
         invoke(
-            start_words(area, "bob", "implementer", "opencode"),
+            start_words(area, "bob", "implementer", "opencode", "--lane-tmp-dir", str(lane_tmp)),
             programs=programs(area),
             reader=hub,
             workspace=workspace_of(area),
@@ -168,8 +169,84 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
         assert rules["*"] == "deny" and "/too-broad/*" not in rules
         assert rules[area["worktree"].as_posix() + "/*"] == "allow"
         assert rules[area["checkout"].as_posix() + "/*"] == "allow"
+        assert rules[lane_tmp.as_posix() + "/*"] == "allow"
         assert launch["cwd"] == launch["env"]["PWD"] == str(area["worktree"])
     assert len(names) == len(set(names)) == 2
+    saved = CLI.saved_identity(rows(area)[0], "opencode", "", "")
+    assert saved.lane_tmp == lane_tmp
+
+
+@pytest.mark.parametrize("system_cache", [False, True])
+def test_ambient_uv_cache_never_grants_its_parent(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    system_cache: bool,
+) -> None:
+    import tempfile
+
+    cache = (
+        Path(tempfile.gettempdir()) if system_cache else area["root"] / "unrelated"
+    ) / "uv-cache"
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache))
+    hub = FakeHub(
+        after_launches(
+            area,
+            {"workflow": workflow(), "agents": [agent_row()]},
+            {"workflow": workflow(), "agents": [agent_row("released")]},
+        )
+    )
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    launch = launches(area)[0]
+    content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    name = launch["argv"][launch["argv"].index("--agent") + 1]
+    rules = content["agent"][name]["permission"]["external_directory"]
+    assert cache.parent.resolve().as_posix() + "/*" not in rules
+
+
+@pytest.mark.parametrize("matching_metadata", [False, True])
+def test_prepared_temporary_root_requires_matching_run_metadata(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    matching_metadata: bool,
+) -> None:
+    area["sessions"].mkdir(parents=True)
+    metadata = {
+        "run_dir": str(area["sessions"] if matching_metadata else area["root"]),
+        "hub_repo": str(area["checkout"]),
+        "state_dir": str(area["state"]),
+    }
+    (area["sessions"] / "run.json").write_text(json.dumps(metadata))
+    monkeypatch.setenv("UV_CACHE_DIR", str(area["root"] / "unrelated" / "uv-cache"))
+    hub = FakeHub(
+        after_launches(
+            area,
+            {"workflow": workflow(), "agents": [agent_row()]},
+            {"workflow": workflow(), "agents": [agent_row("released")]},
+        )
+    )
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    launch = launches(area)[0]
+    content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    name = launch["argv"][launch["argv"].index("--agent") + 1]
+    rules = content["agent"][name]["permission"]["external_directory"]
+    assert ((area["sessions"] / "tmp" / "bob").as_posix() + "/*" in rules) == matching_metadata
+    assert (area["root"] / "unrelated").as_posix() + "/*" not in rules
 
 
 def test_permission_trace_is_incremental_and_matches_session_request(tmp_path: Path) -> None:
@@ -203,6 +280,73 @@ def test_permission_trace_is_incremental_and_matches_session_request(tmp_path: P
     assert observer.read() and not observer.pending
     append(type="permission.asked", launch_id="stale", permission="external_directory", patterns=[])
     assert not observer.read()
+
+
+@pytest.mark.parametrize("probe", ["config", "git"])
+def test_opencode_probe_timeouts_have_clear_fail_closed_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: str,
+) -> None:
+    from opencode_headless import allowed_roots, prepare
+
+    def timeout(command: list[str], **kwargs: Any) -> Any:
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    expected = "OpenCode effective configuration" if probe == "config" else "Git common-directory"
+    with pytest.raises(ValueError, match=expected + " probe failed or timed out"):
+        if probe == "config":
+            prepare(["opencode", "run"], {}, tmp_path, tmp_path / "journal")
+        else:
+            allowed_roots(tmp_path, None, None)
+
+
+def test_permission_publisher_throttles_and_recovers_transient_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub_common import launcher_observations as observations
+
+    now = [0.0]
+    errors: list[str] = []
+    publisher = observations.ObservationPublisher(
+        tmp_path, "bob", errors.append, clock=lambda: now[0]
+    )
+    pending = {"pending": [{"request": "r"}]}
+    publisher.publish({"pending": []})
+    assert not list(tmp_path.iterdir())
+    original = os.replace
+    attempts = []
+
+    def locked(source: str, target: Path) -> None:
+        attempts.append(now[0])
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(os, "replace", locked)
+    for tick in (0.0, 0.2, 0.4, 1.0, 1.2, 2.0):
+        now[0] = tick
+        publisher.publish(pending)
+    assert attempts == [0.0, 1.0, 2.0]
+    assert len(errors) == 1
+    assert not list(tmp_path.iterdir())  # temporary replace files are removed on failure
+    monkeypatch.setattr(os, "replace", original)
+    now[0] = 3.0
+    publisher.publish(pending)
+    snapshot = tmp_path / "bob.permission.json"
+    assert json.loads(snapshot.read_text())["pending"] == pending["pending"]
+    before = snapshot.read_bytes()
+    now[0] = 3.2
+    publisher.publish(pending)
+    assert snapshot.read_bytes() == before
+    publisher.publish({"pending": []})
+    assert json.loads(snapshot.read_text())["pending"] == []
+    before = snapshot.read_bytes()
+    now[0] = 9.0
+    publisher.publish({"pending": []})
+    assert snapshot.read_bytes() == before
+    publisher.close()
+    assert "pending" not in json.loads(snapshot.read_text())
 
 
 @pytest.mark.parametrize("supported", [False, True])
@@ -361,6 +505,7 @@ def test_hanging_opencode_reports_pending_before_exit(
         inspector.join()
     assert not errors
     assert permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW) is None
+    assert not list(area["sessions"].glob("permission-*.jsonl"))
 
 
 FAKE_HARNESS = (

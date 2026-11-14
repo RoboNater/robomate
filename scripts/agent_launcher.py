@@ -440,7 +440,14 @@ class Launcher:
             from opencode_headless import prepare
             from permission_trace import PermissionTrace
 
-            argv, environment = prepare(argv, environment, cwd, self.args.sessions)
+            argv, environment = prepare(
+                argv,
+                environment,
+                cwd,
+                self.args.sessions,
+                agent=self.agent,
+                lane_tmp=getattr(getattr(self.args, "identity", None), "lane_tmp", None),
+            )
             launch_id = uuid.uuid4().hex
             trace_path = self.args.sessions.with_name(f"permission-{launch_id}.jsonl")
             environment["ROBOMATE_PERMISSION_EVENTS"] = str(trace_path)
@@ -489,12 +496,14 @@ class Launcher:
         relay = threading.Thread(target=self.relay, args=(self.child.stdout,), daemon=True)
         relay.start()
         if self.harness == "opencode" and trace is not None:
-            from agent_hub_common.launcher_observations import write_observation
+            from agent_hub_common.launcher_observations import ObservationPublisher
 
             status_dir = Path(
                 environment.get("ROBOMATE_PERMISSION_STATUS_DIR", self.args.sessions.parent)
             )
             previous: list[dict[str, Any]] = []
+            publisher = ObservationPublisher(status_dir, self.agent, say)
+            trace_failed = False
             try:
                 while True:
                     try:
@@ -512,9 +521,7 @@ class Launcher:
                                 self.refresh_workflow_id_best_effort()
                             self.log("permission_observation", launch_id=launch_id, pending=pending)
                             previous = pending
-                        write_observation(
-                            status_dir,
-                            self.agent,
+                        publisher.publish(
                             {
                                 "hub_id": self.hub_id,
                                 "workflow_id": self.workflow_id,
@@ -525,20 +532,26 @@ class Launcher:
                                 "pending": pending,
                             },
                         )
+                        trace_failed = False
                     except (OSError, ValueError) as exc:
-                        say(f"permission observation unavailable: {type(exc).__name__}")
+                        if not trace_failed:
+                            say(f"permission trace unavailable: {type(exc).__name__}")
+                        trace_failed = True
                     try:
                         code = self.child.wait(timeout=0.2)
                         break
                     except subprocess.TimeoutExpired:
                         pass
             finally:
-                if previous:
-                    self.log("permission_observation", launch_id=launch_id, pending=[])
                 try:
-                    write_observation(status_dir, self.agent, {})
-                except OSError:
-                    say("permission observation cleanup failed")
+                    if previous:
+                        self.log("permission_observation", launch_id=launch_id, pending=[])
+                finally:
+                    publisher.close()
+                    try:
+                        trace_path.unlink(missing_ok=True)
+                    except OSError:
+                        say("permission trace cleanup failed")
         else:
             code = self.child.wait()
         self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")

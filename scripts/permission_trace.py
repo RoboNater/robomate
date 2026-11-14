@@ -1,4 +1,10 @@
-"""Bounded incremental parsing of a single child's private permission trace."""
+"""Bounded incremental parsing of a single child's private permission trace.
+
+The launcher diagnoses only its primary conversation. Task-tool subagent asks
+are intentionally omitted until an authoritative parent/session association is
+available; a shared process alone does not establish that association. Headless
+OpenCode still auto-rejects residual asks from those sessions.
+"""
 
 from __future__ import annotations
 

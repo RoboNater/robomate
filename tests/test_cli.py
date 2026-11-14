@@ -4429,12 +4429,40 @@ def test_status_renders_only_current_local_permission_observation(
     journal.write_text(json.dumps({"event": "start", "launch_id": "launch"}) + "\n")
     observation["journal"] = str(journal)
     observation["pid"] = os.getpid()
+    journal.write_text(
+        journal.read_text()
+        + json.dumps(
+            {
+                "event": "permission_observation",
+                "launch_id": "launch",
+                "pending": observation["pending"],
+            }
+        )
+        + "\n"
+    )
     write_observation(tmp_path / "sessions", "bob", observation)
     cli._status(False, None)
     assert (
         "STALLED — opencode permission ask pending: external_directory /path/*"
         in capsys.readouterr().out
     )
+    original_journal = journal.read_text()
+    journal.write_text(
+        original_journal
+        + json.dumps(
+            {
+                "event": "permission_observation",
+                "launch_id": "launch",
+                "pending": [],
+            }
+        )
+        + "\n"
+    )
+    # A failed projection replacement can leave the old snapshot behind. The
+    # journal's matching reply must invalidate that snapshot immediately.
+    cli._status(False, None)
+    assert "permission ask pending" not in capsys.readouterr().out
+    journal.write_text(original_journal)
     write_observation(tmp_path / "sessions", "bob", observation | {"pending": []})
     cli._status(False, None)
     assert "permission ask pending" not in capsys.readouterr().out

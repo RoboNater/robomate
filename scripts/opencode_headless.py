@@ -18,13 +18,16 @@ def allowed_roots(worktree: Path, hub: Path | None, lane_tmp: Path | None) -> li
     roots = [worktree.resolve()]
     if hub is not None:
         roots.append(hub.resolve())
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.SubprocessError as exc:
+        raise ValueError("Git common-directory probe failed or timed out") from exc
     if result.returncode == 0 and Path(result.stdout.strip()).is_absolute():
         roots.append(Path(result.stdout.strip()).resolve())
     if lane_tmp is not None:
@@ -39,7 +42,10 @@ def policy(config: Mapping[str, Any], roots: list[Path], name: str) -> dict[str,
 
     Global permissions still precede this agent. Other build settings and tool
     denials survive; external_directory is deliberately the last permission.
-    OpenCode additionally permits its own tool-output directory.
+    OpenCode additionally permits its own tool-output directory. Other built-in
+    external allows (temporary tool paths and discovered skill directories) are
+    intentionally denied unless they are inside one of the assigned roots.
+    Native Windows OpenCode path matching still requires a live platform check.
     """
     build = copy.deepcopy(config.get("agent", {}).get("build", {}))
     permissions = build.pop("permission", {})
@@ -56,33 +62,51 @@ def policy(config: Mapping[str, Any], roots: list[Path], name: str) -> dict[str,
 
 
 def prepare(
-    argv: list[str], environment: Mapping[str, str], worktree: Path, sessions: Path
+    argv: list[str],
+    environment: Mapping[str, str],
+    worktree: Path,
+    sessions: Path,
+    *,
+    agent: str | None = None,
+    lane_tmp: Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Read effective configuration without changing user files, then pin our agent."""
     env = dict(environment)
     # Preserve wrappers used by operators (and fake harnesses in tests).
     run_index = argv.index("run")
-    probe = subprocess.run(
-        [*argv[:run_index], "debug", "config"],
-        cwd=worktree,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        probe = subprocess.run(
+            [*argv[:run_index], "debug", "config"],
+            cwd=worktree,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.SubprocessError as exc:
+        raise ValueError("OpenCode effective configuration probe failed or timed out") from exc
     if probe.returncode:
         raise ValueError("OpenCode effective configuration could not be read (debug config)")
     config = json.loads(probe.stdout)
     hub = env.get("ROBOMATE_LAUNCH_HUB_CHECKOUT")
-    cache = env.get("UV_CACHE_DIR")
-    lane_tmp = Path(cache).parent if cache and Path(cache).name == "uv-cache" else None
+    # Only explicit launcher/run metadata establishes a temporary root. An
+    # ambient UV_CACHE_DIR=/tmp/uv-cache must never grant all of /tmp.
     # Prepared runs already have a local metadata file beside their journal.
     manifest = sessions.parent / "run.json"
     env["ROBOMATE_PERMISSION_STATUS_DIR"] = str(sessions.parent)
     if manifest.is_file():
         metadata = json.loads(manifest.read_text(encoding="utf-8"))
         hub = metadata.get("hub_repo")
+        lane_tmp = None
+        run_dir = metadata.get("run_dir")
+        if (
+            agent
+            and isinstance(run_dir, str)
+            and Path(run_dir).is_absolute()
+            and Path(run_dir).resolve() == sessions.parent.resolve()
+        ):
+            lane_tmp = Path(run_dir) / "tmp" / agent
         if metadata.get("state_dir"):
             env["ROBOMATE_PERMISSION_STATUS_DIR"] = str(Path(metadata["state_dir"]) / "sessions")
     roots = allowed_roots(worktree, Path(hub) if hub else None, lane_tmp)

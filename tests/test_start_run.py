@@ -394,6 +394,7 @@ def test_each_agent_starts_headless_with_its_harness_model_effort_and_bounds(
         assert option("--harness-version") == run.versions[harness]
         cache = run_dir / "tmp" / agent / "uv-cache"
         assert option("--uv-cache-dir") == str(cache)
+        assert option("--lane-tmp-dir") == str(cache.parent)
         assert cache.parent.is_dir()
         if os.name != "nt":
             assert cache.parent.stat().st_mode & 0o777 == 0o700

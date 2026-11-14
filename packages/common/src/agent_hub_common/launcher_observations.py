@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,51 @@ def write_observation(directory: Path, agent: str, observation: dict[str, Any]) 
         os.replace(temporary, directory / f"{agent}.permission.json")
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+class ObservationPublisher:
+    """Publish state changes and a one-second lease heartbeat while asks are pending."""
+
+    def __init__(
+        self,
+        directory: Path,
+        agent: str,
+        report: Callable[[str], None],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.directory, self.agent, self.report, self.clock = directory, agent, report, clock
+        self.pending: list[dict[str, Any]] = []
+        self.deadline = 0.0
+        self.failed = False
+        self.attempted = False
+
+    def _write(self, observation: dict[str, Any]) -> None:
+        self.attempted = True
+        try:
+            write_observation(self.directory, self.agent, observation)
+        except OSError as exc:
+            if not self.failed:
+                self.report(f"permission observation unavailable: {type(exc).__name__}")
+            self.failed = True
+        else:
+            self.failed = False
+
+    def publish(self, observation: dict[str, Any]) -> None:
+        pending = observation.get("pending", [])
+        changed = pending != self.pending
+        now = self.clock()
+        if not pending and not self.pending:
+            return
+        if not changed and now < self.deadline:
+            return
+        self.pending = list(pending)
+        self.deadline = now + 1.0
+        self._write(observation)
+
+    def close(self) -> None:
+        if self.attempted:
+            self._write({})
 
 
 def permission_diagnostic(
@@ -51,11 +97,21 @@ def permission_diagnostic(
             stream.seek(max(0, end - 262144))
             lines = stream.read(262144).splitlines()
         current = None
+        journal_pending = None
+        journal_seen = False
         for line in reversed(lines):
             try:
                 entry = json.loads(line)
             except (ValueError, UnicodeError):
                 continue
+            if (
+                isinstance(entry, dict)
+                and entry.get("event") == "permission_observation"
+                and entry.get("launch_id") == row["launch_id"]
+                and not journal_seen
+            ):
+                journal_seen = True
+                journal_pending = entry.get("pending")
             if isinstance(entry, dict) and entry.get("event") in {
                 "start",
                 "resume",
@@ -69,6 +125,10 @@ def permission_diagnostic(
             return None
         if current.get("event") in {"exit", "stop"}:
             return None
+        if journal_pending != row.get("pending"):
+            # A transient projection replace failure must not resurrect an ask
+            # which the journal has already resolved.
+            return None
         for pending in row.get("pending", []):
             if pending.get("session") != row.get("session"):
                 continue
@@ -76,6 +136,6 @@ def permission_diagnostic(
             patterns = pending["patterns"]
             text = f"opencode permission ask pending: {permission} {' '.join(patterns)}"
             return "".join(c for c in text if c.isprintable())[:4096]
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
         pass
     return None

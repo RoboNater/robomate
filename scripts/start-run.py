@@ -781,6 +781,8 @@ def launch_words(run: Run, agent: str, *, interactive: bool) -> list[str]:
         run.versions[harness],
         "--uv-cache-dir",
         str(cache),
+        "--lane-tmp-dir",
+        str(cache.parent),
         "--pytest-workers",
         str(values["pytest_workers"]),
     ]
