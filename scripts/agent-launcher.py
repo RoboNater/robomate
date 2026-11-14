@@ -19,8 +19,10 @@ the harness there with the join line (``Join robomate as bob, implementer.``)
 as its only prompt, passes the harness's sandbox grants as flags, and resumes
 the same conversation with a fixed continuation and #158 backoff until the
 workflow is done or the worker is released. Nothing is rendered: the harness
-finds the hub through its static ``robomate mcp`` entry and the worktree's
-binding. Each launch, exit, wait and stop is a JSON line, with the hub's
+finds the hub through its static ``robomate mcp`` entry, pinned to this hub's
+``hub_id`` through ``ROBOMATE_HUB_ID`` in the child environment (#511), so the
+bridge never attaches by guessing from the worktree's binding. Each launch,
+exit, wait and stop is a JSON line, with the hub's
 ``run_id``, in ``sessions/<agent>.jsonl`` in the hub's state directory: the
 operator's data, which agents never read. A remote host passes ``--hub-url``,
 ``--token-file``, ``--sessions-dir`` and the ``--workdir`` that ``robomate
@@ -41,7 +43,10 @@ the agent's declared identity (#402): ``HUB_HARNESS``, ``HUB_HARNESS_VERSION``
 (``--harness-version``, the CLI's own ``--version``), ``HUB_PROVIDER`` (from the
 model, as ``run_common.resolve_provider``), ``HUB_MODEL`` and ``HUB_EFFORT``.
 Codex forwards no variable to an MCP server unless told, so a Codex launch also
-names them in ``-c mcp_servers.robomate.env.*``. ``--uv-cache-dir`` gives the
+names them in ``-c mcp_servers.robomate.env.*``. Every start and resume also
+pins ``ROBOMATE_HUB_ID`` (and, on a remote host, ``ROBOMATE_HUB_URL`` and the
+``ROBOMATE_TOKEN_FILE`` path) the same way for Codex; no token value goes on
+argv. ``--uv-cache-dir`` gives the
 agent an isolated ``UV_CACHE_DIR`` (#285), created owner-only and granted to the
 sandbox, and ``--pytest-workers`` its ``PYTEST_XDIST_AUTO_NUM_WORKERS`` (0 clears
 an inherited one). The launch rows record them, so ``resume`` applies them again.
@@ -65,7 +70,7 @@ import sys
 import urllib.error
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -74,6 +79,7 @@ SCRIPTS = Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import agent_launcher as common  # noqa: E402
+from agent_hub_common.discovery import HUB_ID_ENV  # noqa: E402
 from agent_interactive import split_arguments  # noqa: E402
 from agent_recovery import agent_lock, prepare  # noqa: E402
 from agent_sessions import conversation as saved_conversation  # noqa: E402
@@ -164,6 +170,9 @@ class Place:
     a remote host, or a hub named by ``ROBOMATE_HUB_URL``. A local hub is found
     through the worktree's binding instead."""
     checkout: Path | None = None
+    hub_id: str | None = None
+    """The hub this launch is pinned to (#511). A local hub's comes from its
+    ``hub.json``; a remote host's is read from ``hub.info`` before launch."""
 
 
 def locate(args: argparse.Namespace) -> Place:
@@ -190,15 +199,24 @@ def locate(args: argparse.Namespace) -> Place:
         raise Usage(str(exc)) from None
     if isinstance(hub, LocalHub):
         sessions = Path(args.sessions_dir) if args.sessions_dir else hub.state_dir / "sessions"
-        return Place(hub.url.rstrip("/"), hub.token_file, sessions, args.hub, checkout=hub.checkout)
+        return Place(
+            hub.url.rstrip("/"),
+            hub.token_file,
+            sessions,
+            args.hub,
+            checkout=hub.checkout,
+            hub_id=hub.hub_id,
+        )
     if not args.sessions_dir:
         raise Usage("a hub named by ROBOMATE_HUB_URL has no local state: add --sessions-dir")
+    # An explicit/remote hub has no local record to read its id from; resolve it
+    # from hub.info before launch (resolve_hub_id), refusing an unreadable hub.
     return Place(hub.url, hub.token_file, Path(args.sessions_dir), None, explicit=True)
 
 
 def is_selection(name: str) -> bool:
     """The variables by which a bridge finds a hub explicitly (spec §4)."""
-    return name == "ROBOMATE_HUB_URL" or name.startswith("ROBOMATE_TOKEN")
+    return name in ("ROBOMATE_HUB_URL", HUB_ID_ENV) or name.startswith("ROBOMATE_TOKEN")
 
 
 def cleared_environment() -> dict[str, str]:
@@ -211,21 +229,66 @@ def cleared_environment() -> dict[str, str]:
     }
 
 
+def hub_selection_env(place: Place) -> dict[str, str]:
+    """The selection that pins a joining bridge to this hub (#511).
+
+    Every child gets ``ROBOMATE_HUB_ID``; a remote host's bridge also gets the
+    URL and the token-file path (never the token value). The id is not secret
+    and survives a hub restart on a different port.
+    """
+    if not place.hub_id:
+        raise Usage("the hub's id is unknown: the launcher cannot pin the joining bridge")
+    values = {HUB_ID_ENV: place.hub_id}
+    if place.explicit:
+        if place.token_file is None:
+            raise Usage("the hub's token file is unknown: name it with --token-file")
+        values["ROBOMATE_HUB_URL"] = place.url
+        values["ROBOMATE_TOKEN_FILE"] = str(place.token_file)
+    return values
+
+
+def hub_flags(harness: str, place: Place) -> list[str]:
+    """Codex forwards no env unless named: pin the selected hub on argv too (#511)."""
+
+    if harness != "codex":
+        return []
+    words: list[str] = []
+    for key, value in hub_selection_env(place).items():
+        words += ["-c", f"mcp_servers.robomate.env.{key}={json.dumps(value)}"]
+    return words
+
+
+def resolve_hub_id(place: Place, tools: Tools, agent: str, role: str) -> Place:
+    """Give a remote/explicit place its hub id from hub.info, or refuse (#511).
+
+    A local place already carries its id from hub.json. An explicit one has no
+    local record, so read hub.info before launch; an unreadable hub is refused.
+    """
+    if place.hub_id:
+        return place
+    reader = make_reader(tools, place, agent, role)
+    try:
+        info = reader.call("hub.info")
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        raise Usage(f"cannot read the remote hub's id from hub.info: {exc}") from None
+    hub_id = info.get("hub_id") if isinstance(info, dict) else None
+    if not isinstance(hub_id, str) or not hub_id:
+        raise Usage("the remote hub's hub.info names no hub_id")
+    return replace(place, hub_id=hub_id)
+
+
 def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """A joining child's environment: the selected hub, never an inherited one (#247 r1-3).
 
     A local hub's worktree binding names it, so any ambient selection is
-    cleared. A remote host's clone has no binding: its bridge gets the URL and
-    token file the operator gave, and no ``ROBOMATE_TOKEN``, which would
-    otherwise take precedence over the file.
+    cleared and the pinned id re-added. A remote host's clone has no binding:
+    its bridge gets the URL and token file the operator gave, and no
+    ``ROBOMATE_TOKEN``, which would otherwise take precedence over the file.
     """
     forwarded: dict[str, str] = {}
     if place.checkout is not None:
         forwarded["ROBOMATE_LAUNCH_HUB_CHECKOUT"] = str(place.checkout)
-    if place.explicit:
-        if place.token_file is None:
-            raise Usage("the hub's token file is unknown: name it with --token-file")
-        forwarded = {"ROBOMATE_HUB_URL": place.url, "ROBOMATE_TOKEN_FILE": str(place.token_file)}
+    forwarded |= hub_selection_env(place)
     return cleared_environment() | forwarded | dict(extra or {})
 
 
@@ -982,7 +1045,7 @@ def supplied_conversation(log: Path, saved: Mapping[str, Any], supplied: str | N
 
 
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
-    place = locate(args)
+    place = resolve_hub_id(locate(args), tools, args.agent, args.role)
     if args.workdir:
         workdir = Path(args.workdir).resolve()
     elif place.selector is None and args.hub_url:
@@ -1007,6 +1070,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     identity.prepare()
     granted = grants(args.harness, workdir, place.token_file, identity.uv_cache)
     granted += identity.bridge_flags()
+    granted += hub_flags(args.harness, place)
     with agent_lock(log):
         set_aside(log, args.harness)
     if args.interactive:
@@ -1087,6 +1151,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     log = log_path(place.sessions, args.agent)
     saved = saved_settings(log, args.agent)
     harness, role = str(saved["harness"]), str(saved["role"])
+    place = resolve_hub_id(place, tools, args.agent, role)
     model, effort = str(saved.get("model") or ""), str(saved.get("effort") or "")
     workdir = Path(saved["workdir"])
     if not workdir.is_dir():
@@ -1102,6 +1167,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     identity.prepare()
     granted = grants(harness, workdir, place.token_file, identity.uv_cache)
     granted += identity.bridge_flags()
+    granted += hub_flags(harness, place)
     # The operator's record of what recovery captured; the agent is never pointed at it.
     record = place.sessions / f"{args.agent}-resume.md"
     record.write_text(
