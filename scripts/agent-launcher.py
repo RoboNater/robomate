@@ -1004,11 +1004,14 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             args.harness, program, flags, granted, perms, extra, prompt=line, session_id=session_id
         )
         env = identity.apply(
-            child_environment(
-                place,
-                opencode_environment(args.effort, safe=args.safe_mode)
-                if args.harness == "opencode"
-                else {},
+            common.launch_environment(
+                workdir,
+                child_environment(
+                    place,
+                    opencode_environment(args.effort, safe=args.safe_mode)
+                    if args.harness == "opencode"
+                    else {},
+                ),
             )
         )
         announce(args.harness, args.safe_mode, extra)
@@ -1058,7 +1061,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         command=base,
         sessions=log,
         cwd=workdir,
-        env=identity.apply(child_environment(place)),
+        env=identity.apply(common.launch_environment(workdir, child_environment(place))),
         identity=identity,
     )
     reader = make_reader(tools, place, args.agent, args.role)
@@ -1124,11 +1127,14 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 conversation,
             )
             env = identity.apply(
-                child_environment(
-                    place,
-                    opencode_environment(effort, safe=args.safe_mode)
-                    if harness == "opencode"
-                    else {},
+                common.launch_environment(
+                    workdir,
+                    child_environment(
+                        place,
+                        opencode_environment(effort, safe=args.safe_mode)
+                        if harness == "opencode"
+                        else {},
+                    ),
                 )
             )
             announce(harness, args.safe_mode, extra)
@@ -1170,7 +1176,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         command=base,
         sessions=log,
         cwd=workdir,
-        env=identity.apply(child_environment(place)),
+        env=identity.apply(common.launch_environment(workdir, child_environment(place))),
         identity=identity,
         **recovery,
     )
@@ -1209,10 +1215,15 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         ask=True,
         fork=args.fork,
     )
-    env = (
-        opencode_environment(effort, safe=args.safe_mode, no_hub=True)
-        if harness == "opencode"
-        else {}
+    start_dir = workdir if workdir.is_dir() else Path.cwd()
+    env = common.launch_environment(
+        start_dir,
+        cleared_environment()
+        | (
+            opencode_environment(effort, safe=args.safe_mode, no_hub=True)
+            if harness == "opencode"
+            else {}
+        ),
     )
     print(
         f"Ask {args.agent} ({harness}): conversation {selected}; working directory {workdir}; "
@@ -1221,9 +1232,7 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         flush=True,
     )
     try:
-        return subprocess.call(
-            argv, cwd=workdir if workdir.is_dir() else None, env=cleared_environment() | env
-        )
+        return subprocess.call(argv, cwd=start_dir, env=env)
     except KeyboardInterrupt:
         return common.EXIT_INTERRUPTED
 
@@ -1342,7 +1351,10 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     if login:
         print(login, flush=True)
     # No inherited hub selection: discovery is scoped to each operator command.
-    environment = cleared_environment() | {profile_variable: str(profile)}
+    environment = common.launch_environment(
+        doctor_dir["workdir"],
+        cleared_environment() | {profile_variable: str(profile)},
+    )
     environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
     return subprocess.call(argv, cwd=doctor_dir["workdir"], env=environment)
 

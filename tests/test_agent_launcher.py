@@ -63,7 +63,7 @@ stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
         "ROBOMATE_TOKEN_FILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
         "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
-        "PYTEST_XDIST_AUTO_NUM_WORKERS")
+        "PYTEST_XDIST_AUTO_NUM_WORKERS", "PWD", "VIRTUAL_ENV", "PATH")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
           "env": {k: os.environ.get(k) for k in keys}}
 log = os.environ["FAKE_LOG"]
@@ -355,6 +355,48 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     launch_rows = [row for row in rows(area, agent) if row["event"] in ("start", "resume")]
     assert all(row["run_id"] == RUN and row["role"] == role for row in launch_rows)
     assert launch_rows[0]["workdir"] == str(area["worktree"].resolve())
+
+
+def test_start_and_resume_name_the_worktree_and_drop_the_launcher_venv(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#486: opencode takes its project from PWD, so a start elsewhere must not leak it."""
+
+    use_harness("opencode", monkeypatch)
+    checkout = area["root"] / "prep checkout"
+    launcher_venv = checkout / ".venv"
+    venv_bin = launcher_venv / ("Scripts" if os.name == "nt" else "bin")
+    venv_bin.mkdir(parents=True)
+    operator_bin = area["root"] / "operator bin"
+    operator_bin.mkdir()
+    monkeypatch.setenv("PWD", str(checkout))
+    monkeypatch.setenv("VIRTUAL_ENV", str(launcher_venv))
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(venv_bin), str(operator_bin), os.environ.get("PATH", "")])
+    )
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "opencode"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    start, resumed = launches(area)
+    for run in (start, resumed):
+        # The harness starts in the worktree, and its own idea of PWD agrees.
+        assert Path(run["cwd"]).resolve() == area["worktree"].resolve()
+        assert run["env"]["PWD"] == str(area["worktree"].resolve())
+        # The launcher's uv project venv is not handed on; the operator's PATH is.
+        assert run["env"]["VIRTUAL_ENV"] is None
+        entries = [Path(entry).resolve() for entry in run["env"]["PATH"].split(os.pathsep)]
+        assert venv_bin.resolve() not in entries
+        assert operator_bin.resolve() in entries
 
 
 def test_grants_are_flags_for_the_measured_harnesses(area: dict[str, Path], tmp_path: Path) -> None:
@@ -798,6 +840,8 @@ def test_ask_opens_the_saved_conversation_without_hub_tools(
         content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
         assert content["mcp"] == {"robomate": {"enabled": False}}
     assert log.read_bytes() == before
+    assert launch["env"]["PWD"] == str(area["worktree"].resolve())
+    assert launch["env"]["VIRTUAL_ENV"] is None
 
 
 @pytest.mark.parametrize("harness", ["antigravity", "devin"])
@@ -1188,6 +1232,8 @@ def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
     assert env[other] == str(
         area["root"] / ("team claude config" if other == "CLAUDE_CONFIG_DIR" else "team codex home")
     )
+    assert env["PWD"] == str(Path(launch["cwd"]).resolve())
+    assert env["VIRTUAL_ENV"] is None
 
 
 # -- a broken fake child (#464) --------------------------------------------------------

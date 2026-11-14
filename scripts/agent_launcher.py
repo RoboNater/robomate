@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import signal
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -185,6 +187,41 @@ def log_session(path: Path, **fields: object) -> None:
 
 def say(message: str) -> None:
     print(f"agent-launcher: {message}", file=sys.stderr, flush=True)
+
+
+def launch_environment(
+    workdir: str | Path, environment: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """The environment of a process started in ``workdir``: PWD names it, no launcher venv.
+
+    ``subprocess.Popen(cwd=...)`` changes the child's working directory but not an
+    inherited ``PWD``, which some harnesses (opencode) use to choose their project.
+    The launcher's own uv project venv is not handed on either: ``VIRTUAL_ENV`` and
+    the ``bin``/``Scripts`` entry ``uv run`` prepended to ``PATH`` belong to the
+    launcher, so a harness's own ``uv run`` selects its worktree's environment.
+    Everything else, the operator's ``PATH`` included, is kept.
+    """
+
+    result = dict(os.environ if environment is None else environment)
+    venv = result.pop("VIRTUAL_ENV", None)
+    if venv:
+        directories = {
+            os.path.normcase(os.path.realpath(os.path.join(venv, name)))
+            for name in ("bin", "Scripts")
+        }
+        paths = result.get("PATH")
+        if paths is not None:
+            keep = [
+                entry
+                for entry in paths.split(os.pathsep)
+                if os.path.normcase(os.path.realpath(entry)) not in directories
+            ]
+            if keep:
+                result["PATH"] = os.pathsep.join(keep)
+            else:
+                result.pop("PATH", None)
+    result["PWD"] = str(Path(workdir).resolve())
+    return result
 
 
 def backoff_delay(initial_s: float, cap_s: float, failures_in_series: int) -> float:
