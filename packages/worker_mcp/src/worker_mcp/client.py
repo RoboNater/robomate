@@ -29,7 +29,13 @@ from agent_hub_common import (
     StandingRole,
     validate_agent_name,
 )
-from agent_hub_common.discovery import discover, resolve_checkout
+from agent_hub_common.discovery import (
+    HUB_ID_ENV,
+    DiscoveryError,
+    discover,
+    resolve_checkout,
+    select_hub,
+)
 from agent_hub_common.workspace import IDENTITY_FILE, canonical_workspace, read_identity
 
 from .config import WorkerSettings
@@ -40,6 +46,19 @@ logger = logging.getLogger(__name__)
 
 ROLE_SLUG_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 RETRYABLE_STATUS_CODES = frozenset({502, 503, 504})
+
+#: #511: an unbound bridge must fail closed, not enumerate the machine's hubs
+#: for an agent to pick one. Keep the leading phrase stable (#512 matches it to
+#: stop resuming); name neither a hub URL nor a hub_id, and suggest no `hub=`.
+NO_HUB_MESSAGE = (
+    "this robomate bridge has no hub: its launcher gave none and its working "
+    "directory {cwd} is not bound to one. Do not choose a hub yourself. "
+    "Stop and report blocked to the operator."
+)
+HUB_OVERRIDE_MESSAGE = (
+    "join(hub={hub}) names a different hub from the one this bridge's launcher "
+    "selected; do not override it — report blocked"
+)
 
 
 class WorkerProtocolError(Exception):
@@ -509,10 +528,53 @@ class WorkerHubClient:
                     exc.args = (f"{type(exc).__name__} ({hint})",)
                 raise
 
+    def _guard_hub_override(
+        self, hub: str, pinned_id: str, pinned_url: str, env: Mapping[str, str]
+    ) -> None:
+        """Refuse an agent's `hub=` that would redirect a launcher-pinned bridge (#511)."""
+
+        try:
+            selected = select_hub(hub, env)
+        except DiscoveryError:
+            raise DiscoveryError(HUB_OVERRIDE_MESSAGE.format(hub=hub)) from None
+        if pinned_id:
+            same = selected.hub_id == pinned_id
+        else:
+            same = selected.url.rstrip("/") == pinned_url.rstrip("/")
+        if not same:
+            raise DiscoveryError(HUB_OVERRIDE_MESSAGE.format(hub=hub))
+
     async def _bind_hub(self, hub: str | None = None) -> None:
-        if hub is not None or (not self.settings.hub_url and self._external_client is None):
+        env = self.settings.environ or {}
+        pinned_id = (env.get(HUB_ID_ENV) or "").strip()
+        pinned_url = (env.get("ROBOMATE_HUB_URL") or "").strip()
+        pinned = bool(pinned_id or pinned_url)
+        # A launcher pin is authoritative: resolve it even when a client was
+        # injected (a test double); the pin supplies the endpoint and token.
+        if (
+            hub is not None
+            or pinned
+            or (not self.settings.hub_url and self._external_client is None)
+        ):
             cwd = self.settings.cwd or Path.cwd()
-            endpoint = discover(cwd, self.settings.environ, selector=hub)
+            if hub is not None and pinned:
+                self._guard_hub_override(hub, pinned_id, pinned_url, env)
+                selector = None
+            elif hub is not None:
+                selector = hub
+            else:
+                selector = None
+            try:
+                endpoint = discover(
+                    cwd,
+                    self.settings.environ,
+                    selector=selector,
+                    list_hubs=(hub is not None),
+                )
+            except DiscoveryError:
+                if hub is None:
+                    raise DiscoveryError(NO_HUB_MESSAGE.format(cwd=cwd)) from None
+                raise
             if (
                 self._external_client is None
                 and self._client is not None
