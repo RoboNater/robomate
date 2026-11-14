@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -19,9 +20,15 @@ from agent_hub_common import (
     ReviewerVerdict,
     TaskState,
 )
-from agent_hub_common.discovery import DiscoveryError, write_hub_json
+from agent_hub_common.discovery import (
+    Binding,
+    DiscoveryError,
+    checkout_git_dir,
+    write_binding,
+    write_hub_json,
+)
 from agent_hub_common.registry import register
-from conftest import BASE_URL, TOKEN
+from conftest import BASE_URL, TOKEN, closed_port_url
 from timing import LIVENESS_S, wait_until
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
@@ -1042,6 +1049,50 @@ def _register_live_hub(
     return url
 
 
+def _register_down_hub(tmp_path: Path, hub_id: str, name: str, env: dict[str, str]) -> None:
+    """Register a hub whose /healthz URL refuses connections (hub is down)."""
+
+    url = closed_port_url()
+    state = tmp_path / name / "state"
+    state.mkdir(parents=True)
+    write_hub_json(state, {"hub_id": hub_id, "name": name, "url": url, "pid": None})
+    token = tmp_path / name / "token"
+    token.write_text(TOKEN, encoding="utf-8")
+    checkout = tmp_path / name / "checkout"
+    checkout.mkdir()
+    register(
+        {
+            "hub_id": hub_id,
+            "name": name,
+            "checkout": str(checkout),
+            "git_common_dir": str(checkout / ".git"),
+            "state_dir": str(state),
+            "token_file": str(token),
+            "url": url,
+            "pid": None,
+        },
+        env,
+    )
+
+
+def _register_bound_down_hub(tmp_path: Path, hub_id: str, name: str) -> Path:
+    """A checkout bound to a hub whose /healthz URL refuses connections."""
+
+    checkout = tmp_path / name / "checkout"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
+    state = tmp_path / name / "state"
+    state.mkdir(parents=True)
+    token = tmp_path / name / "token"
+    token.write_text(TOKEN, encoding="utf-8")
+    write_hub_json(state, {"hub_id": hub_id, "name": name, "url": closed_port_url(), "pid": None})
+    write_binding(
+        checkout_git_dir(checkout),
+        Binding("owner", hub_id, name, checkout, state, token),
+    )
+    return checkout
+
+
 def _join_guides(settings: HubSettings) -> None:
     settings.guides_dir.mkdir(parents=True, exist_ok=True)
     (settings.guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
@@ -1138,3 +1189,59 @@ async def test_join_hub_override_matching_the_pin_is_accepted(
     result = await worker.join("bob", "implementer", hub="hub-b")
     assert result["status"] == "registered"
     assert worker.settings.hub_url == url_b
+
+
+# -- review r1-1: only the genuinely unbound case fails closed ------------------
+
+
+def _assert_cause_surfaces(message: str, diagnostic: str) -> None:
+    """A pinned/bound failure keeps its real cause and the stable phrase is absent."""
+
+    assert diagnostic in message
+    # #512's launcher matches this phrase to stop resuming; a restarting hub
+    # must not be reported as an unbound bridge (review r1-1, #511).
+    assert "this robomate bridge has no hub" not in message
+    assert "report blocked" not in message
+
+
+async def test_pinned_hub_down_surfaces_the_cause(tmp_path: Path) -> None:
+    """A launcher-pinned hub that is down is diagnosed, not 'no hub' (r1-1)."""
+
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "LOCALAPPDATA": str(tmp_path / "local")}
+    _register_down_hub(tmp_path, "pin-id", "pinned", env)
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    pinned = env | {"ROBOMATE_HUB_ID": "pin-id"}
+    worker = WorkerHubClient(WorkerSettings.unjoined(cwd=unbound, environ=pinned))
+    with pytest.raises(DiscoveryError) as joined:
+        await worker.join("bob", "implementer")
+    _assert_cause_surfaces(str(joined.value), "is not running")
+    result = await worker.whoami()
+    _assert_cause_surfaces(result["discovery_error"], "is not running")
+
+
+async def test_bound_checkout_hub_down_surfaces_the_cause(tmp_path: Path) -> None:
+    """A bound checkout whose hub is down keeps verify_local_hub's diagnostic (r1-1)."""
+
+    checkout = _register_bound_down_hub(tmp_path, "bound-id", "bound")
+    worker = WorkerHubClient(WorkerSettings.unjoined(cwd=checkout, environ={}))
+    with pytest.raises(DiscoveryError) as joined:
+        await worker.join("bob", "implementer")
+    _assert_cause_surfaces(str(joined.value), "is not running")
+    result = await worker.whoami()
+    _assert_cause_surfaces(result["discovery_error"], "is not running")
+
+
+async def test_unknown_pin_surfaces_the_cause(tmp_path: Path) -> None:
+    """An unknown ROBOMATE_HUB_ID reports 'no registered hub', not 'no hub' (r1-1)."""
+
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "LOCALAPPDATA": str(tmp_path / "local")}
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    pinned = env | {"ROBOMATE_HUB_ID": "missing-id"}
+    worker = WorkerHubClient(WorkerSettings.unjoined(cwd=unbound, environ=pinned))
+    with pytest.raises(DiscoveryError) as joined:
+        await worker.join("bob", "implementer")
+    _assert_cause_surfaces(str(joined.value), "no registered hub has that name or hub_id")
+    result = await worker.whoami()
+    _assert_cause_surfaces(result["discovery_error"], "no registered hub has that name or hub_id")

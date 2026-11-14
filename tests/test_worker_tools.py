@@ -197,12 +197,13 @@ async def test_mcp_unbound_bridge_fails_closed_without_leaking_hubs(
 ) -> None:
     """The MCP tool layer replaces a hub-listing discovery error with a blocked hint (#511)."""
 
-    from agent_hub_common.discovery import DiscoveryError
+    from agent_hub_common.discovery import NoHubError
 
     def listing_error(
         cwd: Path, environ: Any, *, selector: Any = None, list_hubs: bool = True
     ) -> Any:
-        raise DiscoveryError(
+        # The genuinely unbound case is the one error the bridge rewrites (#511).
+        raise NoHubError(
             "no hub is recorded for checkout /unbound. Live hubs:\n"
             "  alpha  http://alpha:8420  hub_id hub-a\n"
             "  beta   http://beta:8420   hub_id hub-b"

@@ -31,6 +31,15 @@ class DiscoveryError(RuntimeError):
     """A repository or hub cannot be identified unambiguously."""
 
 
+class NoHubError(DiscoveryError):
+    """No hub was given and none was found: no selector, pin, URL or binding.
+
+    Distinct from other `DiscoveryError`s so an MCP bridge can fail closed only
+    for the genuinely unbound case, while a hub that was pinned or bound but is
+    down, restarting or misconfigured still surfaces the real cause (#511).
+    """
+
+
 class GitTimeoutError(DiscoveryError):
     """A `git` child hung past its deadline instead of answering (#301).
 
@@ -1202,8 +1211,8 @@ def find_hub(
             return hub
         where = f"no hub is recorded for checkout {checkout}"
     if not list_hubs:
-        raise DiscoveryError(where)
-    raise DiscoveryError(
+        raise NoHubError(where)
+    raise NoHubError(
         f"{where}. Choose a hub with --hub <name | hub_id | checkout path> (CLI) or "
         "ROBOMATE_HUB_URL with ROBOMATE_TOKEN_FILE (MCP bridge), or run robomate up "
         f"here. Live hubs:\n{describe_hubs(live_entries(env))}"

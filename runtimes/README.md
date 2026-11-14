@@ -36,7 +36,7 @@ Before using a template:
    Change the provider if the harness is pointed elsewhere (e.g. Claude Code on Bedrock).
    When `HUB_MODEL` is empty the agent may declare its own model through `check_in(model=...)`,
    recorded with `model_source: declared`; a value set here wins and is recorded as `env`.
-    `AGENT_RUNTIME`, the Step 4 name for `HUB_HARNESS`, is still honoured when `HUB_HARNESS` is unset.
+   `AGENT_RUNTIME`, the Step 4 name for `HUB_HARNESS`, is still honoured when `HUB_HARNESS` is unset.
 
 A launcher-managed run pins the bridge to one hub with `ROBOMATE_HUB_ID`
 (a registered hub id, never a URL or token) in the server's `env`. From a

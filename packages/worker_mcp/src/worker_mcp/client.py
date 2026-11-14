@@ -32,6 +32,7 @@ from agent_hub_common import (
 from agent_hub_common.discovery import (
     HUB_ID_ENV,
     DiscoveryError,
+    NoHubError,
     discover,
     resolve_checkout,
     select_hub,
@@ -571,7 +572,11 @@ class WorkerHubClient:
                     selector=selector,
                     list_hubs=(hub is not None),
                 )
-            except DiscoveryError:
+            except NoHubError:
+                # Fail closed only for the genuinely unbound case (no pin, URL
+                # or binding). Any other discovery failure keeps its real cause:
+                # a pinned/bound hub that is down or restarting must be diagnosed,
+                # and #512's launcher must not strand the worker (review r1-1).
                 if hub is None:
                     raise DiscoveryError(NO_HUB_MESSAGE.format(cwd=cwd)) from None
                 raise

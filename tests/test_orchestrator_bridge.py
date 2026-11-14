@@ -19,7 +19,7 @@ from agent_hub.signals import EVENT_KEY
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
 from agent_hub_common.accounting import CallRecord
-from agent_hub_common.discovery import DiscoveryError
+from agent_hub_common.discovery import DiscoveryError, NoHubError
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
@@ -748,9 +748,8 @@ async def test_unjoined_whoami_fails_closed_without_listing_hubs(
     """#511: an unbound bridge never leaks hub names or suggests hub= to an agent."""
 
     def missing(*args: Any, **kwargs: Any) -> None:
-        raise DiscoveryError(
-            "outside a checkout; Registered and live hubs: repo-a, repo-b; use hub="
-        )
+        # The genuinely unbound case is the one error the bridge rewrites (#511).
+        raise NoHubError("outside a checkout; Registered and live hubs: repo-a, repo-b; use hub=")
 
     monkeypatch.setattr("worker_mcp.client.discover", missing)
     client = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}))
