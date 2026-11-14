@@ -205,6 +205,14 @@ def test_served_worker_boundaries_and_git_hygiene(forge: str) -> None:
         "git push origin <branch>",
         "without `-u`",
         "Never delete branches, local or remote",
+        "Never use `git stash`",
+        "stack belongs to the clone rather than the worktree",
+        "shared with every other agent working in a worktree of the same clone",
+        "another agent's entry as easily as your own",
+        "scratch detached worktree of `origin/<default>`",
+        "harness's temporary directory",
+        "`git show origin/<default>:<path> > <path>` and restore it afterwards",
+        "commit it to the work branch",
     ):
         assert fragment in text
 
@@ -223,6 +231,18 @@ def test_served_rebase_guide_preserves_branch_push_rules(forge: str) -> None:
             "Never delete branches, local or remote",
         )
     )
+
+
+@pytest.mark.parametrize("role", ["implementer", "rebase"])
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_git_rules_point_to_the_stash_ban(role: str, forge: str) -> None:
+    """#500: repeated git rules carry the worker guide's shared-stack ban."""
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode("utf-8").split()
+    )
+    assert "Never use `git stash`" in text
+    assert "shared across the clone's worktrees" in text
+    assert "worker guide" in text
 
 
 def test_linux_grants_and_spec_common_directory_clarification() -> None:

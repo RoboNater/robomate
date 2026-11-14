@@ -36,6 +36,8 @@ the approved changes unchanged. If you are unsure whether a file counts, list it
    `git push --force-with-lease=<branch>:<pr_head_sha> origin <branch>` so that
    a push you have not seen makes yours fail. For a merge, use
    `git push origin <branch>` without `-u`. Never delete branches, local or remote.
+   Never use `git stash`: its stack is shared across the clone's worktrees
+   (worker guide); set work aside with a WIP commit instead.
 3. **Resolve conflicts, and only conflicts.** Keep the intent of both sides.
    Do not refactor, rename, reformat or fix anything else, however tempting it
    is: every extra change is code no reviewer has read. If a resolution needs a
