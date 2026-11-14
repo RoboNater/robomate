@@ -95,6 +95,15 @@ cleanup belongs to the operator. If git reports `cannot lock ref`, retry the
 same command after a short wait; never delete a `.lock` file. If contention
 persists, report `blocked` with the command and error.
 
+Never use `git stash`. Its stack belongs to the clone rather than the worktree,
+so it is shared with every other agent working in a worktree of the same clone,
+and a bare `git stash pop` (or `apply`) takes whatever is on top — another
+agent's entry as easily as your own — and drops it from their stack. To compare
+against the base, use a scratch detached worktree of `origin/<default>` in the
+harness's temporary directory, or swap a single file with
+`git show origin/<default>:<path> > <path>` and restore it afterwards. If work
+in progress must be set aside, commit it to the work branch.
+
 Keep scratch outside the worktree. Validation scratch, temporary checkouts,
 and validation TEMP belong in the harness's own temporary directory, never
 in the worktree or `closeout/`. Normal repository setup and check caches

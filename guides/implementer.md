@@ -26,6 +26,8 @@ change request, or merge it.
    of the same run, check out the existing branch. For an address task,
    check out the existing change-request
    branch and verify its current head from the forge (see the forge appendix).
+   Never use `git stash`: its stack is shared across the clone's worktrees
+   (worker guide); use a scratch worktree or a temporary WIP commit instead.
 3. Before changing any shared monotonic counter, check the claim in the run's
    reservations issue and use that value exactly. Alice claims it or explicitly
    assigns you the claim edit, using the shared-body procedure and advancing the
