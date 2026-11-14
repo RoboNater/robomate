@@ -426,11 +426,10 @@ class Launcher:
         argv = launch.argv
         if self.harness == "claude-code" and "--permission-prompts" not in argv:
             version = environment.get("HUB_HARNESS_VERSION", "")
-            if not version:
-                manifest = self.args.sessions.parent / "run.json"
-                if manifest.is_file():
-                    metadata = json.loads(manifest.read_text(encoding="utf-8"))
-                    version = metadata.get("versions", {}).get("claude", "")
+            manifest = self.args.sessions.parent / "run.json"
+            if manifest.is_file():
+                metadata = json.loads(manifest.read_text(encoding="utf-8"))
+                version = metadata.get("versions", {}).get("claude", "")
             match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
             # 2.1.325 is the first version verified by #517. Older/unknown
             # versions retain their supported argv rather than receiving a new flag.

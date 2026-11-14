@@ -79,7 +79,8 @@ def prepare(
     lane_tmp = Path(cache).parent if cache and Path(cache).name == "uv-cache" else None
     # Prepared runs already have a local metadata file beside their journal.
     manifest = sessions.parent / "run.json"
-    if not hub and manifest.is_file():
+    env["ROBOMATE_PERMISSION_STATUS_DIR"] = str(sessions.parent)
+    if manifest.is_file():
         metadata = json.loads(manifest.read_text(encoding="utf-8"))
         hub = metadata.get("hub_repo")
         if metadata.get("state_dir"):

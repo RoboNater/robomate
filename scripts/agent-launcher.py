@@ -203,7 +203,12 @@ def is_selection(name: str) -> bool:
 
 def cleared_environment() -> dict[str, str]:
     """This process's environment without an inherited hub selection."""
-    return {key: value for key, value in os.environ.items() if not is_selection(key)}
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not is_selection(key)
+        and not key.startswith(("ROBOMATE_PERMISSION_", "ROBOMATE_LAUNCH_"))
+    }
 
 
 def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> dict[str, str]:
