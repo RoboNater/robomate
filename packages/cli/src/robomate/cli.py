@@ -1269,7 +1269,8 @@ def _status(as_json: bool, selector: str | None) -> None:
         )
         if agent.get("stalled"):
             print(f"    {_stall_evidence(agent['activity'])}")
-            permission_line(agent["name"])
+            if agent["harness"] == "opencode":
+                permission_line(agent["name"])
         activity = agent.get("activity") or {}
         if activity.get("redelivery_count", 0) >= 2:
             print(
