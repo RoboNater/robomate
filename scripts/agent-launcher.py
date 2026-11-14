@@ -163,6 +163,7 @@ class Place:
     """Whether a joining child's bridge needs the URL and token file to find the hub:
     a remote host, or a hub named by ``ROBOMATE_HUB_URL``. A local hub is found
     through the worktree's binding instead."""
+    checkout: Path | None = None
 
 
 def locate(args: argparse.Namespace) -> Place:
@@ -189,7 +190,7 @@ def locate(args: argparse.Namespace) -> Place:
         raise Usage(str(exc)) from None
     if isinstance(hub, LocalHub):
         sessions = Path(args.sessions_dir) if args.sessions_dir else hub.state_dir / "sessions"
-        return Place(hub.url.rstrip("/"), hub.token_file, sessions, args.hub)
+        return Place(hub.url.rstrip("/"), hub.token_file, sessions, args.hub, checkout=hub.checkout)
     if not args.sessions_dir:
         raise Usage("a hub named by ROBOMATE_HUB_URL has no local state: add --sessions-dir")
     return Place(hub.url, hub.token_file, Path(args.sessions_dir), None, explicit=True)
@@ -214,6 +215,8 @@ def child_environment(place: Place, extra: Mapping[str, str] | None = None) -> d
     otherwise take precedence over the file.
     """
     forwarded: dict[str, str] = {}
+    if place.checkout is not None:
+        forwarded["ROBOMATE_LAUNCH_HUB_CHECKOUT"] = str(place.checkout)
     if place.explicit:
         if place.token_file is None:
             raise Usage("the hub's token file is unknown: name it with --token-file")
@@ -453,7 +456,7 @@ def headless_base(
     if harness == "codex":
         return [*program, "exec", "-C", ".", *RUN_PERMISSIONS[harness], *granted, *flags, *extra]
     if harness == "opencode":
-        return [*program, "run", *RUN_PERMISSIONS[harness], *flags, "--title", title, *extra]
+        return [*program, "run", *flags, "--title", title, *extra]
     if harness == "antigravity":
         return [*program, *flags, *RUN_PERMISSIONS[harness], *extra]
     if harness == "devin":

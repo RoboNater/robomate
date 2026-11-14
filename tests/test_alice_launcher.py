@@ -62,6 +62,12 @@ import json, os, sys, time
     + fake_harness.CHILD_PID_RECORD
     + """\
 argv = sys.argv[1:]
+if argv == ["--help"]:
+    print(os.environ.get("FAKE_CLAUDE_HELP", ""))
+    sys.exit(0)
+if argv == ["debug", "config"]:
+    print(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
+    sys.exit(0)
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 record = {
     "argv": argv,
@@ -158,6 +164,7 @@ def args(run_dir: Path, fake: Path, harness: str, *extra: str) -> list[str]:
             "--",
             sys.executable,
             str(fake),
+            *(["run"] if harness == "opencode" else []),
             "--model",
             "m-1",
             "--flag",
@@ -185,7 +192,11 @@ def sessions(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def events(run_dir: Path) -> list[str]:
-    return [record["event"] for record in sessions(run_dir)]
+    return [
+        record["event"]
+        for record in sessions(run_dir)
+        if record["event"] != "permission_observation"
+    ]
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
@@ -205,14 +216,15 @@ def test_each_harness_resumes_its_own_conversation_until_done(
     assert len(runs) == 3
     for run in runs:
         # Model, flags and environment survive every resume.
-        assert run["argv"][:3] == ["--model", "m-1", "--flag"]
+        offset = 3 if harness == "opencode" else 0
+        assert run["argv"][offset : offset + 3] == ["--model", "m-1", "--flag"]
         assert run["env"] == {
             "FAKE_MARK": "kept",
             "CODEX_HOME": str(run_dir / "codex home"),
             "OPENCODE_CONFIG": str(run_dir / "alice.opencode.json"),
         }
     kickoff = f"Read {run_dir / 'alice.prompt.md'} and follow the instructions in it"
-    skip = 5 if harness == "devin" else 3
+    skip = 5 if harness == "devin" else 6 if harness == "opencode" else 3
     first, *resumed = (run["argv"][skip:] for run in runs)
     log = sessions(run_dir)
     conversation = log[-1]["conversation_id"]

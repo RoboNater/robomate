@@ -1011,7 +1011,7 @@ def opencode_launch(
     it is omitted for interactive launches, which take no title.
     """
     words = (
-        ["opencode", "run", "--auto", *flags]
+        ["opencode", "run", *flags]
         if auto_start
         else ["opencode", *permission_flags("opencode", False), *flags]
     )
@@ -1492,7 +1492,7 @@ def opencode_resume(
 ) -> list[str]:
     """A manual OpenCode session resume by ``ses_...`` ID; never ``--continue`` (#94)."""
     if auto_start:
-        words = ["opencode", "run", "--auto", *flags]
+        words = ["opencode", "run", *flags]
         if title:
             words += ["--title", shell_word(title, powershell)]
         words += ["--session", session_var, auto_start_instruction(resume_prompt, powershell)]
@@ -2016,7 +2016,7 @@ def agent_launch_lines(
         )
         base += ["--approve-for-me", *flags]
     elif harness == "opencode":
-        base = ["opencode", "run", "--auto", *flags]
+        base = ["opencode", "run", *flags]
         if title:
             base += ["--title", shell_word(title, powershell)]
     elif harness == "antigravity":

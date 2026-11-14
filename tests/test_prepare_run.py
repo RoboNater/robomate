@@ -736,7 +736,7 @@ def test_opencode_launch_lines_carry_model_variant_and_prompt(
     lines = interactive_command_lines(lines, auto_start)
     if auto_start:
         expected = (
-            f"OPENCODE_CONFIG={config} opencode run --auto "
+            f"OPENCODE_CONFIG={config} opencode run "
             "--model opencode/gemini-3.8-flash --variant high "
             f"'Read {prompt} and follow the instructions in it'"
         )
@@ -842,7 +842,7 @@ def test_launch_lines_windows_powershell(tmp_path: Path, monkeypatch: pytest.Mon
         "high",
     )
     assert "$env:OPENCODE_CONFIG =" in oc_lines[1]
-    assert "opencode run --auto --model 'opencode/gemini-3.8-flash' --variant high" in oc_lines[2]
+    assert "opencode run --model 'opencode/gemini-3.8-flash' --variant high" in oc_lines[2]
     agy_home = run_dir / "configs" / "charlie-agy"
     agy_lines = PREPARE_RUN.launch_lines(
         "antigravity",
@@ -3427,6 +3427,9 @@ def test_opencode_run_records_title_and_resume_artifacts(
 FAKE_ALICE = """\
 import json, os, sys
 argv = sys.argv[1:]
+if argv == ["debug", "config"]:
+    print("{}")
+    sys.exit(0)
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 env = {k: os.environ.get(k) for k in ("CODEX_HOME", "OPENCODE_CONFIG", "HOME", "TMPDIR", "TEMP")}
 with open(os.environ["FAKE_ARGV_LOG"], "a", encoding="utf-8") as log:

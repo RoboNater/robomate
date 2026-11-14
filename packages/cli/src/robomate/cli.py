@@ -1238,10 +1238,23 @@ def _status(as_json: bool, selector: str | None) -> None:
         print(line)
     # Absent from a hub older than #144, which may still be running.
     stalled = False
+    from agent_hub_common.launcher_observations import permission_diagnostic
+
+    def permission_line(agent_name: str) -> None:
+        diagnostic = permission_diagnostic(
+            location[0] / "sessions" if location else None,
+            agent_name,
+            status.get("hub_id", ""),
+            workflow.get("id") if workflow else None,
+        )
+        if diagnostic:
+            print(f"  STALLED — {diagnostic}")
+
     alice = status.get("orchestrator_activity")
     if alice and alice.get("stalled"):
         stalled = True
         print(f"  STALLED — {_stall_evidence(alice)}")
+        permission_line((status.get("orchestrator") or {}).get("name", "alice"))
     print(f"Agents: {len(status['agents'])}")
     for agent in status["agents"]:
         life = (
@@ -1256,6 +1269,7 @@ def _status(as_json: bool, selector: str | None) -> None:
         )
         if agent.get("stalled"):
             print(f"    {_stall_evidence(agent['activity'])}")
+            permission_line(agent["name"])
         activity = agent.get("activity") or {}
         if activity.get("redelivery_count", 0) >= 2:
             print(
