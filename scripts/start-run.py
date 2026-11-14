@@ -89,6 +89,7 @@ DEFAULTS: dict[str, str | int | float | bool] = {
     "denise_harness": "",
     "denise_model": "",
     "denise_effort": "",
+    "denise_clean_login": False,
     "auto_start": True,
     "pytest_workers": 0,
     "max_resumes": -1,
@@ -112,6 +113,7 @@ COMMENTS = {
     "forge": "github or gitlab; empty lets robomate up detect it from the origin.",
     "alice_harness": "claude, codex, opencode, antigravity or devin; model and effort optional.",
     "denise_settings_from": "Denise (doctor) settings: alice, bob, charlie or none.",
+    "denise_clean_login": "Use a separate per-run doctor login instead of the operator login.",
     "auto_start": "false prints each agent's interactive start command instead.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
     "max_resumes": "Launcher resume bounds; max_resumes = -1 is unlimited.",
@@ -940,6 +942,8 @@ def report(run: Run) -> bool:
         for key in ("model", "effort"):
             if doctor[key]:
                 words += [f"--{key}", doctor[key]]
+        if run.values["denise_clean_login"]:
+            words += ["--clean-login"]
         say("consult Denise about this run with: " + command_line(words))
     return done
 

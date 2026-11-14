@@ -1237,6 +1237,62 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         return common.EXIT_INTERRUPTED
 
 
+def doctor_codex_mcp_flags(argv: list[str], *, environment: dict[str, str], cwd: str) -> list[str]:
+    """Disable discovered servers and verify the effective config before startup.
+
+    mcp_servers={} merges rather than clears on codex-cli 0.167.0 (#496).
+    Probe in the same directory/environment with the same CLI settings as startup.
+    Never print the returned config: transports may contain credentials.
+    """
+    remedy = "cannot verify Codex has no enabled MCP servers; retry with --clean-login"
+
+    def servers(flags: list[str]) -> list[dict[str, Any]]:
+        try:
+            response = subprocess.run(
+                [*argv, *flags, "mcp", "list", "--json"],
+                cwd=cwd,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            entries = json.loads(response.stdout)
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("name"), str)
+                or not entry["name"]
+                or not isinstance(entry.get("enabled"), bool)
+                for entry in entries
+            ):
+                raise ValueError("invalid MCP listing")
+            return entries
+        except (OSError, subprocess.SubprocessError, ValueError):
+            raise Usage(remedy) from None
+
+    flags = []
+    table = []
+    special = False
+    for entry in servers([]):
+        name = entry["name"]
+        table.append(json.dumps(name, ensure_ascii=False) + "={enabled=false}")
+        if re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            override = f"mcp_servers.{name}.enabled=false"
+        else:
+            # Codex splits dotted CLI keys literally, even inside quotes. A
+            # quoted inline-table key preserves dots and other special characters.
+            special = True
+            continue
+        flags += ["-c", override]
+    if special:
+        # Keep all names in this override: a whole-table assignment supersedes
+        # earlier dotted overrides in the CLI layer before it merges user config.
+        flags = ["-c", "mcp_servers={" + ",".join(table) + "}"]
+    if any(entry["enabled"] for entry in servers(flags)):
+        raise Usage(remedy)
+    return flags
+
+
 def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     """Denise's optional entry: local reads only, no join, no MCP, no supervision."""
 
@@ -1295,32 +1351,26 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         settings=settings,
     )
     doctor_dir = context["doctor"]
-    # Denise's own harness home/config under the selected run (docs/denise/guide.md):
-    # no robomate MCP entry, no team permissions, no unattended approvals.
-    profile = Path(doctor_dir["configs"]) / profile_name
-    doctor_dir["profile"] = str(profile)
+    environment = common.launch_environment(doctor_dir["workdir"], cleared_environment())
+    environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
+    login = ""
+    if args.clean_login:
+        # An opt-in per-run home keeps authentication separate across runs.
+        profile = Path(doctor_dir["configs"]) / profile_name
+        doctor_dir["profile"] = str(profile)
+        profile.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if harness == "codex":
+            (profile / "config.toml").write_text(
+                "# Denise's clean doctor profile: no MCP servers or approval overrides.\n",
+                encoding="utf-8",
+            )
+            environment["CODEX_HOME"] = str(profile)
+            if not (profile / "auth.json").is_file():
+                login = f"Log in to Denise's clean profile: CODEX_HOME={profile} codex login"
+        else:
+            environment["CLAUDE_CONFIG_DIR"] = str(profile)
+            login = f"Denise's clean Claude Code profile is {profile}: use /login to log in."
     report = denise.render_joined(context)
-    profile.mkdir(parents=True, mode=0o700, exist_ok=True)
-    if harness == "codex":
-        (profile / "config.toml").write_text(
-            "# Denise's doctor profile (agent-launcher.py doctor): no MCP servers and no\n"
-            "# unattended approvals. Rewritten at each start; log in once with\n"
-            f"#   CODEX_HOME={profile} codex login\n",
-            encoding="utf-8",
-        )
-        profile_variable = "CODEX_HOME"
-        login = (
-            ""
-            if (profile / "auth.json").is_file()
-            else f"Denise's Codex profile has no login yet: run `CODEX_HOME={profile} codex "
-            "login`, or log in when Codex asks. Never point it at another agent's home."
-        )
-    else:
-        profile_variable = "CLAUDE_CONFIG_DIR"
-        login = (
-            f"Denise's Claude Code profile is {profile}: log in there when Claude Code asks, "
-            "never with another agent's configuration."
-        )
     write_roots = [
         root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
     ]
@@ -1332,16 +1382,17 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     flags = model_flags(harness, settings["model"], settings["effort"], interactive=True)
     if harness == "codex":
         # No MCP server at all, and write grants only on the selected run's roots.
-        argv = [*program, "-C", doctor_dir["workdir"], "-c", "mcp_servers={}"]
-        argv += ["-c", "sandbox_mode=workspace-write"]
+        argv = [*program, "-C", doctor_dir["workdir"], *flags, *extra]
+        argv += ["-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request"]
         for root in write_roots:
             argv += ["--add-dir", root]
-        argv += [*flags, *extra, prompt]
+        argv += doctor_codex_mcp_flags(argv, environment=environment, cwd=doctor_dir["workdir"])
+        argv += [prompt]
     else:
-        argv = [*program, *flags, "--strict-mcp-config"]
+        argv = [*program, *flags, *extra, "--strict-mcp-config", "--permission-mode", "default"]
         for root in [*write_roots, *read_roots]:
             argv += ["--add-dir", root]
-        argv += [*extra, prompt]
+        argv += [prompt]
     print(
         f"Denise ({harness}) for run {args.run}: no hub tools; context {doctor_dir['context']}; "
         f"report {report}; write roots: {', '.join(write_roots) or '(none)'}; "
@@ -1350,12 +1401,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     )
     if login:
         print(login, flush=True)
-    # No inherited hub selection: discovery is scoped to each operator command.
-    environment = common.launch_environment(
-        doctor_dir["workdir"],
-        cleared_environment() | {profile_variable: str(profile)},
-    )
-    environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
+
     return subprocess.call(argv, cwd=doctor_dir["workdir"], env=environment)
 
 
@@ -1450,6 +1496,7 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--hub", metavar="NAME|HUB_ID|CHECKOUT", help="the hub to read")
     check.add_argument("--run", help="the run ID under the hub's runs/")
     check.add_argument("--harness", required=True, choices=("claude", *DOCTOR_HARNESSES))
+    check.add_argument("--clean-login", action="store_true", help="use a separate per-run login")
     check.add_argument("--model", default="")
     check.add_argument("--effort", default="")
     check.add_argument("--target", help="the target checkout (default: the hub's checkout)")

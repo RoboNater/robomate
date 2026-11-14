@@ -59,6 +59,13 @@ import json, os, sys, time
     + fake_harness.CHILD_PID_RECORD
     + """\
 argv = sys.argv[1:]
+if "mcp" in argv and "list" in argv and "--json" in argv:
+    entries = json.loads(os.environ.get("FAKE_MCP_SERVERS", "[]"))
+    if any("enabled=false" in word for word in argv):
+        for entry in entries:
+            entry["enabled"] = False
+    print(json.dumps(entries))
+    sys.exit(0)
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
         "ROBOMATE_TOKEN_FILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
@@ -1103,11 +1110,9 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
         == f"Read {run['denise'] / 'startup.md'} and follow the instructions in it"
     )
     assert not any("Join robomate" in word or "--mcp-config" in word for word in launch["argv"])
-    assert not any(
-        word in launch["argv"] for word in ("-p", "--permission-mode", "--approve-for-me")
-    )
+    assert not any(word in launch["argv"] for word in ("-p", "--approve-for-me"))
     if harness == "codex":
-        assert "mcp_servers={}" in launch["argv"]
+        assert "approval_policy=on-request" in launch["argv"]
     else:
         assert "--strict-mcp-config" in launch["argv"]
     granted = [
@@ -1198,8 +1203,16 @@ def test_doctor_supports_only_its_ready_harnesses(
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])
-def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
-    area: dict[str, Path], run: dict[str, Path], monkeypatch: pytest.MonkeyPatch, harness: str
+@pytest.mark.parametrize("clean_login", [False, True])
+@pytest.mark.parametrize("ambient", [False, True])
+def test_doctor_login_and_no_inherited_hub_selection(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    clean_login: bool,
+    ambient: bool,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     for name, value in {
         "ROBOMATE_HUB_URL": "http://another-hub:1",
@@ -1210,30 +1223,118 @@ def test_doctor_uses_its_own_profile_and_no_inherited_hub_selection(
     }.items():
         monkeypatch.setenv(name, value)
 
+    if not ambient:
+        for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("FAKE_MCP_SERVERS", json.dumps([{"name": "robomate", "enabled": True}]))
     words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", harness]
+    if clean_login:
+        words += ["--clean-login"]
     assert invoke(words, programs=programs(area), reader=no_hub()) == 0
 
     (launch,) = launches(area)
     env = launch["env"]
+    assert env["PWD"] == str(Path(launch["cwd"]).resolve())
+    assert env["VIRTUAL_ENV"] is None
     assert env["ROBOMATE_HUB_URL"] is None and env["ROBOMATE_TOKEN"] is None
     assert env["ROBOMATE_TOKEN_FILE"] is None
     profile = run["denise"] / "configs" / ("codex" if harness == "codex" else "claude")
-    variable, other = (
-        ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
-        if harness == "codex"
-        else ("CLAUDE_CONFIG_DIR", "CODEX_HOME")
-    )
-    assert env[variable] == str(profile) and profile.is_dir()
-    if harness == "codex":
-        config = (profile / "config.toml").read_text(encoding="utf-8")
-        assert "[mcp_servers" not in config and "approval" not in config.split("#")[0]
+    variable = "CODEX_HOME" if harness == "codex" else "CLAUDE_CONFIG_DIR"
     context = json.loads((run["denise"] / "context.json").read_text(encoding="utf-8"))
-    assert context["doctor"]["profile"] == str(profile)
-    assert env[other] == str(
-        area["root"] / ("team claude config" if other == "CLAUDE_CONFIG_DIR" else "team codex home")
+    if clean_login:
+        assert env[variable] == str(profile) and profile.is_dir()
+        assert context["doctor"]["profile"] == str(profile)
+        if harness == "codex":
+            config = (profile / "config.toml").read_text(encoding="utf-8")
+            assert "[mcp_servers" not in config and "approval" not in config.split("#")[0]
+        else:
+            assert "/login" in capsys.readouterr().out
+    else:
+        assert "profile" not in context["doctor"]
+        assert not profile.exists()
+    for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR"):
+        if clean_login and key == variable:
+            continue
+        expected = (
+            str(area["root"] / ("team codex home" if key == "CODEX_HOME" else "team claude config"))
+            if ambient
+            else None
+        )
+        assert env[key] == expected
+    argv = launch["argv"]
+    if harness == "codex":
+        assert "mcp_servers.robomate.enabled=false" in argv
+        assert "approval_policy=on-request" in argv and "sandbox_mode=workspace-write" in argv
+    else:
+        assert "--strict-mcp-config" in argv and "--mcp-config" not in argv
+        assert argv[argv.index("--permission-mode") + 1] == "default"
+
+
+@pytest.mark.parametrize("failure", ["enabled", "bad-json", "bad-shape", "exit", "timeout"])
+def test_doctor_refuses_unverified_codex_mcp(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    real_run = subprocess.run
+
+    def listing(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "mcp" not in argv:
+            return real_run(argv, **kwargs)
+        calls.append(argv)
+        if failure == "exit":
+            raise subprocess.CalledProcessError(1, argv, stderr="secret transport")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 30)
+        body = json.dumps([{"name": "robomate", "enabled": True}])
+        if len(calls) > 1:
+            body = {"bad-json": "secret transport", "bad-shape": "{}"}.get(failure, body)
+        return subprocess.CompletedProcess(argv, 0, stdout=body)
+
+    monkeypatch.setattr(CLI.subprocess, "run", listing)
+    assert (
+        invoke(
+            ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 2
     )
-    assert env["PWD"] == str(Path(launch["cwd"]).resolve())
-    assert env["VIRTUAL_ENV"] is None
+    assert launches(area) == []
+    error = capsys.readouterr().err
+    assert "--clean-login" in error and "secret transport" not in error
+
+
+def test_doctor_codex_disables_special_names_with_same_launch_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    entries = [{"name": name, "enabled": True} for name in ("robomate", "with.dot")]
+
+    def listing(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(
+                entries if len(calls) == 1 else [entry | {"enabled": False} for entry in entries]
+            ),
+        )
+
+    monkeypatch.setattr(CLI.subprocess, "run", listing)
+    argv = ["codex", "-C", "/work", "-c", "approval_policy=on-request"]
+    env = {"CODEX_HOME": "/operator"}
+    flags = CLI.doctor_codex_mcp_flags(argv, environment=env, cwd="/work")
+    assert flags == [
+        "-c",
+        'mcp_servers={"robomate"={enabled=false},"with.dot"={enabled=false}}',
+    ]
+    assert calls[0][0] == [*argv, "mcp", "list", "--json"]
+    assert calls[1][0] == [*argv, *flags, "mcp", "list", "--json"]
+    assert all(kwargs["env"] == env and kwargs["cwd"] == "/work" for _, kwargs in calls)
 
 
 # -- a broken fake child (#464) --------------------------------------------------------

@@ -186,17 +186,23 @@ locally; a missing run lists the hub's runs and creates nothing. In that
 run's `denise/` it refreshes `context.json` (the run, the robomate checkout
 and the target checkout as separate references, and an access inventory) and
 `startup.md`, and creates a new report under `reports/`; earlier reports are
-kept. Denise starts interactively in `denise/workspace` with her own
-harness profile, `denise/configs/claude` (`CLAUDE_CONFIG_DIR`) or
-`denise/configs/codex` (`CODEX_HOME`, whose `config.toml` holds no MCP server
-and no approval policy), never the operator's or a team agent's. She gets no
-MCP server (`--strict-mcp-config` for Claude Code, `mcp_servers={}` for
-Codex), no unattended flags, no inherited `ROBOMATE_HUB_URL` or
-`ROBOMATE_TOKEN*`, the local guide `docs/denise/guide.md`, and directory
-grants only on the inventory's write roots: the selected run, the target
-checkout and its git common directory, and the hub's state. A new profile has
-no login: the launcher says how to log in to it (`CODEX_HOME=<profile> codex
-login`, or Claude Code's own prompt). M7 Step 2's
+kept. Denise starts interactively in `denise/workspace`, using the operator's
+existing home and login by default (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` pass
+through unchanged). User hooks, plugins and skills may load. Use `--clean-login`
+for her separate per-run profile in `denise/configs/claude` or
+`denise/configs/codex`; log in with `/login` or
+`CODEX_HOME=<profile> codex login` as printed at launch.
+
+Claude Code gets `--strict-mcp-config` without `--mcp-config` and
+`--permission-mode default`. Codex lists configured MCP servers, disables
+each by name, and verifies with the same launch overrides that none is enabled;
+a failed check refuses startup and recommends `--clean-login`.
+`mcp_servers={}` merges existing entries on codex-cli 0.167.0 and is not used
+as a clearing flag. Codex gets `approval_policy=on-request` and
+`sandbox_mode=workspace-write`. Both clear inherited `ROBOMATE_HUB_URL` and
+`ROBOMATE_TOKEN*`, read `docs/denise/guide.md`, and receive directory grants
+on the inventory's write roots: the selected run, the target checkout and
+its git common directory, and the hub's state. M7 Step 2's
 generated wrappers for prepared runs remain until Step 11 proves this entry
 on Bash and PowerShell.
 
