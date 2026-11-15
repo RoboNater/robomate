@@ -747,6 +747,7 @@ class FakeHub(WORKER.WorkerReader):  # type: ignore[misc,name-defined]
         if method == "hub.status":
             agents = result.setdefault("agents", [])
             self.current_agent = next((a for a in agents if a.get("name") == self.agent), None)
+            self.current_orchestrator = result.get("orchestrator")
         return result
 
 
@@ -1210,7 +1211,7 @@ def test_orchestrator_resume_matches_its_recorded_join(
     else:
         monkeypatch.setenv("FAKE_BRIDGE_JOIN", bridge)
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
-    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    active = {"workflow": workflow(), "agents": [], "orchestrator": {"name": "alice"}}
     done = {"workflow": workflow("done"), "agents": []}
     hub = FakeHub(after_launches(area, active, active, done))
 
@@ -1228,6 +1229,27 @@ def test_orchestrator_resume_matches_its_recorded_join(
     assert text == CLI.continuation("alice", "orchestrator", joined=joined)
     assert ('join(name="alice", role="orchestrator", takeover=true)' in text) == joined
     assert "Then call get_state" in text and "On resume" in text
+
+
+def test_orchestrator_that_never_joins_stops(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FAKE_BRIDGE_JOIN", raising=False)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    queued: dict[str, Any] = {"workflow": workflow("queued"), "agents": [], "orchestrator": None}
+    code = invoke(
+        start_words(area, "alice", "orchestrator", "claude-code"),
+        programs=programs(area),
+        reader=FakeHub(after_launches(area, queued)),
+        workspace=workspace_of(area),
+    )
+    assert code == LAUNCHER.EXIT_NEVER_JOINED
+    assert len(launches(area)) == 1
+    rows = [
+        json.loads(line) for line in (area["sessions"] / "alice.jsonl").read_text().splitlines()
+    ]
+    assert rows[-1]["reason"] == "never_joined"
+    assert not any(row["event"] == "wait" for row in rows)
 
 
 def test_an_earlier_release_and_finished_run_do_not_stop_a_new_start(

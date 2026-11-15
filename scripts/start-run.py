@@ -98,8 +98,10 @@ DEFAULTS: dict[str, str | int | float | bool] = {
     "resume_max_delay_s": launcher_defaults.DEFAULT_RESUME_MAX_DELAY_S,
     "resume_total_s": launcher_defaults.DEFAULT_RESUME_TOTAL_S,
     "resume_series_reset_s": launcher_defaults.DEFAULT_RESUME_SERIES_RESET_S,
+    "join_window_s": 120.0,
 }
 FLOAT_KEYS = ("resume_delay_s", "resume_max_delay_s", "resume_total_s", "resume_series_reset_s")
+SECONDS_KEYS = (*FLOAT_KEYS, "join_window_s")
 PATH_KEYS = ("run_parent_dir", "work_file")
 #: prep-standard-run's top-level policy keys; this reads them into ``[policy]``.
 POLICY_SHORTHANDS = ("stall_after_min", "stall_action_after_min")
@@ -118,6 +120,7 @@ COMMENTS = {
     "auto_start": "false prints each agent's interactive start command instead.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
     "max_resumes": "Launcher resume bounds; max_resumes = -1 is unlimited.",
+    "join_window_s": "Maximum seconds for the team to join before startup fails.",
 }
 POLICY_COMMENT = """\
 # Workflow policy for this run, over the hub, repository and user
@@ -195,7 +198,7 @@ def parser() -> argparse.ArgumentParser:
         if isinstance(default, bool):
             group.add_argument(flag, action=argparse.BooleanOptionalAction, default=None)
         else:
-            kind = float if key in FLOAT_KEYS else int if isinstance(default, int) else str
+            kind = float if key in SECONDS_KEYS else int if isinstance(default, int) else str
             group.add_argument(flag, type=kind, default=None)
     for key in POLICY_SHORTHANDS:
         result.add_argument(
@@ -305,7 +308,7 @@ def load_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     values: dict[str, Any] = {}
     for key, value in loaded.items():
         expected = DEFAULTS[key]
-        if key in FLOAT_KEYS:
+        if key in SECONDS_KEYS:
             if type(value) not in (int, float):
                 raise ValueError(f"{key} must be a number of seconds")
             value = float(value)
@@ -428,9 +431,11 @@ def validate(values: Mapping[str, Any], policy: Mapping[str, Any], *, starting: 
             raise ValueError(str(exc)) from None
     if values["max_resumes"] < -1:
         raise ValueError("max_resumes must be -1 (unlimited) or a count")
-    for key in FLOAT_KEYS:
+    for key in SECONDS_KEYS:
         if not math.isfinite(values[key]) or values[key] < 0:
             raise ValueError(f"{key} must be a finite, non-negative number of seconds")
+    if values["join_window_s"] <= 0:
+        raise ValueError("join_window_s must be positive")
     for name in AGENTS:
         if str(values[f"{name}_harness"]).strip().lower() not in HARNESS_NAMES:
             raise ValueError(f"invalid {name}_harness {values[f'{name}_harness']!r}")
@@ -569,7 +574,11 @@ def operator_environment(cwd: Path) -> dict[str, str]:
 
 
 def robomate(
-    checkout: Path, *words: str, stdin: str | None = None, check: bool = True
+    checkout: Path,
+    *words: str,
+    stdin: str | None = None,
+    check: bool = True,
+    timeout_s: float = CLI_TIMEOUT_S,
 ) -> subprocess.CompletedProcess[str]:
     """One ``robomate`` command in the checkout; ``stdin`` goes as UTF-8 bytes, unchanged.
 
@@ -583,7 +592,7 @@ def robomate(
         env=operator_environment(checkout),
         input=None if stdin is None else stdin.encode("utf-8"),
         capture_output=True,
-        timeout=CLI_TIMEOUT_S,
+        timeout=timeout_s,
         check=False,
     )
     done = subprocess.CompletedProcess(
@@ -602,11 +611,11 @@ def same_path(left: str | Path, right: str | Path) -> bool:
     return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
 
 
-def hub_status(checkout: Path) -> dict[str, Any] | None:
+def hub_status(checkout: Path, *, timeout_s: float = CLI_TIMEOUT_S) -> dict[str, Any] | None:
     """``robomate status --json`` for the checkout's hub when it serves this checkout."""
 
     try:
-        done = robomate(checkout, "status", "--json", check=False)
+        done = robomate(checkout, "status", "--json", check=False, timeout_s=timeout_s)
     except subprocess.TimeoutExpired:
         return None
     try:
@@ -837,6 +846,50 @@ def resume_hint(run: Run, agent: str) -> str:
 def supervise(run: Run) -> int:
     """Wait for every launcher; report each exit, with the resume command after a failure."""
 
+    deadline = time.monotonic() + run.values["join_window_s"]
+    joined: set[str] = set()
+    previous = {
+        row["name"]: (row.get("activity") or {}).get("instance")
+        for row in run.status.get("agents", [])
+        if isinstance(row, dict)
+        and isinstance(row.get("activity") or {}, dict)
+        and isinstance(row.get("name"), str)
+    }
+    while len(joined) < len(run.agents):
+        remaining = max(0.001, deadline - time.monotonic())
+        status = hub_status(run.checkout, timeout_s=remaining) or {}
+        orchestrator = status.get("orchestrator")
+        if isinstance(orchestrator, dict) and orchestrator.get("name") in run.agents:
+            joined.add(orchestrator["name"])
+        for row in status.get("agents", []):
+            if not isinstance(row, dict) or row.get("name") not in run.agents:
+                continue
+            name = row["name"]
+            activity = row.get("activity") or {}
+            instance = activity.get("instance") if isinstance(activity, dict) else None
+            if name not in previous or (instance is not None and instance != previous[name]):
+                joined.add(name)
+        for agent, process in run.agents.items():
+            code = process.poll()
+            if code:
+                say(
+                    f"startup failed: {agent}'s launcher exited with {code}; "
+                    f"log {run.logs_dir / (agent + '.log')}"
+                )
+                stop_agents(run)
+                return code
+        if len(joined) == len(run.agents):
+            break
+        if time.monotonic() >= deadline:
+            for agent in run.agents.keys() - joined:
+                say(
+                    f"startup failed: {agent} did not join within "
+                    f"{run.values['join_window_s']:g}s; log {run.logs_dir / (agent + '.log')}"
+                )
+            stop_agents(run)
+            return 1
+        time.sleep(POLL_S)
+    say("all agents joined")
     worst = 0
     pending = dict(run.agents)
     while pending:

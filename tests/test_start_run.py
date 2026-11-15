@@ -825,3 +825,115 @@ def test_opencode_checks_both_configs_and_warns_on_unreadable(
     other.write_text('{"mcp":{"robomate":false}}', encoding="utf-8")
     with pytest.raises(ValueError, match="mcp.robomate"):
         START.check_mcp_entry("opencode")
+
+
+def test_supervise_stops_remaining_launchers_when_start_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    values, _ = settings()
+    run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
+
+    class Process:
+        def __init__(self, code: int | None) -> None:
+            self.code = code
+            self.stopped = False
+
+        def poll(self) -> int | None:
+            return self.code
+
+    run.agents = {name: Process(1 if name == "bob" else None) for name in START.AGENTS}
+    monkeypatch.setattr(START, "hub_status", lambda _, **kw: {"agents": [], "orchestrator": None})
+    monkeypatch.setattr(
+        START, "stop_agents", lambda _: setattr(run.agents["alice"], "stopped", True)
+    )
+    assert START.supervise(run) == 1
+    assert run.agents["alice"].stopped
+    output = capsys.readouterr().out
+    assert "bob" in output and "bob.log" in output and "exited with 1" in output
+
+
+def test_supervise_reports_agents_missing_at_join_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    values, _ = settings("--join-window-s", "1")
+    run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
+
+    class Process:
+        def poll(self) -> None:
+            return None
+
+    run.agents = dict.fromkeys(START.AGENTS, Process())
+    monkeypatch.setattr(START, "hub_status", lambda _, **kw: {"agents": [], "orchestrator": None})
+    monkeypatch.setattr(START, "stop_agents", lambda _: None)
+    times = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(START.time, "monotonic", lambda: next(times))
+    assert START.supervise(run) == 1
+    output = capsys.readouterr().out
+    for agent in START.AGENTS:
+        assert agent in output and f"{agent}.log" in output
+    assert "did not join" in output
+
+
+def test_start_stops_hub_when_harness_exits_without_joining(smoke: dict[str, Any]) -> None:
+    root: Path = smoke["root"]
+    shim = root / "bin" / ("codex.cmd" if os.name == "nt" else "codex")
+    if os.name == "nt":
+        shim.write_text(
+            '@if "%1"=="--version" (echo codex 0.999.0 & exit /b 0)\r\n@exit /b 1\r\n',
+            encoding="utf-8",
+        )
+    else:
+        shim.write_text(
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex 0.999.0"; exit 0; fi\nexit 1\n',
+            encoding="utf-8",
+        )
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/start-run.py"),
+            "--config",
+            str(smoke["config"]),
+            "--issue",
+            "7",
+            "--join-window-s",
+            str(LIVENESS_S),
+        ],
+        cwd=root,
+        env=smoke["env"],
+        capture_output=True,
+        text=True,
+        timeout=5 * LIVENESS_S,
+    )
+    assert done.returncode != 0
+    assert "charlie" in done.stdout and "charlie.log" in done.stdout
+    assert "hub scripted stopped" in done.stdout
+    status = subprocess.run(
+        [sys.executable, "-m", "robomate", "status", "--json"],
+        cwd=root / "runs" / "scripted" / "scripted",
+        env=smoke["env"],
+        capture_output=True,
+        text=True,
+        timeout=2 * LIVENESS_S,
+    )
+    assert status.returncode == 1 and json.loads(status.stdout)["running"] is False
+
+
+def test_supervise_does_not_count_agent_rows_from_previous_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    values, _ = settings("--join-window-s", "1")
+    run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
+
+    class Process:
+        def poll(self) -> None:
+            return None
+
+    run.agents = dict.fromkeys(START.AGENTS, Process())
+    old = [{"name": name, "activity": {"instance": f"old-{name}"}} for name in START.AGENTS]
+    run.status = {"agents": old}
+    monkeypatch.setattr(START, "hub_status", lambda _, **kw: {"agents": old})
+    monkeypatch.setattr(START, "stop_agents", lambda _: None)
+    times = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(START.time, "monotonic", lambda: next(times))
+    assert START.supervise(run) == 1
+    assert "did not join" in capsys.readouterr().out

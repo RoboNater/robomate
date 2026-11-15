@@ -91,6 +91,7 @@ class WorkerReader(common.HubReader):
             ):
                 raise ValueError("hub.status has a malformed agent")
             self.current_agent = agent
+            self.current_orchestrator = result.get("orchestrator")
         return result
 
     def read(self) -> tuple[str, dict[str, Any] | None]:
@@ -104,6 +105,7 @@ class WorkerLauncher(common.Launcher):
     def __init__(self, args: argparse.Namespace, reader: common.HubReader | None = None) -> None:
         super().__init__(args, reader or WorkerReader(args.hub_url, args.token_file, args.agent))
         self.agent = args.agent
+        self.ever_joined = False
         self.telemetry_offset = telemetry_size(args.telemetry)
 
     def finished(self, workflow: dict[str, Any] | None, resumes: int) -> bool:
@@ -134,6 +136,15 @@ class WorkerLauncher(common.Launcher):
         workflow = self.read_hub()
         if self.finished(workflow, resumes):
             return "done"
+        agent = workflow.get("agent") if workflow else getattr(self.reader, "current_agent", None)
+        self.ever_joined |= agent is not None
+        if not self.ever_joined:
+            raise common.Stop(
+                common.EXIT_NEVER_JOINED,
+                "never_joined",
+                f"{self.agent} never joined the hub; inspect the harness log "
+                f"and {self.args.sessions}.",
+            )
         # Reuse the common stop checks without doing a second status read.
         if workflow is None:
             raise common.Stop(
@@ -192,6 +203,7 @@ class WorkerLauncher(common.Launcher):
                 if workflow
                 else (self.reader.current_agent if isinstance(self.reader, WorkerReader) else None)
             )
+            self.ever_joined |= agent is not None
             if self.resume_deadline is not None and time.monotonic() >= self.resume_deadline:
                 raise common.Stop(
                     common.EXIT_RESUMES_SPENT,
