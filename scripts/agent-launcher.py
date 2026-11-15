@@ -874,6 +874,9 @@ def supervise(launcher: Joined, sessions: Path) -> int:
     except common.Stop as stop:
         say(str(stop))
         return stop.code
+    except common.OpenCodeConfigError as exc:
+        say(f"harness configuration failure: {exc}")
+        return common.EXIT_CANNOT_RESUME
     except (OSError, ValueError, urllib.error.URLError) as exc:
         say(
             f"launch unavailable: {exc}. Restore hub reachability, then run "

@@ -176,6 +176,27 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
     assert saved.lane_tmp == lane_tmp
 
 
+def test_opencode_invalid_probe_reports_configuration_failure(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    use_harness("opencode", monkeypatch)
+    monkeypatch.setenv("FAKE_OPENCODE_INVALID", "{bad")
+    hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": [agent_row()]}))
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "opencode"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == LAUNCHER.EXIT_CANNOT_RESUME
+    )
+    error = capsys.readouterr().err
+    assert "OpenCode `debug config` returned invalid JSON (4 bytes)" in error
+    assert "configuration failure" in error
+    assert "hub reachability" not in error
+
+
 @pytest.mark.parametrize("system_cache", [False, True])
 def test_ambient_uv_cache_never_grants_its_parent(
     area: dict[str, Path],
@@ -510,7 +531,7 @@ def test_hanging_opencode_reports_pending_before_exit(
 
 FAKE_HARNESS = (
     """\
-import json, os, sys, time
+import json, os, stat, sys, time
 """
     + fake_harness.CHILD_PID_RECORD
     + """\
@@ -519,7 +540,15 @@ if argv == ["--help"]:
     print(os.environ.get("FAKE_CLAUDE_HELP", ""))
     sys.exit(0)
 if argv == ["debug", "config"]:
-    print(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
+    raw = os.environ.get("FAKE_OPENCODE_INVALID")
+    if raw is None:
+        config = json.loads(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
+        config["provider"] = {"catalog": "x" * 100_000}
+        raw = json.dumps(config)
+    data = raw.encode("utf-8")
+    if stat.S_ISFIFO(os.fstat(1).st_mode):
+        data = data[:65_536]
+    sys.stdout.buffer.write(data)
     sys.exit(0)
 if "mcp" in argv and "list" in argv and "--json" in argv:
     entries = json.loads(os.environ.get("FAKE_MCP_SERVERS", "[]"))

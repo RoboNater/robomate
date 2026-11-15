@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from agent_sessions import ask_hint, ask_hint_from_args
+from opencode_headless import OpenCodeConfigError
 
 _JOURNAL_LOCK = threading.Lock()
 
@@ -956,6 +957,9 @@ def main(
         if args.recover:
             say(ask_hint(args.sessions, launcher.agent))
         return stop.code
+    except OpenCodeConfigError as exc:
+        say(f"Harness configuration failure: {exc}")
+        return EXIT_CANNOT_RESUME
     except (OSError, ValueError, urllib.error.URLError) as exc:
         say(
             f"Recovery/launch unavailable: {exc}. Restore the original run files and hub "
