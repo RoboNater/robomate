@@ -16,8 +16,11 @@ queued run, assigns bob an implementation and charlie its review, collects the
 closeout reports, releases both and marks the run done; a worker takes each
 assignment, submits a typed result, reports when asked and exits on release.
 The bridge inherits the shim's environment, except that the Codex stand-in, like
-Codex, forwards the identity variables only when ``-c mcp_servers.robomate.env.*``
-names them. ``MOCK_HARNESS_LOG``, when set, receives one JSON line per launch.
+Codex, forwards **no** ``ROBOMATE_*`` / ``HUB_*`` variable to an MCP server
+unless ``-c mcp_servers.robomate.env.*`` names it: it strips the whole prefix
+from the bridge env and adds back only the forwarded argv. A missing ``-c``
+therefore fails a Codex launch here as it does in reality (#511).
+``MOCK_HARNESS_LOG``, when set, receives one JSON line per launch.
 """
 
 from __future__ import annotations
@@ -42,7 +45,9 @@ VERSIONS = {
 }
 PROGRAMS = {"claude-code": "claude", "codex": "codex"}
 IDENTITY = ("HUB_HARNESS", "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT")
+SELECTION = ("ROBOMATE_HUB_ID", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN_FILE")
 LOGGED = (*IDENTITY, "UV_CACHE_DIR", "PYTEST_XDIST_AUTO_NUM_WORKERS", "PWD", "VIRTUAL_ENV", "PATH")
+BRIDGE_LOGGED = (*IDENTITY, *SELECTION)
 SHA = "0123456789abcdef0123456789abcdef01234567"
 HOLD_S = 5.0
 DEADLINE_S = float(os.environ.get("MOCK_HARNESS_DEADLINE_S", "300"))
@@ -103,8 +108,15 @@ def codex_forwarded(argv: list[str]) -> dict[str, str]:
 def bridge_environment(harness: str, argv: list[str]) -> dict[str, str]:
     environment = dict(os.environ)
     if harness == "codex":
-        for key in IDENTITY:
-            environment.pop(key, None)
+        # The real allowlist: no ROBOMATE_* or HUB_* variable (identity,
+        # telemetry log, hub selection) reaches an MCP server unless its `-c`
+        # override names it. Strip the whole prefix; only codex_forwarded adds
+        # anything back, so a missing -c for a selection makes join fail (#511).
+        environment = {
+            key: value
+            for key, value in environment.items()
+            if not key.startswith(("ROBOMATE_", "HUB_"))
+        }
         environment |= codex_forwarded(argv)
     return environment
 
@@ -322,7 +334,9 @@ def main(argv: list[str]) -> int:
             "argv": words,
             "cwd": os.getcwd(),
             "env": {key: os.environ.get(key) for key in LOGGED},
-            "bridge_env": {key: bridge_environment(harness, words).get(key) for key in IDENTITY},
+            "bridge_env": {
+                key: bridge_environment(harness, words).get(key) for key in BRIDGE_LOGGED
+            },
         }
         with open(log, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\n")

@@ -19,7 +19,7 @@ from agent_hub.signals import EVENT_KEY
 from agent_hub.store import HubStore
 from agent_hub_common import TaskState
 from agent_hub_common.accounting import CallRecord
-from agent_hub_common.discovery import DiscoveryError
+from agent_hub_common.discovery import DiscoveryError, NoHubError
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
@@ -741,14 +741,15 @@ async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
             await client.close()
 
 
-async def test_unjoined_whoami_reports_discovery_failure_and_live_hubs(
+async def test_unjoined_whoami_fails_closed_without_listing_hubs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """#511: an unbound bridge never leaks hub names or suggests hub= to an agent."""
+
     def missing(*args: Any, **kwargs: Any) -> None:
-        raise DiscoveryError(
-            "outside a checkout; Registered and live hubs: repo-a, repo-b; use hub="
-        )
+        # The genuinely unbound case is the one error the bridge rewrites (#511).
+        raise NoHubError("outside a checkout; Registered and live hubs: repo-a, repo-b; use hub=")
 
     monkeypatch.setattr("worker_mcp.client.discover", missing)
     client = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}))
@@ -756,6 +757,10 @@ async def test_unjoined_whoami_reports_discovery_failure_and_live_hubs(
     try:
         who = await _call(server, "whoami")
         assert who["joined"] is False and who["hub"] is None
-        assert "repo-a, repo-b" in who["discovery_error"]
+        error = who["discovery_error"]
+        assert "this robomate bridge has no hub" in error
+        assert "report blocked" in error
+        assert "repo-a, repo-b" not in error
+        assert "hub=" not in error
     finally:
         await client.close()

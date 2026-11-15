@@ -566,6 +566,11 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
         if os.name != "nt":
             assert cache.stat().st_mode & 0o777 == 0o700
         assert record["bridge_env"]["HUB_HARNESS_VERSION"] == versions[harness]
+        # The stricter Codex stand-in forwards no ROBOMATE_*/HUB_* variable
+        # unless a -c override names it: the hub-id pin must reach the bridge,
+        # or a missing -c would leave join with no hub (#511).
+        pinned = record["bridge_env"]["ROBOMATE_HUB_ID"]
+        assert isinstance(pinned, str) and pinned
 
     # The hub recorded each agent's launcher identity with source env (#402).
     agents = agent_rows(state / "hub.db")

@@ -31,6 +31,15 @@ class DiscoveryError(RuntimeError):
     """A repository or hub cannot be identified unambiguously."""
 
 
+class NoHubError(DiscoveryError):
+    """No hub was given and none was found: no selector, pin, URL or binding.
+
+    Distinct from other `DiscoveryError`s so an MCP bridge can fail closed only
+    for the genuinely unbound case, while a hub that was pinned or bound but is
+    down, restarting or misconfigured still surfaces the real cause (#511).
+    """
+
+
 class GitTimeoutError(DiscoveryError):
     """A `git` child hung past its deadline instead of answering (#301).
 
@@ -54,6 +63,13 @@ class HubEndpoint:
     url: str
     token: str
     token_file: Path | None = None
+
+
+#: The launcher pins a joining bridge to one registered hub by id (#511). The
+#: token stays in the registry's state location, so no token path or value goes
+#: into the harness environment, and the pin survives a hub restart on a new
+#: port. An id is not secret; the token never travels through this variable.
+HUB_ID_ENV = "ROBOMATE_HUB_ID"
 
 
 # `git` should answer at once: it only reads local config and refs here, never
@@ -1104,8 +1120,15 @@ def describe_hubs(entries: list[dict[str, Any]]) -> str:
     return "\n".join(lines) or "  (none)"
 
 
-def select_hub(selector: str, environ: Mapping[str, str] | None = None) -> LocalHub:
-    """The hub an explicit `--hub <name | hub_id | checkout path>` names."""
+def select_hub(
+    selector: str, environ: Mapping[str, str] | None = None, *, list_hubs: bool = True
+) -> LocalHub:
+    """The hub an explicit `--hub <name | hub_id | checkout path>` names.
+
+    ``list_hubs`` keeps the CLI's informative listing (the default). The MCP
+    bridge passes ``False`` so an unknown pin never enumerates the machine's
+    hubs or their URLs back to an agent that must not choose one itself (#511).
+    """
 
     from .registry import hub_entries, live_entries
 
@@ -1126,10 +1149,14 @@ def select_hub(selector: str, environ: Mapping[str, str] | None = None) -> Local
         entry for entry in entries if entry.get("name") == selector
     ]
     if not matches:
+        detail = ""
+        if list_hubs:
+            detail = (
+                f"Registered hubs:\n{describe_hubs(entries)}\n"
+                f"Live hubs:\n{describe_hubs(live_entries(environ))}"
+            )
         raise DiscoveryError(
-            f"--hub {selector}: no registered hub has that name or hub_id. "
-            f"Registered hubs:\n{describe_hubs(entries)}\n"
-            f"Live hubs:\n{describe_hubs(live_entries(environ))}"
+            f"--hub {selector}: no registered hub has that name or hub_id. {detail}".rstrip()
         )
     if len(matches) > 1:
         raise DiscoveryError(
@@ -1143,24 +1170,37 @@ def select_hub(selector: str, environ: Mapping[str, str] | None = None) -> Local
 
 
 def find_hub(
-    cwd: Path, environ: Mapping[str, str] | None = None, *, selector: str | None = None
+    cwd: Path,
+    environ: Mapping[str, str] | None = None,
+    *,
+    selector: str | None = None,
+    list_hubs: bool = True,
 ) -> LocalHub | HubEndpoint:
     """Find the hub to act on, in the spec §4 discovery order. There is no silent attach.
 
-    1. An explicit `--hub` selector, else `ROBOMATE_HUB_URL` with a token.
-    2. The hub the checkout containing `cwd` is bound to, or owns.
-    3. Otherwise an error listing the live hubs and how to choose one. A
+    1. An explicit `--hub` selector, else `ROBOMATE_HUB_URL` with a token. When
+       both an explicit URL and a `ROBOMATE_HUB_ID` pin are set (a remote host),
+       the URL is kept and `discover` checks the pin against /healthz.
+    2. `ROBOMATE_HUB_ID` (with no explicit URL): the registered hub with that id.
+    3. The hub the checkout containing `cwd` is bound to, or owns.
+    4. Otherwise an error listing the live hubs and how to choose one. A
        checkout never reaches a hub it was not given, even the only one.
+
+    ``list_hubs`` keeps the CLI's listing (the default); the MCP bridge passes
+    ``False`` so an unbound bridge never enumerates the machine's hubs (#511).
     """
 
     from .registry import live_entries
 
     env = os.environ if environ is None else environ
     if selector:
-        return select_hub(selector, env)
+        return select_hub(selector, env, list_hubs=list_hubs)
     explicit = _explicit(env)
     if explicit is not None:
         return explicit
+    hub_id = (env.get(HUB_ID_ENV) or "").strip()
+    if hub_id:
+        return select_hub(hub_id, env, list_hubs=list_hubs)
     try:
         checkout, _ = resolve_checkout(cwd)
     except DiscoveryError as exc:
@@ -1170,7 +1210,9 @@ def find_hub(
         if hub is not None:
             return hub
         where = f"no hub is recorded for checkout {checkout}"
-    raise DiscoveryError(
+    if not list_hubs:
+        raise NoHubError(where)
+    raise NoHubError(
         f"{where}. Choose a hub with --hub <name | hub_id | checkout path> (CLI) or "
         "ROBOMATE_HUB_URL with ROBOMATE_TOKEN_FILE (MCP bridge), or run robomate up "
         f"here. Live hubs:\n{describe_hubs(live_entries(env))}"
@@ -1178,16 +1220,33 @@ def find_hub(
 
 
 def discover(
-    cwd: Path, environ: Mapping[str, str] | None = None, *, selector: str | None = None
+    cwd: Path,
+    environ: Mapping[str, str] | None = None,
+    *,
+    selector: str | None = None,
+    list_hubs: bool = True,
 ) -> HubEndpoint:
     """The URL and token of the hub `find_hub` chooses, for the MCP bridge and scripts.
 
-    A local hub is used only once /healthz reports its recorded hub_id; an
-    explicit URL is taken as given.
+    A local hub is used only once /healthz reports its recorded hub_id. An
+    explicit URL is taken as given unless the launcher pinned a `ROBOMATE_HUB_ID`:
+    then the hub at that URL must answer /healthz with the pinned id, so a
+    process squatting on the address never receives the bearer token (#511).
     """
 
-    hub = find_hub(cwd, environ, selector=selector)
+    from .registry import check_healthz
+
+    env = os.environ if environ is None else environ
+    hub = find_hub(cwd, environ, selector=selector, list_hubs=list_hubs)
     if isinstance(hub, LocalHub):
         verify_local_hub(hub)
         return hub.endpoint()
+    pinned = (env.get(HUB_ID_ENV) or "").strip()
+    if pinned:
+        health = check_healthz(hub.url)
+        if health.hub_id != pinned:
+            answered = health.hub_id if health.hub_id is not None else "no hub_id"
+            raise DiscoveryError(
+                f"{HUB_ID_ENV} {pinned} does not match the hub at {hub.url} (answers as {answered})"
+            )
     return hub

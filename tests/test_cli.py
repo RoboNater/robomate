@@ -3307,8 +3307,13 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         assert not whoami_before.get("isError"), whoami_before
         before_body = json.loads(whoami_before["content"][0]["text"])
         assert before_body["joined"] is False and before_body["hub"] is None
-        assert str(info["name"]) in before_body["discovery_error"]
-        assert "not inside a git repository" in before_body["discovery_error"]
+        # An unbound bridge fails closed: no hub names, URLs or hub= hint (#511).
+        assert "this robomate bridge has no hub" in before_body["discovery_error"]
+        assert "report blocked" in before_body["discovery_error"]
+        assert str(info["url"]) not in before_body["discovery_error"]
+        assert str(info["hub_id"]) not in before_body["discovery_error"]
+        assert "Live hubs:" not in before_body["discovery_error"]
+        assert "hub=" not in before_body["discovery_error"]
 
         # 2. await_assignment before join fails naming join
         send(

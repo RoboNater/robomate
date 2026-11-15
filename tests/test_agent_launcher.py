@@ -530,7 +530,7 @@ if "mcp" in argv and "list" in argv and "--json" in argv:
     sys.exit(0)
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
-        "ROBOMATE_TOKEN_FILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
+        "ROBOMATE_TOKEN_FILE", "ROBOMATE_HUB_ID", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
         "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
         "PYTEST_XDIST_AUTO_NUM_WORKERS", "PWD", "VIRTUAL_ENV", "PATH")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
@@ -816,6 +816,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
         assert run["env"]["FAKE_MARK"] == "kept"
         # The worktree's binding names a local hub; an ambient selection is cleared.
         assert run["env"]["ROBOMATE_HUB_URL"] is None and run["env"]["ROBOMATE_TOKEN"] is None
+        # Every harness's bridge is pinned to the launcher's hub by id (#511).
+        assert run["env"]["ROBOMATE_HUB_ID"] == HUB
         # No rendered config, prompt file or MCP config path is passed.
         assert not any("--mcp-config" in word or "prompt.md" in word for word in run["argv"])
     resumed = second["stdin"] if harness == "codex" else second["argv"][-1]
@@ -831,6 +833,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     launch_rows = [row for row in rows(area, agent) if row["event"] in ("start", "resume")]
     assert all(row["run_id"] == RUN and row["role"] == role for row in launch_rows)
     assert launch_rows[0]["workdir"] == str(area["worktree"].resolve())
+    # Launch rows already record the hub id the child is pinned to (#511).
+    assert all(row["hub_id"] == HUB for row in launch_rows)
 
 
 def test_start_and_resume_name_the_worktree_and_drop_the_launcher_venv(
@@ -1129,13 +1133,16 @@ def test_start_exports_identity_uv_cache_and_workers_to_every_launch(
         assert {key: launch["env"][key] for key in IDENTITY} == expected
         assert launch["env"]["UV_CACHE_DIR"] == str(cache.resolve())
         assert launch["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
+        # Every harness's child env carries the launcher's hub-id pin (#511).
+        assert launch["env"]["ROBOMATE_HUB_ID"] == HUB
         forwarded = [word for word in launch["argv"] if word.startswith("mcp_servers.robomate")]
         if harness == "codex":
-            # Codex forwards nothing to an MCP server unless the entry names it.
+            # Codex forwards nothing to an MCP server unless the entry names it,
+            # so the hub-id pin is named on argv too, after the identity (#511).
             assert forwarded == [
                 f"mcp_servers.robomate.env.{key}={json.dumps(value)}"
                 for key, value in expected.items()
-            ]
+            ] + [f"mcp_servers.robomate.env.ROBOMATE_HUB_ID={json.dumps(HUB)}"]
             roots = next(
                 word for word in launch["argv"] if word.startswith("sandbox_workspace_write.wr")
             )
@@ -1386,6 +1393,46 @@ def test_a_remote_host_hands_its_hub_selection_to_the_joining_harness(
         assert run["env"]["ROBOMATE_TOKEN"] is None
     assert (sessions / "bob.jsonl").is_file()
     assert not area["sessions"].exists()
+
+
+def test_remote_codex_argv_carries_the_pin_and_selection_without_a_token_value(
+    area: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote Codex bridge needs the pin, URL and token-file path on argv (#511)."""
+
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    monkeypatch.setenv("ROBOMATE_HUB_URL", "http://ambient:1")
+    sessions = tmp_path / "remote sessions"
+    token = area["state"] / "token"
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": []}, released))
+
+    def no_workspace(agent: str, selector: str | None) -> Path:
+        raise AssertionError("a remote host has no local robomate workspace")
+
+    remote = ["--hub-url", "http://hub.example:8420/", "--token-file", str(token)]
+    remote += ["--sessions-dir", str(sessions), "--read-retry-delay-s", "0"]
+    words = ["start", "bob", "--role", "implementer", "--harness", "codex", *remote]
+    words += ["--workdir", str(area["worktree"]), "--predecessor-poll-s", "0.01"]
+    words += ["--resume-delay-s", "0"]
+    assert invoke(words, programs=programs(area), reader=hub, workspace=no_workspace) == 0
+
+    (launch,) = launches(area)
+    argv = launch["argv"]
+    forwarded = [word for word in argv if word.startswith("mcp_servers.robomate.env.")]
+    assert f"mcp_servers.robomate.env.ROBOMATE_HUB_ID={json.dumps(HUB)}" in forwarded
+    assert (
+        f"mcp_servers.robomate.env.ROBOMATE_HUB_URL={json.dumps('http://hub.example:8420')}"
+        in forwarded
+    )
+    assert (
+        f"mcp_servers.robomate.env.ROBOMATE_TOKEN_FILE={json.dumps(str(token.resolve()))}"
+        in forwarded
+    )
+    # No argv element ever contains the token value, only the token-file path.
+    assert all("secret-token-value" not in word for word in argv)
+    assert launch["env"]["ROBOMATE_HUB_ID"] == HUB
+    assert launch["env"]["ROBOMATE_HUB_URL"] == "http://hub.example:8420"
 
 
 def test_interactive_codex_start_captures_its_conversation_for_resume_and_ask(

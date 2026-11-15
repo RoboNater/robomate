@@ -297,9 +297,9 @@ async def test_bridge_whoami_names_its_token_file_without_exposing_the_token(
         before = await worker.whoami()
         assert before["token_file"] == expected
         assert TOKEN not in str(before)
-        await worker.join(
-            name="bob", role="worker", hub="test" if source == "discovered-file" else None
-        )
+        # A pinned bridge resolves its hub on every bind (#511); no hub= selector
+        # is needed, and an agent must not pass one to redirect a launcher pin.
+        await worker.join(name="bob", role="worker")
         after = await worker.whoami()
         assert after["joined"] is True
         assert after["token_file"] == expected
