@@ -199,6 +199,13 @@ resume with their original goals; do not regenerate the goal to resume. `--alice
 Before starting a run, configure the harness MCP entries using the
 [interim setup prompt](mcp-setup-prompt.md).
 
+Before starting, configure the static, user-level `robomate` MCP entry for each
+team harness and the resolved Denise harness. Use a stable robomate checkout
+for `--project`, not a run lane. Follow the [MCP setup prompt](mcp-setup-prompt.md)
+for the entry and unattended settings, and run `scripts/check-mcp-tools.py`
+after updating that checkout. Devin's entry cannot currently be checked
+automatically; start-run warns. The preflight checks entry presence only.
+
 `scripts/start-run.py` (#268) is the joined successor of the standard run
 helper below: one command, with no interactive step, starts the hub of a fresh
 checkout, the three agents' worktrees, the submitted work and Alice, Bob and
@@ -447,46 +454,10 @@ For prepared runs, pass `--remote-worker bob` when preparing on the hub host. Th
 
 ## Manual MCP configuration
 
-For the current user-level setup, see the [interim MCP setup prompt](mcp-setup-prompt.md).
-
-A Claude Code Alice can use a config like this (replace all absolute paths):
-
-```json
-{
-  "mcpServers": {
-    "robomate": {
-      "command": "uv",
-      "args": ["run", "--locked", "--project", "/path/to/robomate", "robomate", "mcp", "--role", "orchestrator"],
-      "env": {
-        "ROBOMATE_HUB_URL": "http://127.0.0.1:8420",
-        "ROBOMATE_TOKEN_FILE": "/path/to/target.robomate/target/token/token"
-      }
-    }
-  }
-}
-```
-
-For a worker, set the role to `worker`, pass `--name bob` (or set `AGENT_NAME=bob`), and add `HUB_WORKSPACE=/absolute/path/to/bob-clone`. The runtime templates in [`runtimes/`](../runtimes/README.md) show the harness profile and telemetry variables. Do not put the MCP config in the worker clone. On Windows, use forward slashes or escaped backslashes in JSON paths.
-
-For Bob, copy [`runtimes/claude-code.mcp.json`](../runtimes/claude-code.mcp.json) to the run directory and fill in the hub URL, token file path, workspace path, harness version, provider, and any pinned model or capabilities. The bridge command remains `robomate mcp --role worker`. `HUB_MODEL` is an operator claim used for pairing: leave it empty when Bob should declare the model he actually uses at check-in. The hub records a mismatch if the claim and declaration differ. Set `HUB_TELEMETRY_LOG` to an absolute path when using the unattended supervisor. Launch Claude Code from Bob's clone:
-
-```sh
-cd /absolute/path/to/bob-clone
-claude --strict-mcp-config --mcp-config /absolute/path/to/my-run/configs/bob.mcp.json
-```
-
-For Charlie, copy [`runtimes/codex.config.toml`](../runtimes/codex.config.toml) into a private run-local `CODEX_HOME`. Its `[mcp_servers.robomate]` entry uses the same hub URL and token file path and identifies Charlie's own clone. Keep `tool_timeout_sec = 330` for long assignment waits and approve the coordination tools listed in `TOOLS` in `scripts/run_common.py` (mirrored in `runtimes/codex.config.toml`) for unattended use. Apply the Linux sandbox grants below, and feed the worker prompt through stdin:
-
-```sh
-cd /absolute/path/to/charlie-clone
-CODEX_HOME=/absolute/path/to/my-run/configs/codex codex exec -C . \
-  --approve-for-me - \
-  < /absolute/path/to/my-run/charlie.prompt.md
-```
-
-The manual route uses [`prompts/alice.md`](../prompts/alice.md) for Alice and [`prompts/worker.md`](../prompts/worker.md) for each worker. Install the [`alice-orchestrator`](../skills/alice-orchestrator/SKILL.md) skill in Alice's runtime and the [`worker`](../skills/worker/SKILL.md) skill in a Claude worker's runtime. The generated run directory does these steps for you and keeps every config outside the clones.
-
-The bridge finds its hub from explicit `ROBOMATE_HUB_URL` plus `ROBOMATE_TOKEN_FILE`, or else the hub of the checkout it starts in, once that hub's `/healthz` reports the hub ID recorded for it. It never attaches to another hub, even the only one on the machine: anywhere else it returns the list of live hubs as a tool error. The generated configs set the explicit values.
+For joined runs, follow the [MCP setup prompt](mcp-setup-prompt.md) for the
+static, token-free user-level entry and its unattended settings. The
+[runtime templates](../runtimes/README.md) are for the older prepared-run
+route, which supplies per-run connection and identity settings.
 
 ## Linux sandbox grants
 

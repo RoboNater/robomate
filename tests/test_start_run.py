@@ -451,6 +451,13 @@ def smoke(tmp_path: Path) -> dict[str, Any]:
         "MOCK_HARNESS_DEADLINE_S": str(4 * LIVENESS_S),
         "PYTHONIOENCODING": "utf-8",
     }
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    write(codex_home / "config.toml", '[mcp_servers.robomate]\ncommand = "uv"\n')
+    home = tmp_path / "home"
+    home.mkdir()
+    write(home / ".claude.json", '{"mcpServers":{"robomate":{}}}')
+    env.update({"HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(codex_home)})
     config = write(
         tmp_path / "run.toml",
         f"repository = {json.dumps(str(origin))}\n"
@@ -701,3 +708,69 @@ def test_final_report_passes_clean_login_from_cli_and_saved_config(
     output = capsys.readouterr().out
     assert "consult Denise" in output
     assert ("--clean-login" in output) is clean_login
+
+
+def test_missing_mcp_entry_refuses_before_clone(smoke: dict[str, Any]) -> None:
+    root = smoke["root"]
+    (Path(smoke["env"]["CODEX_HOME"]) / "config.toml").write_text("", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/start-run.py"),
+            "--config",
+            str(smoke["config"]),
+            "--issue",
+            "7",
+        ],
+        cwd=root,
+        env=smoke["env"],
+        capture_output=True,
+        text=True,
+        timeout=LIVENESS_S,
+    )
+    assert result.returncode == 1
+    assert "codex" in result.stderr and "[mcp_servers.robomate]" in result.stderr
+    assert "user-level" in result.stderr
+    assert not (root / "runs").exists()
+    assert not (root / "xdg-state").exists()
+
+
+@pytest.mark.parametrize(
+    ("harness", "relative", "contents"),
+    [
+        ("claude-code", ".claude.json", '{"mcpServers":{"robomate":{}}}'),
+        ("opencode", ".config/opencode/opencode.jsonc", '{// comment\n"mcp":{"robomate":{},},}'),
+        ("antigravity", ".gemini/config/mcp_config.json", '{"mcpServers":{"robomate":{}}}'),
+        ("codex", ".codex/config.toml", "[mcp_servers.robomate]\ncommand = 'uv'\n"),
+    ],
+)
+def test_user_level_mcp_presence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, harness: str, relative: str, contents: str
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents, encoding="utf-8")
+    START.check_mcp_entry(harness)
+    path.unlink()
+    with pytest.raises(ValueError, match="user-level"):
+        START.check_mcp_entry(harness)
+
+
+def test_uncheckable_harness_warns(capsys: pytest.CaptureFixture[str]) -> None:
+    START.check_mcp_entry("devin")
+    assert "warning" in capsys.readouterr().err
+
+
+def test_codex_nested_settings_alone_are_not_a_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    (tmp_path / "config.toml").write_text(
+        '[mcp_servers.robomate.tools.join]\napproval_mode = "approve"\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="mcp_servers.robomate"):
+        START.check_mcp_entry("codex")
