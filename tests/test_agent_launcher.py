@@ -1105,14 +1105,23 @@ def test_a_recorded_join_keeps_the_bounded_takeover_continuation(
     [("success-then-takeover-refused", "takeover_refused"), ("success-then-no-hub", "no_hub")],
 )
 def test_a_refused_resume_join_stops_without_retaking_the_seat(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, bridge: str, event: str
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    bridge: str,
+    event: str,
 ) -> None:
-    """A refused takeover or an unbound bridge is terminal, not another resume (#512)."""
+    """A refused takeover or an unbound bridge is terminal, not another resume (#512).
+
+    The stop keeps the child's exit row, so a later manual resume passes the
+    recorded-exit guard without --confirm-stopped (r1-1 on #512).
+    """
 
     monkeypatch.setenv("FAKE_BRIDGE_JOIN", bridge)
-    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0", "exit:0"]))
     active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
-    hub = FakeHub(after_launches(area, active))
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, active, released))
 
     code = invoke(
         start_words(area, "bob", "implementer", "claude-code"),
@@ -1122,12 +1131,36 @@ def test_a_refused_resume_join_stops_without_retaking_the_seat(
     )
 
     assert code == LAUNCHER.EXIT_CANNOT_RESUME
+    # The operator gets a remedy, not the agent's instruction (r1-2 on #512).
+    stop_text = capsys.readouterr().err
+    assert "Check `robomate status`" in stop_text
+    assert "agent-launcher.py resume bob" in stop_text
+    assert "report blocked" not in stop_text
     assert len(launches(area)) == 2  # the start and one takeover attempt
-    events = [row["event"] for row in rows(area)]
+    log = rows(area)
+    events = [row["event"] for row in log]
     assert events.count("joined") == 1 and event in events
     # One wait and one takeover attempt, then the stop: no further resume.
     assert events.count("wait") == 1 and events.count("resume") == 1
     assert events[-2:] == [event, "stop"]
+    last_launch = max(i for i, name in enumerate(events) if name == "resume")
+    exit_after = events.index("exit", last_launch)
+    assert exit_after < events.index(event)
+
+    # The recorded exit lets a manual resume proceed without --confirm-stopped.
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    conversation = log[0]["conversation_id"]
+    resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+    assert (
+        invoke(
+            [*resume, "--resume-session", conversation],
+            programs=programs(area),
+            reader=snapshotting(hub),
+        )
+        == 0
+    )
+    assert len(launches(area)) == 3
+    assert any(row["event"] == "manual_resume" for row in rows(area))
 
 
 def test_telemetry_scan_ignores_partial_and_malformed_rows(tmp_path: Path) -> None:

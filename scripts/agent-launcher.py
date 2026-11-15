@@ -755,12 +755,15 @@ class Joined(common.Launcher):
     run_id: str | None = None
     launched = False
     joined = False
+    pending_stop: tuple[str, common.Stop] | None = None
+    """A terminal join outcome, raised after the child's exit row is written (r1-1 on #512)."""
 
     def setup(self, args: argparse.Namespace) -> None:
         self.agent = args.agent
         self.role = args.role
         self.orchestrator = args.role == "orchestrator"
         self.joined = False
+        self.pending_stop = None
         self.continue_prompt = continuation(args.agent, args.role, joined=False)
 
     def resume_name(self) -> str:
@@ -781,7 +784,8 @@ class Joined(common.Launcher):
 
         A successful join makes later resumes a takeover of this conversation's
         own seat. A refused takeover, or a bridge with no hub, is terminal: the
-        launcher stops instead of re-taking a seat it does not hold.
+        launcher stops instead of re-taking a seat it does not hold. The stop
+        is raised from ``resumable`` so the child's exit row is written first.
         """
 
         for row in telemetry_rows(self.bridge_log(), offset):
@@ -797,22 +801,39 @@ class Joined(common.Launcher):
                 if not isinstance(error, str):
                     continue
                 if "takeover refused:" in error:
-                    self.log("takeover_refused")
-                    raise common.Stop(
-                        common.EXIT_CANNOT_RESUME,
+                    self.pending_stop = (
                         "takeover_refused",
-                        "the resumed join was refused: another session's agent holds this "
-                        "seat. The launcher stopped instead of retrying the takeover; report "
-                        "blocked and wait for the operator.",
+                        common.Stop(
+                            common.EXIT_CANNOT_RESUME,
+                            "takeover_refused",
+                            "the resumed join was refused: another session's agent holds this "
+                            "seat. Check `robomate status` and release or stop the other "
+                            f"session, then run {self.resume_name()}.",
+                        ),
                     )
+                    return
                 if "this robomate bridge has no hub" in error:
-                    self.log("no_hub")
-                    raise common.Stop(
-                        common.EXIT_CANNOT_RESUME,
+                    self.pending_stop = (
                         "no_hub",
-                        "the bridge reported no hub and will not choose one. The launcher "
-                        "stopped; report blocked and wait for the operator.",
+                        common.Stop(
+                            common.EXIT_CANNOT_RESUME,
+                            "no_hub",
+                            "the bridge reported no hub and will not choose one. Check "
+                            "`robomate status` and the launcher's hub selection, then run "
+                            f"{self.resume_name()}.",
+                        ),
                     )
+                    return
+
+    def resumable(self, exit_code: int, resumes: int) -> str:
+        """Raise a terminal join outcome after the loop has logged the child's exit."""
+
+        if self.pending_stop is not None:
+            event, stop = self.pending_stop
+            self.pending_stop = None
+            self.log(event)
+            raise stop
+        return super().resumable(exit_code, resumes)
 
     def manual_resume_text(self) -> str:
         """The manual resume's text, matching this recorded conversation (#512)."""
