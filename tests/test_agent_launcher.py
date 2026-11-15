@@ -574,7 +574,7 @@ stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
         "ROBOMATE_TOKEN_FILE", "ROBOMATE_HUB_ID", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
         "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
-        "PYTEST_XDIST_AUTO_NUM_WORKERS", "PWD", "VIRTUAL_ENV", "PATH")
+        "PYTEST_XDIST_AUTO_NUM_WORKERS", "HUB_TELEMETRY_LOG", "PWD", "VIRTUAL_ENV", "PATH")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
           "env": {k: os.environ.get(k) for k in keys}}
 log = os.environ["FAKE_LOG"]
@@ -584,6 +584,23 @@ if os.path.exists(log):
         count = len(stream.readlines())
 with open(log, "a", encoding="utf-8") as stream:
     stream.write(json.dumps(record) + "\\n")
+bridge_join = os.environ.get("FAKE_BRIDGE_JOIN")
+telemetry = os.environ.get("HUB_TELEMETRY_LOG")
+if bridge_join and telemetry:
+    if bridge_join in ("success-then-takeover-refused", "success-then-no-hub"):
+        bridge_join = "success" if count == 0 else bridge_join.removeprefix("success-then-")
+    rows = [{"event": "session_started"},
+            {"event": "tool_call", "tool": "join", "phase": "start"}]
+    if bridge_join == "success":
+        rows.append({"event": "tool_call", "tool": "join", "phase": "success"})
+    elif bridge_join == "takeover-refused":
+        rows.append({"event": "tool_call", "tool": "join", "phase": "error",
+                     "error": "takeover refused: workspace: elsewhere; retry"})
+    elif bridge_join == "no-hub":
+        rows.append({"event": "tool_call", "tool": "join", "phase": "error",
+                     "error": "this robomate bridge has no hub: unbound"})
+    with open(telemetry, "a", encoding="utf-8") as stream:
+        stream.write("".join(json.dumps(row) + "\\n" for row in rows))
 export = os.environ.get("FAKE_EXPORT_ID")
 if export and "--export" in argv:
     with open(argv[argv.index("--export") + 1], "w", encoding="utf-8") as stream:
@@ -814,6 +831,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     use_harness(harness, monkeypatch)
     monkeypatch.setenv("ROBOMATE_HUB_URL", "http://another-hub:1")
     monkeypatch.setenv("ROBOMATE_TOKEN", "ambient-token")
+    # The first child's bridge records its join, so its resume is a takeover.
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     agent = "alice" if role == "orchestrator" else "bob"
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
     active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
@@ -860,9 +879,14 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
         assert run["env"]["ROBOMATE_HUB_URL"] is None and run["env"]["ROBOMATE_TOKEN"] is None
         # Every harness's bridge is pinned to the launcher's hub by id (#511).
         assert run["env"]["ROBOMATE_HUB_ID"] == HUB
+        # Every harness gets a bridge telemetry log in the hub's sessions/ (#512).
+        assert run["env"]["HUB_TELEMETRY_LOG"] == str(
+            (area["sessions"] / f"{agent}-bridge.jsonl").resolve()
+        )
         # No rendered config, prompt file or MCP config path is passed.
         assert not any("--mcp-config" in word or "prompt.md" in word for word in run["argv"])
     resumed = second["stdin"] if harness == "codex" else second["argv"][-1]
+    assert resumed == CLI.continuation(agent, role, joined=True)
     assert f'join(name="{agent}", role="{role}", takeover=true)' in resumed
     conversation = IDS[harness] or rows(area, agent)[0]["conversation_id"]
     assert conversation in second["argv"]
@@ -872,6 +896,7 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     assert changed and all(Path(path).parent == area["sessions"] for path in changed)
     events = [row["event"] for row in rows(area, agent)]
     assert events[0] == "start" and "resume" in events and events[-1] == "stop"
+    assert events.count("joined") == 1
     launch_rows = [row for row in rows(area, agent) if row["event"] in ("start", "resume")]
     assert all(row["run_id"] == RUN and row["role"] == role for row in launch_rows)
     assert launch_rows[0]["workdir"] == str(area["worktree"].resolve())
@@ -965,6 +990,8 @@ def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["hang", "exit:0"]))
+    # The killed child's bridge had already recorded its join (#512).
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     # The killed harness's bridge is still attached: the successor's join with
     # takeover supersedes it and keeps the task, so the launcher does not wait.
     orphan = {"alive": True, "activity": {"instance": "orphan-bridge"}}
@@ -994,13 +1021,211 @@ def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
     first, second = launches(area)
     conversation = first["argv"][first["argv"].index("--session-id") + 1]
     assert second["argv"][-4:-2] == ["--resume", conversation]
-    assert second["argv"][-1] == CLI.continuation("bob", "implementer")
+    assert second["argv"][-1] == CLI.continuation("bob", "implementer", joined=True)
     log = rows(area)
-    assert [row["event"] for row in log] == ["start", "exit", "wait", "resume", "exit", "stop"]
-    assert log[1]["exit_code"] != 0
-    assert log[2]["delay_s"] == 0.05
+    assert [row["event"] for row in log] == [
+        "start",
+        "joined",
+        "exit",
+        "wait",
+        "resume",
+        "exit",
+        "stop",
+    ]
+    assert log[2]["exit_code"] != 0
+    assert log[3]["delay_s"] == 0.05
     assert log[-1]["reason"] == "released"
     assert all(row["run_id"] == RUN and row["conversation_id"] == conversation for row in log)
+
+
+def test_automatic_resume_without_a_recorded_join_sends_the_plain_join_line(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conversation whose first join never completed must not be told to take over (#512)."""
+
+    monkeypatch.delenv("FAKE_BRIDGE_JOIN", raising=False)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    _, resumed = launches(area)
+    text = resumed["argv"][-1]
+    assert text == CLI.continuation("bob", "implementer", joined=False)
+    assert "Join robomate as bob, implementer." in text
+    assert "takeover=true" not in text
+    assert "task you still hold" not in text and "reattached_task" not in text
+    assert "joined" not in [row["event"] for row in rows(area)]
+
+
+def test_a_recorded_join_keeps_the_bounded_takeover_continuation(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The takeover text now names only this seat and stops on a refusal (#512)."""
+
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
+
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "claude-code"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+
+    _, resumed = launches(area)
+    text = resumed["argv"][-1]
+    assert text == CLI.continuation("bob", "implementer", joined=True)
+    assert 'join(name="bob", role="implementer", takeover=true)' in text
+    assert "If the join response has a reattached_task, finish it" in text
+    assert "refused takeover" in text and "report blocked" in text
+    assert "never take over a seat you did not hold" in text
+    assert "Its reattached_task is the task you still hold" not in text
+    joined = [row for row in rows(area) if row["event"] == "joined"]
+    conversation = rows(area)[0]["conversation_id"]
+    assert [row["conversation_id"] for row in joined] == [conversation]
+
+
+@pytest.mark.parametrize(
+    ("bridge", "event"),
+    [("success-then-takeover-refused", "takeover_refused"), ("success-then-no-hub", "no_hub")],
+)
+def test_a_refused_resume_join_stops_without_retaking_the_seat(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    bridge: str,
+    event: str,
+) -> None:
+    """A refused takeover or an unbound bridge is terminal, not another resume (#512).
+
+    The stop keeps the child's exit row, so a later manual resume passes the
+    recorded-exit guard without --confirm-stopped (r1-1 on #512).
+    """
+
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", bridge)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, active, released))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == LAUNCHER.EXIT_CANNOT_RESUME
+    # The operator gets a remedy, not the agent's instruction (r1-2 on #512).
+    stop_text = capsys.readouterr().err
+    assert "Check `robomate status`" in stop_text
+    assert "agent-launcher.py resume bob" in stop_text
+    assert "report blocked" not in stop_text
+    assert len(launches(area)) == 2  # the start and one takeover attempt
+    log = rows(area)
+    events = [row["event"] for row in log]
+    assert events.count("joined") == 1 and event in events
+    # One wait and one takeover attempt, then the stop: no further resume.
+    assert events.count("wait") == 1 and events.count("resume") == 1
+    assert events[-2:] == [event, "stop"]
+    last_launch = max(i for i, name in enumerate(events) if name == "resume")
+    exit_after = events.index("exit", last_launch)
+    assert exit_after < events.index(event)
+
+    # The recorded exit lets a manual resume proceed without --confirm-stopped.
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    conversation = log[0]["conversation_id"]
+    resume = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+    assert (
+        invoke(
+            [*resume, "--resume-session", conversation],
+            programs=programs(area),
+            reader=snapshotting(hub),
+        )
+        == 0
+    )
+    assert len(launches(area)) == 3
+    assert any(row["event"] == "manual_resume" for row in rows(area))
+
+
+def test_telemetry_scan_ignores_partial_and_malformed_rows(tmp_path: Path) -> None:
+    """Only complete JSON objects after the offset count (#512, like agent_worker.released)."""
+
+    path = tmp_path / "bob-bridge.jsonl"
+    start = {"event": "tool_call", "tool": "join", "phase": "start"}
+    success = {"event": "tool_call", "tool": "join", "phase": "success"}
+    path.write_bytes(
+        b'{"event": "session_started"}\nnot json\nnull\n'
+        + json.dumps(start).encode()
+        + b"\n"
+        + json.dumps(success).encode()
+        + b'\n{"event": "tool_call", "tool": "join",'
+    )
+    assert CLI.telemetry_rows(path, 0) == [{"event": "session_started"}, start, success]
+
+    offset = path.stat().st_size
+    later = {"event": "tool_call", "tool": "join", "phase": "error", "error": "x"}
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(later) + "\n")
+    assert CLI.telemetry_rows(path, offset) == [later]
+    assert CLI.telemetry_rows(tmp_path / "missing.jsonl", 0) == []
+
+
+def test_saved_join_matches_only_the_resumed_conversation() -> None:
+    rows: list[dict[str, Any]] = [
+        {"event": "start", "conversation_id": "conversation-a"},
+        {"event": "joined", "conversation_id": "conversation-a"},
+        {"event": "joined", "conversation_id": "conversation-b"},
+    ]
+    assert CLI.saved_join(rows, "conversation-a")
+    assert CLI.saved_join(rows, "conversation-b")
+    assert not CLI.saved_join(rows, "conversation-c")
+    assert not CLI.saved_join(rows, None)
+    assert not CLI.saved_join([{"event": "joined"}], "conversation-a")
+
+
+@pytest.mark.parametrize(("bridge", "joined"), [("success", True), (None, False)])
+def test_orchestrator_resume_matches_its_recorded_join(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, bridge: str | None, joined: bool
+) -> None:
+    if bridge is None:
+        monkeypatch.delenv("FAKE_BRIDGE_JOIN", raising=False)
+    else:
+        monkeypatch.setenv("FAKE_BRIDGE_JOIN", bridge)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    done = {"workflow": workflow("done"), "agents": []}
+    hub = FakeHub(after_launches(area, active, active, done))
+
+    assert (
+        invoke(
+            start_words(area, "alice", "orchestrator", "claude-code"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+
+    text = launches(area)[1]["argv"][-1]
+    assert text == CLI.continuation("alice", "orchestrator", joined=joined)
+    assert ('join(name="alice", role="orchestrator", takeover=true)' in text) == joined
+    assert "Then call get_state" in text and "On resume" in text
 
 
 def test_an_earlier_release_and_finished_run_do_not_stop_a_new_start(
@@ -1104,12 +1329,12 @@ def test_resume_of_a_log_from_before_the_workflow_takes_the_run_from_the_hub(
 
     assert code == 0
     (launch,) = launches(area)
-    assert launch["argv"][-4:] == [
-        "--resume",
-        conversation,
-        "-p",
-        CLI.continuation("bob", "implementer"),
-    ]
+    # No joined row was recorded for this conversation, so the resume asks for
+    # the plain join line rather than a takeover (#512).
+    text = CLI.continuation("bob", "implementer", joined=False)
+    assert launch["argv"][-4:] == ["--resume", conversation, "-p", text]
+    assert "Join robomate as bob, implementer." in text
+    assert "takeover=true" not in text and "task you still hold" not in text
     assert Path(launch["cwd"]).resolve() == area["worktree"].resolve()
     log = rows(area)
     recovery = next(row for row in log if row["event"] == "recovery")
@@ -1119,6 +1344,70 @@ def test_resume_of_a_log_from_before_the_workflow_takes_the_run_from_the_hub(
     # The agent is never pointed at a file in the hub's state; the record stays there.
     assert not any("resume.md" in word for word in launch["argv"])
     assert "Before-snapshot" in (area["sessions"] / "bob-resume.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("recorded", ["the-resumed", "another", None])
+def test_manual_resume_join_text_matches_the_recorded_conversation(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, recorded: str | None
+) -> None:
+    """Only a join recorded for this exact conversation makes a manual resume a takeover (#512)."""
+
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00003"
+    now = datetime.now(UTC)
+    saved_log(area, conversation, now - timedelta(minutes=10), now - timedelta(minutes=1))
+    if recorded is not None:
+        row = {
+            "agent": "bob",
+            "harness": "claude-code",
+            "role": "implementer",
+            "event": "joined",
+            "timestamp": (now - timedelta(minutes=2)).isoformat(),
+            "conversation_id": conversation
+            if recorded == "the-resumed"
+            else "another-conversation",
+            "hub_id": HUB,
+            "workflow_id": None,
+            "run_id": None,
+        }
+        with (area["sessions"] / "bob.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row) + "\n")
+    joined = recorded == "the-resumed"
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    status = after_launches(
+        area,
+        {"workflow": live, "agents": [agent_row()]},
+        {"workflow": live, "agents": [agent_row("released", context="c2")]},
+    )
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.snapshot":
+            return {"hub_id": HUB, "workflow": live, "tasks": [], "taken_at": now.isoformat()}
+        if method == "hub.questions":
+            return {"questions": []}
+        return status(method)
+
+    code = invoke(
+        [
+            "resume",
+            "bob",
+            "--hub",
+            str(area["checkout"]),
+            "--read-retry-delay-s",
+            "0",
+            "--resume-session",
+            conversation,
+        ],
+        programs=programs(area),
+        reader=FakeHub(answer),
+    )
+
+    assert code == 0
+    (launch,) = launches(area)
+    text = CLI.continuation("bob", "implementer", joined=joined)
+    assert launch["argv"][-4:] == ["--resume", conversation, "-p", text]
+    assert ('join(name="bob", role="implementer", takeover=true)' in text) == joined
+    record = (area["sessions"] / "bob-resume.md").read_text(encoding="utf-8")
+    assert f"Sent to the agent: {text}" in record
 
 
 IDENTITY = ("HUB_HARNESS", "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT")
@@ -1171,20 +1460,26 @@ def test_start_exports_identity_uv_cache_and_workers_to_every_launch(
         "HUB_MODEL": "m-1",
         "HUB_EFFORT": "high",
     }
+    telemetry = str((area["sessions"] / "bob-bridge.jsonl").resolve())
     for launch in launches(area):
         assert {key: launch["env"][key] for key in IDENTITY} == expected
         assert launch["env"]["UV_CACHE_DIR"] == str(cache.resolve())
         assert launch["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
-        # Every harness's child env carries the launcher's hub-id pin (#511).
+        # Every harness's child env carries the launcher's hub-id pin (#511) and
+        # its bridge telemetry log (#512).
         assert launch["env"]["ROBOMATE_HUB_ID"] == HUB
+        assert launch["env"]["HUB_TELEMETRY_LOG"] == telemetry
         forwarded = [word for word in launch["argv"] if word.startswith("mcp_servers.robomate")]
         if harness == "codex":
             # Codex forwards nothing to an MCP server unless the entry names it,
-            # so the hub-id pin is named on argv too, after the identity (#511).
+            # so the pin and the telemetry log are named on argv too (#511, #512).
             assert forwarded == [
                 f"mcp_servers.robomate.env.{key}={json.dumps(value)}"
                 for key, value in expected.items()
-            ] + [f"mcp_servers.robomate.env.ROBOMATE_HUB_ID={json.dumps(HUB)}"]
+            ] + [
+                f"mcp_servers.robomate.env.HUB_TELEMETRY_LOG={json.dumps(telemetry)}",
+                f"mcp_servers.robomate.env.ROBOMATE_HUB_ID={json.dumps(HUB)}",
+            ]
             roots = next(
                 word for word in launch["argv"] if word.startswith("sandbox_workspace_write.wr")
             )

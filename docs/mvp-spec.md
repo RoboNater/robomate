@@ -1163,7 +1163,8 @@ Continuation: CLI harnesses that end turns get a thin, policy-free supervisor wh
 Headless launch is optional and outside the core (M2 Step 10): `scripts/agent-launcher.py
 start|resume|ask <agent>` starts a harness in the worktree `robomate workspace` returns, with
 the join line as its only prompt and the harness's grants as flags (no generated files),
-resumes the same conversation with a fixed join-with-`takeover` continuation and backoff, and
+resumes the same conversation with a fixed continuation whose join instruction matches whether
+that conversation joined the hub before, and backoff, and
 logs each launch with the hub's `run_id` to `sessions/<agent>.jsonl` in the hub's state
 directory (or `--sessions-dir` on a remote host). It holds no policy, and `robomate` gains
 no launch command in M2. Its separate `doctor` entry starts Denise (§5.1) from the selected
