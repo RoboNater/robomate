@@ -137,10 +137,13 @@ the test harness itself. A clean rebase with no hand resolutions relies on CI;
 a rebase with hand resolutions also runs the full suite locally.
 
 `-n auto` uses `PYTEST_XDIST_AUTO_NUM_WORKERS` from the run's launch/resume
-script. The operator sets `pytest_workers` in the standard-run TOML or passes
-`--pytest-workers N`; zero clears the override and uses the CPU count. The
-setting can be edited in a generated script before resuming (the run record
-then retains its original value, like a hand-edited model).
+script. The operator sets `pytest_workers` in the run's config
+(`start-run.py`'s `run.toml`, or the standard-run TOML for a prepared run) or
+passes `--pytest-workers N`; zero clears the override and uses the CPU count.
+The setting can be edited in a generated script before resuming (the run
+record then retains its original value, like a hand-edited model). Don't
+unset or change it unless the statement or issue names a worker count. Record
+any override, and why, as a departure in your result.
 
 <!-- Long local command: #122, #355. -->
 

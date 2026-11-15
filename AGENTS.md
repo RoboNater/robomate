@@ -77,7 +77,8 @@ clean rebase without hand resolutions relies on CI for the full suite; hand
 resolutions require a local full run too. Other validation and touched entry
 points still run. See the role guides for details.
 
-`-n auto` respects each run's `PYTEST_XDIST_AUTO_NUM_WORKERS`. Set
+`-n auto` respects each run's `PYTEST_XDIST_AUTO_NUM_WORKERS`. Don't unset it
+unless the statement names a worker count. Set
 `pytest_workers` in the standard-run TOML or `--pytest-workers N` when preparing
 (0 means CPU count); generated launch and resume scripts carry the setting.
 CI uses the runner's CPU count. `test`, `windows`, `probe` (50 ms) and `probe-100` (100 ms) are all required.
@@ -125,23 +126,10 @@ Tests that drive the app use conftest's `hub_store`, not `store`: a second
 `HubStore` on one database has its own `Signals`, so writes through one never
 wake a waiter on the other.
 
-An autouse conftest fixture (`isolated_cwd`) chdirs every test to its own clean
-`tmp_path`. `WorkerHubClient.join` and `OrchestratorBridge` fall back to
-`Path.cwd()` when built without `cwd=`; a prepared worker clone (or a
-`bootstrap-workspace` clone) carries `.git/robo-agents-workspace.json` there, so
-without the fixture a no-`cwd` bridge would adopt — or refuse — that lane's clone
-identity, unlike a plain CI checkout (#461). `tmp_path` is outside any git
-checkout, so the no-`cwd` default always joins via a worktree on both kinds of
-checkout and the full suite gives the same counts in either. A test that needs a
-specific checkout passes `cwd=` or `monkeypatch.chdir` itself; the fixture leaves
-`join`'s clone detection as shipped. The regression
-`test_workspace.py::test_no_cwd_bridge_ignores_lane_clone_identity` runs a no-`cwd`
-join in a nested pytest whose invocation directory is a synthetic lane carrying a
-same-agent or different-agent identity, with the repo's conftest copied in. The
-identity-bearing directory is therefore the one the fixture-less default would
-resolve, so removing the fixture fails the test in a plain CI checkout too (silent
-clone adoption for the same agent, a foreign-identity refusal for the other),
-rather than the outcome depending on which lane happens to run the suite.
+An autouse conftest fixture (`isolated_cwd`) runs every test from its own
+`tmp_path`, so a bridge built without `cwd=` never sees a worker clone's
+identity file (#461). A test that needs a specific checkout passes `cwd=`
+or chdirs itself.
 
 Time in tests ([policy](docs/development/testing-time-and-waits.md)): put any
 deadline the hub enforces on the `frozen_clock` fixture and pass it with

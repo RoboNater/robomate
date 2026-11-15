@@ -10,8 +10,10 @@ Usage:
 
     # 2. Database mode: runs against an existing HubStore database.
     # Note: Cross-process database polling only re-evaluates holds at timeout deadlines
-    # (spec §2: Alice MCP tools run in-process with the hub). Use lower HUB_DEFAULT_WAIT_S
-    # or stdio MCP mode for responsive handoffs.
+    # (spec §2: Alice MCP tools run in-process with the hub): a --db drive against a
+    # hub in another process sees each event only when its hold slice ends, up to
+    # 2 s while waiting for check-in and up to 5 s per slice while driving the task.
+    # Nothing is lost, --endurance is unaffected, and --mcp gives responsive handoffs.
     python scripts/mock-alice.py --db /path/to/hub.db --agent bob --harness claude-code
 
     # 3. Step 4B endurance mode against a separately running HTTP hub/worker.

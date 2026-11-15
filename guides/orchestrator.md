@@ -434,6 +434,9 @@ Apply `max_review_rounds` (default 3) exactly:
   finding IDs to distinguish new findings from unresolved ones.
 - Do not count a rebase re-review, CI repair/re-run, or confirmation pass with
   no new blocking finding.
+- Each RE-REVIEW assignment states the count this rule gives, as
+  `remediation rounds used: N of M; a new blocking finding here makes N+1`,
+  so the reviewer and the result don't restate it differently.
 - When the count reaches the cap, escalate before assigning more remediation.
 - If the implementer disputes a finding and the reviewer re-raises the same
   disagreement across two rounds, escalate even before the cap.
