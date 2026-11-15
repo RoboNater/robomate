@@ -40,6 +40,33 @@ CALLER_HEADERS = {"X-Robomate-Actor": "alice", "X-Robomate-Session": SESSION}
 TEST_WAIT_S = 0.2
 TEST_MAX_WAIT_S = 1.0
 
+# #492: a launcher exports its selection and identity into every agent's
+# environment, and a suite run inside an agent lane inherits them. Code under
+# test that reads one would see the lane instead of a clean machine: a bridge
+# binds its configured agent name before `join`, an explicit workspace
+# overrides its clone identity, discovery pins the run's hub, and a reported
+# profile names the launcher's harness. The list is explicit rather than every
+# ``HUB_*``: hub server settings (``HUB_STATE_DIR``, ``HUB_DB_PATH``,
+# ``HUB_HOST``, ...) are not launcher identity, and the entry points that honour
+# them are configured by their tests after this fixture.
+LAUNCHER_ENV = (
+    "AGENT_NAME",
+    "AGENT_RUNTIME",
+    "HUB_CAPABILITIES",
+    "HUB_CALL_LOG_JSONL",
+    "HUB_EFFORT",
+    "HUB_HARNESS",
+    "HUB_HARNESS_VERSION",
+    "HUB_MODEL",
+    "HUB_PROVIDER",
+    "HUB_TELEMETRY_LOG",
+    "HUB_WORKSPACE",
+    "ROBOMATE_HUB_ID",
+    "ROBOMATE_HUB_URL",
+    "ROBOMATE_LAUNCH_HUB_CHECKOUT",
+    "ROBOMATE_OPERATOR_TOKEN_FILE",
+)
+
 
 class MonotonicClock:
     """Wall-clock time based on `time.monotonic()`, with optional test advances.
@@ -79,20 +106,22 @@ def db_latency_probe() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def isolated_machine_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """#264: inherited worker credentials must never select the run's hub/state.
+    """#264, #492: launcher selection and identity must not reach code under test.
 
-    Every xdist process has its own monkeypatch state and each test its own
-    directory. Tests needing explicit discovery overrides set them afterwards.
-    The default operator credential follows the isolated registry.
+    A worker's environment names its hub, its credentials and its declared
+    profile. Inherited, they select the run's hub and state, report the
+    launcher's harness instead of the one a test configures, and send the
+    run's telemetry to its log. Every xdist process has its own monkeypatch
+    state and each test its own directory. Tests needing explicit discovery
+    overrides or a profile set them afterwards. The default operator credential
+    follows the isolated registry.
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     for name in list(os.environ):
-        if name in ("ROBOMATE_HUB_URL", "ROBOMATE_OPERATOR_TOKEN_FILE") or name.startswith(
-            "ROBOMATE_TOKEN"
-        ):
+        if name in LAUNCHER_ENV or name.startswith("ROBOMATE_TOKEN"):
             monkeypatch.delenv(name)
 
 
