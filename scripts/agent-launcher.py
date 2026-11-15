@@ -87,6 +87,7 @@ from agent_recovery import agent_lock, prepare  # noqa: E402
 from agent_sessions import conversation as saved_conversation  # noqa: E402
 from agent_sessions import exact_id  # noqa: E402
 from agent_worker import WorkerLauncher, WorkerReader, telemetry_size  # noqa: E402
+from mcp_preflight import check as check_mcp_entry  # noqa: E402
 from run_common import bridge_identity_env, resolve_provider  # noqa: E402
 
 ROLES = ("orchestrator", "implementer", "reviewer", "worker")
@@ -1200,6 +1201,10 @@ def supplied_conversation(log: Path, saved: Mapping[str, Any], supplied: str | N
 
 
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
+    try:
+        check_mcp_entry(args.harness)
+    except ValueError as exc:
+        raise Usage(str(exc)) from exc
     place = resolve_hub_id(locate(args), tools, args.agent, args.role)
     if args.workdir:
         workdir = Path(args.workdir).resolve()

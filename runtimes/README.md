@@ -1,5 +1,10 @@
 # Worker Runtime Configurations
 
+For joined runs, configure the static, token-free user-level entry using the
+[MCP setup prompt](../docs/mcp-setup-prompt.md), and use
+[`scripts/check-mcp-tools.py`](../scripts/check-mcp-tools.py) after updates.
+These templates are for the older prepared-run route.
+
 This directory contains template configurations for worker agent runtimes (Claude Code, OpenAI Codex CLI, OpenCode, AntiGravity CLI, Gemini CLI) to connect to the HTTP hub via `robomate mcp --role worker`.
 
 ## Template Files
