@@ -651,6 +651,8 @@ def git(cwd: Path, *words: str) -> str:
 def area(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     """A hub checkout with legacy state, an agent worktree, and the fake harness outside both."""
 
+    monkeypatch.setattr(CLI, "check_mcp_entry", lambda harness: None)
+
     for name in (
         "ROBOMATE_HUB_URL",
         "ROBOMATE_TOKEN",
@@ -2451,3 +2453,32 @@ def test_windows_supervision_never_sends_console_ctrl_c(
 
     assert all(sig != 0 for _, sig in kills), "os.kill(pid, 0) would Ctrl-C the console"
     assert (4242, signal.SIGTERM) in kills
+
+
+def test_start_refuses_missing_user_mcp_entry(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from mcp_preflight import check  # type: ignore[import-not-found]
+
+    monkeypatch.setattr(CLI, "check_mcp_entry", check)
+    missing = area["root"] / "empty-codex"
+    missing.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(missing))
+    rc = CLI.main(
+        [
+            "start",
+            "bob",
+            "--role",
+            "implementer",
+            "--harness",
+            "codex",
+            "--hub",
+            str(area["checkout"]),
+        ],
+        programs=programs(area),
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "codex" in err and "[mcp_servers.robomate]" in err and "user-level" in err
+    assert not (area["harness_dir"] / "launches.jsonl").exists()
+    assert not area["sessions"].exists()

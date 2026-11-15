@@ -51,6 +51,7 @@ ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import agent_launcher as launcher_defaults  # noqa: E402
 from denise import resolve_settings  # noqa: E402
+from mcp_preflight import check as check_mcp_entry  # noqa: E402
 from run_common import probe_harness_version  # noqa: E402
 
 #: The standard team: names and standing roles are fixed; harness, model and effort are set.
@@ -955,6 +956,12 @@ def start(values: dict[str, Any], policy: dict[str, Any]) -> int:
     run_dir = Path(values["run_dir"])
     name = hub_name(values)
     run = Run(values, policy, run_dir, run_dir / name, name)
+    harnesses = {harness_of(values, agent) for agent in AGENTS}
+    doctor = denise(values)
+    if doctor["status"] == "ready":
+        harnesses.add(doctor["harness"])
+    for harness in sorted(harnesses):
+        check_mcp_entry(harness)
     run.versions = probe_versions(values)
     run_dir.mkdir(parents=True, exist_ok=True)
     previous = signal.getsignal(signal.SIGTERM)
