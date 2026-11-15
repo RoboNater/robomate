@@ -57,7 +57,7 @@ ID_LINES = {
 
 FAKE_HARNESS = (
     """\
-import json, os, sys, time
+import json, os, stat, sys, time
 """
     + fake_harness.CHILD_PID_RECORD
     + """\
@@ -66,7 +66,17 @@ if argv == ["--help"]:
     print(os.environ.get("FAKE_CLAUDE_HELP", ""))
     sys.exit(0)
 if argv == ["debug", "config"]:
-    print(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
+    if os.environ.get("FAKE_OPENCODE_EXIT"):
+        sys.exit(1)
+    raw = os.environ.get("FAKE_OPENCODE_INVALID")
+    if raw is None:
+        config = json.loads(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
+        config["provider"] = {"catalog": "x" * 100_000}
+        raw = json.dumps(config)
+    data = raw.encode("utf-8")
+    if stat.S_ISFIFO(os.fstat(1).st_mode):
+        data = data[:65_536]
+    sys.stdout.buffer.write(data)
     sys.exit(0)
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 record = {
@@ -317,6 +327,29 @@ def test_an_exit_before_initialization_never_replays_the_kickoff(run_dir: Path, 
     assert code == LAUNCHER.EXIT_CANNOT_RESUME
     assert len(launches(run_dir)) == 1
     assert sessions(run_dir)[-1]["reason"] == "no_workflow"
+
+
+@pytest.mark.parametrize("failure", ["invalid", "exit"])
+def test_opencode_probe_reports_configuration_failure(
+    run_dir: Path,
+    fake: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    monkeypatch.setenv(
+        "FAKE_OPENCODE_INVALID" if failure == "invalid" else "FAKE_OPENCODE_EXIT",
+        "{bad" if failure == "invalid" else "1",
+    )
+    reader = ScriptedReader(wf("active"))
+    assert (
+        LAUNCHER.main(start_args(run_dir, fake, "opencode"), reader) == LAUNCHER.EXIT_CANNOT_RESUME
+    )
+    error = capsys.readouterr().err
+    expected = "returned invalid JSON (4 bytes)" if failure == "invalid" else "could not be read"
+    assert expected in error
+    assert "configuration failure" in error
+    assert "hub reachability" not in error
 
 
 def test_no_conversation_id_means_no_guessed_resume(

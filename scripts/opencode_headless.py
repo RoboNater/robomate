@@ -5,10 +5,15 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+
+class OpenCodeConfigError(ValueError):
+    """The OpenCode configuration probe failed or returned invalid data."""
 
 
 def allowed_roots(worktree: Path, hub: Path | None, lane_tmp: Path | None) -> list[Path]:
@@ -74,21 +79,33 @@ def prepare(
     env = dict(environment)
     # Preserve wrappers used by operators (and fake harnesses in tests).
     run_index = argv.index("run")
+    with tempfile.TemporaryFile() as output:
+        try:
+            probe = subprocess.run(
+                [*argv[:run_index], "debug", "config"],
+                cwd=worktree,
+                env=env,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.SubprocessError as exc:
+            raise OpenCodeConfigError(
+                "OpenCode effective configuration probe failed or timed out"
+            ) from exc
+        if probe.returncode:
+            raise OpenCodeConfigError(
+                "OpenCode effective configuration could not be read (debug config)"
+            )
+        output.seek(0)
+        data = output.read()
     try:
-        probe = subprocess.run(
-            [*argv[:run_index], "debug", "config"],
-            cwd=worktree,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-    except subprocess.SubprocessError as exc:
-        raise ValueError("OpenCode effective configuration probe failed or timed out") from exc
-    if probe.returncode:
-        raise ValueError("OpenCode effective configuration could not be read (debug config)")
-    config = json.loads(probe.stdout)
+        config = json.loads(data)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise OpenCodeConfigError(
+            f"OpenCode `debug config` returned invalid JSON ({len(data)} bytes)"
+        ) from exc
     hub = env.get("ROBOMATE_LAUNCH_HUB_CHECKOUT")
     # Only explicit launcher/run metadata establishes a temporary root. An
     # ambient UV_CACHE_DIR=/tmp/uv-cache must never grant all of /tmp.
