@@ -136,6 +136,12 @@ class WorkerLauncher(common.Launcher):
         workflow = self.read_hub()
         if self.finished(workflow, resumes):
             return "done"
+        if workflow is not None and workflow["status"] == "paused":
+            raise common.Stop(
+                common.EXIT_PAUSED,
+                "paused",
+                "workflow paused; wait until the operator resumes it. " + self.manual_resume_hint(),
+            )
         agent = workflow.get("agent") if workflow else getattr(self.reader, "current_agent", None)
         self.ever_joined |= agent is not None
         if not self.ever_joined:
@@ -157,12 +163,6 @@ class WorkerLauncher(common.Launcher):
                 common.EXIT_CANNOT_RESUME,
                 "no_conversation",
                 "no exact conversation ID to resume. " + self.manual_resume_hint(),
-            )
-        if workflow["status"] == "paused":
-            raise common.Stop(
-                common.EXIT_PAUSED,
-                "paused",
-                "workflow paused; wait until the operator resumes it. " + self.manual_resume_hint(),
             )
         if self.args.max_resumes is not None and resumes >= self.args.max_resumes:
             raise common.Stop(
