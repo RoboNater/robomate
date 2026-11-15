@@ -13,7 +13,7 @@ from typing import Any
 
 
 class OpenCodeConfigError(ValueError):
-    """The OpenCode configuration probe returned invalid data."""
+    """The OpenCode configuration probe failed or returned invalid data."""
 
 
 def allowed_roots(worktree: Path, hub: Path | None, lane_tmp: Path | None) -> list[Path]:
@@ -91,9 +91,13 @@ def prepare(
                 timeout=30,
             )
         except subprocess.SubprocessError as exc:
-            raise ValueError("OpenCode effective configuration probe failed or timed out") from exc
+            raise OpenCodeConfigError(
+                "OpenCode effective configuration probe failed or timed out"
+            ) from exc
         if probe.returncode:
-            raise ValueError("OpenCode effective configuration could not be read (debug config)")
+            raise OpenCodeConfigError(
+                "OpenCode effective configuration could not be read (debug config)"
+            )
         output.seek(0)
         data = output.read()
     try:

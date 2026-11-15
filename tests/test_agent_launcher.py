@@ -176,11 +176,18 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
     assert saved.lane_tmp == lane_tmp
 
 
-def test_opencode_invalid_probe_reports_configuration_failure(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("failure", ["invalid", "exit"])
+def test_opencode_probe_reports_configuration_failure(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
 ) -> None:
     use_harness("opencode", monkeypatch)
-    monkeypatch.setenv("FAKE_OPENCODE_INVALID", "{bad")
+    monkeypatch.setenv(
+        "FAKE_OPENCODE_INVALID" if failure == "invalid" else "FAKE_OPENCODE_EXIT",
+        "{bad" if failure == "invalid" else "1",
+    )
     hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": [agent_row()]}))
     assert (
         invoke(
@@ -192,7 +199,8 @@ def test_opencode_invalid_probe_reports_configuration_failure(
         == LAUNCHER.EXIT_CANNOT_RESUME
     )
     error = capsys.readouterr().err
-    assert "OpenCode `debug config` returned invalid JSON (4 bytes)" in error
+    expected = "returned invalid JSON (4 bytes)" if failure == "invalid" else "could not be read"
+    assert expected in error
     assert "configuration failure" in error
     assert "hub reachability" not in error
 
@@ -309,14 +317,17 @@ def test_opencode_probe_timeouts_have_clear_fail_closed_messages(
     monkeypatch: pytest.MonkeyPatch,
     probe: str,
 ) -> None:
-    from opencode_headless import allowed_roots, prepare
+    from opencode_headless import OpenCodeConfigError, allowed_roots, prepare
 
     def timeout(command: list[str], **kwargs: Any) -> Any:
         raise subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     monkeypatch.setattr(subprocess, "run", timeout)
     expected = "OpenCode effective configuration" if probe == "config" else "Git common-directory"
-    with pytest.raises(ValueError, match=expected + " probe failed or timed out"):
+    with pytest.raises(
+        OpenCodeConfigError if probe == "config" else ValueError,
+        match=expected + " probe failed or timed out",
+    ):
         if probe == "config":
             prepare(["opencode", "run"], {}, tmp_path, tmp_path / "journal")
         else:
@@ -540,6 +551,8 @@ if argv == ["--help"]:
     print(os.environ.get("FAKE_CLAUDE_HELP", ""))
     sys.exit(0)
 if argv == ["debug", "config"]:
+    if os.environ.get("FAKE_OPENCODE_EXIT"):
+        sys.exit(1)
     raw = os.environ.get("FAKE_OPENCODE_INVALID")
     if raw is None:
         config = json.loads(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
