@@ -388,3 +388,19 @@ def test_queued_workflow_launches_worker_instead_of_stopping_unreadable(
         == 0
     )
     assert len(launches(run_dir)) == 1
+
+
+def test_worker_that_never_joins_stops_without_backoff(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_harness("claude-code", monkeypatch)
+    missing = ("hub-1", {"id": "wf-1", "status": "active", "agent": None})
+    reader = ScriptedReader(missing, missing, missing, missing)
+    code = WORKER.main(
+        worker_args(run_dir, fake, "claude-code", "--prompt", str(run_dir / "alice.prompt.md")),
+        reader,
+    )
+    assert code == WORKER.common.EXIT_NEVER_JOINED
+    assert len(launches(run_dir)) == 1
+    assert sessions(run_dir)[-1]["reason"] == "never_joined"
+    assert not any(row["event"] == "wait" for row in sessions(run_dir))

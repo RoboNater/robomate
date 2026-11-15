@@ -3463,6 +3463,7 @@ class _StubHub(BaseHTTPRequestHandler):
     calls: list[tuple[str, str | None]] = []
     current_status = "active"
     created: str | None = None
+    agents: list[dict[str, Any]] = []
 
     def do_POST(self) -> None:  # noqa: N802 - the stdlib's name
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -3491,7 +3492,7 @@ class _StubHub(BaseHTTPRequestHandler):
                 workflow["created"] = self.created
             result = {
                 "workflow": workflow,
-                "agents": [],
+                "agents": self.agents,
                 "orchestrator_activity": {"holding": None, "heartbeat_age_s": None},
             }
         payload = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
@@ -3509,6 +3510,7 @@ def stub_hub(*statuses: str) -> Iterator[str]:
     _StubHub.statuses = list(statuses)
     _StubHub.calls = []
     _StubHub.created = None
+    _StubHub.agents = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHub)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -3571,6 +3573,10 @@ def test_start_and_resume_scripts_run_the_launcher_to_done(
         else ["active"] * 5 + ["done", "escalated", "escalated", "escalated", "done"]
     )
     with stub_hub(*statuses) as url:
+        if agent != "alice":
+            _StubHub.agents = [
+                {"name": agent, "status": "idle", "alive": True, "activity": {"instance": None}}
+            ]
         run_dir, manifest = prepare(
             base,
             monkeypatch,

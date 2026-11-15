@@ -894,6 +894,21 @@ class JoinedOrchestrator(Joined):
         super().__init__(args, reader)
         self.setup(args)
 
+    def resumable(self, exit_code: int, resumes: int) -> str:
+        workflow = self.read_hub()
+        if (
+            self.pending_stop is None
+            and not self.joined
+            and not (workflow is not None and workflow["status"] == "done")
+        ):
+            raise common.Stop(
+                common.EXIT_NEVER_JOINED,
+                "never_joined",
+                f"{self.agent} never joined the hub; inspect the harness log "
+                f"and {self.args.sessions}.",
+            )
+        return super().resumable(exit_code, resumes)
+
 
 _UNSEEN = object()
 

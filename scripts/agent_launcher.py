@@ -50,6 +50,7 @@ EXIT_RESUMES_SPENT = 1
 EXIT_HUB_UNREADABLE = 3
 EXIT_CANNOT_RESUME = 4
 EXIT_PAUSED = 5
+EXIT_NEVER_JOINED = 6
 EXIT_INTERRUPTED = 130
 
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
