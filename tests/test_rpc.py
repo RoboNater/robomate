@@ -1417,6 +1417,28 @@ async def test_invalid_orchestrator_join_does_not_attach(
     assert app.state.rpc.orchestrator is None
 
 
+async def test_orchestrator_join_on_an_unknown_forge_hub_names_the_appendix_and_fix(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+) -> None:
+    """#481: the refusal names the missing appendix and the `--forge` restart."""
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {"hub_id": "h", "forge": "unknown"}
+
+    code, message = error_of(await call(client, "join", name="alice"))
+
+    assert code == NOT_FOUND
+    assert message.startswith("orchestrator guide refused")
+    assert "forge/orchestrator-unknown.md" in message
+    assert "`robomate up --forge github` or `robomate up --forge gitlab`" in message
+    assert dispatcher.orchestrator is None
+    # The refusal happens before ownership changes, so a forge with an
+    # appendix still joins on the same session.
+    dispatcher.hub_info = {"hub_id": "h", "forge": "github"}
+    assert "result" in await call(client, "join", name="alice")
+
+
 async def test_start_workflow_queues_and_second_starts_after_done(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:

@@ -393,7 +393,9 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
     if repo.forge == "unknown":
         print(
             "Warning: forge is unknown; check_merge_gate will use the GitHub gate. "
-            "Choose --forge github|gitlab to override.",
+            "Choose --forge github|gitlab to override. An orchestrator join is refused "
+            "on a hub whose forge is unknown, so restart with "
+            "`robomate up --forge github` or `robomate up --forge gitlab` before joining.",
             flush=True,
         )
     elif repo.forge == "gitlab":
