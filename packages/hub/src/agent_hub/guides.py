@@ -29,6 +29,26 @@ def _not_found(role: str) -> HTTPException:
     return HTTPException(status.HTTP_404_NOT_FOUND, detail=f"no guide for role {role!r}")
 
 
+def _appendix_not_found(role: str, forge: str, appendix_name: str) -> HTTPException:
+    """A missing forge appendix is a 404 that names the appendix (#481).
+
+    On a hub whose forge is `unknown` (`robomate up` without `--forge`), the
+    orchestrator guide is refused outright with the fix instead: there is no
+    `orchestrator-unknown.md`, and the merge/cleanup steps live in a forge
+    appendix, so the bare guide must never be served (spec §10).
+    """
+
+    if role == "orchestrator" and forge == "unknown":
+        detail = (
+            f"orchestrator join refused: the hub's forge is unknown and there is no "
+            f"forge appendix forge/{appendix_name}.md; restart with "
+            "`robomate up --forge github` or `robomate up --forge gitlab`"
+        )
+    else:
+        detail = f"no guide for role {role!r}: missing forge appendix forge/{appendix_name}.md"
+    return HTTPException(status.HTTP_404_NOT_FOUND, detail=detail)
+
+
 def guide_response(guides_dir: Path, role: str, forge: str | None = None) -> Response:
     """Serve `{role}.md` from the guides directory, composed with a forge appendix.
 
@@ -57,7 +77,7 @@ def guide_response(guides_dir: Path, role: str, forge: str | None = None) -> Res
     appendix_name = f"orchestrator-{forge}" if role == "orchestrator" else forge
     appendix_path = (root / "forge" / f"{appendix_name}.md").resolve()
     if not appendix_path.is_file() or not appendix_path.is_relative_to(root):
-        raise _not_found(role)
+        raise _appendix_not_found(role, forge, appendix_name)
     content = content + b"\n\n" + appendix_path.read_bytes()
 
     return Response(content=content, media_type=MEDIA_TYPE)

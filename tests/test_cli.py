@@ -2592,7 +2592,9 @@ def test_up_malformed_origin_warns_and_serves(
         info = await_hub(root, process)
         assert info["forge"] == "unknown"
         stop(root, env, process)
-        assert "forge is unknown" in _hub_stdout(process)
+        stdout = _hub_stdout(process)
+        assert "forge is unknown" in stdout
+        assert "orchestrator join is refused" in stdout
     finally:
         if process.poll() is None:
             process.terminate()

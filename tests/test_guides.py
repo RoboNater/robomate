@@ -367,6 +367,28 @@ def test_a_missing_appendix_is_a_404_not_a_bare_guide(guides: Path) -> None:
     assert raised.value.status_code == 404
 
 
+def test_a_missing_appendix_404_names_the_appendix(guides: Path) -> None:
+    """#481: the 404 names the missing appendix, not only the role."""
+
+    with pytest.raises(HTTPException) as raised:
+        guide_response(guides, "worker", forge="gitlab")
+
+    assert raised.value.status_code == 404
+    assert "missing forge appendix forge/gitlab.md" in str(raised.value.detail)
+
+
+def test_an_unknown_forge_refuses_the_orchestrator_guide_naming_the_fix() -> None:
+    """#481: no orchestrator guide on a forge-unknown hub, and the fix is named."""
+
+    with pytest.raises(HTTPException) as raised:
+        guide_response(CHECKED_IN_GUIDES, "orchestrator", forge="unknown")
+
+    assert raised.value.status_code == 404
+    detail = str(raised.value.detail)
+    assert "forge/orchestrator-unknown.md" in detail
+    assert "`robomate up --forge github` or `robomate up --forge gitlab`" in detail
+
+
 async def test_route_serves_composed_guide_with_forge_param(
     app: FastAPI, client: httpx.AsyncClient, guides: Path
 ) -> None:
@@ -452,6 +474,55 @@ async def test_a_missing_effective_appendix_is_a_404(settings: HubSettings, guid
     ):
         response = await client.get("/guides/worker.md")
         assert response.status_code == 404
+
+
+async def test_an_unknown_hub_still_serves_worker_guides(
+    settings: HubSettings, guides: Path
+) -> None:
+    """#481: a forge-unknown hub keeps serving worker guides, composed."""
+    from agent_hub.app import create_app
+
+    hub_app = create_app(settings, hub_info={"forge": "unknown", "hub_id": "test-hub-123"})
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/worker.md")
+
+    assert response.status_code == 200
+    assert GUIDE in response.text
+    assert "# GitHub Appendix" in response.text
+
+
+async def test_route_refuses_the_orchestrator_guide_for_an_unknown_forge(
+    settings: HubSettings,
+) -> None:
+    """#481: `?forge=unknown` on the orchestrator guide names the appendix and the fix."""
+    from agent_hub.app import create_app
+
+    hub_app = create_app(
+        replace(settings, guides_dir=CHECKED_IN_GUIDES),
+        hub_info={"forge": "unknown", "hub_id": "test-hub"},
+    )
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        response = await client.get("/guides/orchestrator.md?forge=unknown")
+
+    assert response.status_code == 404
+    assert "forge/orchestrator-unknown.md" in response.text
+    assert "robomate up --forge github" in response.text
 
 
 async def test_two_instances_serve_identical_bytes(settings: HubSettings, guides: Path) -> None:
