@@ -28,6 +28,7 @@ REQUIRED = (
     "HUB_MODEL",
     "HUB_PROVIDER",
     "HUB_TELEMETRY_LOG",
+    "HUB_WORKSPACE",
     "ROBOMATE_HUB_ID",
     "ROBOMATE_LAUNCH_HUB_CHECKOUT",
 )
@@ -50,10 +51,11 @@ def test_isolated_machine_state_strips_launcher_identity(tmp_path: Path) -> None
     """#492: an agent lane's launcher environment must not reach the suite.
 
     The fixture strips the variables a launcher exports to its agent: the
-    declared profile (``HUB_HARNESS`` and friends) and agent name, the pinned
-    hub id and launch checkout, telemetry sinks and the hub selection. Without
-    that, a full suite run inside a worker lane fails discovery-dependent
-    tests and reports the launcher's harness where a test configures its own.
+    declared profile (``HUB_HARNESS`` and friends) and agent name, the explicit
+    workspace, the pinned hub id and launch checkout, telemetry sinks and the
+    hub selection. Without that, a full suite run inside a worker lane fails
+    discovery-dependent tests and reports the launcher's harness where a test
+    configures its own.
 
     To make the regression host-independent, the check runs in a *nested*
     pytest: its invocation directory carries no identity, the outer test sets

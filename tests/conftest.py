@@ -43,11 +43,12 @@ TEST_MAX_WAIT_S = 1.0
 # #492: a launcher exports its selection and identity into every agent's
 # environment, and a suite run inside an agent lane inherits them. Code under
 # test that reads one would see the lane instead of a clean machine: a bridge
-# binds its configured agent name before `join`, discovery pins the run's hub,
-# and a reported profile names the launcher's harness. The list is explicit
-# rather than every ``HUB_*``: hub server settings (``HUB_STATE_DIR``,
-# ``HUB_DB_PATH``, ``HUB_HOST``, ...) are not launcher identity, and the entry
-# points that honour them are configured by their tests after this fixture.
+# binds its configured agent name before `join`, an explicit workspace
+# overrides its clone identity, discovery pins the run's hub, and a reported
+# profile names the launcher's harness. The list is explicit rather than every
+# ``HUB_*``: hub server settings (``HUB_STATE_DIR``, ``HUB_DB_PATH``,
+# ``HUB_HOST``, ...) are not launcher identity, and the entry points that honour
+# them are configured by their tests after this fixture.
 LAUNCHER_ENV = (
     "AGENT_NAME",
     "AGENT_RUNTIME",
@@ -59,6 +60,7 @@ LAUNCHER_ENV = (
     "HUB_MODEL",
     "HUB_PROVIDER",
     "HUB_TELEMETRY_LOG",
+    "HUB_WORKSPACE",
     "ROBOMATE_HUB_ID",
     "ROBOMATE_HUB_URL",
     "ROBOMATE_LAUNCH_HUB_CHECKOUT",
