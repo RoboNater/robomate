@@ -196,9 +196,6 @@ resume with their original goals; do not regenerate the goal to resume. `--alice
 
 ### Scripted run start (M2)
 
-Before starting a run, configure the harness MCP entries using the
-[interim setup prompt](mcp-setup-prompt.md).
-
 Before starting, configure the static, user-level `robomate` MCP entry for each
 team harness and the resolved Denise harness. Use a stable robomate checkout
 for `--project`, not a run lane. Follow the [MCP setup prompt](mcp-setup-prompt.md)
@@ -458,6 +455,10 @@ For joined runs, follow the [MCP setup prompt](mcp-setup-prompt.md) for the
 static, token-free user-level entry and its unattended settings. The
 [runtime templates](../runtimes/README.md) are for the older prepared-run
 route, which supplies per-run connection and identity settings.
+The bridge uses an explicit hub URL and token file when supplied, and can find
+and verify the hub bound to its checkout. It does not attach to an unrelated
+hub. See [hub discovery](mvp-spec.md#4-local-layout-discovery-multiple-hubs)
+for the full selection order.
 
 ## Linux sandbox grants
 

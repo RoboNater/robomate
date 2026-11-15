@@ -436,7 +436,13 @@ def smoke(tmp_path: Path) -> dict[str, Any]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in ("ROBOMATE_HUB_URL", "HUB_STATE_DIR", "PYTEST_XDIST_AUTO_NUM_WORKERS")
+        if key
+        not in (
+            "ROBOMATE_HUB_URL",
+            "HUB_STATE_DIR",
+            "PYTEST_XDIST_AUTO_NUM_WORKERS",
+            "CLAUDE_CONFIG_DIR",
+        )
         and not key.startswith(("ROBOMATE_TOKEN", "HUB_"))
     } | {
         "PATH": str(shims) + os.pathsep + os.environ.get("PATH", ""),
@@ -750,6 +756,7 @@ def test_user_level_mcp_presence(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     path = tmp_path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -774,3 +781,47 @@ def test_codex_nested_settings_alone_are_not_a_server(
     )
     with pytest.raises(ValueError, match="mcp_servers.robomate"):
         START.check_mcp_entry("codex")
+
+
+def test_claude_config_dir_overrides_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    custom = tmp_path / "claude"
+    custom.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom))
+    (custom / ".claude.json").write_text('{"mcpServers":{"robomate":{}}}', encoding="utf-8")
+    START.check_mcp_entry("claude-code")
+    (custom / ".claude.json").unlink()
+    (home / ".claude.json").write_text('{"mcpServers":{"robomate":{}}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="claude"):
+        START.check_mcp_entry("claude-code")
+
+
+def test_opencode_checks_both_configs_and_warns_on_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    directory = tmp_path / "opencode"
+    directory.mkdir()
+    (directory / "opencode.json").write_text("{", encoding="utf-8")
+    other = directory / "opencode.jsonc"
+    other.write_text('{"mcp":{"robomate":{}}}', encoding="utf-8")
+    import mcp_preflight  # type: ignore[import-not-found]
+
+    parsed: list[str] = []
+    parse = mcp_preflight._jsonc
+
+    def recording_parse(text: str) -> object:
+        parsed.append(text)
+        return parse(text)
+
+    monkeypatch.setattr(mcp_preflight, "_jsonc", recording_parse)
+    START.check_mcp_entry("opencode")
+    assert len(parsed) == 2
+    assert "warning" in capsys.readouterr().err
+    (directory / "opencode.json").unlink()
+    other.write_text('{"mcp":{"robomate":false}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="mcp.robomate"):
+        START.check_mcp_entry("opencode")

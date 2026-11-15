@@ -28,7 +28,7 @@ def check(harness: str) -> None:
             "[mcp_servers.robomate]",
         ),
         "claude-code": (
-            [home / ".claude.json"],
+            [Path(os.environ.get("CLAUDE_CONFIG_DIR") or home) / ".claude.json"],
             ("mcpServers", "robomate"),
             '"mcpServers.robomate"',
         ),
@@ -56,11 +56,10 @@ def check(harness: str) -> None:
         )
         return
     paths, keys, entry = configs[harness]
-    try:
-        found = False
-        for path in paths:
-            if not path.exists():
-                continue
+    found = False
+    uncertain = False
+    for path in paths:
+        try:
             raw = path.read_text(encoding="utf-8")
             data = tomllib.loads(raw) if harness == "codex" else _jsonc(raw)
             for key in keys:
@@ -71,17 +70,18 @@ def check(harness: str) -> None:
                     break
             # Nested tool/env tables alone create an implicit TOML table, but
             # do not register a Codex server transport.
-            if harness == "codex" and isinstance(data, dict):
-                data = data if "command" in data or "url" in data else None
-            if data is not None:
+            if isinstance(data, dict) and (
+                harness != "codex" or "command" in data or "url" in data
+            ):
                 found = True
-        if not found:
-            raise FileNotFoundError
-    except FileNotFoundError:
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            uncertain = True
+            print(f"warning: {harness}: cannot check user-level {entry}: {exc}", file=sys.stderr)
+    if not found and not uncertain:
         raise ValueError(
             f"{harness}: missing {entry} in user-level config ({', '.join(map(str, paths))}); "
             f"add {entry} running `uv run --locked --project <stable-robomate-checkout> "
             f"robomate mcp --harness {harness}`; see docs/mcp-setup-prompt.md"
-        ) from None
-    except (OSError, ValueError) as exc:
-        print(f"warning: {harness}: cannot check user-level {entry}: {exc}", file=sys.stderr)
+        )
