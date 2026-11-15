@@ -78,7 +78,10 @@ So **never move only the wall clock.** `hub_store.clock = lambda: now +
 timedelta(seconds=30)` or `MonotonicClock.advance(30)` looks like a host
 pause, and the test then checks pause recovery instead of what it meant to.
 `FrozenClock` drives both clocks from one value, and `advance` moves them
-together.
+together. To measure an interval, read `frozen_clock.elapsed` or compare with
+`pytest.approx`. Never subtract two `FrozenClock.monotonic()` readings and
+compare exactly: `(start + e1) - (start + e0)` can differ from `e1 - e0` by a
+rounding step (#375, #397).
 
 One more case: between two sweeps, an advance longer than the sweep's
 `lost_after_s` on both clocks is a `sweep_gap`, which the hub also treats as a
@@ -119,7 +122,11 @@ transaction per poll. A hold meant to last until a condition holds therefore
 passes `timeout_s=LIVENESS_S`, and over HTTP or MCP also lifts the cap with
 `@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)`. Without the marker, the
 hold still ends after 1 s. Directly on the store, passing `timeout_s=LIVENESS_S`
-is enough. An audit of implicit holds must search the parsed code (for example with Python's `ast` module), not a single line, so calls written across several lines are included.
+is enough. An audit of implicit holds must search the parsed code (for
+example with Python's `ast` module), not a single line, so calls written
+across several lines are included. Also check each call that passes the
+method in a variable, or trace the helper that takes one: matching the
+literal `"message/stream"` misses them.
 
 **No `elapsed < N` as a fast-fail.** A test that holds for `LIVENESS_S` and
 expects to be woken early may be tempted to assert `elapsed < 10.0` to prove
@@ -248,6 +255,9 @@ ROBOMATE_TEST_DB_LATENCY_MS=50 uv run --locked pytest tests/test_closeout.py -q
 ROBOMATE_TEST_DB_LATENCY_MS=100 uv run --locked pytest tests/test_closeout.py -q
 ```
 
+`-q` hides pytest's header, including the probe line; drop it when the log
+must show the probe setting.
+
 50 ms per transaction is harsher than CI, so treat thresholds as rough; what
 matches the CI history is which tests fail. To repair a flaky test:
 
@@ -302,7 +312,15 @@ conditions that produce it, in one or more of these ways:
 - **A controlled delay at the stage the evidence names.** Delaying that one
   step shows that the repaired test waits for the condition rather than for
   a duration. A test-only hook like this must be off by default, as the
-  probe is, and the PR must name it.
+  probe is, and the PR must name it. To add the delay without a hook in the
+  repository, put a `sitecustomize.py` in a scratch directory outside the
+  worktree, on `PYTHONPATH`, gated by an environment variable. The subprocess
+  hub inherits the environment, so the delay reaches it, and with the
+  variable unset nothing happens. It loads at interpreter start, so it can
+  also patch a function that production imports by name. Print the hook in
+  the PR so a reader can recreate it (PR #418, #420). A reviewer can use the
+  same shim for a mutation check that must not edit a production file
+  (`guides/reviewer.md`, step 4).
 
 The fix is done when the PR names the cause from that evidence and shows the
 repaired test passing under the same conditions. A run of local passes alone
