@@ -4170,6 +4170,205 @@ def test_up_with_agents_creates_worktrees_ahead_of_join(
             stop(root, env, process)
 
 
+def test_up_with_agents_partway_failure_leaves_reusable_worktrees(
+    repository: tuple[Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#347: an `up --agents` failing partway leaves reusable, correctly bound worktrees.
+
+    PR #345 (r1-2) moved worktree creation after `hub.json`, the owner
+    binding, the registry name claim and the port bind (`_run_up`), so a
+    failed `up` never leaves locked worktrees bound to an unrecorded
+    `hub_id`. This pins the failure that ordering exists for, as checked by
+    hand on the issue: a plain directory blocking charlie's path fails the
+    `up` after bob's worktree was created, and the next `up --agents` reuses
+    it, with a later join of bob reusing it again.
+    """
+
+    import uuid
+
+    import httpx
+    from agent_hub.worktrees import worktree_lock_reason
+    from agent_hub_common import SCHEMA_VERSION, MetaKeys
+
+    root, env = repository
+    worktree_root = tmp_path_worktree_root(root)
+
+    # A first plain up/down records the hub's identity, worktree root and
+    # owner binding, so the blocked up has a hub_id to reuse.
+    first = start(root, env)
+    try:
+        await_hub(root, first)
+    finally:
+        stop(root, env, first)
+    stopped = read_hub(root)
+    assert stopped is not None and stopped["pid"] is None
+    hub_id = str(stopped["hub_id"])
+    name = str(stopped["name"])
+
+    blocked = worktree_root / name / "charlie"
+    blocked.mkdir(parents=True)
+    (blocked / "placeholder").write_text("not a worktree", encoding="utf-8")
+
+    failed = start(root, env, "--agents", "bob,charlie")
+    wait_until_sync(lambda: failed.poll() is not None, "the blocked `up --agents` exits")
+    printed = _hub_stdout(failed)
+    err = _hub_stderr(failed)
+    assert failed.returncode == 1, err
+    bob = worktree_root / name / "bob"
+    # bob's path was printed before charlie's path was refused.
+    assert str(bob) in printed, printed
+    assert (
+        f"agent path {blocked} exists but is not a worktree of this repository; "
+        "move it away before joining"
+    ) in err, err
+    # No hub is serving: the recorded identity stays without a live pid.
+    after_failure = read_hub(root)
+    assert after_failure is not None and after_failure["pid"] is None
+    status = _inproc_cli(monkeypatch, capsys, root, env, "status")
+    assert status.returncode == 1
+    assert f"Hub {name} ({root}): not running" in status.stdout, status.stdout
+    # bob's worktree exists, detached and locked with the hub's reason, and
+    # its binding names the recorded hub_id.
+    listing = subprocess.run(
+        ["git", f"--git-dir={root / '.git'}", "worktree", "list", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    blocks = {
+        block.splitlines()[0].removeprefix("worktree "): block
+        for block in listing.split("\n\n")
+        if block.startswith("worktree ")
+    }
+    bob_block = blocks.get(bob.as_posix())
+    assert bob_block is not None, listing
+    assert f"locked {worktree_lock_reason(name)}" in bob_block, bob_block
+    assert "branch " not in bob_block, bob_block  # detached at origin/<default>
+    binding = read_binding(checkout_git_dir(bob))
+    assert binding is not None and binding.role == "agent" and binding.agent == "bob"
+    assert binding.hub_id == after_failure["hub_id"]
+    workspace_id = binding.workspace_id
+    assert workspace_id is not None
+
+    # With the blocker removed, the next `up --agents` starts: it reuses bob's
+    # worktree, with the same binding, and creates charlie's.
+    (blocked / "placeholder").unlink()
+    blocked.rmdir()
+    second = start(root, env, "--agents", "bob,charlie")
+    try:
+        info = await_hub(root, second)
+        assert str(info["hub_id"]) == hub_id
+        out = _hub_stdout(second)
+        charlie = worktree_root / name / "charlie"
+        for path in (bob, charlie):
+            assert str(path) in out, out
+        assert charlie.is_dir()
+        charlie_binding = read_binding(checkout_git_dir(charlie))
+        assert (
+            charlie_binding is not None
+            and charlie_binding.role == "agent"
+            and charlie_binding.agent == "charlie"
+            and charlie_binding.hub_id == hub_id
+        )
+        reused = read_binding(checkout_git_dir(bob))
+        assert reused is not None and reused.workspace_id == workspace_id
+        listing = subprocess.run(
+            ["git", f"--git-dir={root / '.git'}", "worktree", "list", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert worktree_lock_reason(name) in listing
+
+        # A later join of bob reuses the reused worktree, as the success-path
+        # test above covers for a fresh `up --agents`.
+        token = hub_token(root).read_text(encoding="utf-8").strip()
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "messageId": uuid.uuid4().hex,
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "READY"}],
+                    "metadata": {
+                        MetaKeys.AGENT: "bob",
+                        MetaKeys.STANDING_ROLE: "implementer",
+                        MetaKeys.TAKEOVER: False,
+                        MetaKeys.CAPABILITIES: ["python"],
+                        MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+                        MetaKeys.OPERATION_ID: uuid.uuid4().hex,
+                        MetaKeys.WORKER_INSTANCE_ID: "bob-partway-failure",
+                        MetaKeys.WORKSPACE_EXPLICIT: False,
+                        MetaKeys.WORKSPACE_PATH: str(root),
+                    },
+                }
+            },
+        }
+        with httpx.Client(
+            base_url=str(info["url"]),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+        ) as live:
+            response = live.post("/a2a", json=payload)
+        assert response.status_code == 200, response.text
+        meta = response.json()["result"].get("metadata") or {}
+        assert meta.get(MetaKeys.WORKSPACE_PATH) == str(bob)
+        assert meta.get(MetaKeys.WORKSPACE_KIND) == "worktree"
+    finally:
+        stop(root, env, second)
+
+
+def test_up_with_agents_creates_no_worktrees_when_registry_refuses(
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#347: a first `up --agents` refused by the registry creates no worktrees.
+
+    The partway-failure test above cannot see the r1-2 ordering (its `hub_id`
+    is already recorded by the first up), only the reordering's observable
+    case: if worktree creation moved back before `write_hub_json` and
+    `register`, a first `up` failing at the registry claim would leave locked
+    worktrees bound to a `hub_id` nothing recorded. The refusal is triggered
+    for real: a sibling hub of the same repository holds the derived name.
+    """
+
+    from agent_hub_common.discovery import derive_hub_name
+
+    root, env = repository
+    name = derive_hub_name(root)
+    sibling_state = tmp_path / "sibling" / "state"
+    sibling_state.mkdir(parents=True)
+    write_hub_json(sibling_state, {"hub_id": "sibling-hub-347", "name": name})
+    register(
+        {
+            "hub_id": "sibling-hub-347",
+            "name": name,
+            "checkout": str(root),
+            "git_common_dir": str(root / ".git"),
+            "state_dir": str(sibling_state),
+            "token_file": str(tmp_path / "sibling" / "token" / "token"),
+        },
+        env,
+    )
+
+    result = _inproc_cli(monkeypatch, capsys, root, env, "up", "--agents", "bob,charlie")
+    assert result.returncode == 1
+    assert "is taken by hub sibling-hub-347" in result.stderr, result.stderr
+    # The refusal rolled the identity and binding back ...
+    assert read_hub(root) is None
+    assert read_binding(checkout_git_dir(root)) is None
+    # ... and created no agent worktrees: creation must stay after the claim.
+    worktree_root = tmp_path_worktree_root(root)
+    for agent in ("bob", "charlie"):
+        assert not (worktree_root / name / agent).exists()
+
+
 @pytest.mark.parametrize("finalized", [False, True])
 def test_status_closeout_collection(
     repository: tuple[Path, dict[str, str]],
