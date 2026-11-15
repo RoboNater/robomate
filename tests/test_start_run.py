@@ -837,8 +837,11 @@ def test_supervise_stops_remaining_launchers_when_start_fails(
         def __init__(self, code: int | None) -> None:
             self.code = code
             self.stopped = False
+            self.calls = 0
 
         def poll(self) -> int | None:
+            self.calls += 1
+            assert self.calls <= 1, "startup did not stop promptly"
             return self.code
 
     run.agents = {name: Process(1 if name == "bob" else None) for name in START.AGENTS}
@@ -859,10 +862,14 @@ def test_supervise_reports_agents_missing_at_join_deadline(
     run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
 
     class Process:
+        calls = 0
+
         def poll(self) -> None:
+            self.calls += 1
+            assert self.calls <= 1, "startup incorrectly reached normal supervision"
             return None
 
-    run.agents = dict.fromkeys(START.AGENTS, Process())
+    run.agents = {name: Process() for name in START.AGENTS}
     monkeypatch.setattr(START, "hub_status", lambda _, **kw: {"agents": [], "orchestrator": None})
     monkeypatch.setattr(START, "stop_agents", lambda _: None)
     times = iter([0.0, 0.0, 1.0])
@@ -925,10 +932,14 @@ def test_supervise_does_not_count_agent_rows_from_previous_run(
     run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
 
     class Process:
+        calls = 0
+
         def poll(self) -> None:
+            self.calls += 1
+            assert self.calls <= 1, "startup incorrectly reached normal supervision"
             return None
 
-    run.agents = dict.fromkeys(START.AGENTS, Process())
+    run.agents = {name: Process() for name in START.AGENTS}
     old = [{"name": name, "activity": {"instance": f"old-{name}"}} for name in START.AGENTS]
     run.status = {"agents": old}
     monkeypatch.setattr(START, "hub_status", lambda _, **kw: {"agents": old})
@@ -937,3 +948,33 @@ def test_supervise_does_not_count_agent_rows_from_previous_run(
     monkeypatch.setattr(START.time, "monotonic", lambda: next(times))
     assert START.supervise(run) == 1
     assert "did not join" in capsys.readouterr().out
+
+
+def test_supervise_does_not_count_orchestrator_from_previous_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    values, _ = settings("--join-window-s", "1")
+    run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
+
+    class Process:
+        calls = 0
+
+        def poll(self) -> None:
+            self.calls += 1
+            assert self.calls <= 1, "startup incorrectly reached normal supervision"
+            return None
+
+    run.agents = {name: Process() for name in START.AGENTS}
+    old_orchestrator = {"name": "alice", "session": "old-session"}
+    run.status = {"orchestrator": old_orchestrator, "agents": []}
+    rows = [{"name": name, "activity": {"instance": f"new-{name}"}} for name in ("bob", "charlie")]
+    monkeypatch.setattr(
+        START, "hub_status", lambda _, **kw: {"agents": rows, "orchestrator": old_orchestrator}
+    )
+    monkeypatch.setattr(START, "stop_agents", lambda _: None)
+    times = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(START.time, "monotonic", lambda: next(times))
+    assert START.supervise(run) == 1
+    output = capsys.readouterr().out
+    assert "alice did not join" in output and "alice.log" in output
+    assert "all agents joined" not in output

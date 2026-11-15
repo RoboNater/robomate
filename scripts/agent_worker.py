@@ -91,7 +91,6 @@ class WorkerReader(common.HubReader):
             ):
                 raise ValueError("hub.status has a malformed agent")
             self.current_agent = agent
-            self.current_orchestrator = result.get("orchestrator")
         return result
 
     def read(self) -> tuple[str, dict[str, Any] | None]:

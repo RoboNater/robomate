@@ -855,11 +855,20 @@ def supervise(run: Run) -> int:
         and isinstance(row.get("activity") or {}, dict)
         and isinstance(row.get("name"), str)
     }
+    prior_orchestrator = run.status.get("orchestrator")
+    prior_session = (
+        prior_orchestrator.get("session") if isinstance(prior_orchestrator, dict) else None
+    )
     while len(joined) < len(run.agents):
         remaining = max(0.001, deadline - time.monotonic())
         status = hub_status(run.checkout, timeout_s=remaining) or {}
         orchestrator = status.get("orchestrator")
-        if isinstance(orchestrator, dict) and orchestrator.get("name") in run.agents:
+        if (
+            isinstance(orchestrator, dict)
+            and orchestrator.get("name") in run.agents
+            and orchestrator.get("session") is not None
+            and orchestrator["session"] != prior_session
+        ):
             joined.add(orchestrator["name"])
         for row in status.get("agents", []):
             if not isinstance(row, dict) or row.get("name") not in run.agents:

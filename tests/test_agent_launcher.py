@@ -747,8 +747,18 @@ class FakeHub(WORKER.WorkerReader):  # type: ignore[misc,name-defined]
         if method == "hub.status":
             agents = result.setdefault("agents", [])
             self.current_agent = next((a for a in agents if a.get("name") == self.agent), None)
-            self.current_orchestrator = result.get("orchestrator")
         return result
+
+
+class FakeOrchestratorHub(LAUNCHER.HubReader):  # type: ignore[misc,name-defined]
+    """Use the production orchestrator reader with scripted bearer responses."""
+
+    def __init__(self, answer: Callable[[str], dict[str, Any]]) -> None:
+        super().__init__("http://127.0.0.1:9", Path("unused"))
+        self.answer = answer
+
+    def call(self, method: str) -> dict[str, Any]:
+        return self.answer(method)
 
 
 def after_launches(
@@ -1202,18 +1212,14 @@ def test_saved_join_matches_only_the_resumed_conversation() -> None:
     assert not CLI.saved_join([{"event": "joined"}], "conversation-a")
 
 
-@pytest.mark.parametrize(("bridge", "joined"), [("success", True), (None, False)])
 def test_orchestrator_resume_matches_its_recorded_join(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, bridge: str | None, joined: bool
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if bridge is None:
-        monkeypatch.delenv("FAKE_BRIDGE_JOIN", raising=False)
-    else:
-        monkeypatch.setenv("FAKE_BRIDGE_JOIN", bridge)
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
     active = {"workflow": workflow(), "agents": [], "orchestrator": {"name": "alice"}}
     done = {"workflow": workflow("done"), "agents": []}
-    hub = FakeHub(after_launches(area, active, active, done))
+    hub = FakeOrchestratorHub(after_launches(area, active, active, done))
 
     assert (
         invoke(
@@ -1226,8 +1232,8 @@ def test_orchestrator_resume_matches_its_recorded_join(
     )
 
     text = launches(area)[1]["argv"][-1]
-    assert text == CLI.continuation("alice", "orchestrator", joined=joined)
-    assert ('join(name="alice", role="orchestrator", takeover=true)' in text) == joined
+    assert text == CLI.continuation("alice", "orchestrator", joined=True)
+    assert 'join(name="alice", role="orchestrator", takeover=true)' in text
     assert "Then call get_state" in text and "On resume" in text
 
 
@@ -1240,7 +1246,7 @@ def test_orchestrator_that_never_joins_stops(
     code = invoke(
         start_words(area, "alice", "orchestrator", "claude-code"),
         programs=programs(area),
-        reader=FakeHub(after_launches(area, queued)),
+        reader=FakeOrchestratorHub(after_launches(area, queued)),
         workspace=workspace_of(area),
     )
     assert code == LAUNCHER.EXIT_NEVER_JOINED
