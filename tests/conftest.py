@@ -141,6 +141,31 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def git_ceiling_directories(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """#4, #461: keep git discovery from a test's directories off enclosing checkouts.
+
+    pytest's base temporary directory normally sits outside any checkout, but
+    a run with ``--basetemp`` inside one does not: git repository discovery
+    from a test's ``tmp_path`` — where ``isolated_cwd`` chdirs every test
+    (#461) — would then find the enclosing clone instead of stopping, and
+    subprocess tests inherit the environment. Name the base temp directory's
+    parent in ``GIT_CEILING_DIRECTORIES`` so discovery never climbs out of
+    pytest's own directories; entries the environment already sets are kept.
+    """
+
+    ceiling = str(tmp_path_factory.getbasetemp().parent)
+    previous = os.environ.get("GIT_CEILING_DIRECTORIES")
+    os.environ["GIT_CEILING_DIRECTORIES"] = (
+        f"{previous}{os.pathsep}{ceiling}" if previous else ceiling
+    )
+    yield
+    if previous is None:
+        os.environ.pop("GIT_CEILING_DIRECTORIES", None)
+    else:
+        os.environ["GIT_CEILING_DIRECTORIES"] = previous
+
+
 @pytest.fixture
 def settings(tmp_path: Path, request: pytest.FixtureRequest) -> HubSettings:
     """Test hub settings; `@pytest.mark.hub_settings(field=value)` overrides fields."""
