@@ -385,6 +385,9 @@ def test_an_unknown_forge_refuses_the_orchestrator_guide_naming_the_fix() -> Non
 
     assert raised.value.status_code == 404
     detail = str(raised.value.detail)
+    # Neutral prefix (r1-2): the same refusal serves the join and the route.
+    assert detail.startswith("orchestrator guide refused")
+    assert "join refused" not in detail
     assert "forge/orchestrator-unknown.md" in detail
     assert "`robomate up --forge github` or `robomate up --forge gitlab`" in detail
 
@@ -523,6 +526,35 @@ async def test_route_refuses_the_orchestrator_guide_for_an_unknown_forge(
     assert response.status_code == 404
     assert "forge/orchestrator-unknown.md" in response.text
     assert "robomate up --forge github" in response.text
+
+
+async def test_an_unknown_hub_refuses_the_orchestrator_guide_like_the_join(
+    settings: HubSettings,
+) -> None:
+    """#481 r1-1: no orchestrator guide on a forge-unknown hub; workers keep theirs."""
+    from agent_hub.app import create_app
+
+    hub_app = create_app(
+        replace(settings, guides_dir=CHECKED_IN_GUIDES),
+        hub_info={"forge": "unknown", "hub_id": "test-hub"},
+    )
+
+    async with (
+        hub_app.router.lifespan_context(hub_app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub_app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as client,
+    ):
+        orchestrator = await client.get("/guides/orchestrator.md")
+        worker = await client.get("/guides/worker.md")
+
+    assert orchestrator.status_code == 404
+    assert "orchestrator guide refused" in orchestrator.text
+    assert "forge/orchestrator-unknown.md" in orchestrator.text
+    assert "robomate up --forge github" in orchestrator.text
+    assert worker.status_code == 200
 
 
 async def test_two_instances_serve_identical_bytes(settings: HubSettings, guides: Path) -> None:

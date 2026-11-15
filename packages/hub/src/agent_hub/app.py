@@ -332,10 +332,14 @@ def create_app(
         # (`gitlab` gives `gitlab.md`, anything else `github.md`, matching
         # gate selection), and `?forge=` overrides it. A missing appendix for
         # the effective forge is a 404, never a guide without its commands.
+        # On a forge-unknown hub the orchestrator guide is refused like the
+        # join refuses it (#481); worker guides keep the GitHub fallback.
         if forge:
             effective_forge: str | None = forge
         elif hub_info is not None and hub_info.get("forge") == "gitlab":
             effective_forge = "gitlab"
+        elif hub_info is not None and hub_info.get("forge") == "unknown" and role == "orchestrator":
+            effective_forge = "unknown"
         else:
             effective_forge = "github"
         if not accounting.enabled:

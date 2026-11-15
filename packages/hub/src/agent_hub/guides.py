@@ -39,8 +39,9 @@ def _appendix_not_found(role: str, forge: str, appendix_name: str) -> HTTPExcept
     """
 
     if role == "orchestrator" and forge == "unknown":
+        # Neutral prefix: the same refusal serves the join and the guide route.
         detail = (
-            f"orchestrator join refused: the hub's forge is unknown and there is no "
+            f"orchestrator guide refused: the hub's forge is unknown and there is no "
             f"forge appendix forge/{appendix_name}.md; restart with "
             "`robomate up --forge github` or `robomate up --forge gitlab`"
         )

@@ -1429,6 +1429,7 @@ async def test_orchestrator_join_on_an_unknown_forge_hub_names_the_appendix_and_
     code, message = error_of(await call(client, "join", name="alice"))
 
     assert code == NOT_FOUND
+    assert message.startswith("orchestrator guide refused")
     assert "forge/orchestrator-unknown.md" in message
     assert "`robomate up --forge github` or `robomate up --forge gitlab`" in message
     assert dispatcher.orchestrator is None
