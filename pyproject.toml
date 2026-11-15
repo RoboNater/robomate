@@ -57,9 +57,6 @@ filterwarnings = [
     'error::PendingDeprecationWarning',
     # StarletteDeprecationWarning inherits UserWarning and remains report-only.
     # ResourceWarning is a separate concern (#121), outside this category policy.
-    # #210: Starlette 1.6.0 still accesses the alias; remove after an upstream fix.
-    # AnyIO's deprecated alias is accessed by starlette.testclient (stacklevel=3).
-    'ignore:^The anyio\.abc\.BlockingPortal alias is deprecated, use anyio\.from_thread\.BlockingPortal instead\.$:DeprecationWarning:^starlette\.testclient$',
 ]
 
 [tool.ruff]
