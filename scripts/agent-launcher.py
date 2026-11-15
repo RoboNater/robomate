@@ -31,8 +31,10 @@ workspace <agent> --clone`` printed there.
 ``resume`` takes the harness, role and worktree from that log, applies the
 guards of ``agent-recovery`` (predecessor stopped and detached, same hub,
 workflow taken from the hub with #223's evidence when the log predates it),
-and resumes the saved conversation with a one-line text telling the agent to
-``join`` with ``takeover=true``. ``ask`` opens a saved conversation
+and resumes the saved conversation with a fixed continuation whose join
+instruction matches that conversation: no recorded join sends the plain join
+line, while a recorded join sends a bounded ``join(..., takeover=true)`` for
+its own seat only (#512). ``ask`` opens a saved conversation
 interactively with its hub tools disabled; it needs no hub. ``--interactive``
 (#222) starts or resumes without automatic resume and still records the
 session. ``doctor`` is Denise's optional entry, separate from all of this: it
@@ -84,7 +86,7 @@ from agent_interactive import split_arguments  # noqa: E402
 from agent_recovery import agent_lock, prepare  # noqa: E402
 from agent_sessions import conversation as saved_conversation  # noqa: E402
 from agent_sessions import exact_id  # noqa: E402
-from agent_worker import WorkerLauncher, WorkerReader  # noqa: E402
+from agent_worker import WorkerLauncher, WorkerReader, telemetry_size  # noqa: E402
 from run_common import bridge_identity_env, resolve_provider  # noqa: E402
 
 ROLES = ("orchestrator", "implementer", "reviewer", "worker")
@@ -128,16 +130,35 @@ def join_line(agent: str, role: str) -> str:
     return f"Join robomate as {agent}, {role}."
 
 
-def continuation(agent: str, role: str) -> str:
-    """The fixed text every automatic or manual resume sends (#146): no state, no decision."""
+def continuation(agent: str, role: str, *, joined: bool) -> str:
+    """The fixed text every automatic or manual resume sends (#146, #512): no state, no decision.
 
-    head = (
+    ``joined`` says whether this conversation has a recorded successful join:
+    only then does the launcher ask for a takeover, and only its own seat.
+    """
+
+    fixed = (
         "Your previous harness process exited before your work was done, and the launcher "
         "has resumed this same conversation. This message is a fixed continuation: it "
         "carries no operator decision, approval, or state. Your hub tools run in a new "
-        f'bridge process: first call join(name="{agent}", role="{role}", takeover=true), '
-        "which replaces only your previous session and grants no workflow authority. "
+        "bridge process: "
     )
+    if joined:
+        head = fixed + (
+            f'first call join(name="{agent}", role="{role}", takeover=true), which replaces '
+            "only your previous session and grants no workflow authority. The hub refuses "
+            "that takeover if another session's agent holds the seat: never take over a seat "
+            "you did not hold, and if join fails with a refused takeover or a no-hub error, "
+            "report blocked and wait for the operator. "
+        )
+    else:
+        head = (
+            f"Join robomate as {agent}, {role}. "
+            + fixed
+            + "No join from this conversation is recorded, so call that plain join rather "
+            "than a takeover; never take over a seat you did not hold. If join fails with a "
+            "discovery or mismatch error, report blocked and wait for the operator. "
+        )
     if role == "orchestrator":
         return head + (
             "Then call get_state and reconcile using the returned orchestrator guide's On "
@@ -146,12 +167,18 @@ def continuation(agent: str, role: str) -> str:
             "again and do not repeat completed work. Do not end your turn until the "
             "workflow is done."
         )
+    if joined:
+        return head + (
+            "If the join response has a reattached_task, finish it and submit its result; if "
+            "it has none, or the task failed or was canceled, drop it and return to "
+            "await_assignment. Every reply must contain a tool call until await_assignment "
+            "returns release: true. Wait for CI and other work in the foreground. Do not "
+            "end your turn until await_assignment returns release: true."
+        )
     return head + (
-        "Its reattached_task is the task you still hold: finish it and submit its result; "
-        "if the task failed or was canceled, drop it and return to await_assignment. Every "
-        "reply must contain a tool call until await_assignment returns release: true. Wait "
-        "for CI and other work in the foreground. Do not end your turn until "
-        "await_assignment returns release: true."
+        "Then await your assignment with await_assignment. Every reply must contain a tool "
+        "call until await_assignment returns release: true. Wait for CI and other work in "
+        "the foreground. Do not end your turn until await_assignment returns release: true."
     )
 
 
@@ -309,10 +336,15 @@ class Identity:
     uv_cache: Path | None = None
     pytest_workers: int | None = None
     lane_tmp: Path | None = None
+    telemetry_log: Path | None = None
+    """The bridge's own JSONL (#512): the launcher reads its join rows, and the
+    bridge writes no other run data there."""
 
     def environment(self) -> dict[str, str]:
         provider = resolve_provider(self.harness, self.model)
         values = bridge_identity_env(self.harness, self.version, provider, self.model, self.effort)
+        if self.telemetry_log is not None:
+            values["HUB_TELEMETRY_LOG"] = str(self.telemetry_log)
         if self.uv_cache is not None:
             values["UV_CACHE_DIR"] = str(self.uv_cache)
         if self.pytest_workers:
@@ -332,14 +364,17 @@ class Identity:
 
         if self.harness != "codex":
             return []
-        words: list[str] = []
-        for key, value in bridge_identity_env(
+        values = bridge_identity_env(
             self.harness,
             self.version,
             resolve_provider(self.harness, self.model),
             self.model,
             self.effort,
-        ).items():
+        )
+        if self.telemetry_log is not None:
+            values["HUB_TELEMETRY_LOG"] = str(self.telemetry_log)
+        words: list[str] = []
+        for key, value in values.items():
             # A TOML string, so a version like 1.0 is never read as a number.
             words += ["-c", f"mcp_servers.robomate.env.{key}={json.dumps(value)}"]
         return words
@@ -603,6 +638,49 @@ def log_path(sessions: Path, agent: str) -> Path:
     return sessions / f"{agent}.jsonl"
 
 
+def bridge_telemetry(sessions: Path, agent: str) -> Path:
+    """The bridge's own JSONL, beside the launch log (#512).
+
+    The launcher reads it after each child to learn whether that child joined,
+    and to stop on a refused takeover or an unbound bridge. It is always an
+    absolute path, because the bridge refuses a relative ``HUB_TELEMETRY_LOG``.
+    """
+
+    return (sessions / f"{agent}-bridge.jsonl").resolve()
+
+
+def telemetry_rows(path: Path, offset: int) -> list[dict[str, Any]]:
+    """Rows appended to ``path`` after ``offset``; partial or malformed lines are skipped.
+
+    Like ``agent_worker.released``: a line still being written, or one that is
+    not a JSON object, is not evidence either way.
+    """
+
+    try:
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read()
+    except FileNotFoundError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def saved_join(rows: list[dict[str, Any]], conversation: str | None) -> bool:
+    """Whether ``conversation`` has a recorded successful join (#512)."""
+
+    return conversation is not None and any(
+        row.get("event") == "joined" and row.get("conversation_id") == conversation for row in rows
+    )
+
+
 def saved_rows(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -666,20 +744,24 @@ def set_aside(path: Path, harness: str) -> None:
 class Joined(common.Launcher):
     """What a joined agent's supervision changes in the prepared launchers.
 
-    The prompt is the join line, every resume tells the agent to join with
-    takeover, rows carry the role, the run ID and the launch settings, and a
-    finished earlier run on the hub is never pinned at start.
+    The first prompt is the join line. A resume's continuation asks for a
+    takeover only when this conversation has a recorded join (#512); each
+    child's bridge telemetry tells the launcher which. Rows carry the role,
+    the run ID and the launch settings, and a finished earlier run on the hub
+    is never pinned at start.
     """
 
     role = "worker"
     run_id: str | None = None
     launched = False
+    joined = False
 
     def setup(self, args: argparse.Namespace) -> None:
         self.agent = args.agent
         self.role = args.role
         self.orchestrator = args.role == "orchestrator"
-        self.continue_prompt = continuation(args.agent, args.role)
+        self.joined = False
+        self.continue_prompt = continuation(args.agent, args.role, joined=False)
 
     def resume_name(self) -> str:
         return f"agent-launcher.py resume {self.agent}"
@@ -691,7 +773,52 @@ class Joined(common.Launcher):
         text = join_line(self.agent, self.role)
         return common.text_launch(self.harness, self.base, text, self.conversation or "")
 
+    def bridge_log(self) -> Path:
+        return bridge_telemetry(self.args.sessions.parent, self.agent)
+
+    def scan_join(self, offset: int) -> None:
+        """Learn from the bridge's own rows whether this child joined (#512).
+
+        A successful join makes later resumes a takeover of this conversation's
+        own seat. A refused takeover, or a bridge with no hub, is terminal: the
+        launcher stops instead of re-taking a seat it does not hold.
+        """
+
+        for row in telemetry_rows(self.bridge_log(), offset):
+            if row.get("event") != "tool_call" or row.get("tool") != "join":
+                continue
+            phase = row.get("phase")
+            if phase == "success":
+                if not self.joined:
+                    self.joined = True
+                    self.log("joined")
+            elif phase == "error":
+                error = row.get("error")
+                if not isinstance(error, str):
+                    continue
+                if "takeover refused:" in error:
+                    self.log("takeover_refused")
+                    raise common.Stop(
+                        common.EXIT_CANNOT_RESUME,
+                        "takeover_refused",
+                        "the resumed join was refused: another session's agent holds this "
+                        "seat. The launcher stopped instead of retrying the takeover; report "
+                        "blocked and wait for the operator.",
+                    )
+                if "this robomate bridge has no hub" in error:
+                    self.log("no_hub")
+                    raise common.Stop(
+                        common.EXIT_CANNOT_RESUME,
+                        "no_hub",
+                        "the bridge reported no hub and will not choose one. The launcher "
+                        "stopped; report blocked and wait for the operator.",
+                    )
+
     def manual_resume_text(self) -> str:
+        """The manual resume's text, matching this recorded conversation (#512)."""
+
+        self.joined = saved_join(saved_rows(self.args.sessions), self.conversation)
+        self.continue_prompt = continuation(self.agent, self.role, joined=self.joined)
         return self.continue_prompt
 
     def log(self, event: str, **fields: object) -> None:
@@ -708,7 +835,11 @@ class Joined(common.Launcher):
 
     def run_child(self, launch: common.Launch, action: str, resumes: int) -> int:
         self.launched = True
-        return super().run_child(launch, action, resumes)
+        offset = telemetry_size(self.bridge_log())
+        code = super().run_child(launch, action, resumes)
+        self.scan_join(offset)
+        self.continue_prompt = continuation(self.agent, self.role, joined=self.joined)
+        return code
 
     def read_hub(self) -> dict[str, Any] | None:
         pinned = self.workflow_id
@@ -1069,6 +1200,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         Path(args.uv_cache_dir).resolve() if args.uv_cache_dir else None,
         args.pytest_workers,
         Path(args.lane_tmp_dir).resolve() if args.lane_tmp_dir else None,
+        bridge_telemetry(place.sessions, args.agent),
     )
     identity.prepare()
     granted = grants(args.harness, workdir, place.token_file, identity.uv_cache)
@@ -1166,16 +1298,26 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         )
     program = program_for(tools, harness)
     flags = model_flags(harness, model, effort, interactive=args.interactive)
-    identity = saved_identity(saved, harness, model, effort)
+    identity = replace(
+        saved_identity(saved, harness, model, effort),
+        telemetry_log=bridge_telemetry(place.sessions, args.agent),
+    )
     identity.prepare()
     granted = grants(harness, workdir, place.token_file, identity.uv_cache)
     granted += identity.bridge_flags()
     granted += hub_flags(harness, place)
+    rows = saved_rows(log)
+    conversation = (args.resume_session or "").strip() or None
+    if conversation is None:
+        ids = {
+            row["conversation_id"] for row in rows if isinstance(row.get("conversation_id"), str)
+        }
+        conversation = next(iter(ids)) if len(ids) == 1 else None
+    text = continuation(args.agent, role, joined=saved_join(rows, conversation))
     # The operator's record of what recovery captured; the agent is never pointed at it.
     record = place.sessions / f"{args.agent}-resume.md"
     record.write_text(
-        f"# Recovery record for {args.agent}\n\n"
-        f"Sent to the agent: {continuation(args.agent, role)}\n",
+        f"# Recovery record for {args.agent}\n\nSent to the agent: {text}\n",
         encoding="utf-8",
     )
     recovery = {
@@ -1220,10 +1362,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 )
             )
             announce(harness, args.safe_mode, extra)
-            print(
-                f"Send this once the conversation is open: {continuation(args.agent, role)}",
-                flush=True,
-            )
+            print(f"Send this once the conversation is open: {text}", flush=True)
             row = {
                 "agent": args.agent,
                 "harness": harness,

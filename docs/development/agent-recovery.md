@@ -84,15 +84,20 @@ is never pinned; a worker released in an earlier run is not treated as
 released until its new session is.
 
 Every automatic resume sends one fixed continuation, which carries no state
-or decision: call `join` with the agent's name, role and `takeover=true`
-first; then an orchestrator calls `get_state` and follows On resume, and a
-worker finishes its reattached task or returns to `await_assignment`. Because
-takeover supersedes a bridge the exited harness left behind and keeps its
-task, an automatic resume does not wait for that bridge to become lost, as
-the prepared worker launcher does. The launcher stops on `done` or the
-worker's release (0), spent resumes (1), an unreadable or different hub or
-workflow (3), nothing safe to resume (4), a pause (5) or Ctrl-C (130), and
-then names `agent-launcher.py resume <agent>`.
+or decision. Its join instruction matches the conversation (#512): one with
+no recorded join is told to call the plain join line, while one that joined is
+told to call `join` with its name, role and `takeover=true` for its own seat
+only, and to report blocked if that takeover is refused. Then an orchestrator
+calls `get_state` and follows On resume, and a worker finishes a reattached
+task if there is one or returns to `await_assignment`. The launcher learns
+which from the bridge's own `sessions/<agent>-bridge.jsonl` after each child.
+Because takeover supersedes a bridge the exited harness left behind and keeps
+its task, an automatic resume does not wait for that bridge to become lost, as
+the prepared worker launcher does. A refused takeover or an unbound bridge
+ends the launcher (exit 4) instead of trying the seat again. The launcher
+stops on `done` or the worker's release (0), spent resumes (1), an unreadable
+or different hub or workflow (3), nothing safe to resume (4), a pause (5) or
+Ctrl-C (130), and then names `agent-launcher.py resume <agent>`.
 
 ### Resuming by hand
 
@@ -111,7 +116,7 @@ existed takes the workflow from the hub only with #223's evidence. The same
 options apply: `--resume-session`, `--hub-id`, `--workflow-id`,
 `--stopped-at`, `--confirm-stopped`, `--force`. What recovery captured is
 kept for the operator in `sessions/<agent>-resume.md`; the agent receives
-only the one-line continuation, never a path into the hub's state. After the
+only the fixed continuation, never a path into the hub's state. After the
 first launch, supervision continues with a fresh backoff budget.
 
 ### Asking an agent
