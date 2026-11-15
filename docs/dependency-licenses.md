@@ -98,7 +98,7 @@ licenses.
 ## Inventory (generated)
 
 <!-- generated-inventory -->
-Lock SHA256: `b1a85859eedbd470e261a57d6475b074dca84dca310c8e1522118fff43d61934`. Artifact and notice digests, metadata,
+Lock SHA256: `2c74e51aadcce5ce34b7fe889b50cfcd668997d3017caef54e48e28c71a60596`. Artifact and notice digests, metadata,
 markers, and every runtime/dev graph path are in
 [dependency-license-facts.json](dependency-license-facts.json).
 
@@ -134,7 +134,7 @@ markers, and every runtime/dev graph path are in
 | jsonschema-specifications | 2025.9.1 | runtime | 2 / 2 | permissive |
 | jsonschema | 4.26.0 | runtime | 2 / 2 | permissive |
 | librt | 0.15.0 | dev | 19 / 94 | permissive |
-| mcp | 1.29.1 | runtime | 2 / 2 | permissive |
+| mcp | 1.30.0 | runtime | 2 / 2 | permissive |
 | mypy-extensions | 1.1.0 | dev | 2 / 2 | permissive |
 | mypy | 1.20.2 | dev | 14 / 30 | permissive |
 | packaging | 26.3 | dev | 2 / 2 | permissive |
@@ -163,7 +163,7 @@ markers, and every runtime/dev graph path are in
 | rpds-py | 2026.6.3 | runtime | 19 / 89 | permissive |
 | ruff | 0.16.5 | dev | 4 / 18 | permissive |
 | sse-starlette | 3.4.8 | runtime | 2 / 2 | permissive |
-| starlette | 1.6.0 | runtime | 2 / 2 | permissive |
+| starlette | 1.10.0 | runtime | 2 / 2 | permissive |
 | truststore | 0.10.5 | dev | 2 / 2 | permissive |
 | typing-extensions | 4.16.0 | dev, runtime | 2 / 2 | permissive |
 | typing-inspection | 0.4.4 | runtime | 2 / 2 | permissive |
@@ -244,10 +244,10 @@ review_date = "2026-10-12"
 name = "agent-hub"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "2bea10884f3ca95ecef353a5b9abff232cedce4e74f041fcceb0bc004bfa5490"
-renewal_fingerprint = "56d324b708b00450c7c7f072e8c72a51988674e936fa381e843a77a588d28c37"
+fingerprint = "c72a359f1bf252941cae1c7b3980734a0ad0ba72fdc5250707cf99ba61eb4927"
+renewal_fingerprint = "07b37bcc1caed6122b1e478913d2f0407c491020d2e8ca3af62faf1e817b5b68"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-11-15"
 
 [[review]]
 name = "annotated-doc"
@@ -725,12 +725,12 @@ review_date = "2026-10-12"
 
 [[review]]
 name = "starlette"
-version = "1.6.0"
+version = "1.10.0"
 expression = "BSD-3-Clause"
-fingerprint = "ddeb0e26ebe2c2ddf4a61da7daa8ef170a4aa13781287cbe7aef1b5ed1bbec67"
-renewal_fingerprint = "67b35e7625587002aee44b340b4aebfe55bc51d2ffe48a10c4f5d30b78553c29"
+fingerprint = "16cadad098fc37d0bf8efaf98c42f98c1f377510565d17b5a9e2345cfc1d11bd"
+renewal_fingerprint = "d5c98da7ecaa026739bd9e9f4613add8d807adb66b8d8d83d5505c49975aeff7"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-11-15"
 
 [[review]]
 name = "typing-extensions"
@@ -773,10 +773,10 @@ review_date = "2026-10-12"
 name = "worker-mcp"
 version = "0.1.0"
 expression = "MIT"
-fingerprint = "536299c3989dce5fd86ac1d3fa0ad6d7a096a176514361b8fb0a955f6038cba6"
-renewal_fingerprint = "f9ff7e50062d975f5703ab2c8bb81b63b0c5fbb80f81e7198f8a5228e6eb1f77"
+fingerprint = "28ed461bda18684e78743ea0f5c79189df691ed7f83475df9a28b9f62cd03e96"
+renewal_fingerprint = "f064086660cd8fa39a06a6ff5e9763566b405e6cc8502b729916bdb72332295e"
 reviewer = "Implementation agent bob on behalf of RoboNater"
-review_date = "2026-10-12"
+review_date = "2026-11-15"
 
 [[review]]
 name = "httpcore2"
@@ -835,6 +835,11 @@ review_date = "2026-10-17"
 ```
 
 ## Review log
+
+2026-11-15 — Implementation agent bob on behalf of RoboNater reviewed MCP 1.30.0
+(MIT; unchanged renewal evidence), Starlette 1.10.0 (BSD-3-Clause; matching
+sdist and wheel notices and metadata), and the MIT workspace packages whose
+dependency bounds changed. No exception evidence or reachability changed.
 
 2026-11-13 — Maintenance agent (deepseek-v4.1-flash in opencode) on behalf of
 RoboNater renewed the certifi MPL-2.0 exception for 2026.10.23, which the owner
