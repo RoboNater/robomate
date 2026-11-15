@@ -4212,7 +4212,13 @@ def test_up_with_agents_partway_failure_leaves_reusable_worktrees(
     (blocked / "placeholder").write_text("not a worktree", encoding="utf-8")
 
     failed = start(root, env, "--agents", "bob,charlie")
-    wait_until_sync(lambda: failed.poll() is not None, "the blocked `up --agents` exits")
+    try:
+        wait_until_sync(lambda: failed.poll() is not None, "the blocked `up --agents` exits")
+    finally:
+        # If a regression made this `up` serve, the wait above times out and
+        # the hub would outlive the test (#145): stop it.
+        if failed.poll() is None:
+            stop(root, env, failed)
     printed = _hub_stdout(failed)
     err = _hub_stderr(failed)
     assert failed.returncode == 1, err
@@ -4325,8 +4331,6 @@ def test_up_with_agents_partway_failure_leaves_reusable_worktrees(
 def test_up_with_agents_creates_no_worktrees_when_registry_refuses(
     repository: tuple[Path, dict[str, str]],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#347: a first `up --agents` refused by the registry creates no worktrees.
 
@@ -4336,6 +4340,9 @@ def test_up_with_agents_creates_no_worktrees_when_registry_refuses(
     `register`, a first `up` failing at the registry claim would leave locked
     worktrees bound to a `hub_id` nothing recorded. The refusal is triggered
     for real: a sibling hub of the same repository holds the derived name.
+    The `up` runs in a subprocess like every lifecycle call (#145): a
+    regression that got past the claim would otherwise serve in-process, and
+    instead the wait below fails with its diagnostics.
     """
 
     from agent_hub_common.discovery import derive_hub_name
@@ -4349,7 +4356,7 @@ def test_up_with_agents_creates_no_worktrees_when_registry_refuses(
         {
             "hub_id": "sibling-hub-347",
             "name": name,
-            "checkout": str(root),
+            "checkout": str(tmp_path / "sibling"),
             "git_common_dir": str(root / ".git"),
             "state_dir": str(sibling_state),
             "token_file": str(tmp_path / "sibling" / "token" / "token"),
@@ -4357,9 +4364,17 @@ def test_up_with_agents_creates_no_worktrees_when_registry_refuses(
         env,
     )
 
-    result = _inproc_cli(monkeypatch, capsys, root, env, "up", "--agents", "bob,charlie")
-    assert result.returncode == 1
-    assert "is taken by hub sibling-hub-347" in result.stderr, result.stderr
+    failed = start(root, env, "--agents", "bob,charlie")
+    try:
+        wait_until_sync(lambda: failed.poll() is not None, "the refused `up --agents` exits")
+    finally:
+        # If a regression made this `up` serve, the wait above times out and
+        # the hub would outlive the test (#145): stop it.
+        if failed.poll() is None:
+            stop(root, env, failed)
+    err = _hub_stderr(failed)
+    assert failed.returncode == 1, err
+    assert "is taken by hub sibling-hub-347" in err, err
     # The refusal rolled the identity and binding back ...
     assert read_hub(root) is None
     assert read_binding(checkout_git_dir(root)) is None
