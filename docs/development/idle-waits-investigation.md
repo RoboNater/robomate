@@ -1,11 +1,12 @@
 # Idle waits investigation (#497)
 
-Status: **proof-of-concept trials done; document not finished.** This part
-covers item 3 of the
+Status: **investigation complete, with evidence gaps stated below.** This
+document answers the five questions in the
 [rescoping comment](https://github.com/RoboNater/robomate/issues/497#issuecomment-6858579820)
-(trials on each harness on the host) and the investigation needed to run
-them. A regular robomate run finishes the rest. What that run still owes is
-marked **TODO (run)** and collected under [Left for the run](#left-for-the-run).
+and the [remaining-work direction](https://github.com/RoboNater/robomate/issues/497#issuecomment-6932162903).
+It preserves the completed trials and adds a code audit and recommendations;
+it changes no production wait behavior. Missing historical logs and the
+operator-only measurements are recorded under [Evidence limits](#evidence-limits).
 
 The question: can an idle agent hold `await_assignment` / `wait_for_event`
 for much longer than the 100 s the guides fix today, so that an idle wait
@@ -18,13 +19,13 @@ copy of the code and a separate config per harness
 ([Trial setup](#trial-setup)). Nothing on `main` changed. The scripts are in
 [`scripts/development/idle-waits-investigation/`](../../scripts/development/idle-waits-investigation/README.md).
 
-1. **Every harness on the host completed a 30-minute hold** of both
-   `await_assignment` and `wait_for_event` in the mode the launcher uses, once
-   its own limit was raised, with one exception: Claude Code needs one more
-   setting to go past 30 minutes (finding 3). The model call after the hold
-   succeeded every time. The 30-minute worker hold was run three times on
-   Codex, OpenCode and Antigravity, and Claude Code held 1500 s twice more;
-   all completed.
+1. **Codex, OpenCode and Antigravity completed 30-minute holds** of both
+   `await_assignment` and `wait_for_event` with their client limits raised.
+   The worker hold was run three times on each. Claude Code print mode held
+   1500 s twice and completed one 1800 s worker hold, but its 1800 s
+   orchestrator hold raced the idle timeout and failed. With a setting or
+   bridge notifications it held beyond 1800 s (finding 3). Models continued
+   after the successful holds.
 2. **Each harness has a different limit when nothing is set, and the shipped
    330 s settings fail a 600 s hold at 330 s:**
 
@@ -75,6 +76,11 @@ copy of the code and a separate config per harness
    closeout request arrives. `robomate down` mid-hold ends it in 2–5 s with a
    transport error, and the same bridge works again once the hub is back
    ([Interactions](#4-interactions)).
+10. **Long holds expose missing wakeups.** Closeout deadline expiry does not
+    end an inbox hold. Loss and concurrent result submission do not wake a
+    held task-reply wait; instance replacement also needs in-flight stream
+    fencing. The [wakeup audit](#wakeup-audit) separates confirmed scratch
+    probes from code-only findings. These need attention before raising waits.
 
 ## 1. History: why 100 s
 
@@ -110,15 +116,35 @@ copy of the code and a separate config per harness
   `timeoutSeconds: 330` were chosen to match
   ([`docs/harness-investigation-opencode-antigravity.md`](../harness-investigation-opencode-antigravity.md)).
 
-So the only failure ever seen in a run with a longer wait is Claude Code's
-backgrounding at 120 s. The 300 s Codex limit was found by probing.
+The historical sources establish a live Claude Code backgrounding failure,
+not a universal 120 s timeout. [robo-agents#109](https://github.com/RoboNater/robo-agents/issues/109)
+names the affected #101 run, and the [PR #111 live check](https://github.com/RoboNater/robo-agents/pull/111)
+records the background task ID `k7ri9h1na` for 120 s and a foreground timeout
+at 100 s in the same session. [robo-agents#112](https://github.com/RoboNater/robo-agents/issues/112)
+explicitly says the margin was unmeasured. Searching the earlier repository's
+issue titles for `wait` and `timeout`, and reading the PoC spec and lessons,
+found no additional earlier MCP hold-timeout incident. Codex's 300 s timeout
+was a probe result, as the PoC spec §8 records, rather than a reported run
+failure. This search does not prove that no other incident occurred.
 
-**TODO (run):** read the run logs of #259 and #267 (not only the PR text) for
-any wait incident, and any earlier robo-agents issue about wait timeouts.
+**#259/#267 log availability.** The archived run logs could not be read:
+Alice checked the run archive on this host and reported the older lanes
+deleted; the temporary smoke directories in the PR comments are gone too.
+Issues #238/#239 and PRs [#259](https://github.com/RoboNater/robomate/pull/259)
+and [#267](https://github.com/RoboNater/robomate/pull/267) expose no raw-log
+links. Their bodies, review comments and git changes were checked instead.
+#259 explicitly preserves the 100 s invariant. Its `join_via_mcp` 60 s smoke
+timeout came from launching a module that exited without running the CLI,
+not from a held MCP call. #267's failures concern prepared-session takeover,
+tool allowlists and cp1252 output; none establishes a new hold-time limit.
+Thus there is no new wait incident in the available summaries, but the
+missing transcripts prevent confirming that for the full runs.
 
 ## 2. Limits on a single hold, layer by layer
 
-Line numbers are at `8ce2df5`.
+All production code/config line numbers in this document refer to current
+`main` at [`8ce2df5e812ba85514985e4e0d142f5214c2881d`](https://github.com/RoboNater/robomate/tree/8ce2df5e812ba85514985e4e0d142f5214c2881d).
+The investigation branch adds only this document and scratch trial tooling.
 
 ### Guides and prompts
 
@@ -127,8 +153,8 @@ Line numbers are at `8ce2df5`.
 | `guides/orchestrator.md:35` | `wait_for_event(timeout_s=100)` |
 | `guides/worker.md:18-20`, `prompts/worker.md:22` | `await_assignment(timeout_s=100)`; "Keep holds under 120 s: Claude Code backgrounds any tool call still running at 120 s." |
 | `guides/worker.md:297-298`, `prompts/worker.md:301-302` | `ask_orchestrator` / `ask_alice` with `timeout_s=100` |
-| `scripts/prepare-run.py` `prompt_sections` | Claude Code agents are told "Use a 100 second wait time for all hub waits" |
-| `tests/test_worker_config.py` (#12) | asserts all of the above are `<= MAX_HOLD_DEFAULT_S` (100) |
+| `scripts/prepare-run.py:731-785` `prompt_sections` | Claude Code and Devin agents are told "Use a 100 second wait time for all hub waits" |
+| `tests/test_worker_config.py:195-261` (#12) | pins the worker/schema defaults and literals in the three guides at `<= MAX_HOLD_DEFAULT_S` (100); also requires literals to exist. It does not inspect `prompt_sections` |
 
 ### Worker path (`await_assignment`, `ask_orchestrator`)
 
@@ -136,7 +162,7 @@ Line numbers are at `8ce2df5`.
 |---|---|---|
 | MCP tool schema | `timeout_s` at most **300**; above it the bridge rejects the call with a validation error | `Timeout` in `packages/worker_mcp/src/worker_mcp/tools.py:24` |
 | Bridge default when `timeout_s` is omitted | **100 s**, or `HUB_DEFAULT_WAIT_S` from the bridge's environment (trialled: unset held 100.0 s, `HUB_DEFAULT_WAIT_S=40` held 40.0 s) | `worker_mcp/config.py:22,131`; `client.py:1161` |
-| Bridge → hub HTTP read timeout | hold + 15 s | `client.py` `_stream_rpc` |
+| Bridge → hub HTTP read timeout | hold + 15 s | `client.py:377-404` `_stream_rpc` |
 | Hub clamp | `min(requested, max_wait_s)`; `max_wait_s` is `HUB_MAX_WAIT_S`, default 2.5 × `HUB_DEFAULT_WAIT_S` = **300 s** | `agent_hub_common/config.py:205-209,270-271`; `protocol.py:1083-1089` |
 | Hub activity hold | requested timeout + `HOLD_GRACE_S` (30 s) | `activity.py:150-157,219` |
 
@@ -149,8 +175,8 @@ talks to the hub without the bridge, because the bridge always sends a number.
 |---|---|---|
 | MCP tool schema | `timeout_s` at most **120**, default 100 | `Timeout` in `agent_hub_common/orchestrator_tools.py:17,124` |
 | Bridge → hub HTTP read timeout | `timeout_s` + 15 s (75 s for every other call) | `worker_mcp/orchestrator.py:147` |
-| Hub clamp | none: `store.wait_for_event` uses the value as given, and `HUB_MAX_WAIT_S` does not apply | `hub/orchestrator.py:154`, `store.py:3698` |
-| Hub activity hold | `min(timeout_s, 120)` + `HOLD_GRACE_S` | `rpc.py` `_hold_s` (line 690) |
+| Hub clamp | none: `store.wait_for_event` uses the value as given, and `HUB_MAX_WAIT_S` does not apply | `agent_hub/orchestrator.py:153-157`, `store.py:3698-3713` |
+| Hub activity hold | `min(timeout_s, 120)` + `HOLD_GRACE_S` | `rpc.py:691-703` `_hold_s`; `activity.py:219-220` |
 
 The issue body and its scope addition give the bridge bound as 300 for both
 tools. For the orchestrator it is 120, in two places.
@@ -166,9 +192,10 @@ harness does with no setting, measured in the trials.
 | Codex | 300 s | `tool_timeout_sec = 330` | `runtimes/codex.config.toml:11`; `scripts/run_common.py:383,513`; `scripts/prepare-run.py:3217`; static entry |
 | OpenCode | 60 s | `"timeout": 330000` | `runtimes/opencode.json:31`; `run_common.render_opencode_config`; static entry |
 | Antigravity | 180 s | `"timeoutSeconds": 330` | `runtimes/antigravity.mcp.json:38`; `run_common.render_antigravity_mcp`; static entry |
-| Devin | not installed on the trial host | not checked (operator-only) | `run_common.render_devin_mcp` |
+| Devin | not installed on the trial host; timeout unmeasured | renderer supplies no timeout; prepared prompt says 100 s | `run_common.py:589-595`; `prepare-run.py:781-785` |
 
-`scripts/check-mcp-tools.py` reads none of these timeouts.
+`scripts/check-mcp-tools.py:50-147` checks bridge discovery/tool parity, not
+these timeout values (its own subprocess timeouts are unrelated).
 
 Claude Code has four separate mechanisms. The descriptions come from strings
 in the installed 2.1.325 binary; "trialled" marks what a trial confirmed.
@@ -442,9 +469,12 @@ wait_for_event` / state `holding` until 150 s, then `idle` with `silence_s`
 climbing while the call is still held. At 1200 s the hub opened a
 `stall_episode` row (`role: orchestrator`, `reasons: ["no_hub_call"]`), and
 closed it as `recovered` when the hold returned. This happened on all five
-orchestrator hubs. `stall_action_after_min` was 0, so no operator question
-was raised; with it set, a long hold would raise one. With `_hold_s`
-uncapped, the same 30-minute hold showed `holding` throughout and no episode.
+orchestrator hubs. No operator question was raised. Setting
+`stall_action_after_min` would not escalate this orchestrator episode either:
+`store.py:4547-4550` selects only **worker** episodes for automatic action.
+With `_hold_s` uncapped, the same 30-minute hold showed `holding` throughout
+and no episode. The false orchestrator diagnosis still matters even without
+automatic escalation.
 
 **Arrivals mid-hold.** Each ended a 600 s hold within 0.1 s of the trigger:
 
@@ -459,17 +489,93 @@ A hold waits on a signal only (`store._wait_for`): it re-reads state when
 notified or when a delivery lease expires, and otherwise not until its
 timeout. With 100 s waits, a state change that forgot to notify was picked up
 within 100 s. With long waits it would be picked up that much later.
-**TODO (run):** check every state change that should end a hold against the
-`signals.notify` calls in `store.py` and `closeout.py`.
 
-**Event leases.** A delivered event is leased for `HUB_EVENT_LEASE_S` (600 s)
-and acknowledged by the next `wait_for_event(ack=...)`. The lease clock runs
-while the orchestrator handles the event, not while she holds, so hold length
-does not change it. Not exercised beyond the code reading. **TODO (run).**
+### Wakeup audit
 
-**Closeout deadlines.** A closeout request wakes idle workers at once (above).
-An orchestrator's own hold across a closeout deadline was not trialled.
-**TODO (run).**
+The three predicates are assignment/release/held-task change/closeout request
+(`store.py:3571-3675`), reply or terminal task (`3677-3696`), and an eligible
+event (`3698-3713`). `_wait_for` subscribes **before** reading, clears the
+flag before each read, and reads again on timeout (`3542-3569`);
+`signals.py:63-98` makes cross-thread notifications safe. A write must use
+the same store's `Signals`. The audit follows every writer of those predicates;
+an arbitrary DB update is not a supported wakeup path.
+
+| State change | Notification after commit (main line numbers) | Held call affected |
+|---|---|---|
+| Assignment | `store.py:2805`, context key | NEXT claims submitted task immediately |
+| Explicit release; run done with `on_done: release` and no queued run | `2588`; `1813-1816`, context keys | NEXT returns release |
+| Question opened; valid reply | `2955-2956`, event + context; `3034-3035`, task + context | Inbox sees question; repeated NEXT sees input-required/reply; reply hold returns answer |
+| Manual task fail/cancel; A2A task cancel | `2195-2196`; `3267-3269`, task + context | Reply hold ends; repeated NEXT rechecks ended task |
+| Result submission | `3247-3248`, event + context | Inbox sees result; NEXT rechecks. **No task-key notification** for an already-held reply wait |
+| Worker loss, including failure of its open task | `3836-3842`, event + context; terminalization at `3889-3902` | Inbox sees loss; NEXT rechecks. **No task-key notification** for an already-held reply wait |
+| Check-in/rejoin/takeover | `2453`, event key | Inbox sees agent and changed membership. No context/task wake for a superseded in-flight worker hold; replacement's own NEXT reads immediately |
+| Progress, operator answer, explicit appended event | `2906`, `2105`, `3406`, event key | Inbox returns event |
+| New submitted workflow; activation of queued run | `1149`; `1811`, event key | Inbox rechecks; submission queues `work_submitted` when `emit_work_submitted` is set; activation alone adds no new event |
+| Host-pause detection; lease expiry/loss sweep; emitted worker-stall/action events | `3805`; `3836`; `4533-4534`, event key | Inbox returns the diagnostic event; an orchestrator stall episode alone intentionally emits no event |
+| Event leases explicitly expired (takeover/session cleanup) | `3511-3512`, event key when any row changed | Inbox can redeliver immediately |
+| First closeout request; accepted closeout report | `closeout.py:256-258`, worker context keys; `357`, event key | Idle NEXT receives request; inbox receives report. Idempotent retries introduce no new state |
+| Closeout window expires, pauses/shifts, finalizes; membership loss/release/rejoin | `closeout.py:114-141,408-471` and store lifecycle callers | No dedicated deadline event or signal; loss/rejoin already notify inbox, release notifies NEXT, done releases workers as above |
+
+Heartbeat renewal, detach, ack, decisions, escalation/withdrawal and pause
+alone do not create an assignment, a reply or an inbox event. Their absence
+of notification does not hide a newly queued event. Task-lease expiry emits
+`lease_expired` but does not terminalize the task (`store.py:3845-3872`);
+the worker continues until Alice acts. Pauses and clock-jump handling shift
+task/closeout deadlines; they must not be replaced with fixed wall timers.
+
+Two gaps matter before lengthening holds. `await_reply` checks *all*
+terminal states, but result submission and the loss sweep do not notify its
+task key. A concurrent result or a lost bridge with a still-open HTTP hold
+therefore waits until its timeout to report `task_ended`. Likewise,
+check-in replaces a worker instance without waking an older hold on the
+same context; its poll looks up the worker by name, not by original instance.
+Review cancellation/fencing of these in-flight streams before extending
+their lifetime (`protocol.py:974-1020,1134-1138` checks the instance on entry,
+not after the assignment wait). These are audit findings, not claims that
+the normal serial worker loop performs concurrent calls.
+
+**Event leases.** `HUB_EVENT_LEASE_S` defaults to 600 s
+(`agent_hub_common/config.py:192,319`). `wait_for_event(ack=...)` acks the
+previous delivery **before** opening the hold (`store.py:3706-3707`), so a
+properly acknowledged event is not left leased throughout that idle wait.
+Handling an event for more than 600 s can still produce a late ack warning;
+the latest delivery ID is accepted even after expiry (`3409-3447`). Raising
+the hold duration is not a reason by itself to raise the lease duration.
+
+If an event is unacked, `lease_next_event` can redeliver it after expiry,
+minting a new ID and invalidating the old ack (`3449-3488`). The inbox wait
+has a dynamic wake time for the earliest delivered-event expiry
+(`3529-3540,3712`), even with no signal. Thus a 1800 s hold missing its ack
+can return an old event at 600 s. Session takeover explicitly expires leases
+and notifies, without touching task leases. Host-resume grace postpones
+redelivery (`3461-3474,3540`). These conclusions are from code and the
+existing store tests, not a new long-harness trial.
+
+**Closeout deadlines.** First request wakes idle workers promptly; open
+work takes precedence (`store.py:3643-3664`). Reports wake Alice's inbox,
+and loss does too. But expiry is lazy: `_expire` is invoked by report
+submission/read, worker `pending`, or finalization (`closeout.py:128-141,
+315,375,421,445`), not by a timer in the sweeper. No expiry event is queued.
+`wait_for_event` schedules only event-delivery expiry, not collection expiry.
+If one live worker never reports and no other event arrives, a long inbox
+hold can run past the collection deadline until the requested timeout; only
+the subsequent `get_closeout_reports` shows `deadline_expired`.
+
+An isolated in-process scratch probe confirmed this at main: with a frozen
+300 s collection window and an inbox hold subscribed, advancing both clocks
+by 301 s, refreshing the worker heartbeat, sweeping and reading reports
+produced `deadline_expired` with **no notification**; the inbox remained
+held. Appending a control event released it immediately. Two further probes
+confirmed that loss and concurrent result submission terminalize a task
+without waking its held reply; notifying the task key then released each.
+These used temporary databases only, no harnesses or listening hubs.
+
+Before extending inbox waits, either bound each closeout wait by the
+remaining, pause-aware collection window and re-read the reports, or add a
+hub timer outcome/event that actually ends the call. Merely adding a
+`next_timeout` poll to `_wait_for` is insufficient: its event predicate would
+still find no event and go back to sleep. Re-read after a pause/resume or
+host-pause deadline shift. Progress notifications alone cannot fix this.
 
 **`robomate down` during a hold.** Stopped 40 s into 600 s holds:
 
@@ -488,69 +594,158 @@ does not wait for a restarted hub, so an agent sees the error and must call
 again. `robomate down` returned before the hub process had exited; an
 immediate `robomate up` answered "hub already running" and exited.
 
-## 5. Inputs for the recommendation
+## 5. Recommendation and proposed work
 
-Section 5 of the rescoping comment (what a change needs, unknowns, proposed
-issues) is **TODO (run)**. The owner's direction for it (2026-11-16):
+Use **per-harness profiles**, including the harness mode, rather than a common
+hold below the lowest client limit. Roll out Codex's polling instruction first;
+then extend actual holds only after the activity, deadline and wakeup paths
+above are covered. The existing trial results justify this direction, not an
+unconditional guarantee for all versions, providers or operating systems.
 
-- **Per-harness hold lengths**, not one value under every harness's limit.
-- **Codex polling:** an instruction in the served guide, if the guide can
-  carry per-harness text; otherwise a launcher prompt line. Not the
-  undocumented `[features.code_mode]` keys.
-- **A bridge change is acceptable** where it is necessary or adds
-  substantial value.
+### Proposed hold profiles
 
-On the guide: `packages/hub/src/agent_hub/guides.py` composes by role and
-forge only. There is no per-harness composition. Harness-specific text exists
-as inline sentences in the shared guides (for example "For Codex tools that
-return retained command sessions" in `guides/worker.md`) and as the prompt
-lines `scripts/prepare-run.py` adds per harness. The hub knows each agent's
-harness from `join`. So the choices are an inline "On Codex" paragraph, a new
-per-harness appendix or join-response value, or the launcher prompt line.
+These are initial implementation targets for a follow-up, not settings shipped
+by this PR. All apply to NEXT, question waits and the orchestrator inbox, with
+a **shorter wait when a workflow deadline requires it**.
 
-What the trials say section 5 must cover:
-
-| Layer | Needed for holds up to the hub maximum (300 s) | Needed beyond |
+| Harness/mode | Proposed idle hold | Timeout/config requirement and evidence |
 |---|---|---|
-| Guides, `prepare-run.py` prompt text, #12 test | new value or omitted `timeout_s`; the "under 120 s" sentences no longer hold for print mode | same |
-| Worker bridge default | `HUB_DEFAULT_WAIT_S` in the bridge's environment, or a new default; omitting `timeout_s` alone gives 100 s | same |
-| Worker `Timeout` bound | none (already 300) | raise or derive from settings |
-| Orchestrator `Timeout` bound | raise from 120 | raise |
-| `rpc._hold_s` cap | raise from 120, or status shows `idle` | raise, or a stall is recorded at `stall_after_min` |
-| `HUB_MAX_WAIT_S` | none | raise per hub |
-| Claude Code, print mode | none | below 1800 s: none. At or above, one of: per-server `"timeout"` in the MCP entry, `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, or bridge progress notifications |
-| Claude Code, interactive | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` in the session's environment | same |
-| Codex | shipped 330 is enough for the timeout; the `exec` polling needs the instruction at any hold length | `tool_timeout_sec`, and the instruction |
-| OpenCode | shipped 330000 is enough | `timeout` |
-| Antigravity | shipped 330 is enough | `timeoutSeconds` |
+| Claude Code print | **1500 s** | Twice completed with no setting; leaves 300 s below the observed 1800 s silent idle abort. Do not use 1800 s, which raced and failed on the orchestrator |
+| Claude Code interactive | **100 s** by default | Retain foreground behavior below 120 s. Offer the 1500 s profile only after auto-backgrounding is explicitly disabled and that mode is validated; disabling it was measured at 300 s only |
+| Codex | **1800 s**, with the polling instruction | Three worker holds and an orchestrator hold completed with `tool_timeout_sec=7300`. Ship a matching per-server timeout with at least hold + 15 s HTTP margin and scheduling margin (propose 1900 s; validate that exact setting) |
+| OpenCode | **1800 s** | Three worker holds and an orchestrator hold completed with `timeout=7300000`; propose 1900000 ms and validate it, or retain the larger tested entry during rollout |
+| Antigravity | **1800 s** | Three worker holds and an orchestrator hold completed with `timeoutSeconds=7300`; propose 1900 s and validate it, or retain the larger tested entry during rollout |
+| Devin | **retain existing 100 s guidance pending measurement** | No measured timeout or long-hold success; do not infer support from the other harnesses |
 
-Open questions the trials raise:
+For existing static entries still at 330 s, keep the current behavior until
+the operator updates them; a future capability/config check should report
+that the long profile is unavailable. The bridge cannot infer a harness's
+actual per-server timeout from the harness name alone. With today's shipped
+entries, 300 s worker holds fit Codex/OpenCode/Antigravity, but orchestrator
+holds still cannot exceed 120 s. There is no settings-only long-wait rollout.
 
-- Where do the Claude Code settings go? The per-server `"timeout"` fits the
-  static entry. `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` does not: it belongs to
-  the `claude` process, so the launcher's environment can carry it, and an
-  interactive session started by hand has to set it itself.
-- Which value per harness, and where it lives (harness profile, join
-  response, launcher)? Claude Code print mode's 1800 s idle timeout is the
-  lowest raised ceiling seen.
-- Is the bridge's progress notification worth having? It lifts Claude Code
-  print mode past 1800 s with no setting and lets OpenCode's shipped 330 s
-  cover a longer hold, but Codex and Antigravity still need their own
-  settings. The scratch patch covered `await_assignment` only.
-- Codex workers ask for 50–60 s holds today, not the guide's 100 s. Why, and
-  whether a longer guide value changes it, is not known.
+Progress notifications could later let Claude Code print use an 1800 s or
+longer profile without changing its idle setting, and let OpenCode retain a
+shorter client idle timeout. Make this optional bridge work: the 2000 s Claude
+Code trial and 600 s OpenCode trial establish value, but not reliable 3600 s
+holds or recovery after missed notifications. They do not raise Codex's or
+Antigravity's absolute call limit or stop interactive backgrounding. Retain
+finite client/HTTP timeouts so a dead bridge still fails visibly.
 
-## Left for the run
+### Changes needed at each layer
 
-- Section 1: run logs of #259 and #267; earlier wait-timeout issues.
-- Section 2: nothing beyond the operator-only items below.
-- Section 3: reviewer spot-check of one trial, with the committed scripts.
-- Section 4: notify audit; event leases; orchestrator hold across a closeout
-  deadline.
-- Section 5: all of it.
+| Layer and current-main citation | Required work |
+|---|---|
+| Guide/default regression contract: `agent_hub_common/constants.py:20-24`, `tests/test_worker_config.py:195-261`; related [#12](https://github.com/RoboNater/robomate/issues/12) | Replace the single 100 s invariant with tested per-harness/mode defaults. Cover all served and prepared prompt instructions and tool schema defaults. Omitting literals currently fails the test, so this needs an explicit redesign |
+| Shared guides and prepared/resume prompts: `guides/orchestrator.md:35,245-255,701-716`, `guides/worker.md:18-20,119-125,297-298`, `prompts/worker.md:22-24,123-129,301-302`, `scripts/prepare-run.py:731-799,1374-1387` | Replace unconditional 100/120 s claims with the effective profile, distinguish print from interactive Claude Code, preserve foreground/keep-turn-alive requirements, and teach deadline-aware waits. Keep worker guide/prompt copies aligned; check skill pointers for duplicated instructions |
+| Worker schema/default/HTTP: `worker_mcp/tools.py:24,160-180,231-260`, `config.py:22,128-132,190`, `client.py:377-404,1161,1302` | Raise the finite schema bound to accommodate approved profiles; resolve an effective timeout for omitted arguments for both NEXT and question waits. A variable set only on the hub cannot change the bridge's 100 s fallback. Preserve hold + 15 s HTTP budget and bounded retry behavior |
+| Orchestrator schema/HTTP/hub dispatch: `agent_hub_common/orchestrator_tools.py:17,123-124`, `worker_mcp/orchestrator.py:147`, `agent_hub/orchestrator.py:153-157` | Raise its separate 120 s bound; choose the omitted-argument default from the same effective profile instead of another hardcoded 100. Add an explicit hub cap if desired; today's worker `HUB_MAX_WAIT_S` does not constrain this path |
+| Hub settings, status and liveness: `agent_hub_common/config.py:187-209,270-274`, `protocol.py:1083-1089`, `rpc.py:691-703`, `activity.py:49-54,150-164,193-220`, `store.py:4207-4294,4360-4416` | Set a hub ceiling that accommodates the profiles (initially 1800 s), clamp the effective request consistently, and account for that full legitimate hold plus grace. Keep 30 s heartbeats, 180 s loss detection, `IDLE_AFTER_S=120`, and stall policy independent of hold length; raising stall/lost thresholds would conceal the bug |
+| Wakeups, leases and closeout: Section 4, `store.py:3542-3713`, `closeout.py:128-141,370-471` | Test every outcome path, notify terminal reply waiters, fence superseded streams, and actually end or bound an inbox hold at a closeout deadline. Preserve dynamic event-lease wakeups, late ack semantics and pause/host-resume rules |
+| MCP entries and setup: `runtimes/codex.config.toml:11`, `runtimes/opencode.json:31`, `runtimes/antigravity.mcp.json:38`, `run_common.py:372-388,478-595`, `prepare-run.py:3217`, `docs/mcp-setup-prompt.md:38-49`, `scripts/check-mcp-tools.py:50-147` | Write and document corresponding client timeouts in static setup and generated configs, in seconds or milliseconds as required. Add timeout validation to the checker; passing tool discovery today says nothing about long-hold safety. Claude process variables belong in the launcher/session environment, not merely the MCP server's environment |
+| Launcher/recovery: `scripts/agent_launcher.py`, `scripts/prepare-run.py:731-799,1374-1387` | Carry the same profile/mode and Codex note across launch and resume. Keep transport errors visible and permit a subsequent call after restart; do not end a headless worker's turn to wait |
 
-Operator-only; the run neither attempts these nor waits for them:
+Prefer one resolved profile communicated by the bridge/join response to
+repeated independent literals in guides, hub config and launch templates.
+The hub has agent harness identity, but no mode-aware timeout negotiation
+exists today. Unknown harness/mode and old entries need a conservative
+fallback. Decide and document precedence for explicit `timeout_s`, operator
+overrides, profile defaults and the hub maximum; validate unsupported values
+before holding. A static MCP server may serve different hubs, so a global
+user entry alone cannot determine a per-run hub policy.
 
-- Native Windows trials.
-- Devin trials.
-- Provider behaviour under contention.
+### Codex instruction placement
+
+`guide_response` takes role and forge only
+([`guides.py:53-84`](https://github.com/RoboNater/robomate/blob/8ce2df5e812ba85514985e4e0d142f5214c2881d/packages/hub/src/agent_hub/guides.py#L53-L84));
+there is no harness-specific composition. This still allows an inline
+conditional paragraph in the shared served guide, as the worker guide's
+existing Codex retained-session recipe demonstrates (`guides/worker.md:161-182`).
+The options are:
+
+1. **Recommended first:** put an "On Codex" paragraph in the shared worker and
+   orchestrator guides. With the currently supported profile, give an explicit
+   example of an `exec` first-line pragma whose `yield_time_ms` exceeds the
+   effective hold plus transport margin; for a proposed 1800 s hold, 1900000
+   ms is a measured yield value. Forward the eventual result, and if the cell
+   still yields, call `wait` on that cell with a correspondingly long yield.
+   Give the same advice for question waits. Fetching the guides through join
+   covers static as well as prepared runs without adding a guide API dimension.
+2. Add a harness appendix to guide composition, or a structured join-response
+   wait profile plus harness instructions. This offers tailored text but needs
+   route/join changes, hash/cache semantics, fallback rules and tests. The
+   current guide API cannot do it simply by adding a new Markdown file.
+3. If shared conditional text is unsuitable, append the Codex sentence in
+   `prepare-run.py:731-799` and the launch/resume prompt path. This is the
+   fallback the owner requested, but alone it misses hand-started static
+   sessions; their setup instructions must carry it too.
+
+Do not ship the undocumented `[features.code_mode]` keys explored in the
+trials. The prompt instruction removed polling in six short trials; its
+long-run adherence remains to be measured. The real-run 50–60 s holds also
+need explanation: a longer hub maximum cannot help a model that keeps
+requesting short holds or polling every 20–30 s. A future guide change must
+reconcile any harness-level limits on foreground tool yields as well; a guide
+cannot override a higher-priority harness instruction.
+
+### Proposed issues and order
+
+These are proposals for the owner to choose and open, not newly filed issues
+or an implementation added to this PR.
+
+1. **Codex: remove model polling during hub holds.** Start with the conditional
+   served-guide paragraph and matching prepared/resume guidance. Keep current
+   wait bounds for this first change. Acceptance: inspect real worker and
+   orchestrator session files for `exec`/`wait` counts, verify an arriving task
+   returns promptly, and compare empty waits/polls per model call and input
+   tokens with the ten-session 45% baseline. A 100 s hold should require one
+   model tool invocation, not several polls. Measure sustained adherence.
+2. **Extend [#12](https://github.com/RoboNater/robomate/issues/12): per-harness
+   hold profiles and matching client settings.** Implement the profile table
+   and layer changes together with the activity cap and wakeup/deadline work;
+   alternatively make the latter a prerequisite issue. Tests must keep Alice
+   holding for the full supported duration, keep workers alive, deliver
+   assignments/replies/release/closeout promptly, cover every terminal path
+   and instance replacement, wake on unacked lease expiry, accept late acks,
+   and end closeout waiting by the pause-aware deadline. Exercise hub restart
+   mid-hold and continued use of the same bridge. Use frozen clocks for hub
+   deadlines, plus one real hold per supported harness/mode on the final
+   settings. Update static-entry checking, fixtures and generated/resume
+   configs together. Do not mistake #386's collection window for an MCP hold.
+3. **Optional bridge progress notifications for silent holds.** Cover NEXT,
+   question and orchestrator holds, using the caller's `progressToken`, and
+   stop on return/cancel/error. Test periodic delivery and task cleanup,
+   absent tokens, a disconnected caller and stalled hub; heartbeat and
+   progress remain separate. Measure Claude Code print and OpenCode with
+   intervals comfortably shorter than their configured idle timeout. Keep
+   explicit client timeout settings for Codex/Antigravity and test that their
+   limits still behave as expected. Use this only if longer profiles or less
+   operator configuration justify the added lifecycle work.
+4. **Evaluate [#501](https://github.com/RoboNater/robomate/issues/501), park/wake,
+   against the measured long-hold result.** Long holds already preserve
+   heartbeat and reuse a process; Codex polling may dominate the avoidable
+   work. Compare model calls, tokens/cache expiry, process cost, crash recovery
+   and event-to-work latency after proposals 1–2. Park/wake still needs durable
+   event ownership, resume/takeover and safe cancellation, and cannot be
+   implemented by telling a headless worker to end its turn today.
+
+### Evidence limits
+
+- Raw #259/#267 run logs are unavailable; Section 1 gives the available
+  history and its limits rather than inferring an unseen transcript.
+- The Linux harness versions, models and trial counts in Section 3 are the
+  measurements. This run did not repeat those trials. Review still includes
+  the requested spot-check with the committed scripts (300 s is sufficient).
+- **Operator-only; this run neither attempts nor waits for them:** native
+  Windows holds, Devin (not installed), and provider behavior under contention.
+  Until measured, do not assume the Linux limits apply to them.
+- The exact recommended 1900 s client settings, Claude interactive holds
+  beyond 300 s with backgrounding disabled, guide adherence in long sessions,
+  and progress-notification reliability beyond the measured cases remain
+  follow-up acceptance work. The bridge cannot read the parent harness's
+  effective timeout or feature flags today.
+- The closeout/terminal-reply scratch probes establish code-path behavior;
+  they do not simulate network cancellation or an end-to-end 30-minute run.
+  The superseded-stream finding is from code reading. Reconnect error wording,
+  `down`/immediate-`up` shutdown timing, and busy provider response latency
+  remain separate from proving that an idle hold can complete.
