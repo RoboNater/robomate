@@ -976,6 +976,8 @@ def test_wait_for_done_ends_when_a_reused_hub_stays_unreadable(
 
     def status(_: Path) -> None:
         reads.append(1)
+        # Keep a regression from looping forever with the sleep patched out.
+        assert len(reads) <= START.UNREADABLE_LIMIT, "wait_for_done kept reading"
         return None
 
     monkeypatch.setattr(START, "hub_status", status)
