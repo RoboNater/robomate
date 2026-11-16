@@ -65,13 +65,14 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import urllib.error
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,14 @@ class Usage(Exception):
 
 def say(message: str) -> None:
     print(f"agent-launcher: {message}", file=sys.stderr, flush=True)
+
+
+def command_line(words: Sequence[str]) -> str:
+    """A command the operator can paste: PowerShell on Windows, POSIX shells elsewhere."""
+
+    if os.name == "nt":
+        return "& " + " ".join("'" + word.replace("'", "''") + "'" for word in words)
+    return shlex.join(words)
 
 
 def join_line(agent: str, role: str) -> str:
@@ -774,6 +783,28 @@ class Joined(common.Launcher):
     def start_name(self) -> str:
         return f"agent-launcher.py start {self.agent}"
 
+    def ask_hint(self) -> str:
+        """The full ask command, runnable from any directory and naming the hub (#491)."""
+
+        words = [
+            "uv",
+            "run",
+            "--locked",
+            "--project",
+            str(ROOT),
+            "python",
+            str(SCRIPTS / "agent-launcher.py"),
+            "ask",
+            self.agent,
+        ]
+        checkout = getattr(self.args, "hub_checkout", None)
+        if checkout:
+            words += ["--hub", str(checkout)]
+        else:
+            # A remote host's clone has no local hub record; ask needs only the logs.
+            words += ["--sessions-dir", str(self.args.sessions.parent)]
+        return command_line(words)
+
     def first_launch(self) -> common.Launch:
         text = join_line(self.agent, self.role)
         return common.text_launch(self.harness, self.base, text, self.conversation or "")
@@ -989,6 +1020,7 @@ def supervision_args(args: argparse.Namespace, place: Place, **fields: Any) -> a
     values = {
         "hub_url": place.url,
         "token_file": place.token_file,
+        "hub_checkout": str(place.checkout) if place.checkout is not None else None,
         "telemetry": None,
         "prompt": None,
         "resume_session": None,
@@ -1064,7 +1096,7 @@ def stopped(launcher: Joined, stop: common.Stop) -> int:
     else:
         say(str(stop))
         if launcher.args.recover:
-            say(f"To only ask {launcher.agent} questions: agent-launcher.py ask {launcher.agent}")
+            say(f"To only ask {launcher.agent} questions: {launcher.ask_hint()}")
     return stop.code
 
 
