@@ -56,6 +56,37 @@ WORKFLOW = "wf-1"
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
 
+@pytest.fixture(autouse=True)
+def stub_sandbox_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(CLI, "sandbox_preflight", lambda harness: None)
+
+
+def test_sandbox_preflight_runs_required_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()
+    monkeypatch.setattr(CLI.sys, "platform", "linux")
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(CLI.subprocess, "run", run)
+    CLI.sandbox_preflight("claude-code")
+    CLI.sandbox_preflight("codex")
+    CLI.sandbox_preflight("opencode")
+    assert [call[-1] for call in calls] == ["--claude", "--codex"]
+
+
+def test_sandbox_preflight_refuses_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()
+    monkeypatch.setattr(CLI.sys, "platform", "linux")
+    monkeypatch.setattr(
+        CLI.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 1, "", "denied")
+    )
+    with pytest.raises(CLI.Usage, match="denied.*linux-sandbox-grants"):
+        CLI.sandbox_preflight("codex")
+
+
 def test_headless_policy_replaces_inherited_external_rules(tmp_path: Path) -> None:
     from opencode_headless import policy  # type: ignore[import-not-found]
 
@@ -994,6 +1025,7 @@ def test_grants_are_flags_for_the_measured_harnesses(area: dict[str, Path], tmp_
     settings = CLI.grants("claude-code", area["checkout"], area["state"] / "token")
     sandbox = json.loads(settings[1])["sandbox"]
     assert settings[0] == "--settings"
+    assert sandbox["failIfUnavailable"] is True
     assert sandbox["filesystem"]["denyRead"] == [str(area["state"])]
     assert sandbox["network"]["allowedDomains"] == ["github.com", "api.github.com"]
     assert CLI.grants("opencode", linked, None) == []
