@@ -488,6 +488,7 @@ def grants(
     if harness == "claude-code":
         sandbox: dict[str, Any] = {
             "enabled": True,
+            "failIfUnavailable": True,
             "network": {"allowedDomains": forge_hosts(workdir)},
         }
         filesystem: dict[str, list[str]] = {}
@@ -1215,7 +1216,27 @@ def supplied_conversation(log: Path, saved: Mapping[str, Any], supplied: str | N
     )
 
 
+def sandbox_preflight(harness: str) -> None:
+    """Refuse Linux launches when the harness sandbox cannot be established."""
+    if not sys.platform.startswith("linux") or harness not in ("codex", "claude-code"):
+        return
+    script = SCRIPTS / "host-setup/ubuntu-24.04/verify-sandboxes.sh"
+    mode = "--codex" if harness == "codex" else "--claude"
+    try:
+        result = subprocess.run([str(script), mode], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Usage(
+            f"sandbox preflight failed: {exc}; see docs/user-guide.md#linux-sandbox-grants"
+        ) from exc
+    if result.returncode:
+        raise Usage(
+            f"sandbox preflight failed: {result.stderr.strip() or result.stdout.strip()}; "
+            "see docs/user-guide.md#linux-sandbox-grants"
+        )
+
+
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
+    sandbox_preflight(args.harness)
     try:
         check_mcp_entry(args.harness)
     except ValueError as exc:
@@ -1327,6 +1348,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     log = log_path(place.sessions, args.agent)
     saved = saved_settings(log, args.agent)
     harness, role = str(saved["harness"]), str(saved["role"])
+    sandbox_preflight(harness)
     place = resolve_hub_id(place, tools, args.agent, role)
     model, effort = str(saved.get("model") or ""), str(saved.get("effort") or "")
     workdir = Path(saved["workdir"])
