@@ -240,7 +240,7 @@ and the real-run counts).
   linked worktrees of it, under the isolated smoke-run rules in
   [`guides/worker.md`](../../guides/worker.md): own `XDG_STATE_HOME`,
   `XDG_CONFIG_HOME`, `HUB_STATE_DIR` and `ROBOMATE_OPERATOR_TOKEN_FILE`,
-  `ROBOMATE_*` unset, ports 8497–8505, and `HUB_MAX_WAIT_S=7200` in the hub's
+  `ROBOMATE_*` unset, ports 8497–8507, and `HUB_MAX_WAIT_S=7200` in the hub's
   environment only. One hub served the worker trials. Each orchestrator trial
   had its own hub, because a hub has one orchestrator.
 - **A live workflow on every hub**, started with
@@ -278,8 +278,8 @@ with the operator's approval.
 Harness versions: Claude Code 2.1.325, codex-cli 0.169.0, OpenCode 1.19.5,
 Antigravity (`agy`) 1.5.9. Devin is not installed.
 
-Smoke-run report: ten hubs, started with `uv run --locked [--project
-<scratch clone>] robomate up --port N` on ports 8497–8506, state beside three
+Smoke-run report: eleven hubs, started with `uv run --locked [--project
+<scratch clone>] robomate up --port N` on ports 8497–8507, state beside three
 scratch clones under `scratch/` (`smoke/`, `smoke2/`, `smoke3/`). All were stopped with `robomate
 down` in the same isolated environment, and nothing was left listening on
 those ports. The machine's `hubs.json`, operator credential and harness
