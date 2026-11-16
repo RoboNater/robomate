@@ -8,7 +8,7 @@ if [[ ${1:-} == --dry-run && $# == 1 ]]; then
 fi
 [[ $# == 0 ]] || { echo "Usage: $0 [--dry-run]" >&2; exit 2; }
 [[ $EUID == 0 && -n ${SUDO_USER:-} && $SUDO_USER != root ]] || { echo 'Run with sudo from the invoking user.' >&2; exit 1; }
-if ! command -v bwrap >/dev/null 2>&1; then apt-get update; apt-get install -y bubblewrap; fi
+if [[ ! -x /usr/bin/bwrap ]]; then apt-get update; apt-get install -y bubblewrap; fi
 # Refuse unknown attachments, including profiles defined in files with arbitrary names.
 while IFS= read -r file; do
   case "$file" in
