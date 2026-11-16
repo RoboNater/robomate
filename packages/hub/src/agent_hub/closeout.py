@@ -31,6 +31,68 @@ if TYPE_CHECKING:
     from .store import HubStore
 
 
+class SafeCloseoutError(ValueError):
+    """A closeout error constructed without report content."""
+
+
+def _validation_message(exc: ValidationError) -> str:
+    # Unknown keys are user-controlled, as are Pydantic messages and contexts.
+    fields = {
+        "summary",
+        "outstanding_items",
+        "finding_id",
+        "url",
+        "reason",
+        "lessons",
+        "claims",
+        "text",
+        "verification",
+        "evidence",
+        "source",
+        "action",
+    }
+    kinds = {
+        "extra_forbidden",
+        "string_type",
+        "missing",
+        "list_type",
+        "model_type",
+        "string_too_short",
+        "string_too_long",
+        "string_pattern_mismatch",
+        "too_long",
+        "literal_error",
+        "value_error",
+    }
+    safe_messages = {
+        "Value error, an outstanding item needs a URL or a reason",
+        "Value error, url must be an absolute HTTPS issue or comment reference",
+        "Value error, a verified claim requires evidence",
+    }
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
+    details = []
+    for error in errors[:50]:
+        loc = (
+            ".".join(
+                str(part) if isinstance(part, int) or part in fields else "<field>"
+                for part in error["loc"]
+            )
+            or "<report>"
+        )
+        kind = error["type"] if error["type"] in kinds else "invalid"
+        detail = f"{loc}: {kind}"
+        if kind == "value_error" and error["msg"] in safe_messages:
+            detail += f" ({error['msg'].removeprefix('Value error, ')})"
+        details.append(detail)
+    if len(errors) > 50:
+        details.append(f"{len(errors) - 50} further errors omitted")
+    return (
+        "invalid AgentCloseoutReport; expected summary, "
+        "outstanding_items[{summary, finding_id?, url?, reason?}], lessons[str], "
+        "claims[...]; " + "; ".join(details)
+    )
+
+
 def _run(connection: Connection, run_id: str) -> Row:
     row: Row | None = connection.execute(
         "SELECT * FROM workflow WHERE run_id = ?", (run_id,)
@@ -219,10 +281,8 @@ def submit(
         raise PayloadTooLargeError("closeout report exceeds 32 KiB")
     try:
         parsed = AgentCloseoutReport.model_validate(report)
-    except ValidationError:
-        raise ValueError(
-            "invalid closeout report fields; check the AgentCloseoutReport schema"
-        ) from None
+    except ValidationError as exc:
+        raise SafeCloseoutError(_validation_message(exc)) from None
     canonical = json.dumps(
         parsed.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -269,7 +329,7 @@ def submit(
         if any(
             item.finding_id and item.finding_id not in findings for item in parsed.outstanding_items
         ):
-            raise ValueError("closeout finding_id does not refer to a finding in this run")
+            raise SafeCloseoutError("closeout finding_id does not refer to a finding in this run")
         report_id, submitted_at = uuid4().hex, store._now_iso()
         connection.execute(
             "INSERT INTO agent_closeout_report VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -368,8 +428,9 @@ def pending(store: HubStore, connection: Connection, author: str) -> dict[str, A
         "instructions": (
             "Submit one AgentCloseoutReport with submit_closeout_report before release. "
             "Include summary, outstanding_items (URL or reason, optional finding_id),"
-            " lessons, and claims "
-            "(verified requires evidence). Omit credentials and transcripts. This worker"
+            " lessons, and claims (verified requires evidence). "
+            "A finding_id must be recorded in a typed review result; cite findings added "
+            "later only as PR comments by URL. Omit credentials and transcripts. This worker"
             " retrospective is "
             "collected_before_closeout; the later CloseoutResult is authoritative. "
             "Then await_assignment again."

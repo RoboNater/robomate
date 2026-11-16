@@ -69,6 +69,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from .accounting import note_a2a
+from .closeout import SafeCloseoutError
 from .store import (
     AgentRecord,
     Claimant,
@@ -147,6 +148,10 @@ class ProtocolError(Exception):
     def __init__(self, error: A2AErrorModel) -> None:
         super().__init__(error.message)
         self.error = error
+
+
+class SafeCloseoutProtocolError(ProtocolError):
+    """Closeout detail already sanitized by the report validator."""
 
 
 class MissingRequiredFieldError(ProtocolError):
@@ -529,7 +534,7 @@ class A2AProtocol:
         except ProtocolError as exc:
             error = (
                 InvalidParamsError(message="invalid closeout report request")
-                if closeout_intent
+                if closeout_intent and not isinstance(exc, SafeCloseoutProtocolError)
                 else exc.error
             )
             return _error_response(request_id, error)
@@ -585,6 +590,8 @@ class A2AProtocol:
                         "worker",
                         body["report"],
                     )
+                except SafeCloseoutError as exc:
+                    raise SafeCloseoutProtocolError(InvalidParamsError(message=str(exc))) from None
                 except (ValueError, TypeError):
                     raise _invalid(
                         "invalid closeout report; check schema, run and"

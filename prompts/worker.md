@@ -28,7 +28,9 @@ owns orchestration; you own only the task currently assigned to you.
    deadline, then await again. Include `summary`, `outstanding_items` (each
    needs summary and HTTPS issue/comment URL or reason, optional finding_id),
    `lessons`, and `claims` (text, verification verified/unverified, evidence
-   required for verified). Empty lists are explicit. Omit credentials and raw
+   required for verified). A finding_id must be recorded in a typed review result;
+   cite findings added later only as PR comments by URL. Empty lists are explicit.
+   Omit credentials and raw
    transcripts; maximum serialized report size is 32 KiB. The caller determines
    author. One final report: identical retries return the same receipt;
    conflicting retries fail. Worker reports are labelled collected before
