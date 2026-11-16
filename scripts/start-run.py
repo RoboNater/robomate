@@ -154,6 +154,8 @@ HUB_START_TIMEOUT_S = 180.0
 HUB_STOP_TIMEOUT_S = 60.0
 CLI_TIMEOUT_S = 180.0
 AGENT_STOP_TIMEOUT_S = 30.0
+#: Consecutive unanswered status reads that end the wait for a hub it did not start.
+UNREADABLE_LIMIT = 3
 POLL_S = 0.5
 _POLICY_KEY = re.compile(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*")
 
@@ -951,12 +953,28 @@ def run_finished(status: Mapping[str, Any] | None) -> bool:
 def wait_for_done(run: Run) -> None:
     """Keep the hub up until the run is done, its agents are released, or interrupted."""
 
+    unreadable = 0
     while True:
         if run.hub is not None and run.hub.poll() is not None:
             say(f"the hub exited with {run.hub.returncode}")
             return
-        if run_finished(hub_status(run.checkout)):
-            return
+        status = hub_status(run.checkout)
+        if status is None:
+            if run.hub is None:
+                # A hub this command started is reported by its process exit; a
+                # reused one can only be noticed by its answers (r1-2 on #491).
+                unreadable += 1
+                if unreadable >= UNREADABLE_LIMIT:
+                    say(
+                        "the reused hub at "
+                        f"{run.checkout} did not answer {UNREADABLE_LIMIT} times in a row; "
+                        "leaving it as it is and stopping this command"
+                    )
+                    return
+        else:
+            unreadable = 0
+            if run_finished(status):
+                return
         time.sleep(5 * POLL_S)
 
 

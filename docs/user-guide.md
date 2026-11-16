@@ -269,7 +269,10 @@ Denise's doctor command, and stop the hub if it started it. A launcher you
 resumed by hand therefore keeps its hub. Restart a stopped hub with
 `robomate up` in the clone; its state is kept. After a launcher fails, the
 command prints the `agent-launcher.py resume <agent>` line to run while the
-hub is up. Ctrl-C stops the agents and the hub this command started.
+hub is up; it does not exit on that failure while the run is unfinished, so
+resume the agent, or press Ctrl-C, which stops the agents and the hub this
+command started. A reused hub that stops answering ends the wait after a few
+unanswered status reads.
 
 #### Asking an agent after the run
 

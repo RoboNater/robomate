@@ -965,6 +965,26 @@ def test_run_finished_covers_done_and_released_runs() -> None:
     assert not START.run_finished(None)
 
 
+def test_wait_for_done_ends_when_a_reused_hub_stays_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """r1-2 on #491: a reused hub stopped externally must not hang the wait."""
+
+    values, _ = settings()
+    run = START.Run(values, {}, tmp_path, tmp_path / "checkout", "test")
+    reads: list[int] = []
+
+    def status(_: Path) -> None:
+        reads.append(1)
+        return None
+
+    monkeypatch.setattr(START, "hub_status", status)
+    monkeypatch.setattr(START.time, "sleep", lambda _: None)
+    START.wait_for_done(run)
+    assert len(reads) == START.UNREADABLE_LIMIT
+    assert "did not answer" in capsys.readouterr().out
+
+
 def test_supervise_stops_remaining_launchers_when_start_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
