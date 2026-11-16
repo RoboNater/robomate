@@ -457,6 +457,22 @@ def smoke(tmp_path: Path) -> dict[str, Any]:
         "MOCK_HARNESS_DEADLINE_S": str(4 * LIVENESS_S),
         "PYTHONIOENCODING": "utf-8",
     }
+    # Child launchers are real processes, but sandbox availability is not under
+    # test here and CI may itself run inside a sandbox. Stub only that probe.
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    write(
+        hooks / "sitecustomize.py",
+        "import subprocess\n"
+        "_run = subprocess.run\n"
+        "def run(args, *a, **kw):\n"
+        "    if isinstance(args, list) and args and str(args[0]).endswith("
+        "'verify-sandboxes.sh'):\n"
+        "        return subprocess.CompletedProcess(args, 0, '', '')\n"
+        "    return _run(args, *a, **kw)\n"
+        "subprocess.run = run\n",
+    )
+    env["PYTHONPATH"] = str(hooks) + os.pathsep + env.get("PYTHONPATH", "")
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     write(codex_home / "config.toml", '[mcp_servers.robomate]\ncommand = "uv"\n')

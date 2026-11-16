@@ -520,6 +520,23 @@ for the full selection order.
 
 ## Linux sandbox grants
 
+### Ubuntu 24.04 host setup
+
+For both Codex and Claude Code, the known-good setup from [#498](https://github.com/RoboNater/robomate/issues/498) uses `/usr/bin/bwrap` with [Claude Code's AppArmor profile](https://code.claude.com/docs/en/sandboxing) and keeps `kernel.apparmor_restrict_unprivileged_userns=1`. Inspect `scripts/host-setup/ubuntu-24.04/install-bwrap-apparmor.sh --dry-run`, then an operator can run the installer with sudo. It backs up Ubuntu's old profile, installs and loads the replacement, prints undo instructions, and verifies as the invoking user. Do not replace a profile installed by another application without resolving that conflict first. Run `scripts/host-setup/ubuntu-24.04/verify-sandboxes.sh` without sudo to check the host; `--with-claude` also makes a model call to check Claude Code. After a reboot check `sudo aa-status | grep bwrap` (reboot persistence has not yet been verified).
+
+| Profile on bwrap | Userns restriction | Codex | Claude Code | Nested userns |
+| --- | --- | --- | --- | --- |
+| Ubuntu bwrap-userns-restrict | 1 | passes | fails | fails |
+| none | 1 | fails | silently unsandboxed | fails |
+| none | 0 | passes | passes | passes |
+| Ubuntu bwrap-userns-restrict | 0 | passes | fails | fails |
+| Claude Code bwrap | 1 | passes; HOME write refused | passes; HOME write refused | passes |
+
+The earlier #438 `bwrap-userns-restrict` recommendation breaks Claude Code even with the sysctl disabled. The replacement lets any local code use the general bwrap launcher to obtain a capable user namespace. This is narrower than setting the sysctl to 0 for every program, but weaker than Ubuntu's restrictive bwrap profile. Ubuntu 25.04 and later ship the restrictive profile in the `apparmor` package; the same conflict may apply there, unverified. Avoid profiles attached to user-writable copies of bwrap.
+
+The joined-agent launcher runs model-free checks on every Linux host before start and resume, including hosts outside Ubuntu, and refuses to launch if they fail. It requires `/usr/bin/bwrap` and nested user namespaces; a launcher already inside a sandbox may fail the probe. There is no launcher bypass: fix the host or launch manually after checking the sandbox. Claude Code also gets `failIfUnavailable: true` so it refuses startup rather than silently running without its sandbox. The nested userns probe detects the restrictive profile that Claude's startup check alone misses. Prepared or manually launched agents should run the verifier themselves before launch.
+
+
 These grants were measured for **Claude Code 2.1.312** and **Codex 0.164.0**
 in the #316 run. Harness sandboxes change often; M3's `robomate certify`
 (§9.3) re-measures them, including branch creation, commit and push. They
@@ -543,6 +560,7 @@ hub token directory) to the harness settings used for the session:
 {
   "sandbox": {
     "enabled": true,
+    "failIfUnavailable": true,
     "network": {
       "allowedDomains": ["github.com", "api.github.com"]
     },
