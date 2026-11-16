@@ -848,12 +848,15 @@ def test_final_report_passes_clean_login_from_cli_and_saved_config(
     assert "consult Denise" in output
     assert ("--clean-login" in output) is clean_login
     # Every agent's saved conversation is one runnable ask command away (#491).
+    # Build the expected form with the report's own quoting: Windows renders the
+    # whole command as a PowerShell call with every word quoted.
     for agent in START.AGENTS:
-        line = next(
-            text for text in output.splitlines() if f"agent-launcher.py ask {agent} --hub" in text
+        expected = START.launcher_hint(run, agent, "ask")
+        assert expected.startswith("uv run --locked --project ") or expected.startswith(
+            "& 'uv' 'run' '--locked' '--project' "
         )
-        assert "uv run --locked --project" in line
-        assert str(run.checkout) in line
+        assert f"ask {agent} about this run with: {expected}" in output
+        assert str(run.checkout) in expected
 
 
 def test_missing_mcp_entry_refuses_before_clone(smoke: dict[str, Any]) -> None:
