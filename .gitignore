@@ -6,4 +6,4 @@ __pycache__/
 .hub/
 
 # Downloaded license-audit artifacts (verified against uv.lock).
-.cache/dependency-licenses/
+.cache/

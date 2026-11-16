@@ -660,13 +660,16 @@ def test_closeout_policy_and_argument_bounds_schema_and_hub(tmp_path: Path) -> N
 
     adapter = TypeAdapter(CloseoutTimeout)
     assert adapter.validate_python(1800) == 1800
+    # #4: booleans are rejected, but ints and floats in range still validate.
+    assert adapter.validate_python(300) == 300.0
+    assert adapter.validate_python(300.0) == 300.0
     assert WorkflowPolicy.model_validate({"closeout_wait_s": 1800}).closeout_wait_s == 1800
     assert WorkflowPolicy().closeout_wait_s == 300
 
     for bad in (0, -1, 1801, 1800.5, float("inf"), float("-inf"), float("nan"), True):
         with pytest.raises(ValidationError):
             WorkflowPolicy.model_validate({"closeout_wait_s": bad})
-    for bad in (0, -1, 1801, 1800.5, float("inf"), float("-inf"), float("nan")):
+    for bad in (0, -1, 1801, 1800.5, float("inf"), float("-inf"), float("nan"), True, False):
         with pytest.raises(ValidationError):
             adapter.validate_python(bad)
 

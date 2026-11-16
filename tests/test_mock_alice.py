@@ -452,6 +452,12 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
     async def heartbeat_sleep(delay: float) -> None:
         # Patch only the worker module's asyncio reference. The hub's sweeper
         # and hold timeouts keep their ordinary event-loop scheduling.
+        # The hook recognises the heartbeat only by its delay. Safe because no
+        # retry backoff in worker_mcp.client can equal ENDURANCE_HEARTBEAT_S
+        # with this test's backoff_factor_s and max_retries. If those settings
+        # change so that one could, that retry sleep would park waiting for a
+        # heartbeat tick and the test would hang until LIVENESS_S — never a
+        # false pass.
         if delay != ENDURANCE_HEARTBEAT_S:
             await asyncio.sleep(delay)
             return
