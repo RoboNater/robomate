@@ -25,6 +25,9 @@ if [[ $mode != --claude ]] && command -v codex >/dev/null 2>&1; then
   codex sandbox -P :workspace -C "$scratch" -- sh -c 'touch "$PWD/x" && ! touch "$1"' sh "$probe" || fail 'codex workspace / HOME write boundary'
   [[ ! -e $probe ]] || fail "codex wrote $probe; remove it manually"
 fi
+if [[ $mode != --claude ]] && ! command -v codex >/dev/null 2>&1; then
+  echo "codex not on PATH; Codex checks skipped." >&2
+fi
 if [[ $mode == --codex ]] && ! command -v codex >/dev/null 2>&1; then
   fail 'codex is not on PATH'
 fi

@@ -9,14 +9,8 @@ fi
 [[ $# == 0 ]] || { echo "Usage: $0 [--dry-run]" >&2; exit 2; }
 [[ $EUID == 0 && -n ${SUDO_USER:-} && $SUDO_USER != root ]] || { echo 'Run with sudo from the invoking user.' >&2; exit 1; }
 if [[ ! -x /usr/bin/bwrap ]]; then apt-get update; apt-get install -y bubblewrap; fi
-# Refuse unknown attachments, including profiles defined in files with arbitrary names.
-while IFS= read -r file; do
-  case "$file" in
-    /etc/apparmor.d/bwrap-userns-restrict) ;;
-    /etc/apparmor.d/bwrap) cmp -s "$file" "$here/apparmor/bwrap" || { echo "Conflicting profile: $file" >&2; exit 1; } ;;
-    *) echo "Conflicting profile: $file" >&2; exit 1 ;;
-  esac
-done < <(grep -El '^[[:space:]]*(profile[[:space:]]+[^[:space:]]+[[:space:]]+)?/usr/bin/bwrap([[:space:]]|\{|$)' /etc/apparmor.d/* 2>/dev/null || true)
+# Fail closed on attachments that could match /usr/bin/bwrap.
+python3 "$here/check-bwrap-profiles.py" /etc/apparmor.d "$here/apparmor/bwrap"
 old=/etc/apparmor.d/bwrap-userns-restrict
 backup=/var/backups/bwrap-userns-restrict.apparmor
 if [[ -f $old ]]; then
@@ -25,7 +19,11 @@ if [[ -f $old ]]; then
   else
     cp -p -- "$old" "$backup"
   fi
-  apparmor_parser -R "$old"
+  profiles=/sys/kernel/security/apparmor/profiles
+  [[ -r $profiles ]] || { echo "Cannot inspect loaded AppArmor profiles: $profiles" >&2; exit 1; }
+  if grep -Eq '^bwrap \(' "$profiles"; then
+    apparmor_parser -R "$old"
+  fi
   rm -- "$old"
 fi
 install -m 0644 "$here/apparmor/bwrap" /etc/apparmor.d/bwrap
