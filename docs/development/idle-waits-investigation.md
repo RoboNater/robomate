@@ -15,13 +15,16 @@ costs one model call instead of one every 100 s?
 
 Trials ran on Linux on 2026-11-16 against isolated smoke hubs, with a scratch
 copy of the code and a separate config per harness
-([Trial setup](#trial-setup)). Nothing on `main` changed.
+([Trial setup](#trial-setup)). Nothing on `main` changed. The scripts are in
+[`scripts/development/idle-waits-investigation/`](../../scripts/development/idle-waits-investigation/README.md).
 
 1. **Every harness on the host completed a 30-minute hold** of both
    `await_assignment` and `wait_for_event` in the mode the launcher uses, once
    its own limit was raised, with one exception: Claude Code needs one more
    setting to go past 30 minutes (finding 3). The model call after the hold
-   succeeded every time.
+   succeeded every time. The 30-minute worker hold was run three times on
+   Codex, OpenCode and Antigravity, and Claude Code held 1500 s twice more;
+   all completed.
 2. **Each harness has a different limit when nothing is set, and the shipped
    330 s settings fail a 600 s hold at 330 s:**
 
@@ -40,13 +43,14 @@ copy of the code and a separate config per harness
    at 120 s. Print mode's own limit is an idle timeout of exactly 1800 s. A
    scratch bridge that sent an MCP progress notification every 60 s held
    2000 s with Claude Code's defaults.
-4. **On Codex a long hold only saves model calls if the wait is not polled.**
-   Codex 0.169.0 with `gpt-6-luna` calls MCP tools from a scripted `exec` cell
-   that hands control back to the model after `yield_time_ms` (default 30 s).
-   Unprompted, the model sometimes kept the default: one 600 s hold cost 18
+4. **On Codex a long hold only saves model calls if the wait is not polled,
+   and today's waits are polled.** Codex 0.169.0 calls MCP tools from a
+   scripted `exec` cell that hands control back to the model after
+   `yield_time_ms` (default 30 s); the model then polls. In the ten Codex
+   worker sessions from real runs on 12–16 November, 45% of all model calls
+   were hub waits or polls of them. In the trials, one 600 s hold cost 18
    extra model calls and one 1800 s hold cost 55 (about 2M input tokens). A
-   one-line instruction in the prompt, or the config key
-   `direct_only_tool_namespaces`, removed the polling
+   one-line instruction in the prompt removed the polling
    ([Codex polling](#codex-polling)).
 5. **Two hub-side limits apply to the orchestrator only, and neither is the
    300 s the issue assumed:**
@@ -63,7 +67,11 @@ copy of the code and a separate config per harness
 7. **Omitting `timeout_s` does not make `HUB_DEFAULT_WAIT_S` the single
    setting.** The worker bridge fills in its own default, 100 s, unless
    `HUB_DEFAULT_WAIT_S` is set in the *bridge's* environment.
-8. **A held wait ends at once** when an assignment, an event, a release or a
+8. **MCP progress notifications from the bridge are not a general fix.** They
+   reset Claude Code's print-mode idle timeout and OpenCode's timeout, but not
+   Codex's or Antigravity's, and they do not stop interactive Claude Code
+   backgrounding the call ([Progress notifications](#progress-notifications)).
+9. **A held wait ends at once** when an assignment, an event, a release or a
    closeout request arrives. `robomate down` mid-hold ends it in 2–5 s with a
    transport error, and the same bridge works again once the hub is back
    ([Interactions](#4-interactions)).
@@ -158,7 +166,7 @@ harness does with no setting, measured in the trials.
 | Codex | 300 s | `tool_timeout_sec = 330` | `runtimes/codex.config.toml:11`; `scripts/run_common.py:383,513`; `scripts/prepare-run.py:3217`; static entry |
 | OpenCode | 60 s | `"timeout": 330000` | `runtimes/opencode.json:31`; `run_common.render_opencode_config`; static entry |
 | Antigravity | 180 s | `"timeoutSeconds": 330` | `runtimes/antigravity.mcp.json:38`; `run_common.render_antigravity_mcp`; static entry |
-| Devin | not installed on the trial host | **TODO (operator)** | `run_common.render_devin_mcp` |
+| Devin | not installed on the trial host | not checked (operator-only) | `run_common.render_devin_mcp` |
 
 `scripts/check-mcp-tools.py` reads none of these timeouts.
 
@@ -204,22 +212,25 @@ in the installed 2.1.325 binary; "trialled" marks what a trial confirmed.
 - The launcher has no idle watchdog on a harness's output
   (`scripts/agent_launcher.py`).
 
-**TODO (run):** provider limits under contention (the opencode-go queue
-errors in the issue body) were not reproduced here.
+Provider limits under contention (the opencode-go queue errors in the issue
+body) were not reproduced here. That is an operator-only item.
 
 ### Native Windows
 
 Not trialled: the host is Linux. Nothing in the bridge or hub hold path is
 platform-specific, but every harness default above was measured on Linux
-only. **TODO (operator):** repeat one 300 s and one 30-minute hold per harness
-on native Windows.
+only. Repeating one 300 s and one 30-minute hold per harness on native
+Windows is an operator-only item.
 
 ## 3. Proof-of-concept trials
 
 ### Trial setup
 
-Everything lived under `scratch/` in a throwaway clone and was never
-committed. No operator harness config was read or edited.
+Everything the trials created lived under `scratch/` in a throwaway clone and
+was never committed; only the scripts are. No operator harness config was
+edited, and no trial read one. Outside the trials, the operator's Codex
+config header, model list and session files were read (for the model name
+and the real-run counts).
 
 - **Scratch copy.** A clone at `8ce2df5` with two lines changed: the worker
   `Timeout` (`le=300`) and the orchestrator `Timeout` (`le=120`) both raised
@@ -261,15 +272,15 @@ Environment variables for Claude Code were set on the `claude` process.
 
 Models: as the operator specified, except Codex. The Codex account on the
 host rejected `gpt-6.1-luna` ("not supported when using Codex with a ChatGPT
-account"), so the Codex trials used `gpt-6-luna`.
+account"), so the Codex trials used `gpt-6-luna`, plus three on `gpt-6.1-sol`
+with the operator's approval.
 
 Harness versions: Claude Code 2.1.325, codex-cli 0.169.0, OpenCode 1.19.5,
 Antigravity (`agy`) 1.5.9. Devin is not installed.
 
-Smoke-run report: nine hubs, started with `uv run --locked [--project
-<scratch clone>] robomate up --port N` on ports 8497–8505, state under
-`scratch/smoke/robomate-long.robomate/` and
-`scratch/smoke2/robomate-holdfix.robomate/`. All were stopped with `robomate
+Smoke-run report: ten hubs, started with `uv run --locked [--project
+<scratch clone>] robomate up --port N` on ports 8497–8506, state beside three
+scratch clones under `scratch/` (`smoke/`, `smoke2/`, `smoke3/`). All were stopped with `robomate
 down` in the same isolated environment, and nothing was left listening on
 those ports. The machine's `hubs.json`, operator credential and harness
 configs were not touched.
@@ -285,7 +296,7 @@ means not run.
 | Harness | Limit setting | 100 s | 300 s | 600 s | 1800 s | longer |
 |---|---|---|---|---|---|---|
 | Baseline (no harness) | — | ok | ok | ok | ok | 3600 s ok |
-| Claude Code print | none | ok | ok | ok | ok | 2400 s **fail at 1800 s** |
+| Claude Code print | none | ok | ok | ok | ok; 1500 s ok ×2 | 2400 s **fail at 1800 s** |
 | Claude Code print | `MCP_TOOL_TIMEOUT=7200000` | — | — | — | ok | — |
 | Claude Code print | `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` | — | — | — | — | 2400 s ok |
 | Claude Code print | per-server `"timeout": 7200000` | — | — | — | — | 2000 s ok |
@@ -294,13 +305,13 @@ means not run.
 | Claude Code interactive | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` | — | ok | — | — | — |
 | Codex | unset | — | — | **fail at 300 s** | — | — |
 | Codex | `tool_timeout_sec = 330` (shipped) | ok | ok | **fail at 330 s** | — | — |
-| Codex | `tool_timeout_sec = 7300` | — | — | ok | ok (polled) | — |
+| Codex | `tool_timeout_sec = 7300` | — | — | ok | ok ×3 (first one polled) | — |
 | OpenCode | unset | **fail at 60 s** | — | **fail at 60 s** | — | — |
 | OpenCode | `timeout: 330000` (shipped) | ok | ok | **fail at 330 s** | — | — |
-| OpenCode | `timeout: 7300000` | — | — | ok | ok | — |
+| OpenCode | `timeout: 7300000` | — | — | ok | ok ×3 | — |
 | Antigravity | unset | ok | — | **fail at 180 s** | — | — |
 | Antigravity | `timeoutSeconds: 330` (shipped) | ok | ok | **fail at 330 s** | — | — |
-| Antigravity | `timeoutSeconds: 7300` | — | — | ok | ok | — |
+| Antigravity | `timeoutSeconds: 7300` | — | — | ok | ok ×3 | — |
 
 **`wait_for_event`**, four holds in one session per harness, limit raised as
 in the last row for each harness above (Claude Code: no setting):
@@ -331,6 +342,27 @@ How each failure looked, and on which side:
 - No harness abort, provider timeout, connection timeout or reconnect was
   seen in any trial.
 
+### Progress notifications
+
+A scratch patch made the bridge send an MCP progress notification every 60 s
+while `await_assignment` is held. Every harness passed a `progressToken` with
+the call, so every one received them.
+
+| Harness | Limit setting | Hold | Without notifications | With notifications |
+|---|---|---|---|---|
+| Claude Code print | none | 2000 s | fail at 1800 s (2400 s trial) | **ok** |
+| Claude Code interactive | none | 300 s | backgrounded at 120 s | backgrounded at 120 s |
+| Codex | unset | 600 s | fail at 300 s | fail at 300 s |
+| Codex | `tool_timeout_sec = 330` | 600 s | fail at 330 s | fail at 330 s |
+| OpenCode | unset (60 s) | 300 s | fail at 60 s | fail at 60 s |
+| OpenCode | `timeout: 330000` | 600 s | fail at 330 s | **ok** |
+| Antigravity | unset | 600 s | fail at 180 s | fail at 180 s |
+| Antigravity | `timeoutSeconds: 330` | 600 s | fail at 330 s | fail at 330 s |
+
+So notifications reset the timeout on Claude Code print mode and OpenCode
+only. The OpenCode failure with nothing set is a tie: a 60 s interval against
+a 60 s timeout. A shorter interval was not tried.
+
 One unrelated flake: in the first Codex orchestrator launch, with five Codex
 processes starting at once, the model found no `robomate` tools and stopped.
 It did not recur in 15 later launches started 4 s apart.
@@ -357,20 +389,40 @@ prompt it chose, across trials: 1 000, 30 000, 120 000, 300 000, 600 000 and
 | `[features.code_mode]` `default_exec_yield_time_ms = 900000` | 5 | 120k | 0, but the model set its own 600 000 pragma, so the key's effect was not isolated |
 | `[features.code_mode]` `excluded_tool_namespaces = ["mcp__robomate"]` | — | — | the model found no `robomate` tools at all |
 
+**Real runs.** The ten Codex worker session files from robomate runs on 12–16
+November (`gpt-6.1-terra` and `gpt-6.1-sol`, in `~/.codex/sessions`), counted
+with `codex_rollout.py`:
+
+- 4,938 model calls in all. 900 were hub waits made through `exec`, and 1,298
+  were `wait` polls of those: 2,198, or 45%.
+- Every hub wait kept the default 30 s yield, except five at 1 000 ms. No hub
+  wait was a direct call.
+- The workers asked for `timeout_s` of 60 (434 times) or 50 (382), and 100
+  only 46 times, although the guide says 100. Nearly all polls used a 20 s
+  yield.
+- The worst session (t3002-i450, `gpt-6.1-terra`) spent 999 of 1,532 model
+  calls on hub waits and their polls.
+
+**`gpt-6.1-sol` in the trials.** Three trials (100 s; 600 s plain; 600 s with
+the pragma instruction). It used `exec` each time and set a long yield on its
+own (120 000 and 650 000 ms), so nothing was polled. The trial prompt says
+"wait in the foreground … however long it takes", which the served guide does
+not, so the plain trial does not show what it does in a run; the real-run
+counts above do.
+
 Other observations:
 
-- A 1 800 000 ms yield held 30 minutes with no poll, so there is no cap up to
-  that value.
+- A 1 800 000 ms yield held 30 minutes with no poll, and 1 900 000 ms twice
+  more, so there is no cap up to that value.
 - The 1800 s worker trial, where the model kept the default, used 59 model
   calls and 1.99M input tokens (97% from cache).
 - The three key names were found in the binary and accepted by
   `codex exec --strict-config`; they are not in the documentation I found.
   `codex features list` shows `code_mode` as "under development, false", yet
   the model was given `exec`.
-- **Unknown:** whether `gpt-6.1-sol`, the model real runs use, calls MCP
-  tools through `exec`. If it does, today's 100 s waits on Codex may already
-  cost several model calls each. **TODO (run):** count `wait` calls in a
-  Codex agent's rollout from a recent run.
+- The pragma instruction was followed in all six trials that carried it
+  (`gpt-6-luna` and `gpt-6.1-sol`). Whether a guide sentence is followed as
+  reliably over a long run is not shown.
 
 ## 4. Interactions
 
@@ -439,7 +491,24 @@ immediate `robomate up` answered "hub already running" and exited.
 ## 5. Inputs for the recommendation
 
 Section 5 of the rescoping comment (what a change needs, unknowns, proposed
-issues) is **TODO (run)**. What the trials say it must cover:
+issues) is **TODO (run)**. The owner's direction for it (2026-11-16):
+
+- **Per-harness hold lengths**, not one value under every harness's limit.
+- **Codex polling:** an instruction in the served guide, if the guide can
+  carry per-harness text; otherwise a launcher prompt line. Not the
+  undocumented `[features.code_mode]` keys.
+- **A bridge change is acceptable** where it is necessary or adds
+  substantial value.
+
+On the guide: `packages/hub/src/agent_hub/guides.py` composes by role and
+forge only. There is no per-harness composition. Harness-specific text exists
+as inline sentences in the shared guides (for example "For Codex tools that
+return retained command sessions" in `guides/worker.md`) and as the prompt
+lines `scripts/prepare-run.py` adds per harness. The hub knows each agent's
+harness from `join`. So the choices are an inline "On Codex" paragraph, a new
+per-harness appendix or join-response value, or the launcher prompt line.
+
+What the trials say section 5 must cover:
 
 | Layer | Needed for holds up to the hub maximum (300 s) | Needed beyond |
 |---|---|---|
@@ -451,7 +520,7 @@ issues) is **TODO (run)**. What the trials say it must cover:
 | `HUB_MAX_WAIT_S` | none | raise per hub |
 | Claude Code, print mode | none | below 1800 s: none. At or above, one of: per-server `"timeout"` in the MCP entry, `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, or bridge progress notifications |
 | Claude Code, interactive | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` in the session's environment | same |
-| Codex | shipped 330 is enough | `tool_timeout_sec`; and stop the `exec` polling by instruction or `direct_only_tool_namespaces` |
+| Codex | shipped 330 is enough for the timeout; the `exec` polling needs the instruction at any hold length | `tool_timeout_sec`, and the instruction |
 | OpenCode | shipped 330000 is enough | `timeout` |
 | Antigravity | shipped 330 is enough | `timeoutSeconds` |
 
@@ -461,22 +530,27 @@ Open questions the trials raise:
   static entry. `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` does not: it belongs to
   the `claude` process, so the launcher's environment can carry it, and an
   interactive session started by hand has to set it itself.
-- A per-harness maximum, or one value under every harness's limit? Claude
-  Code print mode's 1800 s idle timeout is the lowest raised ceiling seen.
-- Should the bridge send MCP progress notifications during a hold? It reset
-  Claude Code's idle timeout with no harness setting. The scratch patch
-  covered `await_assignment` only. Its effect on the other three harnesses'
-  timeouts, and on interactive backgrounding, was not trialled.
-- Codex: an instruction in the served guide, a launcher prompt line, or the
-  undocumented config key?
+- Which value per harness, and where it lives (harness profile, join
+  response, launcher)? Claude Code print mode's 1800 s idle timeout is the
+  lowest raised ceiling seen.
+- Is the bridge's progress notification worth having? It lifts Claude Code
+  print mode past 1800 s with no setting and lets OpenCode's shipped 330 s
+  cover a longer hold, but Codex and Antigravity still need their own
+  settings. The scratch patch covered `await_assignment` only.
+- Codex workers ask for 50–60 s holds today, not the guide's 100 s. Why, and
+  whether a longer guide value changes it, is not known.
 
 ## Left for the run
 
 - Section 1: run logs of #259 and #267; earlier wait-timeout issues.
-- Section 2: provider limits under contention; Devin.
-- Section 3: reviewer spot-check of one trial.
+- Section 2: nothing beyond the operator-only items below.
+- Section 3: reviewer spot-check of one trial, with the committed scripts.
 - Section 4: notify audit; event leases; orchestrator hold across a closeout
   deadline.
 - Section 5: all of it.
-- For the operator: native Windows trials; Devin trials; one long-hold trial
-  on `gpt-6.1-sol` under Codex.
+
+Operator-only; the run neither attempts these nor waits for them:
+
+- Native Windows trials.
+- Devin trials.
+- Provider behaviour under contention.

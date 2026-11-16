@@ -1,0 +1,13 @@
+diff --git a/packages/hub/src/agent_hub/rpc.py b/packages/hub/src/agent_hub/rpc.py
+index 1c33e45..403f97b 100644
+--- a/packages/hub/src/agent_hub/rpc.py
++++ b/packages/hub/src/agent_hub/rpc.py
+@@ -698,7 +698,7 @@ def _hold_s(method: str, params: Mapping[str, Any]) -> float:
+     if method == "wait_for_event":
+         timeout = params.get("timeout_s", 100)
+         if isinstance(timeout, int | float) and not isinstance(timeout, bool):
+-            return min(max(float(timeout), 0.0), 120.0)
++            return max(float(timeout), 0.0)  # SCRATCH (#497): no 120 s cap
+         return 100.0
+     return 75.0
+ 

@@ -1,0 +1,63 @@
+diff --git a/packages/worker_mcp/src/worker_mcp/tools.py b/packages/worker_mcp/src/worker_mcp/tools.py
+index 79e417a..672740a 100644
+--- a/packages/worker_mcp/src/worker_mcp/tools.py
++++ b/packages/worker_mcp/src/worker_mcp/tools.py
+@@ -15,7 +15,7 @@ from agent_hub_common import (
+     StandingRole,
+ )
+ from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
+-from mcp.server.fastmcp import FastMCP
++from mcp.server.fastmcp import Context, FastMCP
+ from pydantic import Field
+ 
+ from .client import WorkerHubClient
+@@ -158,7 +158,7 @@ def create_worker_mcp(
+ 
+     @server.tool()
+     async def await_assignment(
+-        timeout_s: Timeout | None = None, include_instructions: bool = False
++        timeout_s: Timeout | None = None, include_instructions: bool = False, ctx: Context = None  # type: ignore[assignment]
+     ) -> dict[str, Any]:
+         """Poll the hub for the next task assignment.
+ 
+@@ -181,12 +181,34 @@ def create_worker_mcp(
+         """
+         resolved = await resolve()
+         require_joined(resolved)
+-        return await invoke(
+-            resolved,
+-            "await_assignment",
+-            resolved.await_assignment(timeout_s, include_instructions=include_instructions),
+-            {"timeout_s": timeout_s, "include_instructions": include_instructions},
+-        )
++
++        # SCRATCH (#497): MCP progress notification every 60 s while the hold runs.
++        import asyncio
++        import os
++        import time
++
++        async def ticker() -> None:
++            n = 0
++            token = getattr(getattr(ctx.request_context, "meta", None), "progressToken", None)
++            log = os.environ.get("SCRATCH_PROGRESS_LOG")
++            while True:
++                await asyncio.sleep(60)
++                n += 1
++                await ctx.report_progress(n, None, f"holding {n * 60} s")
++                if log:
++                    with open(log, "a") as f:
++                        f.write(f"{time.strftime('%T')} progress {n} token={token!r}\n")
++
++        tick = asyncio.create_task(ticker())
++        try:
++            return await invoke(
++                resolved,
++                "await_assignment",
++                resolved.await_assignment(timeout_s, include_instructions=include_instructions),
++                {"timeout_s": timeout_s, "include_instructions": include_instructions},
++            )
++        finally:
++            tick.cancel()
+ 
+     @server.tool()
+     async def submit_closeout_report(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
