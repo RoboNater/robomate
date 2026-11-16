@@ -21,6 +21,10 @@ unless ``-c mcp_servers.robomate.env.*`` names it: it strips the whole prefix
 from the bridge env and adds back only the forwarded argv. A missing ``-c``
 therefore fails a Codex launch here as it does in reality (#511).
 ``MOCK_HARNESS_LOG``, when set, receives one JSON line per launch.
+``MOCK_HARNESS_EXIT_AFTER_JOIN`` names a directory: after joining, each
+stand-in writes ``<name>`` there and waits for ``go``, then exits. A test uses
+it to let every agent join before the launchers exit, so it can hand-resume
+them while the run is unfinished (#491).
 """
 
 from __future__ import annotations
@@ -51,6 +55,9 @@ BRIDGE_LOGGED = (*IDENTITY, *SELECTION)
 SHA = "0123456789abcdef0123456789abcdef01234567"
 HOLD_S = 5.0
 DEADLINE_S = float(os.environ.get("MOCK_HARNESS_DEADLINE_S", "300"))
+EXIT_AFTER_JOIN = os.environ.get("MOCK_HARNESS_EXIT_AFTER_JOIN", "")
+#: Time every stand-in stays joined after ``go``: several supervisor polls.
+SETTLE_S = 5.0
 _JOIN = re.compile(r"Join robomate as ([a-z0-9_-]+), ([a-z]+)\.")
 _TAKEOVER = re.compile(r'join\(name="([a-z0-9_-]+)", role="([a-z]+)", takeover=true\)')
 
@@ -196,9 +203,16 @@ class Agent:
     async def orchestrate(self) -> None:
         """Alice: one implementation, one review, closeout, release, done."""
 
-        started = await self.call("start_workflow")
-        run_id = str(started.get("run_id") or "")
-        say(f"alice started run {run_id} ({started.get('status')})")
+        try:
+            started = await self.call("start_workflow")
+            run_id = str(started.get("run_id") or "")
+            say(f"alice started run {run_id} ({started.get('status')})")
+        except RuntimeError as exc:
+            # A hand-resumed Alice finds the run its predecessor started.
+            state = await self.call("get_state")
+            workflow = state.get("workflow") or {}
+            run_id = str(workflow.get("run_id") or "")
+            say(f"alice resumed run {run_id} ({workflow.get('status')}): {exc}")
         joined: dict[str, int] = {}
         implementation = review = ""
         implemented: tuple[int, str] | None = None
@@ -310,6 +324,24 @@ async def play(harness: str, argv: list[str], line: str) -> None:
         agent = Agent(session, name)
         joined = await agent.call("join", name=name, role=role, takeover=takeover)
         say(f"{name} joined as {joined.get('role', role)} (takeover={takeover})")
+        if EXIT_AFTER_JOIN:
+            if role == "orchestrator":
+                # Leave a live run for the hand-resumed Alice, as an interrupted
+                # run does: recovery cannot take a workflow that is still queued.
+                started = await agent.call("start_workflow")
+                say(f"{name} started run {started.get('run_id')} before exiting")
+            barrier = Path(EXIT_AFTER_JOIN)
+            barrier.mkdir(parents=True, exist_ok=True)
+            (barrier / name).write_text("joined\n", encoding="utf-8")
+            go = barrier / "go"
+            until = asyncio.get_running_loop().time() + DEADLINE_S
+            while not go.exists():
+                if asyncio.get_running_loop().time() > until:
+                    raise TimeoutError(f"{name}: no {go} within {DEADLINE_S:g} s")
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(SETTLE_S)
+            say(f"{name} exits after joining (MOCK_HARNESS_EXIT_AFTER_JOIN)")
+            return
         if role == "orchestrator":
             await agent.orchestrate()
         else:

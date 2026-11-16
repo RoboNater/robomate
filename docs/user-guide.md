@@ -261,13 +261,68 @@ agents' worktrees beside the clone, in `<hub_name>.robomate/<hub_name>/`. An
 existing clone is reused only if its origin is `repository`; a live hub of
 that clone is reused and left running, and a hub with a live or queued run is
 refused. Each agent's launcher writes to `<run_dir>/logs/<agent>.log`, and
-the hub's log is `logs/hub.log`. The command stays in the foreground until
-every launcher exits. It then reports the run's status, where its closeout
-reports are and Denise's doctor command, and stops the hub if it started it.
-Restart that hub with `robomate up` in the clone; its state is kept.
-After a launcher fails, the command prints the
-`agent-launcher.py resume <agent>` line to run while the hub is up. Ctrl-C
-stops the agents and the hub this command started.
+the hub's log is `logs/hub.log`. The command stays in the foreground until the
+run is done, or its agents are released, even after every launcher it started
+has exited; only then does it report the run's status, where its closeout
+reports are, a runnable `agent-launcher.py ask` command for each agent and
+Denise's doctor command, and stop the hub if it started it. A launcher you
+resumed by hand therefore keeps its hub. Restart a stopped hub with
+`robomate up` in the clone; its state is kept. After a launcher fails, the
+command prints the `agent-launcher.py resume <agent>` line to run while the
+hub is up. Ctrl-C stops the agents and the hub this command started.
+
+#### Asking an agent after the run
+
+`ask` is the `start-run.py` successor of the generated `ask-<agent>` scripts
+(#491). The final report prints this command for each agent; it opens that
+agent's saved conversation interactively and needs no hub, so it also works
+after the hub is stopped:
+
+```sh
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/agent-launcher.py \
+  ask bob --hub /path/to/run/scripted --fork
+```
+
+Hub tools are switched off for the conversation, so ask Bob to read the
+closeout reports from `<state>/runs/<run_id>/closeout/` (the report prints the
+full path; the state is `<run_dir>/<hub_name>.robomate/<hub_name>/state`).
+`--fork` keeps the original transcript: Claude Code uses `--fork-session`,
+Codex `codex fork`, OpenCode `--fork`. The per-harness suppression and
+transcript rules are in [Ask an agent after the run](#ask-an-agent-after-the-run);
+for the launcher's own behavior see
+[agent recovery](development/agent-recovery.md#asking-an-agent).
+
+#### Stopping and resuming one agent mid-run
+
+The command prints each agent's launcher PID when it starts it. To take one
+agent out of the run without stopping the others, send SIGTERM to that
+launcher (`kill <pid>`): the launcher stops the harness it started and exits,
+the other agents keep working, and the hub stays up. The command keeps it up
+until the run is done or the agents are released, even after every launcher it
+started has exited.
+
+To talk to the stopped agent in the context of the run, open its saved
+conversation with the launcher's interactive resume:
+
+```sh
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/agent-launcher.py \
+  resume bob --hub /path/to/run/scripted --interactive
+```
+
+It prints the fixed continuation to send once the conversation is open; the
+hub tools stay available, so the agent can read the run. Use `ask bob` instead
+when you only want questions and no hub work. When it should rejoin the run,
+hand it back headless:
+
+```sh
+uv run --locked --project /path/to/robomate python /path/to/robomate/scripts/agent-launcher.py \
+  resume bob --hub /path/to/run/scripted
+```
+
+Recovery verifies the saved conversation, the same hub and the stopped
+predecessor before it launches; its checks and controls are in
+[agent recovery](development/agent-recovery.md#resuming-by-hand), not
+repeated here.
 
 Every agent's harness, and so its `robomate mcp` bridge, gets the agent's
 declared identity: `HUB_HARNESS`, `HUB_HARNESS_VERSION` (from the CLI's own
@@ -292,7 +347,7 @@ The standard helper's keys, and what replaces each:
 | `forge` | Same key, passed to `robomate up --forge`. Empty (the new default) detects the forge from the origin. |
 | `alice_*`, `bob_*`, `charlie_*` harness, model, effort | Same keys, passed to `agent-launcher.py start`. Names and roles stay fixed: Alice orchestrator, Bob implementer, Charlie reviewer. |
 | `denise_settings_from`, `denise_*` | Same keys, validated at start. At the end the command prints `agent-launcher.py doctor --run <run_id>` with Denise's resolved harness, model and effort. The default uses the operator login; user hooks/plugins/skills may load. `denise_clean_login = true` (`--denise-clean-login`) appends `--clean-login` for a separate per-run login. MCP servers are disabled and explicit interactive permission modes override user defaults. User allow rules still apply; use `--clean-login` to avoid them (see [authentication](denise/guide.md#authentication-evidence-and-reports)). She is consulted on demand, never started with the team. |
-| `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done or Ctrl-C. |
+| `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done, its agents are released, or Ctrl-C. |
 | `pytest_workers` | Same key, the agents' `PYTEST_XDIST_AUTO_NUM_WORKERS`; 0 clears an inherited value. |
 | `stall_after_min`, `stall_action_after_min` | Read as `[policy]` keys. |
 | `--yes` (the hub is already running) | Not needed: the command starts or reuses the hub itself and never prompts. |
@@ -682,8 +737,17 @@ included in the run's report once its workflow has been initialized.
 
 ## Ask an agent after the run
 
-Use the generated `ask-alice.sh`, `ask-bob.sh`, or `ask-charlie.sh` to reopen
-that agent's last conversation interactively, including after the hub is stopped:
+For a run started with `scripts/start-run.py`, the successor of the generated
+`ask-<agent>` scripts is `scripts/agent-launcher.py ask <agent> --hub
+<checkout>` (#491); the scripted run's final report prints the full command for
+each agent. It opens the same saved conversation with the same hub-tool
+suppression, needs no hub, and is described in the
+[scripted run start section](#asking-an-agent-after-the-run) and
+[agent recovery](development/agent-recovery.md#asking-an-agent).
+
+For prepared runs, use the generated `ask-alice.sh`, `ask-bob.sh`, or
+`ask-charlie.sh` to reopen that agent's last conversation interactively,
+including after the hub is stopped:
 
 ```bash
 "$RUN_DIR/ask-charlie.sh"

@@ -2304,6 +2304,43 @@ def test_broken_fake_child_fails_with_finite_attempts_and_diagnostics(
     assert live_own_pids(fake_supervision.pids) == []
 
 
+def test_a_resume_stop_names_the_full_runnable_ask_command(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#491: the hint after a resume names the hub and runs from any directory."""
+
+    area["fake"].write_text(IMMEDIATE_FAIL_CHILD, encoding="utf-8")
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00002"
+    now = datetime.now(UTC)
+    saved_log(area, conversation, now - timedelta(minutes=10), now - timedelta(minutes=1))
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    hub = snapshotting(FakeHub(after_launches(area, {"workflow": live, "agents": [agent_row()]})))
+
+    code = invoke(
+        ["resume", "bob", "--hub", str(area["checkout"]), "--resume-delay-s", "0"],
+        programs=programs(area),
+        reader=hub,
+    )
+
+    assert code == LAUNCHER.EXIT_RESUMES_SPENT
+    script = ROOT / "scripts/agent-launcher.py"
+    if os.name == "nt":
+        expected = (
+            f"& 'uv' 'run' '--locked' '--project' '{ROOT}' 'python' '{script}' "
+            f"'ask' 'bob' '--hub' '{area['checkout']}'"
+        )
+    else:
+        expected = (
+            f"uv run --locked --project {ROOT} python {script} ask bob --hub '{area['checkout']}'"
+        )
+    err = capsys.readouterr().err
+    assert f"To only ask bob questions: {expected}" in err
+    assert "To only ask bob questions: agent-launcher.py ask bob" not in err
+
+
 # A child that hangs on every attempt and never writes its launch marker. The
 # watchdog must keep sweeping across automatic resumes, not fire once (#464
 # r1-1); otherwise the resumed child hangs with no watchdog left.

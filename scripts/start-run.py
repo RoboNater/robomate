@@ -24,8 +24,10 @@ the file, and either ``issue`` or ``work_file`` selects the work. A
 ``--policy k=v``, go to ``robomate submit --policy`` over the configuration
 layers. The repository is cloned to ``<run_dir>/<hub_name>``; the hub keeps its
 state, token and worktrees beside it, in ``<hub_name>.robomate/``. The command
-stays in the foreground until every agent's launcher exits, then stops the hub
-if it started it. Agents' output goes to ``<run_dir>/logs/<agent>.log``.
+stays in the foreground until the run is done (or its agents are released),
+even after every launcher it started has exited, then stops the hub if it
+started it; a launcher the operator resumed by hand therefore keeps its hub.
+Agents' output goes to ``<run_dir>/logs/<agent>.log``.
 """
 
 from __future__ import annotations
@@ -826,7 +828,7 @@ def start_agents(run: Run) -> None:
         )
 
 
-def resume_hint(run: Run, agent: str) -> str:
+def launcher_hint(run: Run, agent: str, command: str) -> str:
     words = [
         "uv",
         "run",
@@ -835,12 +837,16 @@ def resume_hint(run: Run, agent: str) -> str:
         str(ROOT),
         "python",
         str(SCRIPTS / "agent-launcher.py"),
-        "resume",
+        command,
         agent,
         "--hub",
         str(run.checkout),
     ]
     return command_line(words)
+
+
+def resume_hint(run: Run, agent: str) -> str:
+    return launcher_hint(run, agent, "resume")
 
 
 def supervise(run: Run) -> int:
@@ -915,19 +921,41 @@ def supervise(run: Run) -> int:
                     + resume_hint(run, agent)
                 )
         time.sleep(POLL_S)
+    # The launchers this command started are not the only ones that matter: the
+    # operator may have resumed one by hand under a new launcher (#491). Keep the
+    # hub up until the run itself ends, so that recovery is never cut off.
+    say(
+        "every launcher this command started has exited; keeping the hub up until the run "
+        "is done (Ctrl-C stops the hub this command started)"
+    )
+    wait_for_done(run)
     return worst
 
 
+def run_finished(status: Mapping[str, Any] | None) -> bool:
+    """Whether the workflow is done, or every agent of the live run was released."""
+
+    workflow = (status or {}).get("workflow")
+    if not isinstance(workflow, dict):
+        return False
+    if workflow.get("status") == "done":
+        return True
+    if workflow.get("status") not in ("active", "paused", "escalated"):
+        # A queued run has not touched the agents yet: their rows may still be
+        # released from an earlier run.
+        return False
+    agents = [row for row in (status or {}).get("agents", []) if isinstance(row, dict)]
+    return bool(agents) and all(row.get("status") == "released" for row in agents)
+
+
 def wait_for_done(run: Run) -> None:
-    """With auto_start = false: the hub stays up until the run is done or interrupted."""
+    """Keep the hub up until the run is done, its agents are released, or interrupted."""
 
     while True:
         if run.hub is not None and run.hub.poll() is not None:
             say(f"the hub exited with {run.hub.returncode}")
             return
-        status = hub_status(run.checkout)
-        workflow = (status or {}).get("workflow")
-        if isinstance(workflow, dict) and workflow.get("status") == "done":
+        if run_finished(hub_status(run.checkout)):
             return
         time.sleep(5 * POLL_S)
 
@@ -984,6 +1012,8 @@ def report(run: Run) -> bool:
         closeout = Path(str(state)) / "runs" / str(run_id) / "closeout"
         if closeout.is_dir():
             say(f"closeout reports: {closeout}")
+    for agent in AGENTS:
+        say(f"ask {agent} about this run with: " + launcher_hint(run, agent, "ask"))
     doctor = denise(run.values)
     if doctor["status"] != "ready":
         say(f"Denise skipped: {doctor['skip_reason']}")

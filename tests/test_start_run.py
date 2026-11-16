@@ -639,6 +639,123 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
     assert sorted(path.name for path in (run_dir / "tmp").iterdir()) == ["alice", "bob", "charlie"]
 
 
+def test_a_hand_resumed_launcher_keeps_the_hub_up_after_the_original_ones_exit(
+    smoke: dict[str, Any],
+) -> None:
+    """Item 4 (a) of #491: the hub outlives the launchers this start began.
+
+    Every launcher the command started exits while the run is unfinished; the
+    operator then resumes all three by hand under new launchers, and the hub
+    stays up until the run is done, so the hand recovery is never cut off.
+    """
+
+    root: Path = smoke["root"]
+    # Keep the mock Codex stand-in out of the environment: it forwards only the
+    # HUB_* variables its `-c` flags name, and the short loss grace below needs
+    # every live bridge to receive its heartbeat setting.
+    config = write(
+        root / "resume-run.toml",
+        smoke["config"]
+        .read_text(encoding="utf-8")
+        .replace("pytest_workers = 3", 'pytest_workers = 3\ncharlie_harness = "claude"'),
+    )
+    barrier = root / "join-barrier"
+    env = smoke["env"] | {
+        "MOCK_HARNESS_EXIT_AFTER_JOIN": str(barrier),
+        "HUB_HEARTBEAT_S": "1",
+        "HUB_LOST_AFTER_S": "8",
+        "HUB_SWEEP_INTERVAL_S": "1",
+    }
+    output = root / "start-run.out"
+    run_dir = root / "runs" / "scripted"
+    checkout = run_dir / "scripted"
+    # The hand-resumed bridges inherit this environment and must heartbeat
+    # inside the hub's short loss grace, or they are declared lost mid-work.
+    resume_env = smoke["env"] | {"HUB_HEARTBEAT_S": "1"}
+    logs: list[Any] = []
+    resumes: list[subprocess.Popen[str]] = []
+    with output.open("w", encoding="utf-8") as stream:
+        started = subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts/start-run.py"), "--config", str(config),
+             "--issue", "7"],
+            cwd=root,
+            env=env,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )  # fmt: skip
+    try:
+        # Every original launcher joins and waits, so the command sees a full
+        # team before any of them exits.
+        wait_until_sync(
+            lambda: (
+                all((barrier / agent).is_file() for agent in START.AGENTS)
+                or started.poll() is not None
+            ),
+            "the original launchers join",
+            timeout_s=3 * LIVENESS_S,
+        )
+        assert started.poll() is None, output.read_text(encoding="utf-8")
+        (barrier / "go").write_text("go\n", encoding="utf-8")
+
+        # After their exits the command keeps the hub up for the hand recovery.
+        wait_until_sync(
+            lambda: (
+                "keeping the hub up until the run is done" in output.read_text(encoding="utf-8")
+                or started.poll() is not None
+            ),
+            "start-run keeps the hub after its launchers exit",
+            # A hub start, three joins and exits, then the wait: a hang bound.
+            timeout_s=3 * LIVENESS_S,
+        )
+        assert started.poll() is None, output.read_text(encoding="utf-8")
+
+        for agent in START.AGENTS:
+            log = (root / f"{agent}-resume.log").open("w", encoding="utf-8")
+            logs.append(log)
+            resumes.append(
+                subprocess.Popen(
+                    [sys.executable, str(ROOT / "scripts/agent-launcher.py"), "resume",
+                     agent, "--hub", str(checkout), "--max-resumes", "0",
+                     "--predecessor-poll-s", "0.5"],
+                    cwd=checkout,
+                    env=resume_env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            )  # fmt: skip
+
+        # The command did not stop the hub under the hand-resumed launchers.
+        status = subprocess.run(
+            [sys.executable, "-m", "robomate", "status", "--json"],
+            cwd=checkout,
+            env=smoke["env"],
+            capture_output=True,
+            text=True,
+            timeout=2 * LIVENESS_S,
+        )
+        assert status.returncode == 0, status.stdout + status.stderr
+        assert json.loads(status.stdout).get("hub_id")
+        assert started.poll() is None
+
+        for agent, process in zip(START.AGENTS, resumes, strict=True):
+            code = process.wait(timeout=5 * LIVENESS_S)
+            text = (root / f"{agent}-resume.log").read_text(encoding="utf-8")[-3000:]
+            assert code == 0, f"{agent}'s hand-resumed launcher exited with {code}: {text}"
+        started.wait(timeout=5 * LIVENESS_S)
+    finally:
+        for process in [started, *resumes]:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        for log in logs:
+            log.close()
+    printed = output.read_text(encoding="utf-8")
+    assert "workflow done" in printed, printed
+    assert "hub scripted stopped" in printed, printed
+
+
 @pytest.mark.skipif(os.name == "nt", reason="SIGTERM is TerminateProcess on Windows")
 def test_without_auto_start_it_prints_the_starts_and_sigterm_stops_its_hub(
     smoke: dict[str, Any],
@@ -714,6 +831,13 @@ def test_final_report_passes_clean_login_from_cli_and_saved_config(
     output = capsys.readouterr().out
     assert "consult Denise" in output
     assert ("--clean-login" in output) is clean_login
+    # Every agent's saved conversation is one runnable ask command away (#491).
+    for agent in START.AGENTS:
+        line = next(
+            text for text in output.splitlines() if f"agent-launcher.py ask {agent} --hub" in text
+        )
+        assert "uv run --locked --project" in line
+        assert str(run.checkout) in line
 
 
 def test_missing_mcp_entry_refuses_before_clone(smoke: dict[str, Any]) -> None:
@@ -825,6 +949,20 @@ def test_opencode_checks_both_configs_and_warns_on_unreadable(
     other.write_text('{"mcp":{"robomate":false}}', encoding="utf-8")
     with pytest.raises(ValueError, match="mcp.robomate"):
         START.check_mcp_entry("opencode")
+
+
+def test_run_finished_covers_done_and_released_runs() -> None:
+    """#491 item 4 (a): a done run or a fully released live run ends the wait."""
+
+    released = [{"name": name, "status": "released"} for name in START.AGENTS]
+    idle = [{"name": name, "status": "idle"} for name in START.AGENTS]
+    assert START.run_finished({"workflow": {"status": "done"}, "agents": idle})
+    assert START.run_finished({"workflow": {"status": "active"}, "agents": released})
+    assert not START.run_finished({"workflow": {"status": "active"}, "agents": idle})
+    # A queued run has not touched the agents: their rows can be stale releases.
+    assert not START.run_finished({"workflow": {"status": "queued"}, "agents": released})
+    assert not START.run_finished({"workflow": {"status": "active"}, "agents": []})
+    assert not START.run_finished(None)
 
 
 def test_supervise_stops_remaining_launchers_when_start_fails(
