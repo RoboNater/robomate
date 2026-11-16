@@ -493,6 +493,46 @@ async def test_invalid_closeout_report_details_are_safe(
         await worker.close()
 
 
+async def test_invalid_closeout_rules_and_error_limit(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    worker = WorkerHubClient(
+        WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"), client
+    )
+    await worker.check_in()
+    run_id = hub_store.get_state()["workflow"]["run_id"]
+    hub_store.request_closeout_reports(run_id, "alice", "session")
+    try:
+        bad = report() | {
+            "outstanding_items": [
+                {"summary": "item"},
+                {"summary": "item", "url": "http://private-url", "reason": "reason"},
+            ],
+            "claims": [{"text": "private-claim", "verification": "verified"}],
+        }
+        with pytest.raises(WorkerProtocolError) as error:
+            await worker.submit_closeout_report(run_id, bad)
+        message = str(error.value)
+        assert "an outstanding item needs a URL or a reason" in message
+        assert "url must be an absolute HTTPS issue or comment reference" in message
+        assert "a verified claim requires evidence" in message
+        assert "private-url" not in message and "private-claim" not in message
+        bad = report() | {
+            "outstanding_items": [
+                {"summary": "item", "reason": "reason"}
+                | {f"private-key-{i}": "private-value" for i in range(200)}
+            ]
+        }
+        with pytest.raises(WorkerProtocolError) as error:
+            await worker.submit_closeout_report(run_id, bad)
+        message = str(error.value)
+        assert "omitted" in message
+        assert len(message) < 8192
+        assert "private-key" not in message and "private-value" not in message
+    finally:
+        await worker.close()
+
+
 async def test_accounted_shared_worker_submission(
     app: FastAPI,
     client: httpx.AsyncClient,

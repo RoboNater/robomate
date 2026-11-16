@@ -64,8 +64,14 @@ def _validation_message(exc: ValidationError) -> str:
         "literal_error",
         "value_error",
     }
+    safe_messages = {
+        "Value error, an outstanding item needs a URL or a reason",
+        "Value error, url must be an absolute HTTPS issue or comment reference",
+        "Value error, a verified claim requires evidence",
+    }
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
     details = []
-    for error in exc.errors(include_input=False, include_context=False, include_url=False):
+    for error in errors[:50]:
         loc = (
             ".".join(
                 str(part) if isinstance(part, int) or part in fields else "<field>"
@@ -74,7 +80,12 @@ def _validation_message(exc: ValidationError) -> str:
             or "<report>"
         )
         kind = error["type"] if error["type"] in kinds else "invalid"
-        details.append(f"{loc}: {kind}")
+        detail = f"{loc}: {kind}"
+        if kind == "value_error" and error["msg"] in safe_messages:
+            detail += f" ({error['msg'].removeprefix('Value error, ')})"
+        details.append(detail)
+    if len(errors) > 50:
+        details.append(f"{len(errors) - 50} further errors omitted")
     return (
         "invalid AgentCloseoutReport; expected summary, "
         "outstanding_items[{summary, finding_id?, url?, reason?}], lessons[str], "

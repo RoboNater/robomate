@@ -194,7 +194,9 @@ def create_worker_mcp(
 
         Required fields: summary, outstanding_items (summary and URL or reason,
         optional finding_id), lessons, claims (text, verification verified or
-        unverified, evidence required for verified). Empty lists are explicit.
+        unverified, evidence required for verified). A finding_id must be recorded
+        in a typed review result; cite findings added later only as PR comments by
+        URL. Empty lists are explicit.
         Omit credentials and transcripts. Maximum 32 KiB; identical retries
         return the same receipt, conflicting retries are rejected. Author is
         inferred from your session. Then return to await_assignment.
