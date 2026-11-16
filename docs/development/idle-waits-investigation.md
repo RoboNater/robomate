@@ -27,7 +27,7 @@ copy of the code and a separate config per harness
 
    | Harness (version) | Limit with no setting | Setting that raises it | Failure text |
    |---|---|---|---|
-   | Claude Code 2.1.325, print mode (`-p`) | **1800 s** of silence | `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` (ms; 0 disables) | `sent no response or progress for 1800s; aborting` |
+   | Claude Code 2.1.325, print mode (`-p`) | **1800 s** of silence | per-server `"timeout"` (ms) in the MCP entry, or `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` | `sent no response or progress for 1800s; aborting` |
    | Claude Code 2.1.325, interactive | **moved to the background at 120 s** | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` | the turn ends without the result |
    | Codex CLI 0.169.0 | **300 s** | `tool_timeout_sec` | `timed out awaiting tools/call after 300s` |
    | OpenCode 1.19.5 | **60 s** | `mcp.robomate.timeout` (ms) | `MCP error -32001: Request timed out` |
@@ -37,7 +37,9 @@ copy of the code and a separate config per harness
    sessions only.** In print mode, which `agent-launcher.py` uses, Claude Code
    held 100 s, 300 s, 600 s and 1800 s in the foreground with no setting. In an
    interactive session the same version moved a 300 s hold to the background
-   at 120 s. Print mode's own limit is an idle timeout of exactly 1800 s.
+   at 120 s. Print mode's own limit is an idle timeout of exactly 1800 s. A
+   scratch bridge that sent an MCP progress notification every 60 s held
+   2000 s with Claude Code's defaults.
 4. **On Codex a long hold only saves model calls if the wait is not polled.**
    Codex 0.169.0 with `gpt-6-luna` calls MCP tools from a scripted `exec` cell
    that hands control back to the model after `yield_time_ms` (default 30 s).
@@ -166,9 +168,11 @@ in the installed 2.1.325 binary; "trialled" marks what a trial confirmed.
 - **Idle timeout.** A call with no response and no MCP progress notification
   for 1800 s is aborted (stdio server; trialled). The robomate bridge sends no
   progress notifications, so a hold is silent for its whole length.
-  `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` disables it (trialled at 2400 s). The
-  error text also offers a per-server `"timeout"` (ms) in the MCP entry
-  (trial running at this commit; see [Results](#results)).
+  Three things each got a hold past it (trialled):
+  `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` on the `claude` process (2400 s); a
+  per-server `"timeout": 7200000` in the MCP entry (2000 s); and progress
+  notifications from the bridge (2000 s). Claude Code sent a `progressToken`
+  with the call, so the bridge's notifications were addressed to it.
 - **Wall-clock timeout.** `MCP_TOOL_TIMEOUT` (ms), or the per-server
   `"timeout"`, which wins. `MCP_TOOL_TIMEOUT=7200000` did not change the
   30-minute result, and unset did not stop a 30-minute hold, so the default is
@@ -262,6 +266,14 @@ account"), so the Codex trials used `gpt-6-luna`.
 Harness versions: Claude Code 2.1.325, codex-cli 0.169.0, OpenCode 1.19.5,
 Antigravity (`agy`) 1.5.9. Devin is not installed.
 
+Smoke-run report: nine hubs, started with `uv run --locked [--project
+<scratch clone>] robomate up --port N` on ports 8497–8505, state under
+`scratch/smoke/robomate-long.robomate/` and
+`scratch/smoke2/robomate-holdfix.robomate/`. All were stopped with `robomate
+down` in the same isolated environment, and nothing was left listening on
+those ports. The machine's `hubs.json`, operator credential and harness
+configs were not touched.
+
 ### Results
 
 "ok" means the tool returned `{"timeout": true}` or `{"event": null}` after
@@ -276,7 +288,8 @@ means not run.
 | Claude Code print | none | ok | ok | ok | ok | 2400 s **fail at 1800 s** |
 | Claude Code print | `MCP_TOOL_TIMEOUT=7200000` | — | — | — | ok | — |
 | Claude Code print | `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0` | — | — | — | — | 2400 s ok |
-| Claude Code print | per-server `"timeout": 7200000` | — | — | — | — | 2000 s: running at this commit |
+| Claude Code print | per-server `"timeout": 7200000` | — | — | — | — | 2000 s ok |
+| Claude Code print | none; scratch bridge sends MCP progress every 60 s | — | — | — | — | 2000 s ok |
 | Claude Code interactive | none | — | **backgrounded at 120 s** | — | — | — |
 | Claude Code interactive | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` | — | ok | — | — | — |
 | Codex | unset | — | — | **fail at 300 s** | — | — |
@@ -294,7 +307,7 @@ in the last row for each harness above (Claude Code: no setting):
 
 | Harness | 100 s | 300 s | 600 s | 1800 s |
 |---|---|---|---|---|
-| Baseline | ok | ok | ok | ok |
+| Baseline | ok | ok | ok | ok (a 3600 s hold was stopped unfinished at teardown) |
 | Claude Code print | ok | ok | ok | **fail at 1800 s** (idle timeout) |
 | Codex | ok | ok | ok | ok |
 | OpenCode | ok | ok | ok | ok |
@@ -436,7 +449,7 @@ issues) is **TODO (run)**. What the trials say it must cover:
 | Orchestrator `Timeout` bound | raise from 120 | raise |
 | `rpc._hold_s` cap | raise from 120, or status shows `idle` | raise, or a stall is recorded at `stall_after_min` |
 | `HUB_MAX_WAIT_S` | none | raise per hub |
-| Claude Code, print mode | none | below 1800 s: none. At or above: `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, or bridge progress notifications |
+| Claude Code, print mode | none | below 1800 s: none. At or above, one of: per-server `"timeout"` in the MCP entry, `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, or bridge progress notifications |
 | Claude Code, interactive | `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS=0` in the session's environment | same |
 | Codex | shipped 330 is enough | `tool_timeout_sec`; and stop the `exec` polling by instruction or `direct_only_tool_namespaces` |
 | OpenCode | shipped 330000 is enough | `timeout` |
@@ -444,13 +457,16 @@ issues) is **TODO (run)**. What the trials say it must cover:
 
 Open questions the trials raise:
 
-- Where do the Claude Code variables go? The static entry cannot carry them
-  (they belong to the `claude` process, not the MCP server). The launcher's
-  environment can. An interactive session started by hand has neither.
+- Where do the Claude Code settings go? The per-server `"timeout"` fits the
+  static entry. `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` does not: it belongs to
+  the `claude` process, so the launcher's environment can carry it, and an
+  interactive session started by hand has to set it itself.
 - A per-harness maximum, or one value under every harness's limit? Claude
   Code print mode's 1800 s idle timeout is the lowest raised ceiling seen.
-- Should the bridge send MCP progress notifications during a hold? That would
-  reset Claude Code's idle timeout without any harness setting. Not trialled.
+- Should the bridge send MCP progress notifications during a hold? It reset
+  Claude Code's idle timeout with no harness setting. The scratch patch
+  covered `await_assignment` only. Its effect on the other three harnesses'
+  timeouts, and on interactive backgrounding, was not trialled.
 - Codex: an instruction in the served guide, a launcher prompt line, or the
   undocumented config key?
 
@@ -458,8 +474,7 @@ Open questions the trials raise:
 
 - Section 1: run logs of #259 and #267; earlier wait-timeout issues.
 - Section 2: provider limits under contention; Devin.
-- Section 3: reviewer spot-check of one trial; the result of the Claude Code
-  per-server `"timeout"` trial if not filled in above.
+- Section 3: reviewer spot-check of one trial.
 - Section 4: notify audit; event leases; orchestrator hold across a closeout
   deadline.
 - Section 5: all of it.
