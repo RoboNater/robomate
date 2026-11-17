@@ -1712,7 +1712,9 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         argv = [*program, *flags, *extra, "--strict-mcp-config", "--permission-mode", "default"]
         for root in [*write_roots, *read_roots]:
             argv += ["--add-dir", root]
-        argv += [prompt]
+        # Claude Code's variadic --add-dir consumes a trailing bare prompt as
+        # another directory (#513); -- keeps the startup prompt positional.
+        argv += ["--", prompt]
     print(
         f"Denise ({harness}) for run {args.run}: no hub tools; context {doctor_dir['context']}; "
         f"report {report}; write roots: {', '.join(write_roots) or '(none)'}; "

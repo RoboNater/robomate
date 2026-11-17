@@ -2021,11 +2021,9 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
 
     assert code == 0
     (launch,) = launches(area)
+    prompt = f"Read {run['denise'] / 'startup.md'} and follow the instructions in it"
     assert Path(launch["cwd"]).resolve() == (run["denise"] / "workspace").resolve()
-    assert (
-        launch["argv"][-1]
-        == f"Read {run['denise'] / 'startup.md'} and follow the instructions in it"
-    )
+    assert launch["argv"][-1] == prompt
     assert not any("Join robomate" in word or "--mcp-config" in word for word in launch["argv"])
     assert not any(word in launch["argv"] for word in ("-p", "--approve-for-me"))
     if harness == "codex":
@@ -2036,6 +2034,11 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
         launch["argv"][i + 1] for i, word in enumerate(launch["argv"]) if word == "--add-dir"
     ]
     assert str(run["target"].resolve()) in granted and str(run["run_dir"].resolve()) in granted
+    # Every grant stays a directory and the prompt stays positional: Claude
+    # Code's variadic --add-dir otherwise consumes a trailing prompt (#513).
+    assert prompt not in granted and "--" not in granted
+    if harness == "claude":
+        assert launch["argv"][-2] == "--"
     # Everything the doctor wrote is under the selected run's denise/; team logs are untouched.
     after = files(area["root"], area["harness_dir"])
     changed = {path for path in after if before.get(path) != after[path]}
