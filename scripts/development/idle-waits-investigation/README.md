@@ -123,3 +123,44 @@ run $D/interact_hub_down.py hub-x 8504    # robomate down mid-hold, then up agai
 
 `baseline.sh HUB PORT NAME ROLE TOOL T...` wraps `baseline_hold.py` for plain
 holds.
+
+
+## Shipping-settings acceptance (#559, operator-run)
+
+Use the reviewed commit with **no scratch patches**, and retain `versions.txt`,
+trial timing/output and `status-poll.sh` snapshots. Workers prepare these commands;
+the operator launches the agents and smoke hubs. Linux evidence suffices.
+
+```sh
+D=scripts/development/idle-waits-investigation
+IDLE_WAITS_FINAL_SETTINGS=1 $D/setup-smoke.sh /path/to/fresh-scratch
+export IDLE_WAITS_SCRATCH=/path/to/fresh-scratch
+{ claude --version; codex --version; opencode --version; agy --version; } > "$IDLE_WAITS_SCRATCH/versions.txt"
+$D/start-hub.sh hub-w 8503
+$D/start-hub.sh hub-cc 8504
+$D/start-hub.sh hub-codex 8505
+$D/start-hub.sh hub-oc 8506
+$D/start-hub.sh hub-agy 8507
+setsid nohup $D/status-poll.sh "$IDLE_WAITS_SCRATCH" > /dev/null 2>&1 &
+START_WORKFLOW=1 $D/baseline.sh hub-w 8503 alice orchestrator wait_for_event 5
+$D/run-claude-code.sh final-cc-w hub-w 8503 worker final-cc-w 1500
+$D/run-claude-code.sh final-cc-o hub-cc 8504 orch alice 1500
+CODEX_PROMPT_EXTRA='Use // @exec: {"yield_time_ms": 1830000} for the whole 1800 second hub wait.' $D/run-codex.sh final-codex-w hub-w 8503 1900 worker final-codex-w 1800
+CODEX_PROMPT_EXTRA='Use // @exec: {"yield_time_ms": 1830000} for the whole 1800 second hub wait.' $D/run-codex.sh final-codex-o hub-codex 8505 1900 orch alice 1800
+$D/run-opencode.sh final-oc-w hub-w 8503 1900000 worker final-oc-w 1800
+$D/run-opencode.sh final-oc-o hub-oc 8506 1900000 orch alice 1800
+$D/run-antigravity.sh final-agy-w hub-w 8503 1900 worker final-agy-w 1800
+$D/run-antigravity.sh final-agy-o hub-agy 8507 1900 orch alice 1800
+$D/run-claude-code-tui.sh final-cc-tui hub-w 8503 180 worker final-cc-tui 100
+$D/stop-hubs.sh
+```
+
+Run trials concurrently using the foreground-session route supported by the
+operator's harness. `setup-smoke.sh` sets `HUB_MAX_WAIT_S=1800` in final-settings
+mode; the runners above select the shipping client budgets. The existing trial
+prompts specify explicit holds so they measure that requested profile length.
+For an omitted-timeout check, update the trial's MCP environment to advertise
+`HUB_MCP_TIMEOUT_S=1900` (and `HUB_HARNESS_MODE=print` for Claude print), then call
+without `timeout_s`. Unknown/interactive modes and old static entries stay at
+100 s. Check that each full-length hold remains alive/holding, has no false
+stall episode, returns its timeout, and wakes on assignment/reply/release.

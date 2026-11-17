@@ -15,10 +15,11 @@ from types import MethodType
 from typing import Any
 
 import httpx
-from agent_hub_common import AgentProfile, validate_agent_name
+from agent_hub_common import AgentProfile, profile_from_env, validate_agent_name
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import HubEndpoint, discover
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
+from agent_hub_common.waits import default_wait_s
 from mcp.server.fastmcp import FastMCP
 
 from .accounting import McpAccounting
@@ -40,9 +41,14 @@ class OrchestratorBridge:
         name: str = "alice",
         *,
         cwd: Path | None = None,
+        harness: str | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.name = name
+        self.harness_hint = harness
+        configured = profile_from_env(os.environ).harness
+        effective_harness = harness if configured == "unknown" and harness else configured
+        self.default_wait_s = default_wait_s(effective_harness, os.environ)
         self.cwd = cwd
         self.session = str(uuid.uuid4())
         self._endpoint: HubEndpoint | None = None
@@ -144,6 +150,10 @@ class OrchestratorBridge:
 
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         client = self._http()
+        if method == "wait_for_event":
+            params = dict(params)
+            if params.get("timeout_s") is None:
+                params["timeout_s"] = self.default_wait_s
         timeout = float(params.get("timeout_s", 100)) + 15 if method == "wait_for_event" else 75.0
         request = {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params}
         attempts = 0
@@ -260,7 +270,7 @@ class OrchestratorBridge:
         self.name = name
         self.telemetry.agent = name
         settings = replace(
-            WorkerSettings.unjoined(harness=harness, cwd=self.cwd),
+            WorkerSettings.unjoined(harness=harness or self.harness_hint, cwd=self.cwd),
             telemetry_log=None,
         )
         # Use the same profile/workspace resolution as the static join bridge.

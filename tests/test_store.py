@@ -2640,3 +2640,20 @@ async def test_takeover_fences_already_held_assignment_wait(store: HubStore) -> 
             await pending
     finally:
         pending.cancel()
+
+
+async def test_takeover_fences_already_held_reply_wait(store: HubStore) -> None:
+    store.check_in("bob", worker_instance_id="old")
+    task_id = assign(store)
+    question = store.open_question(task_id, "bob", "Which base?", "q-takeover")
+    pending = asyncio.create_task(
+        store.await_reply(task_id, question, 1800, worker_instance_id="old")
+    )
+    await wait_until(lambda: store.signals.waiting(task_key(task_id)), "old reply hold")
+    store.check_in("bob", worker_instance_id="new", takeover=True)
+    try:
+        await wait_until(pending.done, "superseded reply hold ends")
+        with pytest.raises(ConflictError, match="superseded"):
+            await pending
+    finally:
+        pending.cancel()

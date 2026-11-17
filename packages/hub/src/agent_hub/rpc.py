@@ -591,6 +591,8 @@ class RpcDispatcher:
                 f"{method} requires the {ACTOR_HEADER} and {SESSION_HEADER} headers",
             )
         self._accept_session(*caller)
+        if method == "wait_for_event":
+            params["timeout_s"] = self.ops.bounded_wait(params.get("timeout_s"))
         token = CALLER.set(Caller(*caller))
         try:
             with self.ops.store.orchestrator_call(caller[1], method, _hold_s(method, params)):
@@ -698,7 +700,7 @@ def _hold_s(method: str, params: Mapping[str, Any]) -> float:
     if method == "wait_for_event":
         timeout = params.get("timeout_s", 100)
         if isinstance(timeout, int | float) and not isinstance(timeout, bool):
-            return min(max(float(timeout), 0.0), 120.0)
+            return max(float(timeout), 0.0)
         return 100.0
     return 75.0
 

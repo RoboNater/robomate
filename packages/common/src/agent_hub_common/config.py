@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 WILDCARD_HOST_ALIAS = "*"
 
 DEFAULT_WAIT_S = 120.0
-MAX_WAIT_FACTOR = 2.5
+DEFAULT_MAX_WAIT_S = 1800.0
 DEFAULT_LOST_AFTER_S = 180.0
 DEFAULT_SWEEP_INTERVAL_S = 10.0
 DEFAULT_EVENT_LEASE_S = 600.0
@@ -185,7 +185,7 @@ class HubSettings:
     # Blocking calls are bounded so no agent ever spins: a held request returns
     # empty at the deadline and the caller is told to call again.
     default_wait_s: float = 120.0
-    max_wait_s: float = 300.0
+    max_wait_s: float = DEFAULT_MAX_WAIT_S
     # Liveness comes from worker-mcp's timer, independently of LLM tool calls.
     lost_after_s: float = DEFAULT_LOST_AFTER_S
     sweep_interval_s: float = 10.0
@@ -268,7 +268,7 @@ class HubSettings:
                 )
 
         default_wait_s = _positive_seconds(env, "HUB_DEFAULT_WAIT_S", DEFAULT_WAIT_S)
-        max_wait_s = _positive_seconds(env, "HUB_MAX_WAIT_S", MAX_WAIT_FACTOR * default_wait_s)
+        max_wait_s = _positive_seconds(env, "HUB_MAX_WAIT_S", DEFAULT_MAX_WAIT_S)
         if max_wait_s < default_wait_s:
             raise ConfigurationError(
                 "HUB_MAX_WAIT_S must be at least HUB_DEFAULT_WAIT_S; "

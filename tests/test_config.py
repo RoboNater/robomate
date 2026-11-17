@@ -161,7 +161,7 @@ def test_wait_bounds_and_timer_liveness_have_independent_defaults() -> None:
     settings = HubSettings.from_env({})
 
     assert settings.default_wait_s == 120
-    assert settings.max_wait_s == 300
+    assert settings.max_wait_s == 1800
     assert settings.lost_after_s == 180
     assert settings.sweep_interval_s == 10
 
@@ -169,7 +169,7 @@ def test_wait_bounds_and_timer_liveness_have_independent_defaults() -> None:
 def test_lowering_the_default_hold_does_not_change_timer_liveness() -> None:
     settings = HubSettings.from_env({"HUB_DEFAULT_WAIT_S": "20"})
 
-    assert settings.max_wait_s == 50
+    assert settings.max_wait_s == 1800
     assert settings.lost_after_s == 180
 
 

@@ -122,7 +122,7 @@ def create_app(
         worktree_root=config_layers.worktree_root,
     )
     protocol = A2AProtocol(store=store, settings=resolved, worktree_manager=worktree_manager)
-    orchestrator = OrchestratorOps(store, select_gate(hub_info))
+    orchestrator = OrchestratorOps(store, select_gate(hub_info), settings=resolved)
     accounting = CallAccounting(
         resolved.database_path,
         enabled=resolved.call_accounting,

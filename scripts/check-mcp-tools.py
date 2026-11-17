@@ -28,8 +28,7 @@ Workflow: after running the setup prompt, run once with --save. After each
 
 It contacts no hub. It does start the bridge with `uv run --locked`, which
 syncs the checkout's .venv, so run it only when no robomate run is active.
-It doesn't notice changes to the prompt itself or to the settings a harness
-needs; it only watches the tool list.
+It also reports a Codex static timeout shorter than the measured hold profile.
 """
 
 from __future__ import annotations
@@ -37,6 +36,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -45,6 +45,8 @@ import tempfile
 import threading
 import tomllib
 from pathlib import Path
+
+from agent_hub_common.waits import HTTP_MARGIN_S, profile_wait_s
 
 PROBE_TIMEOUT_S = 180
 
@@ -150,6 +152,21 @@ def codex_config() -> Path:
     return (Path(home) if home else Path.home() / ".codex") / "config.toml"
 
 
+def check_timeout(harness: str, timeout_s: object, mode: str = "unknown") -> list[str]:
+    """Flag an old client budget even though its bridge keeps the 100 s fallback."""
+    required = profile_wait_s(harness, mode) + HTTP_MARGIN_S
+    if (
+        not isinstance(timeout_s, int | float)
+        or not math.isfinite(timeout_s)
+        or timeout_s < required
+    ):
+        return [
+            f"{harness}: static client timeout {timeout_s!r}s is shorter than "
+            f"profile + HTTP margin ({required:g}s)"
+        ]
+    return []
+
+
 def check_codex(checkout: Path, tools: set[str]) -> tuple[list[str], bool]:
     """Return (problems, checked) for Codex's robomate entry."""
     path = codex_config()
@@ -168,7 +185,7 @@ def check_codex(checkout: Path, tools: set[str]) -> tuple[list[str], bool]:
             return [], False
         return [f"Codex: {path} has no [mcp_servers.robomate] entry"], True
 
-    problems = []
+    problems = check_timeout("codex", entry.get("tool_timeout_sec", 330))
     approved = {
         name
         for name, table in entry.get("tools", {}).items()

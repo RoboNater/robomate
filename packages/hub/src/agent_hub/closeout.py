@@ -255,6 +255,7 @@ def request(
                 raise ConflictError("orchestrator is not a member of this closeout collection")
     for context in contexts:
         store.signals.notify(context_key(context))
+    store.signals.notify(EVENT_KEY)
     return read(store, run_id)
 
 
@@ -471,7 +472,7 @@ def shift(connection: Connection, workflow_id: str, seconds: float) -> None:
         )
 
 
-def inbox_window(store: HubStore) -> tuple[bool, float | None]:
+def inbox_window(store: HubStore) -> tuple[bool, float | None, int]:
     """Expire outstanding worker windows and bound Alice's next inbox sleep.
 
     Only a newly ended window returns true, so subsequent inbox calls can hold
@@ -500,4 +501,9 @@ def inbox_window(store: HubStore) -> tuple[bool, float | None]:
                 ended = True
             else:
                 remaining.append(seconds)
-    return ended, min(remaining) if remaining else None
+        expired_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM closeout_expected WHERE missing_reason = 'deadline_expired'"
+            ).fetchone()[0]
+        )
+    return ended, min(remaining) if remaining else None, expired_count

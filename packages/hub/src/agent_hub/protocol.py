@@ -1033,7 +1033,17 @@ class A2AProtocol:
         sent_as: str,
     ) -> AsyncIterator[bytes]:
         with self.store.worker_hold(agent.name, agent.worker_instance_id, "ask_alice", timeout_s):
-            reply = await self.store.await_reply(task.id, question_id, timeout_s)
+            try:
+                reply = await self.store.await_reply(
+                    task.id, question_id, timeout_s, worker_instance_id=agent.worker_instance_id
+                )
+            except ConflictError as exc:
+                yield _sse(
+                    JSONRPCErrorResponse(
+                        id=request_id, error=InvalidRequestError(message=str(exc))
+                    ).model_dump(mode="json", exclude_none=True)
+                )
+                return
         current = self.store.get_task(task.id)
         if current is not None and current.state in (
             TaskState.CANCELED,

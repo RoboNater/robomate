@@ -775,3 +775,29 @@ async def test_unjoined_whoami_fails_closed_without_listing_hubs(
         assert "hub=" not in error
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize("explicit", [None, 45.0])
+async def test_bridge_uses_profile_default_and_http_margin(
+    monkeypatch: pytest.MonkeyPatch, explicit: float | None
+) -> None:
+    monkeypatch.setenv("HUB_HARNESS", "codex")
+    monkeypatch.setenv("HUB_MCP_TIMEOUT_S", "1900")
+    monkeypatch.delenv("HUB_DEFAULT_WAIT_S", raising=False)
+    seen = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"result": {"event": None}})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), base_url=BASE_URL
+    ) as client:
+        bridge = OrchestratorBridge(http_client=client)
+        try:
+            assert await bridge.call("wait_for_event", {"timeout_s": explicit}) == {"event": None}
+            request = seen[0]
+            assert json.loads(request.content)["params"]["timeout_s"] == (explicit or 1800)
+            assert request.extensions["timeout"]["read"] == (explicit or 1800) + 15
+        finally:
+            await bridge.close()

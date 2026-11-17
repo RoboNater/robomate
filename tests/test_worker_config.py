@@ -1,13 +1,10 @@
 import json
-import re
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
-import worker_mcp.config as worker_config_mod
 from agent_hub_common import (
-    MAX_HOLD_DEFAULT_S,
     AgentProfile,
     ConfigurationError,
     ModelSource,
@@ -197,67 +194,55 @@ def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> Non
     assert "HUB_TELEMETRY_LOG" in claude["mcpServers"]["robomate"]["env"]
 
 
-def _check_hold_defaults(
-    *,
-    worker_default_wait_s: float,
-    wait_for_event_default_s: float,
-    guide_texts: dict[str, str],
-) -> None:
-    assert MAX_HOLD_DEFAULT_S == 100
-    assert worker_default_wait_s <= MAX_HOLD_DEFAULT_S, (
-        f"worker_mcp.config.DEFAULT_WAIT_S={worker_default_wait_s} > {MAX_HOLD_DEFAULT_S}"
+@pytest.mark.parametrize(
+    ("harness", "mode", "hold"),
+    [
+        ("claude-code", "print", 1500),
+        ("claude-code", "interactive", 100),
+        ("claude-code", "unknown", 100),
+        ("codex", "headless", 1800),
+        ("opencode", "headless", 1800),
+        ("antigravity", "headless", 1800),
+        ("devin", "headless", 100),
+        ("unknown", "unknown", 100),
+    ],
+)
+def test_measured_wait_profiles_and_precedence(harness: str, mode: str, hold: int) -> None:
+    from agent_hub_common.waits import default_wait_s, profile_wait_s
+
+    env = {"HUB_HARNESS": harness, "HUB_HARNESS_MODE": mode, "HUB_MCP_TIMEOUT_S": "1900"}
+    assert profile_wait_s(harness, mode) == hold
+    assert WorkerSettings.unjoined(environ=env).default_wait_s == hold
+    assert (
+        WorkerSettings.unjoined(
+            harness=harness, environ={"HUB_HARNESS_MODE": mode, "HUB_MCP_TIMEOUT_S": "1900"}
+        ).default_wait_s
+        == hold
     )
-    assert wait_for_event_default_s <= MAX_HOLD_DEFAULT_S, (
-        f"orchestrator wait_for_event timeout_s={wait_for_event_default_s} > {MAX_HOLD_DEFAULT_S}"
-    )
-    for rel_path, text in guide_texts.items():
-        literals = [
-            float(m.group(1)) for m in re.finditer(r"timeout_s\s*=\s*(\d+(?:\.\d+)?)", text)
-        ]
-        assert literals, f"{rel_path} has no timeout_s= literals"
-        for value in literals:
-            assert value <= MAX_HOLD_DEFAULT_S, (
-                f"{rel_path} has timeout_s={value:g} > {MAX_HOLD_DEFAULT_S}"
-            )
+    assert default_wait_s(harness, env | {"HUB_DEFAULT_WAIT_S": "45"}) == 45
+    assert default_wait_s(harness, env | {"HUB_MCP_TIMEOUT_S": "330"}) == 100
+    assert default_wait_s(harness, {}) == 100
+    if harness == "claude-code":
+        assert hold < (1800 if mode == "print" else 120)
+    else:
+        assert hold + 15 < 1900
 
 
-async def test_max_hold_default_s_bounds_worker_orchestrator_and_guide_timeouts() -> None:
-    """#12: MCP hold defaults stay at or below 100 s across code, schema, and guides."""
+@pytest.mark.parametrize("raw", ["nan", "inf", "1801", "0"])
+def test_operator_wait_override_must_be_bounded(raw: str) -> None:
+    with pytest.raises(ConfigurationError, match="HUB_DEFAULT_WAIT_S"):
+        WorkerSettings.unjoined(environ={"HUB_DEFAULT_WAIT_S": raw})
+
+
+async def test_orchestrator_timeout_schema_accepts_profiles_and_omits_default() -> None:
     tools = await create_orchestrator_mcp(OrchestratorBridge()).list_tools()
-    wait_tool = next(t for t in tools if t.name == "wait_for_event")
-    schema: dict[str, Any] = wait_tool.inputSchema
-    wait_default = float(schema["properties"]["timeout_s"]["default"])
-    guide_texts = {
-        rel: (ROOT / rel).read_text(encoding="utf-8")
-        for rel in ("guides/worker.md", "prompts/worker.md", "guides/orchestrator.md")
-    }
-
-    _check_hold_defaults(
-        worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
-        wait_for_event_default_s=wait_default,
-        guide_texts=guide_texts,
-    )
-
-    with pytest.raises(AssertionError, match=r"worker_mcp\.config\.DEFAULT_WAIT_S"):
-        _check_hold_defaults(
-            worker_default_wait_s=120.0,
-            wait_for_event_default_s=wait_default,
-            guide_texts=guide_texts,
-        )
-    with pytest.raises(AssertionError, match="orchestrator wait_for_event"):
-        _check_hold_defaults(
-            worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
-            wait_for_event_default_s=120.0,
-            guide_texts=guide_texts,
-        )
-    for rel in guide_texts:
-        tampered = {**guide_texts, rel: guide_texts[rel] + "\nwait_for_event(timeout_s=100.5)\n"}
-        with pytest.raises(AssertionError, match=re.escape(rel)):
-            _check_hold_defaults(
-                worker_default_wait_s=worker_config_mod.DEFAULT_WAIT_S,
-                wait_for_event_default_s=wait_default,
-                guide_texts=tampered,
-            )
+    schema: dict[str, Any] = next(t for t in tools if t.name == "wait_for_event").inputSchema
+    assert schema["properties"]["timeout_s"]["default"] is None
+    assert any(s.get("maximum") == 1800 for s in schema["properties"]["timeout_s"]["anyOf"])
+    for rel in ("guides/worker.md", "prompts/worker.md", "guides/orchestrator.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "wait_profile.default_wait_s" in text
+        assert "1500 s" in text and "1800 s" in text
 
 
 def test_unjoined_remote_bridge_uses_explicit_url_and_token_file(tmp_path: Path) -> None:
@@ -270,3 +255,19 @@ def test_unjoined_remote_bridge_uses_explicit_url_and_token_file(tmp_path: Path)
     assert settings.hub_url == "http://remote:8420"
     assert settings.token == "remote-secret"
     assert settings.token_file == token
+
+
+def test_orchestrator_install_hint_and_environment_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HUB_HARNESS", raising=False)
+    monkeypatch.delenv("AGENT_RUNTIME", raising=False)
+    monkeypatch.delenv("HUB_DEFAULT_WAIT_S", raising=False)
+    monkeypatch.setenv("HUB_MCP_TIMEOUT_S", "1900")
+    assert OrchestratorBridge(harness="codex").default_wait_s == 1800
+    monkeypatch.setenv("HUB_HARNESS", "claude-code")
+    assert OrchestratorBridge(harness="codex").default_wait_s == 100
+    monkeypatch.setenv("HUB_HARNESS_MODE", "print")
+    assert OrchestratorBridge(harness="codex").default_wait_s == 1500
+    monkeypatch.setenv("HUB_DEFAULT_WAIT_S", "45")
+    assert OrchestratorBridge(harness="codex").default_wait_s == 45

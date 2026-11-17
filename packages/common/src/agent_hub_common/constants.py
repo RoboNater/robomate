@@ -18,9 +18,8 @@ MAX_TYPED_RESULT_BYTES = 32 * 1024
 # an issue and submit that).
 MAX_STATEMENT_BYTES = 12 * 1024
 
-# #12 / robo-agents #109: Claude Code backgrounds any MCP tool call still
-# running at 120 s, so every default hold across worker_mcp, orchestrator
-# wait_for_event, and the worker guides/prompts stays at or below 100 s.
+# #12 / #559: fallback for unknown clients and interactive Claude (120 s
+# background threshold). Measured long profiles live in waits.py.
 MAX_HOLD_DEFAULT_S = 100
 
 AGENT_HEADER = "X-Hub-Agent"

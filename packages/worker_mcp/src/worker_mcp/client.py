@@ -391,6 +391,7 @@ class WorkerHubClient:
         client_timeout = hold_timeout_s + 15.0
         attempts = 0
         while True:
+            response_started = False
             try:
                 async with client.stream(
                     "POST",
@@ -399,6 +400,7 @@ class WorkerHubClient:
                     timeout=client_timeout,
                     headers=self._headers(),
                 ) as response:
+                    response_started = True
                     retryable = (
                         response.status_code in RETRYABLE_STATUS_CODES
                         and attempts < self.settings.max_retries
@@ -498,7 +500,9 @@ class WorkerHubClient:
                     finally:
                         count_http_exchange(response)
             except (httpx.TransportError, httpx.TimeoutException) as exc:
-                if attempts < self.settings.max_retries:
+                # Once a hold starts, a dropped response must return to the caller.
+                # Replaying it could silently start another 30-minute wait (#559).
+                if not response_started and attempts < self.settings.max_retries:
                     attempts += 1
                     count_http_retry()
                     delay = self.settings.backoff_factor_s * (2 ** (attempts - 1))
@@ -842,6 +846,7 @@ class WorkerHubClient:
                     http_client=self._ensure_client(),
                 )
             self.orchestrator.name = clean_name
+            self.orchestrator.default_wait_s = self.settings.default_wait_s
             result = await self.orchestrator.register(
                 profile,
                 takeover=takeover,
@@ -869,6 +874,7 @@ class WorkerHubClient:
                 "workspace_id": result.get("workspace_id", profile.workspace_id),
                 "cwd_inside_workspace": cwd_inside,
                 "profile": pinned_profile,
+                "wait_profile": {"default_wait_s": self.settings.default_wait_s},
             }
 
         self.settings = replace(self.settings, agent_name=clean_name)
@@ -1018,6 +1024,7 @@ class WorkerHubClient:
             "cwd_inside_workspace": final_cwd_inside,
             "setup": hub_setup,
             "profile": profile_dict,
+            "wait_profile": {"default_wait_s": self.settings.default_wait_s},
             "role_guide": role_guide,
             "guide": worker_guide,
             "guide_sha256": worker_guide_sha256,

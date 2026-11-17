@@ -1861,6 +1861,8 @@ def test_worker_env_includes_effort() -> None:
     assert env["HUB_EFFORT"] == "max"
     assert PREPARE_RUN.bridge_identity_env("opencode", "1.18.32", "anthropic", "m", "high") == {
         "HUB_HARNESS": "opencode",
+        "HUB_MCP_TIMEOUT_S": "1900",
+        "HUB_HARNESS_MODE": "headless",
         "HUB_HARNESS_VERSION": "1.18.32",
         "HUB_PROVIDER": "anthropic",
         "HUB_MODEL": "m",
@@ -2368,14 +2370,14 @@ async def test_opencode_and_antigravity_harnesses_render_configs_skills_and_scri
     }
     assert "join" in served
     assert set(alice_mcp["enabledTools"]) == served
-    assert alice_mcp["timeoutSeconds"] == 330
+    assert alice_mcp["timeoutSeconds"] == 1900
 
-    # OpenCode Bob uses the robomate worker bridge with a 330000ms timeout and external_directory.
+    # OpenCode Bob uses the robomate worker bridge with a 1900000ms timeout and external_directory.
     bob_oc = json.loads((run_dir / "configs" / "bob.opencode.json").read_text(encoding="utf-8"))
     assert bob_oc["model"] == "opencode/claude-sonnet-4-6"
     bob_mcp = bob_oc["mcp"]["robomate"]
     assert bob_mcp["command"][-3:] == ["mcp", "--role", "worker"]
-    assert bob_mcp["timeout"] == 330000
+    assert bob_mcp["timeout"] == 1900000
     assert bob_mcp["environment"]["ROBOMATE_HUB_URL"] == "http://127.0.0.1:8521"
     assert bob_mcp["environment"]["ROBOMATE_TOKEN_FILE"] == str(tmp_path / "target/.robomate/token")
     assert bob_mcp["environment"]["HUB_HARNESS"] == "opencode"
@@ -2693,7 +2695,7 @@ def test_codex_kickoff_and_resume_prompts_carry_the_long_exec_yield(
         charlie_harness="codex",
     )
     fragments = (
-        '`// @exec: {"yield_time_ms": 130000}`',
+        '`// @exec: {"yield_time_ms": 1830000}`',
         "pass the guide's `timeout_s` rather than a shorter value",
         "call `wait` on that same cell with a correspondingly long yield",
     )

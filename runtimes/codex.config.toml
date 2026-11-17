@@ -6,10 +6,10 @@
 command = "uv"
 args = ["run", "--project", "/path/to/robomate", "robomate", "mcp", "--role", "worker"]
 # Codex CLI 0.154.0 fails an MCP tool call after 300 s by default (observed; spec §8).
-# The default hold is 100 s, but a worker may request up to HUB_MAX_WAIT_S (300 s)
-# and waits 15 s past the hold before giving up, so allow that with margin.
-tool_timeout_sec = 330
-env = { ROBOMATE_HUB_URL = "http://alice-host:8420", ROBOMATE_TOKEN_FILE = "/path/to/target/.robomate/token", AGENT_NAME = "charlie", HUB_WORKSPACE = "/absolute/path/to/charlie-sandbox", HUB_HARNESS = "codex", HUB_HARNESS_VERSION = "", HUB_PROVIDER = "openai", HUB_MODEL = "", HUB_EFFORT = "", HUB_CAPABILITIES = "", HUB_TELEMETRY_LOG = "" }
+# The measured Codex default hold is 1800 s, capped by HUB_MAX_WAIT_S.
+# The bridge waits 15 s past the hold; the client budget includes further margin.
+tool_timeout_sec = 1900
+env = { HUB_MCP_TIMEOUT_S = "1900", ROBOMATE_HUB_URL = "http://alice-host:8420", ROBOMATE_TOKEN_FILE = "/path/to/target/.robomate/token", AGENT_NAME = "charlie", HUB_WORKSPACE = "/absolute/path/to/charlie-sandbox", HUB_HARNESS = "codex", HUB_HARNESS_VERSION = "", HUB_PROVIDER = "openai", HUB_MODEL = "", HUB_EFFORT = "", HUB_CAPABILITIES = "", HUB_TELEMETRY_LOG = "" }
 
 # Unattended workers cannot answer interactive MCP approval prompts. These
 # approvals cover only the bridge's coordination tools; shell commands and

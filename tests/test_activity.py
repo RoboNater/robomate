@@ -19,7 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 from conftest import SESSION, check_in, message, rpc
-from timing import wait_until
+from timing import FrozenClock, wait_until
 
 SESSION_2 = "0b9d2f4e-1c3a-4e5f-8a7b-6c5d4e3f2a1b"
 
@@ -796,3 +796,39 @@ def test_pause_freezes_existing_stall_episode(hub: HubStore, clock: FakeClock) -
     hub.sweep(3600)
     assert hub.sweep_stalls() == []
     assert hub.stall_episodes() == before
+
+
+@pytest.mark.parametrize("hold_s", [1500, 1800])
+def test_full_profile_hold_preserves_liveness_and_activity(
+    store: HubStore, frozen_clock: FrozenClock, hold_s: int
+) -> None:
+    from agent_hub.rpc import _hold_s
+
+    instance = worker(store)
+    orchestrate(store)
+    while (event := store.lease_next_event()) is not None:
+        store.ack_event(event.delivery_id)
+    duration = _hold_s("wait_for_event", {"timeout_s": hold_s})
+    assert duration == hold_s
+    with (
+        store.worker_hold("bob", instance, "await_assignment", hold_s),
+        store.orchestrator_call(SESSION, "wait_for_event", duration),
+    ):
+        for _ in range(hold_s // 30):
+            frozen_clock.advance(30)
+            heartbeat(store, "bob", instance)
+            store.note_orchestrator_heartbeat(SESSION)
+            store.sweep(180)
+            assert assessed(store, "bob")["holding"] == "await_assignment"
+            assert not assessed(store, "bob")["stalled"]
+            assert alice(store)["state"] == "holding"
+            assert not alice(store)["stalled"]
+            agent = store.agent_by_name("bob")
+            assert agent is not None and agent.status is AgentStatus.IDLE
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM event WHERE kind = 'agent_stalled'"
+            ).fetchone()[0]
+            == 0
+        )

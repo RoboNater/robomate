@@ -36,9 +36,9 @@ Settings that unattended runs need. Harness config formats change, so confirm th
 | Harness | User-level config (typical; confirm) | Settings beyond the command |
 |---|---|---|
 | Claude Code | `claude mcp add --scope user …` (stored in `~/.claude.json`) | None. |
-| Codex CLI | `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows; `$CODEX_HOME/config.toml` if `CODEX_HOME` is set), table `[mcp_servers.robomate]` | `command`, `args`, `startup_timeout_sec = 120`, `tool_timeout_sec = 330` (a bridge call can legitimately hold for about 315 s). Approve every bridge tool, because unattended runs can't answer approval prompts: one `[mcp_servers.robomate.tools.<tool>]` table with `approval_mode = "approve"` for each tool name from step 4. |
-| OpenCode | Global config: `~/.config/opencode/opencode.json` or `opencode.jsonc` (confirm the Windows location), key `mcp.robomate` | `"type": "local"`, `"command": ["uv", "run", …]` (the whole command as one array), `"enabled": true`, `"timeout": 330000` (milliseconds). |
-| Antigravity (`agy`) | The user-level MCP config `agy` reads. robomate's launcher has used `<home>/.gemini/config/mcp_config.json`; confirm against current docs. Key `mcpServers.robomate` | `command`, `args`, `"timeoutSeconds": 330`. If `agy` requires an `enabledTools` allow-list, list every tool from step 4. |
+| Codex CLI | `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows; `$CODEX_HOME/config.toml` if `CODEX_HOME` is set), table `[mcp_servers.robomate]` | `command`, `args`, `startup_timeout_sec = 120`, `tool_timeout_sec = 1900` (an idle call holds 1800 s plus 15 s HTTP margin). Approve every bridge tool, because unattended runs can't answer approval prompts: one `[mcp_servers.robomate.tools.<tool>]` table with `approval_mode = "approve"` for each tool name from step 4. |
+| OpenCode | Global config: `~/.config/opencode/opencode.json` or `opencode.jsonc` (confirm the Windows location), key `mcp.robomate` | `"type": "local"`, `"command": ["uv", "run", …]` (the whole command as one array), `"enabled": true`, `"timeout": 1900000` (milliseconds). |
+| Antigravity (`agy`) | The user-level MCP config `agy` reads. robomate's launcher has used `<home>/.gemini/config/mcp_config.json`; confirm against current docs. Key `mcpServers.robomate` | `command`, `args`, `"timeoutSeconds": 1900`. If `agy` requires an `enabledTools` allow-list, list every tool from step 4. |
 
 OpenCode 1.19.5 converts the documented V2 `mcp.servers` layout to the flat
 form and drops its object timeout; use the flat form above and revisit when
@@ -101,3 +101,9 @@ Give a table with one row per harness: installed version, config file, action (a
   - `RE-RUN` (exit 1): Codex's per-tool approvals, and any Antigravity allow-list, must change to match new or removed tools. Rerun this prompt. It saves a new baseline at the end.
   - Exit 2: the bridge didn't start, or there's no baseline. Read the output.
 - The check watches tool names only. If this prompt itself changes, for example because a harness needs a new setting, rerun it anyway.
+
+New entries must also set bridge environment `HUB_MCP_TIMEOUT_S="1900"` to advertise
+the client budget. Without it, old static entries retain 100 s holds. Claude
+Code entries keep the unknown/interactive 100 s default; a print launcher sets
+`HUB_HARNESS_MODE="print"` for its measured 1500 s profile. Do not mark an
+interactive session as print.

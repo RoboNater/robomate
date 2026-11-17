@@ -32,7 +32,10 @@ The response supplies this guide and `guide_sha256`, the hub identity and forge,
 compact state and unacknowledged deliveries. A rejoin in the same bridge session
 returns `unchanged (<hash>)` when the served bytes are identical; retain the
 previous guide. When a workflow is active follow On resume below. Use
-`wait_for_event(timeout_s=100)` for the event loop. The bridge sends heartbeats.
+`wait_for_event()` for the event loop: omit timeout_s to use
+`join.wait_profile.default_wait_s`. Claude Code print uses 1500 s,
+Codex/OpenCode/Antigravity 1800 s; interactive Claude, unknown modes and old
+static entries use 100 s. The bridge sends heartbeats.
 The forge appendix supplies all forge CLI commands, including merge and read-back.
 Run forge CLI and Git commands from your assigned worktree, and keep the
 harness tool workdir there. For GitHub, use a full PR URL or `--repo OWNER/REPO`
@@ -252,14 +255,14 @@ In a headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) the
 process exits when your turn ends. End your turn only once the workflow is
 `done`. Never end it to wait for the operator, CI, a worker, or a background
 command: keep waiting in the foreground with `wait_for_event` or the merge
-gate, each call kept under 120 s on Claude Code.
+gate. Hub waits use the effective profile; interactive Claude keeps calls under 120 s.
 
 <!-- Codex hub-wait polling: #558. -->
 
 On Codex, Alice's hub wait (`wait_for_event`) runs in an `exec` cell that
 yields back to the model after `yield_time_ms`, and each `wait` poll of it is
 another model call. Start the script with a pragma that outlasts the hold, for
-example `// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass
+example `// @exec: {"yield_time_ms": 1830000}` for an 1800 s hold, and pass
 the guide's `timeout_s` rather than a shorter value. If the cell still yields,
 call `wait` on that same cell with a correspondingly long yield instead of
 starting the wait again.

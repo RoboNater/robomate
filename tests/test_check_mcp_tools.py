@@ -67,7 +67,7 @@ def test_codex_problems(
     if problem == "stale":
         approvals.append("stale")
     config.write_text(
-        f'[mcp_servers.robomate]\nargs = ["--project", "{project}"]\n'
+        f'[mcp_servers.robomate]\ntool_timeout_sec = 1900\nargs = ["--project", "{project}"]\n'
         + "".join(
             f'[mcp_servers.robomate.tools.{name}]\napproval_mode = "approve"\n'
             for name in approvals
@@ -98,7 +98,8 @@ def test_symlinked_project(setup: Path, tmp_path: Path) -> None:
     config = tmp_path / "codex/config.toml"
     config.parent.mkdir()
     config.write_text(
-        f'[mcp_servers.robomate]\nargs = ["--project", "{link.as_posix()}"]\n'
+        "[mcp_servers.robomate]\ntool_timeout_sec = 1900\n"
+        f'args = ["--project", "{link.as_posix()}"]\n'
         '[mcp_servers.robomate.tools.a]\napproval_mode = "approve"\n'
     )
     assert check.check_codex(setup, {"a"}) == ([], True)
@@ -147,3 +148,17 @@ def test_real_bridge(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     assert observed["stderr"] != check.subprocess.PIPE
     assert observed["process"].returncode == 0
     assert {"join", "whoami", "await_assignment", "assign_task"} <= set(result["tools"])
+
+
+@pytest.mark.parametrize(
+    ("harness", "mode", "timeout", "bad"),
+    [
+        ("codex", "unknown", 330, True),
+        ("opencode", "unknown", 330, True),
+        ("antigravity", "unknown", 1900, False),
+        ("claude-code", "print", 1515, False),
+        ("claude-code", "interactive", 330, False),
+    ],
+)
+def test_static_timeout_profile(harness: str, mode: str, timeout: int, bad: bool) -> None:
+    assert bool(check.check_timeout(harness, timeout, mode)) is bad

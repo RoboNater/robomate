@@ -1,9 +1,10 @@
 import asyncio
 import json
 import subprocess
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -29,7 +30,7 @@ from agent_hub_common.discovery import (
 )
 from agent_hub_common.registry import register
 from conftest import BASE_URL, TOKEN, closed_port_url
-from timing import LIVENESS_S, wait_until
+from timing import LIVENESS_S, FrozenClock, wait_until
 from worker_mcp.client import WorkerHubClient, WorkerProtocolError
 from worker_mcp.config import WorkerSettings
 
@@ -1237,3 +1238,129 @@ async def test_unknown_pin_surfaces_the_cause(tmp_path: Path) -> None:
     _assert_cause_surfaces(str(joined.value), "no registered hub has that name or hub_id")
     result = await worker.whoami()
     _assert_cause_surfaces(result["discovery_error"], "no registered hub has that name or hub_id")
+
+
+async def test_restart_during_long_stream_errors_without_replaying_hold_and_bridge_recovers(
+    worker_settings: WorkerSettings,
+) -> None:
+    class Interrupted(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b": held\n\n"
+            raise httpx.ReadError("hub restarted")
+
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=Interrupted()
+            )
+        return httpx.Response(200, json={"result": {"recovered": True}})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), base_url=BASE_URL
+    ) as client:
+        worker = WorkerHubClient(worker_settings, http_client=client)
+        with pytest.raises(httpx.ReadError, match="hub restarted"):
+            await worker._stream_rpc("message/stream", {}, 1800)
+        assert len(calls) == 1
+        assert calls[0].extensions["timeout"]["read"] == 1815
+        assert await worker._stream_rpc("message/stream", {}, 1800) == {"recovered": True}
+
+
+async def test_real_http_hub_restart_interrupts_long_holds_and_same_bridges_recover(
+    settings: HubSettings, worker_settings: WorkerSettings, frozen_clock: FrozenClock
+) -> None:
+    import uvicorn
+    from agent_hub import create_app
+    from agent_hub.signals import EVENT_KEY, context_key
+    from conftest import reserve_port_block
+    from worker_mcp.orchestrator import OrchestratorBridge
+
+    port = reserve_port_block(1)
+    url = f"http://127.0.0.1:{port}"
+    config = replace(settings, host="127.0.0.1", port=port, public_url=url, max_wait_s=1800)
+    servers = []
+    running = []
+
+    async def start() -> HubStore:
+        app = create_app(config)
+        frozen_clock.install(app.state.store)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app, host=config.host, port=port, log_level="critical", timeout_graceful_shutdown=0
+            )
+        )
+        servers.append(server)
+        running.append(asyncio.create_task(server.serve()))
+        await wait_until(lambda: server.started, "isolated HTTP hub starts")
+        return cast(HubStore, app.state.store)
+
+    try:
+        store = await start()
+        async with (
+            WorkerHubClient(replace(worker_settings, hub_url=url)) as worker,
+            httpx.AsyncClient(
+                base_url=url, headers={"Authorization": f"Bearer {settings.token}"}
+            ) as http,
+        ):
+            bridge = OrchestratorBridge(http_client=http)
+            try:
+                await worker.check_in()
+                await bridge.call("get_state", {})
+                while (event := store.lease_next_event()) is not None:
+                    store.ack_event(event.delivery_id)
+                worker_hold = asyncio.create_task(worker.await_assignment(timeout_s=1800))
+                alice_hold = asyncio.create_task(bridge.call("wait_for_event", {"timeout_s": 1800}))
+                await wait_until(
+                    lambda: store.signals.waiting(context_key(str(worker.context_id))),
+                    "worker HTTP hold",
+                )
+                await wait_until(lambda: store.signals.waiting(EVENT_KEY), "Alice HTTP hold")
+                servers[0].should_exit = True
+                await asyncio.wait_for(running[0], LIVENESS_S)
+                for hold in (worker_hold, alice_hold):
+                    await wait_until(hold.done, "restart returns a prompt transport error")
+                    with pytest.raises(httpx.HTTPError):
+                        await hold
+                await start()
+                assert await worker.await_assignment(timeout_s=0) == {"timeout": True}
+                assert "agents" in await bridge.call("get_state", {})
+            finally:
+                await bridge.close()
+    finally:
+        for server, task in zip(servers, running, strict=True):
+            server.should_exit = True
+            await asyncio.wait_for(task, LIVENESS_S)
+
+
+@pytest.mark.hub_settings(max_wait_s=1800)
+@pytest.mark.parametrize("reply_wait", [False, True])
+async def test_superseded_held_stream_returns_protocol_error(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+    reply_wait: bool,
+) -> None:
+    from agent_hub.signals import context_key, task_key
+    from worker_mcp.client import WorkerProtocolError
+
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    if reply_wait:
+        task = hub_store.assign_task("bob", "implementer", "Build", "Build")
+        await worker.await_assignment(timeout_s=0)
+        pending = asyncio.create_task(worker.ask_alice(task.id, "Which base?", timeout_s=1800))
+        key = task_key(task.id)
+    else:
+        pending = asyncio.create_task(worker.await_assignment(timeout_s=1800))
+        key = context_key(str(worker.context_id))
+    await wait_until(lambda: hub_store.signals.waiting(key), "old instance stream")
+    hub_store.check_in("bob", worker_instance_id="replacement", takeover=True)
+    try:
+        await wait_until(pending.done, "superseded stream rejected")
+        with pytest.raises(WorkerProtocolError, match="superseded"):
+            await pending
+    finally:
+        pending.cancel()

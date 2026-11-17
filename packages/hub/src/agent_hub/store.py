@@ -2453,6 +2453,8 @@ class HubStore:
 
         self.signals.notify(EVENT_KEY)
         self.signals.notify(context_key(context_id))
+        if agent.current_task_id is not None:
+            self.signals.notify(task_key(agent.current_task_id))
         if operation_id is None:
             return agent
         return res
@@ -3681,11 +3683,21 @@ class HubStore:
             return replace(held, already_held=True)
 
     async def await_reply(
-        self, task_id: str, after_message_id: int, timeout_s: float
+        self,
+        task_id: str,
+        after_message_id: int,
+        timeout_s: float,
+        *,
+        worker_instance_id: str | None = None,
     ) -> MessageRecord | None:
         """Hold until Alice answers the question at `after_message_id` or task ends."""
 
         def poll() -> MessageRecord | object | None:
+            task = self.get_task(task_id)
+            if worker_instance_id is not None and task is not None and task.assignee is not None:
+                agent = self.agent_by_name(task.assignee)
+                if agent is None or agent.worker_instance_id != worker_instance_id:
+                    raise ConflictError("worker instance has been superseded")
             reply = self.pending_reply(task_id, after_message_id)
             if reply is not None:
                 return reply
@@ -3715,11 +3727,14 @@ class HubStore:
             self.ack_event(ack)
         expired = object()
         collection_timeout: float | None = None
+        expired_count: int | None = None
 
         def poll() -> EventRecord | object | None:
-            nonlocal collection_timeout
+            nonlocal collection_timeout, expired_count
             self._detect_pause(self._now(), self.monotonic_clock())
-            ended, collection_timeout = inbox_window(self)
+            ended, collection_timeout, count = inbox_window(self)
+            ended = ended or (expired_count is not None and count != expired_count)
+            expired_count = count
             event = self.lease_next_event(lease_s)
             return event if event is not None else expired if ended else None
 
