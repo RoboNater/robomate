@@ -2602,3 +2602,58 @@ def test_pre_change_duplicate_findings_still_read_back(store: HubStore) -> None:
     assert task.result["blocking_findings"] == dup_result["blocking_findings"]
     state = store.get_state()
     assert state["tasks"][0]["result"]["blocking_findings"] == dup_result["blocking_findings"]
+
+
+@pytest.mark.parametrize("finish", ["result", "loss"])
+async def test_reply_hold_wakes_when_task_finishes(
+    store: HubStore, frozen_clock: FrozenClock, finish: str
+) -> None:
+    store.check_in("bob")
+    task_id = assign(store)
+    question = store.open_question(task_id, "bob", "Which base?", "q-long")
+    pending = asyncio.create_task(store.await_reply(task_id, question, 1800))
+    await wait_until(lambda: store.signals.waiting(task_key(task_id)), "reply hold")
+    if finish == "result":
+        store.submit_result(
+            task_id,
+            "bob",
+            {"outcome": "blocked", "summary": "Need input", "blocker": "Operator decision"},
+        )
+    else:
+        frozen_clock.advance(181)
+        store.sweep(180)
+    try:
+        await wait_until(pending.done, "terminal task wakes reply hold")
+        assert await pending is None
+    finally:
+        pending.cancel()
+
+
+async def test_takeover_fences_already_held_assignment_wait(store: HubStore) -> None:
+    agent = store.check_in("bob", worker_instance_id="old")
+    pending = asyncio.create_task(store.await_assignment(agent.context_id, 1800))
+    await wait_until(lambda: store.signals.waiting(context_key(agent.context_id)), "old hold")
+    store.check_in("bob", worker_instance_id="new", takeover=True)
+    try:
+        await wait_until(pending.done, "superseded assignment hold ends")
+        with pytest.raises(ConflictError, match="superseded"):
+            await pending
+    finally:
+        pending.cancel()
+
+
+async def test_takeover_fences_already_held_reply_wait(store: HubStore) -> None:
+    store.check_in("bob", worker_instance_id="old")
+    task_id = assign(store)
+    question = store.open_question(task_id, "bob", "Which base?", "q-takeover")
+    pending = asyncio.create_task(
+        store.await_reply(task_id, question, 1800, worker_instance_id="old")
+    )
+    await wait_until(lambda: store.signals.waiting(task_key(task_id)), "old reply hold")
+    store.check_in("bob", worker_instance_id="new", takeover=True)
+    try:
+        await wait_until(pending.done, "superseded reply hold ends")
+        with pytest.raises(ConflictError, match="superseded"):
+            await pending
+    finally:
+        pending.cancel()

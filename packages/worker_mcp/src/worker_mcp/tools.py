@@ -21,7 +21,7 @@ from pydantic import Field
 from .client import WorkerHubClient
 from .telemetry import HttpIO, current_http_io
 
-Timeout = Annotated[float, Field(ge=0, le=300, allow_inf_nan=False)]
+Timeout = Annotated[float, Field(ge=0, le=1800, allow_inf_nan=False)]
 T = TypeVar("T")
 
 
@@ -177,7 +177,7 @@ def create_worker_mcp(
         restart includes the full assignment again (#434). Set include_instructions=true
         to recover the full text and assignment fields again without restarting.
         On timeout, call again.
-        timeout_s: Optional wait timeout in seconds (defaults to HUB_DEFAULT_WAIT_S if omitted).
+        timeout_s: Optional seconds; omit to use join.wait_profile.default_wait_s.
         """
         resolved = await resolve()
         require_joined(resolved)
@@ -235,7 +235,7 @@ def create_worker_mcp(
 
         Returns {reply: text}, {timeout: true}, or {task_ended: true, state, note}.
         On timeout, call ask_alice again to continue waiting; retries resume the pending question.
-        timeout_s: Optional wait timeout in seconds (defaults to HUB_DEFAULT_WAIT_S if omitted).
+        timeout_s: Optional seconds; omit to use join.wait_profile.default_wait_s.
         """
         resolved = await resolve()
         require_joined(resolved)

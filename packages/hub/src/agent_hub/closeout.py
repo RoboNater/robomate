@@ -255,6 +255,7 @@ def request(
                 raise ConflictError("orchestrator is not a member of this closeout collection")
     for context in contexts:
         store.signals.notify(context_key(context))
+    store.signals.notify(EVENT_KEY)
     return read(store, run_id)
 
 
@@ -469,3 +470,40 @@ def shift(connection: Connection, workflow_id: str, seconds: float) -> None:
             "UPDATE closeout_collection SET deadline = ? WHERE workflow_id = ?",
             (to_iso(deadline), workflow_id),
         )
+
+
+def inbox_window(store: HubStore) -> tuple[bool, float | None, int]:
+    """Expire outstanding worker windows and bound Alice's next inbox sleep.
+
+    Only a newly ended window returns true, so subsequent inbox calls can hold
+    normally. Paused windows have no timer; resume notifies the inbox and the
+    next read uses their shifted deadline.
+    """
+    ended = False
+    remaining: list[float] = []
+    with database(store.path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT DISTINCT c.* FROM closeout_collection c JOIN closeout_expected e"
+            " USING (workflow_id) JOIN workflow w ON w.id = c.workflow_id"
+            " WHERE c.finalized_at IS NULL AND c.paused_at IS NULL"
+            " AND w.status IN ('active', 'escalated') AND e.author_kind = 'worker'"
+            " AND e.missing_reason IS NULL AND NOT EXISTS"
+            " (SELECT 1 FROM agent_closeout_report r WHERE r.workflow_id = e.workflow_id"
+            " AND r.author = e.author)"
+        ).fetchall()
+        now = store._now()
+        for row in rows:
+            deadline = datetime.fromisoformat(row["deadline"].replace("Z", "+00:00"))
+            seconds = (deadline - now).total_seconds()
+            if seconds <= 0:
+                _expire(connection, row["workflow_id"], to_iso(now))
+                ended = True
+            else:
+                remaining.append(seconds)
+        expired_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM closeout_expected WHERE missing_reason = 'deadline_expired'"
+            ).fetchone()[0]
+        )
+    return ended, min(remaining) if remaining else None, expired_count

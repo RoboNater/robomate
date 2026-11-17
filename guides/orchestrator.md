@@ -32,7 +32,10 @@ The response supplies this guide and `guide_sha256`, the hub identity and forge,
 compact state and unacknowledged deliveries. A rejoin in the same bridge session
 returns `unchanged (<hash>)` when the served bytes are identical; retain the
 previous guide. When a workflow is active follow On resume below. Use
-`wait_for_event(timeout_s=100)` for the event loop. The bridge sends heartbeats.
+`wait_for_event()` for the event loop: omit timeout_s to use
+`join.wait_profile.default_wait_s`. Claude Code print uses 1500 s,
+Codex/OpenCode/Antigravity 1800 s; interactive Claude, unknown modes and old
+static entries use 100 s. The bridge sends heartbeats.
 The forge appendix supplies all forge CLI commands, including merge and read-back.
 Run forge CLI and Git commands from your assigned worktree, and keep the
 harness tool workdir there. For GitHub, use a full PR URL or `--repo OWNER/REPO`
@@ -243,8 +246,11 @@ completed or active phase.
 
 Keep the `delivery_id` of the event being handled. After its action finishes,
 pass it as `ack` on the next `wait_for_event(ack=<delivery_id>)`; do not ack
-before the action. A timeout is normal, so wait again until the wall-time rail
-expires.
+before the action. A timeout is normal. While a closeout collection is open,
+`wait_for_event` returning `event: null` means call
+`get_closeout_reports(run_id)` before waiting again: collection deadline expiry
+can end the hold without queuing an event. Proceed once no worker remains `awaiting_report`; otherwise wait again
+until the wall-time rail expires.
 
 <!-- Headless turn end: #115. -->
 
@@ -252,14 +258,14 @@ In a headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) the
 process exits when your turn ends. End your turn only once the workflow is
 `done`. Never end it to wait for the operator, CI, a worker, or a background
 command: keep waiting in the foreground with `wait_for_event` or the merge
-gate, each call kept under 120 s on Claude Code.
+gate. Hub waits use the effective profile; interactive Claude keeps calls under 120 s.
 
 <!-- Codex hub-wait polling: #558. -->
 
 On Codex, Alice's hub wait (`wait_for_event`) runs in an `exec` cell that
 yields back to the model after `yield_time_ms`, and each `wait` poll of it is
 another model call. Start the script with a pragma that outlasts the hold, for
-example `// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass
+example `// @exec: {"yield_time_ms": 1830000}` for an 1800 s hold, and pass
 the guide's `timeout_s` rather than a shorter value. If the cell still yields,
 call `wait` on that same cell with a correspondingly long yield instead of
 starting the wait again.
@@ -713,8 +719,10 @@ with `request_closeout_reports(run_id)` (run `closeout_wait_s` window, default
 300 seconds, maximum 1800 seconds, pause-aware). Open tasks take precedence; idle workers receive
 an explicit request from `await_assignment`, submit with their own bridge,
 and resume waiting. Use `get_closeout_reports(run_id)` to read their observations
-and missing reasons. Proceed as soon as no worker remains `awaiting_report`;
-do not wait out the deadline. A `worker_lost` missing reason records
+and missing reasons. After any `event: null` inbox result during collection, re-read
+`get_closeout_reports(run_id)` before another hold; the collection deadline can
+end the wait without an inbox event. Proceed as soon as no worker remains
+`awaiting_report`; do not wait out the deadline. A `worker_lost` missing reason records
 known loss immediately, including during a pause, and needs no further waiting.
 Rejoining before finalization clears that reason and restores the original,
 pause-aware submission window. Lost, crashed or unresponsive agents remain

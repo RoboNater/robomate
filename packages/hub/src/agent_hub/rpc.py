@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from agent_hub_common import AgentProfile, token_matches, validate_agent_name
 from agent_hub_common.accounting import CallRecord, hub_id
-from agent_hub_common.orchestrator_tools import OPERATIONS
+from agent_hub_common.orchestrator_tools import OPERATIONS, Timeout
 from fastapi import BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict, StrictBool, validate_call
 from pydantic_core import to_jsonable_python
@@ -126,6 +126,10 @@ class _Audit:
     method: str | None = None
     actor: str | None = None
     session: str | None = None
+
+
+class WaitTimeout(BaseModel):
+    timeout_s: Timeout | None = None
 
 
 class OrchestratorJoin(BaseModel):
@@ -591,9 +595,15 @@ class RpcDispatcher:
                 f"{method} requires the {ACTOR_HEADER} and {SESSION_HEADER} headers",
             )
         self._accept_session(*caller)
+        hold_s = _hold_s(method, params)
+        if method == "wait_for_event":
+            # Validate before clamping: negative or over-bound requests must still
+            # fail, and the tracker must use the same coerced value as the tool.
+            requested = WaitTimeout.model_validate({"timeout_s": params.get("timeout_s")})
+            hold_s = self.ops.bounded_wait(requested.timeout_s)
         token = CALLER.set(Caller(*caller))
         try:
-            with self.ops.store.orchestrator_call(caller[1], method, _hold_s(method, params)):
+            with self.ops.store.orchestrator_call(caller[1], method, hold_s):
                 result = await operation(**params)
         finally:
             CALLER.reset(token)
@@ -698,7 +708,7 @@ def _hold_s(method: str, params: Mapping[str, Any]) -> float:
     if method == "wait_for_event":
         timeout = params.get("timeout_s", 100)
         if isinstance(timeout, int | float) and not isinstance(timeout, bool):
-            return min(max(float(timeout), 0.0), 120.0)
+            return max(float(timeout), 0.0)
         return 100.0
     return 75.0
 

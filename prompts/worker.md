@@ -19,9 +19,11 @@ owns orchestration; you own only the task currently assigned to you.
    unknown identity fields must never be guessed. The `join` response includes
    this worker etiquette guide (`guide` and `guide_sha256`), any
    `reattached_task` on `takeover=true`, and `next_call: "await_assignment"`.
-2. Call `await_assignment(timeout_s=100)`. A timeout is normal: call it again.
-   Never poll in a tight loop. Keep holds under 120 s: Claude Code backgrounds
-   any tool call still running at 120 s.
+2. Call `await_assignment()` without timeout_s to use `join.wait_profile.default_wait_s`.
+   A timeout is normal: call again. Never poll in a tight loop. Measured profiles:
+   Claude Code print 1500 s; Codex/OpenCode/Antigravity 1800 s; Claude Code
+   interactive, unknown modes and old static entries 100 s. Interactive Claude
+   backgrounds calls at 120 s; print mode must stay below its 1800 s idle abort.
    A `{closeout_requested: true, run_id, deadline, instructions}` response is
    an explicit retrospective request, not a task or release. Follow its fresh
    instructions and call `submit_closeout_report(run_id, report)` before the
@@ -130,7 +132,7 @@ when your turn ends; the hub then declares you lost and fails your task. Never
 end your turn to wait for CI, a background command, a long test run, or Alice,
 and never end it promising to continue once a background job finishes. Wait in
 the foreground instead: a foreground CI watch or bounded polling of the checks,
-with each call kept under 120 s on Claude Code.
+using the effective hub wait profile (interactive Claude keeps calls under 120 s).
 
 <!-- Codex hub-wait polling: #558. -->
 
@@ -138,7 +140,7 @@ On Codex, a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or
 `wait_for_event`) runs in an `exec` cell that yields back to the model after
 `yield_time_ms`, and each `wait` poll of it is another model call. Start the
 script with a pragma that outlasts the hold, for example
-`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the
+`// @exec: {"yield_time_ms": 1830000}` for an 1800 s hold, and pass the
 guide's `timeout_s` rather than a shorter value. If the cell still yields,
 call `wait` on that same cell with a correspondingly long yield instead of
 starting the wait again.
@@ -309,8 +311,8 @@ The MVP stays flexible: do not require exhaustive upfront specifications or
 approval of every adjustment, and do not add scope locking, source pinning,
 or change-control machinery.
 
-Use `ask_orchestrator(task_id, question, timeout_s=100)` (or the
-`ask_alice(task_id, question, timeout_s=100)` alias on prepared runs) when a
+Use `ask_orchestrator(task_id, question)` (or the
+`ask_alice(task_id, question)` alias on prepared runs) when a
 decision cannot be derived from the assignment, its acceptance criteria, the
 role guide, or repository policy. Ask before expanding scope, making a
 destructive choice, resolving an ambiguous conflict, or acting on contradictory

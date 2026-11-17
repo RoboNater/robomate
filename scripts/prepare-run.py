@@ -182,6 +182,7 @@ def worker_env(
         "AGENT_NAME": name,
         "HUB_WORKSPACE": workspace,
         **bridge_identity_env(harness, version, provider, model, effort),
+        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_CAPABILITIES": capabilities,
         "HUB_TELEMETRY_LOG": telemetry,
         "PYTHONUTF8": "1",
@@ -745,7 +746,7 @@ def codex_hub_wait_note(name: str) -> str:
         f"On Codex, {wait} runs in an `exec` cell that yields back to the model "
         "after `yield_time_ms`, and each `wait` poll of it is another model call. "
         "Start the script with a pragma that outlasts the hold, for example "
-        '`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the '
+        '`// @exec: {"yield_time_ms": 1830000}` for an 1800 s hold, and pass the '
         "guide's `timeout_s` rather than a shorter value. If the cell still yields, "
         "call `wait` on that same cell with a correspondingly long yield instead of "
         "starting the wait again."
@@ -755,8 +756,8 @@ def codex_hub_wait_note(name: str) -> str:
 def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
     """Harness notes and the post-release close-out appended to a rendered prompt (#30).
 
-    Claude Code backgrounds any tool call still running at 120 s, so a Claude
-    agent is told to keep every hub wait at 100 s. In ``claude -p`` the process
+    Claude Code print mode uses the measured 1500 s idle profile; interactive
+    mode keeps its 100 s profile because it backgrounds calls at 120 s. In ``claude -p`` the process
     exits when the turn ends, and a background job can wake the agent only
     while its turn is still running, so it is told never to end its turn to
     wait (#115). A worker is also pointed at its guide's recipe for a local
@@ -766,8 +767,9 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
     if harness == "claude-code":
         waits = "`wait_for_event`" if name == "alice" else "`await_assignment`"
         sections.append(
-            f"Use a 100 second wait time for all hub waits including {waits}. This "
-            "prevents the wait from being shifted to a background task by the harness."
+            f"For hub waits including {waits}, omit timeout_s to use join.wait_profile. "
+            "Claude Code print mode uses 1500 s; interactive mode uses 100 s. "
+            "Only interactive mode backgrounds calls at 120 s."
         )
         last = (
             "the workflow is `done`"
@@ -779,7 +781,8 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "process exits when your turn ends, and a background job can wake you only "
             "while your turn is still running. Never end your turn to wait for CI, a "
             "background command, or a long test run, and do not use `run_in_background` "
-            "for a wait. Wait in the foreground with calls kept under 120 s: for example, "
+            "for a wait. Use the effective profile for hub waits; for other waits, "
+            "use bounded foreground checks: for example, "
             "re-run a bounded check such as `gh pr checks <pr>` (GitHub) or "
             "`glab ci status` (GitLab) after a short `sleep`."
         )
@@ -2575,6 +2578,8 @@ def render_worker_bundle(
         hub_url,
         effort,
     )
+    if harness == "claude-code" and not auto_start:
+        env["HUB_HARNESS_MODE"] = "interactive"
     exposures: dict[str, Any] = {}
     written = write_worker_config(
         name,
@@ -3193,6 +3198,8 @@ def prepare(
             network["hub_url"],
             efforts[name],
         )
+        if harness == "claude-code" and not auto_start:
+            env["HUB_HARNESS_MODE"] = "interactive"
         rendered_configs[name] = str(
             write_worker_config(
                 name,
@@ -3209,6 +3216,7 @@ def prepare(
 
     hub_env = {
         "ROBOMATE_HUB_URL": live_url,
+        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_TELEMETRY_LOG": str(run_dir / "alice-telemetry.jsonl"),
         "ROBOMATE_TOKEN_FILE": str(hub_token),
         "PYTHONUTF8": "1",
@@ -3222,6 +3230,8 @@ def prepare(
             alice_effort,
         ),
     }
+    if alice_harness == "claude-code" and not auto_start:
+        hub_env["HUB_HARNESS_MODE"] = "interactive"
     hub_args = [
         "run",
         "--locked",
@@ -3243,7 +3253,7 @@ def prepare(
         write_private_text(
             alice_home / "config.toml",
             codex_sandbox(((run_dir / "closeout").as_posix(),))
-            + codex_mcp("uv", hub_args, hub_env, ALICE_TOOLS, 330),
+            + codex_mcp("uv", hub_args, hub_env, ALICE_TOOLS, 1900),
         )
         alice_config = alice_home / "config.toml"
     elif alice_harness == "opencode":

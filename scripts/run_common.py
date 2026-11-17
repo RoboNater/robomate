@@ -156,6 +156,7 @@ def bridge_identity_env(
     (``agent-launcher.py``, used by ``start-run.py``, #268) all build from here.
     """
     return {
+        "HUB_HARNESS_MODE": "print" if harness == "claude-code" else "headless",
         "HUB_HARNESS": harness,
         "HUB_HARNESS_VERSION": version,
         "HUB_PROVIDER": provider,
@@ -510,7 +511,7 @@ def render_codex_config(
     reference = tomllib.loads((ROOT / "runtimes/codex.config.toml").read_text(encoding="utf-8"))[
         "mcp_servers"
     ]["robomate"]
-    config = codex_sandbox(writable_roots) + codex_mcp("uv", worker_args, env, TOOLS, 330)
+    config = codex_sandbox(writable_roots) + codex_mcp("uv", worker_args, env, TOOLS, 1900)
     if sorted(reference.get("tools", {})) != sorted(TOOLS):
         raise ValueError("runtimes/codex.config.toml tools drifted from the shared TOOLS list")
     return config

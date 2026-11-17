@@ -1727,7 +1727,7 @@ async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
     if args.role in (None, "worker"):
         await run_worker_bridge(stdout, name=args.name, harness=args.harness)
     else:
-        bridge = OrchestratorBridge(args.name or "alice")
+        bridge = OrchestratorBridge(args.name or "alice", harness=args.harness)
         try:
             server = create_orchestrator_mcp(bridge)
             await serve_mcp(server, stdout, await bridge.accounting(server))

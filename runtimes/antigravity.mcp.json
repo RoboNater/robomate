@@ -16,6 +16,7 @@
         "ROBOMATE_TOKEN_FILE": "/path/to/target/.robomate/token",
         "AGENT_NAME": "bob",
         "HUB_WORKSPACE": "/absolute/path/to/bob-sandbox",
+        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_HARNESS": "antigravity",
         "HUB_HARNESS_VERSION": "",
         "HUB_PROVIDER": "",
@@ -35,7 +36,7 @@
         "get_operator_answer",
         "get_statement"
       ],
-      "timeoutSeconds": 330
+      "timeoutSeconds": 1900
     }
   }
 }

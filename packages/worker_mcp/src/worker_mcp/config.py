@@ -17,6 +17,7 @@ from agent_hub_common import (
     profile_from_env,
 )
 from agent_hub_common.discovery import HubEndpoint
+from agent_hub_common.waits import default_wait_s as resolve_wait_s
 from agent_hub_common.workspace import canonical_workspace, read_identity
 
 DEFAULT_WAIT_S = float(MAX_HOLD_DEFAULT_S)
@@ -125,11 +126,6 @@ class WorkerSettings:
         """Settings for a worker MCP bridge before `join` names the agent and role (§5)."""
 
         env = dict(os.environ if environ is None else environ)
-        wait_s = (
-            default_wait_s
-            if default_wait_s is not None
-            else _positive_seconds(env, "HUB_DEFAULT_WAIT_S", DEFAULT_WAIT_S)
-        )
         heartbeat_s = _positive_seconds(env, "HUB_HEARTBEAT_S", DEFAULT_HEARTBEAT_S)
         max_retries = _non_negative_int(env, "HUB_MAX_RETRIES", DEFAULT_MAX_RETRIES)
         backoff_factor_s = _positive_seconds(env, "HUB_BACKOFF_FACTOR_S", DEFAULT_BACKOFF_FACTOR_S)
@@ -156,7 +152,11 @@ class WorkerSettings:
             token=raw_token,
             agent_name=raw_agent_name,
             profile=resolved_profile,
-            default_wait_s=wait_s,
+            default_wait_s=(
+                default_wait_s
+                if default_wait_s is not None
+                else resolve_wait_s(resolved_profile.harness, env)
+            ),
             heartbeat_s=heartbeat_s,
             max_retries=max_retries,
             backoff_factor_s=backoff_factor_s,
@@ -187,7 +187,7 @@ class WorkerSettings:
             raise ConfigurationError("AGENT_NAME must be set")
         agent_name = raw_agent_name.strip()
 
-        default_wait_s = _positive_seconds(env, "HUB_DEFAULT_WAIT_S", DEFAULT_WAIT_S)
+        default_wait_s = resolve_wait_s(profile_from_env(env).harness, env)
         heartbeat_s = _positive_seconds(env, "HUB_HEARTBEAT_S", DEFAULT_HEARTBEAT_S)
         max_retries = _non_negative_int(env, "HUB_MAX_RETRIES", DEFAULT_MAX_RETRIES)
         backoff_factor_s = _positive_seconds(env, "HUB_BACKOFF_FACTOR_S", DEFAULT_BACKOFF_FACTOR_S)

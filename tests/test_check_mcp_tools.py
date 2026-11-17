@@ -22,6 +22,7 @@ def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(check.shutil, "which", lambda _: None)
+    monkeypatch.setattr(check, "json_config_paths", lambda: [], raising=False)
     monkeypatch.setattr(check, "probe", lambda *_: ({"name": "bridge", "version": "1"}, ["a", "b"]))
     return checkout
 
@@ -67,7 +68,7 @@ def test_codex_problems(
     if problem == "stale":
         approvals.append("stale")
     config.write_text(
-        f'[mcp_servers.robomate]\nargs = ["--project", "{project}"]\n'
+        f'[mcp_servers.robomate]\ntool_timeout_sec = 1900\nargs = ["--project", "{project}"]\n'
         + "".join(
             f'[mcp_servers.robomate.tools.{name}]\napproval_mode = "approve"\n'
             for name in approvals
@@ -98,7 +99,8 @@ def test_symlinked_project(setup: Path, tmp_path: Path) -> None:
     config = tmp_path / "codex/config.toml"
     config.parent.mkdir()
     config.write_text(
-        f'[mcp_servers.robomate]\nargs = ["--project", "{link.as_posix()}"]\n'
+        "[mcp_servers.robomate]\ntool_timeout_sec = 1900\n"
+        f'args = ["--project", "{link.as_posix()}"]\n'
         '[mcp_servers.robomate.tools.a]\napproval_mode = "approve"\n'
     )
     assert check.check_codex(setup, {"a"}) == ([], True)
@@ -147,3 +149,141 @@ def test_real_bridge(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     assert observed["stderr"] != check.subprocess.PIPE
     assert observed["process"].returncode == 0
     assert {"join", "whoami", "await_assignment", "assign_task"} <= set(result["tools"])
+
+
+@pytest.mark.parametrize(
+    ("harness", "mode", "timeout", "bad"),
+    [
+        ("codex", "unknown", 330, True),
+        ("opencode", "unknown", 330, True),
+        ("antigravity", "unknown", 1900, False),
+        ("claude-code", "print", 1515, False),
+        ("claude-code", "interactive", 330, False),
+    ],
+)
+def test_static_timeout_profile(harness: str, mode: str, timeout: int, bad: bool) -> None:
+    assert bool(check.check_timeout(harness, timeout, mode)) is bad
+
+
+@pytest.mark.parametrize(
+    ("harness", "field", "scale"),
+    [
+        ("opencode", "timeout", 1000),
+        ("antigravity", "timeoutSeconds", 1),
+    ],
+)
+def test_other_static_clients_and_advertisement_are_audited(
+    setup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+    field: str,
+    scale: int,
+) -> None:
+    path = tmp_path / "client.json"
+    env_key = "environment" if harness == "opencode" else "env"
+    section = "mcp" if harness == "opencode" else "mcpServers"
+    path.write_text(
+        json.dumps(
+            {
+                section: {
+                    "robomate": {
+                        field: 330 * scale,
+                        env_key: {"HUB_MCP_TIMEOUT_S": "1900"},
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(check, "json_config_paths", lambda: [(harness, path)], raising=False)
+    assert run(monkeypatch, setup, "--save") == 1
+    out = capsys.readouterr().out
+    assert harness in out and "profile + HTTP margin" in out
+    assert "HUB_MCP_TIMEOUT_S" in out and "330" in out
+
+
+def test_codex_advertised_timeout_cannot_exceed_real_timeout(
+    setup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = tmp_path / "codex/config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        "[mcp_servers.robomate]\ntool_timeout_sec = 330\n"
+        f'args = ["--project", "{setup.as_posix()}"]\n'
+        'env = {HUB_MCP_TIMEOUT_S = "1900"}\n'
+        '[mcp_servers.robomate.tools.a]\napproval_mode = "approve"\n'
+        '[mcp_servers.robomate.tools.b]\napproval_mode = "approve"\n'
+    )
+    assert run(monkeypatch, setup, "--save") == 1
+    assert "HUB_MCP_TIMEOUT_S" in capsys.readouterr().out
+
+
+def test_valid_jsonc_keeps_quoted_comment_markers_and_converts_milliseconds(
+    setup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "opencode.jsonc"
+    text = """{
+      // Client timeout is in milliseconds.
+      "mcp": {"robomate": {
+        "timeout": 1900000, /* long hold budget */
+        "environment": {
+          "HUB_MCP_TIMEOUT_S": "1900",
+          "URL": "https://example.test/a//b/*literal*/",
+        },
+      },},
+    }"""
+    path.write_text(text)
+    monkeypatch.setattr(check, "json_config_paths", lambda: [("opencode", path)])
+    parsed = check.jsonc_object(text)
+    assert parsed["mcp"]["robomate"]["environment"]["URL"] == "https://example.test/a//b/*literal*/"
+    assert run(monkeypatch, setup, "--save") == 0
+
+
+@pytest.mark.parametrize(
+    ("entry", "bad"),
+    [
+        ({"timeoutSeconds": 1900, "env": {"HUB_MCP_TIMEOUT_S": "1900"}}, False),
+        ({"timeoutSeconds": 0, "env": {"HUB_MCP_TIMEOUT_S": "1900"}}, True),
+        ({"timeoutSeconds": -1, "env": {"HUB_MCP_TIMEOUT_S": "1900"}}, False),
+        ({"timeoutSeconds": 1900, "env": {"HUB_MCP_TIMEOUT_S": "invalid"}}, True),
+        ({"timeoutSeconds": 1900, "env": []}, True),
+    ],
+)
+def test_antigravity_timeout_defaults_and_unlimited_budget(
+    entry: dict[str, Any], bad: bool
+) -> None:
+    assert bool(check.check_client_timeout("antigravity", entry)) is bad
+
+
+def test_invalid_json_config_is_reported_instead_of_crashing(
+    setup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "client.json"
+    path.write_text('{"mcp": {"robomate": "invalid"}}')
+    monkeypatch.setattr(check, "json_config_paths", lambda: [("opencode", path)])
+    assert run(monkeypatch, setup, "--save") == 1
+    assert "robomate entry must be an object" in capsys.readouterr().out
+
+
+def test_static_json_config_locations(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(check.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    selected = tmp_path / "selected.jsonc"
+    monkeypatch.setenv("OPENCODE_CONFIG", str(selected))
+    assert check.json_config_paths() == [
+        ("opencode", tmp_path / "xdg/opencode/opencode.json"),
+        ("opencode", tmp_path / "xdg/opencode/opencode.jsonc"),
+        ("opencode", selected),
+        ("antigravity", tmp_path / ".gemini/config/mcp_config.json"),
+    ]
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative")
+    assert check.json_config_paths()[0] == ("opencode", tmp_path / ".config/opencode/opencode.json")

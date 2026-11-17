@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from time import monotonic
 from typing import Any, Literal
 
-from agent_hub_common import TaskState, WorkflowPolicy, WorkflowStatus
+from agent_hub_common import HubSettings, TaskState, WorkflowPolicy, WorkflowStatus
 from agent_hub_common.orchestrator_tools import (
     CloseoutTimeout,
     Lease,
@@ -48,13 +48,24 @@ class OrchestratorOps(OrchestratorTools):
     """The orchestrator operations over one store and merge gate."""
 
     def __init__(
-        self, store: HubStore, gate: ForgeGate | None = None, *, caller: Caller | None = None
+        self,
+        store: HubStore,
+        gate: ForgeGate | None = None,
+        *,
+        caller: Caller | None = None,
+        settings: HubSettings | None = None,
     ) -> None:
+        self.settings = settings
         self.store = store
         self.gate: ForgeGate = gate if gate is not None else MergeGate()
         # Used only when the transport sets no CALLER: the in-process server,
         # which has a single caller.
         self.caller = caller
+
+    def bounded_wait(self, timeout_s: float | None) -> float:
+        if self.settings is not None:
+            return self.settings.bounded_wait(timeout_s)
+        return max(0.0, min(100.0 if timeout_s is None else timeout_s, 1800.0))
 
     def _caller(self) -> Caller:
         caller = CALLER.get() or self.caller
@@ -151,9 +162,9 @@ class OrchestratorOps(OrchestratorTools):
         raise RuntimeError("start_workflow returned an unknown workflow")
 
     async def wait_for_event(
-        self, timeout_s: Timeout = 100, ack: str | None = None
+        self, timeout_s: Timeout | None = None, ack: str | None = None
     ) -> dict[str, Any]:
-        event = await self.store.wait_for_event(timeout_s=timeout_s, ack=ack)
+        event = await self.store.wait_for_event(timeout_s=self.bounded_wait(timeout_s), ack=ack)
         return {"event": None if event is None else asdict(event)}
 
     async def assign_task(

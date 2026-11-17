@@ -14,7 +14,7 @@ from pydantic import Field
 
 from .models import CLOSEOUT_WAIT_MAX_S, WorkflowStatus
 
-Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
+Timeout = Annotated[float, Field(ge=0, le=1800, allow_inf_nan=False)]
 CloseoutTimeout = Annotated[
     float, Field(strict=True, gt=0, le=CLOSEOUT_WAIT_MAX_S, allow_inf_nan=False)
 ]
@@ -121,10 +121,11 @@ class OrchestratorTools:
         raise NotImplementedError
 
     async def wait_for_event(
-        self, timeout_s: Timeout = 100, ack: str | None = None
+        self, timeout_s: Timeout | None = None, ack: str | None = None
     ) -> dict[str, Any]:
         """Wait for and lease the oldest event. On event=null, call again.
 
+        Omit timeout_s to use the bridge's effective wait profile (join.wait_profile).
         ack: the delivery_id of the event just handled. It still acks after
         the delivery lease has expired, so a long action — merging, say — is
         not redone once it has finished.

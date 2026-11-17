@@ -59,7 +59,7 @@ def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
     orchestrator = read("guides/orchestrator.md")
     shared = (
         "`yield_time_ms`",
-        '`// @exec: {"yield_time_ms": 130000}`',
+        '`// @exec: {"yield_time_ms": 1830000}`',
         "pass the guide's `timeout_s` rather than a shorter value",
         "call `wait` on that same cell with a correspondingly long yield",
         "instead of starting the wait again",

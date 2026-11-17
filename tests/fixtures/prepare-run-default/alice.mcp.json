@@ -15,7 +15,9 @@
       "env": {
         "HUB_EFFORT": "",
         "HUB_HARNESS": "claude-code",
+        "HUB_HARNESS_MODE": "print",
         "HUB_HARNESS_VERSION": "2.1.277",
+        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_MODEL": "",
         "HUB_PROVIDER": "anthropic",
         "HUB_TELEMETRY_LOG": "$RUN_DIR/alice-telemetry.jsonl",

@@ -198,15 +198,22 @@
   },
   {
     "name": "wait_for_event",
-    "description": "Wait for and lease the oldest event. On event=null, call again.\n\n        ack: the delivery_id of the event just handled. It still acks after\n        the delivery lease has expired, so a long action \u2014 merging, say \u2014 is\n        not redone once it has finished.\n        ",
+    "description": "Wait for and lease the oldest event. On event=null, call again.\n\n        Omit timeout_s to use the bridge's effective wait profile (join.wait_profile).\n        ack: the delivery_id of the event just handled. It still acks after\n        the delivery lease has expired, so a long action \u2014 merging, say \u2014 is\n        not redone once it has finished.\n        ",
     "inputSchema": {
       "properties": {
         "timeout_s": {
-          "default": 100,
-          "maximum": 120,
-          "minimum": 0,
-          "title": "Timeout S",
-          "type": "number"
+          "anyOf": [
+            {
+              "maximum": 1800,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout S"
         },
         "ack": {
           "anyOf": [
