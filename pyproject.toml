@@ -62,6 +62,10 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Claude Code's Linux sandbox mounts unreadable placeholders for protected
+# paths under .claude/ (e.g. loop.md), and `ruff format` (which also formats
+# Markdown) fails on them with "Permission denied" (#395).
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "SIM", "UP"]
