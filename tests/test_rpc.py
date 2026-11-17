@@ -475,7 +475,7 @@ async def test_every_json_rpc_id_is_echoed_and_other_ids_are_refused(
             },
             "lease_min",
         ),
-        ("wait_for_event", {"timeout_s": 121}, "timeout_s"),
+        ("wait_for_event", {"timeout_s": 1801}, "timeout_s"),
         ("wait_for_event", {"timeout_s": -1}, "timeout_s"),
         ("set_task_state", {"task_id": "t", "state": "done", "note": "n"}, "state"),
         ("set_workflow_status", {"status": "finished", "summary": "s"}, "status"),
@@ -1996,3 +1996,25 @@ async def test_assign_task_names_branch_and_reuses_it(
         assert fetched is not None
         second_task = fetched
     assert second_task.branch == first["branch"]
+
+
+@pytest.mark.parametrize("requested", [1800, "1800"])
+async def test_long_inbox_hold_uses_hub_clamp_for_activity_and_wait(
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+    requested: int | str,
+) -> None:
+    original = HubStore.orchestrator_call
+    observed = []
+
+    def capture(self: HubStore, session: str, kind: str, timeout_s: float) -> Any:
+        observed.append((kind, timeout_s))
+        return original(self, session, kind, timeout_s)
+
+    monkeypatch.setattr(HubStore, "orchestrator_call", capture)
+    hub_store.check_in("bob")
+    response = await call(client, "wait_for_event", timeout_s=requested)
+    assert response["result"]["event"]["kind"] == "agent_checked_in"
+    # conftest caps hub holds at 1 s; coercion and tracking use the same value.
+    assert observed == [("wait_for_event", 1.0)]

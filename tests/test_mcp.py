@@ -112,7 +112,7 @@ async def test_tools_and_durable_actions(tmp_path: Path) -> None:
         assert (
             conn.execute("SELECT summary FROM decision ORDER BY id").fetchall()[0][0] == "Finished"
         )
-    for args in ({"timeout_s": -1}, {"timeout_s": 121}, {"timeout_s": float("inf")}):
+    for args in ({"timeout_s": -1}, {"timeout_s": 1801}, {"timeout_s": float("inf")}):
         with pytest.raises(Exception, match="validation error"):
             await call("wait_for_event", **args)
     with pytest.raises(Exception, match="already failed"):

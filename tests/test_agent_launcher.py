@@ -1536,6 +1536,8 @@ def test_start_exports_identity_uv_cache_and_workers_to_every_launch(
             # Codex forwards nothing to an MCP server unless the entry names it,
             # so the pin and the telemetry log are named on argv too (#511, #512).
             assert forwarded == [
+                'mcp_servers.robomate.env.HUB_HARNESS_MODE="headless"',
+            ] + [
                 f"mcp_servers.robomate.env.{key}={json.dumps(value)}"
                 for key, value in expected.items()
             ] + [
