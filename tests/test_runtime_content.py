@@ -57,21 +57,31 @@ def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
     worker = read("guides/worker.md")
     prompt = read("prompts/worker.md")
     orchestrator = read("guides/orchestrator.md")
+    shared = (
+        "`yield_time_ms`",
+        '`// @exec: {"yield_time_ms": 130000}`',
+        "pass the guide's `timeout_s` rather than a shorter value",
+        "call `wait` on that same cell with a correspondingly long yield",
+        "instead of starting the wait again",
+    )
 
     assert prompt.endswith(worker)
-    for text in (worker, prompt, orchestrator):
+    for text in (worker, prompt):
         assert_fragments(
             text,
             (
                 "On Codex, a hub wait",
                 "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`",
-                "`yield_time_ms`",
-                '`// @exec: {"yield_time_ms": 130000}`',
-                "pass the guide's `timeout_s` rather than a shorter value",
-                "call `wait` on that same cell with a correspondingly long yield",
-                "instead of starting the wait again",
+                *shared,
             ),
         )
+    # Alice's only hub wait is `wait_for_event`; the worker-only tools must not
+    # be listed as hers.
+    paragraph = section(
+        orchestrator, "<!-- Codex hub-wait polling: #558. -->", "Before a delivered event"
+    )
+    assert_fragments(paragraph, ("On Codex, Alice's hub wait (`wait_for_event`)", *shared))
+    assert "ask_alice" not in paragraph and "ask_orchestrator" not in paragraph
 
 
 def test_progress_visibility_names_milestones_and_stall_cadence() -> None:

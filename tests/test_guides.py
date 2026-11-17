@@ -190,14 +190,18 @@ def test_served_guides_carry_the_codex_hub_wait_instruction(role: str, forge: st
     assert all(
         fragment in text
         for fragment in (
-            "On Codex, a hub wait",
-            "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`",
+            "On Codex",
             '`// @exec: {"yield_time_ms": 130000}`',
             "pass the guide's `timeout_s` rather than a shorter value",
             "call `wait` on that same cell with a correspondingly long yield",
             "instead of starting the wait again",
         )
     )
+    if role == "worker":
+        assert "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`" in text
+    else:
+        assert "Alice's hub wait (`wait_for_event`)" in text
+        assert "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`" not in text
 
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
