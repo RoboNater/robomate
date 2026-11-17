@@ -146,7 +146,8 @@ class OrchestratorTools:
         Refused while the workflow is escalated.
 
         event_id: the durable event whose handling causes this assignment.
-        role: implementer, reviewer or rebase — the guide the worker fetches.
+        role: implementer, reviewer, rebase or closeout — the guide the worker fetches.
+        A post-merge CLOSE-OUT is always role "closeout", never "implementer".
         pr_head_sha: the PR head a review or rebase is bound to.
         """
         raise NotImplementedError

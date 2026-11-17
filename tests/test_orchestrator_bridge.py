@@ -17,7 +17,7 @@ import pytest
 from agent_hub.database import database
 from agent_hub.signals import EVENT_KEY
 from agent_hub.store import HubStore
-from agent_hub_common import TaskState
+from agent_hub_common import TaskRole, TaskState
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import DiscoveryError, NoHubError
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
@@ -120,6 +120,17 @@ async def test_tool_list_matches_legacy_fixture() -> None:
     fixture = Path(__file__).parent / "fixtures/orchestrator-tools.json"
     assert actual == json.loads(fixture.read_text(encoding="utf-8"))
     assert bridge._client is None  # Listing tools does not discover or connect.
+
+
+async def test_assign_task_description_names_every_task_role() -> None:
+    """#551: the assign_task description must name every TaskRole, so a future
+    role cannot be left out the way closeout was."""
+    bridge = OrchestratorBridge()
+    tools = await create_orchestrator_mcp(bridge).list_tools()
+    description = next(tool.description for tool in tools if tool.name == "assign_task")
+    assert description is not None
+    missing = [role.value for role in TaskRole if role.value not in description]
+    assert missing == []
 
 
 def test_worker_mcp_does_not_import_the_hub() -> None:

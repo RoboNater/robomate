@@ -232,7 +232,7 @@
   },
   {
     "name": "assign_task",
-    "description": "Assign work to an idle worker and wake its pending NEXT.\n\n        Refused while the workflow is escalated.\n\n        event_id: the durable event whose handling causes this assignment.\n        role: implementer, reviewer or rebase \u2014 the guide the worker fetches.\n        pr_head_sha: the PR head a review or rebase is bound to.\n        ",
+    "description": "Assign work to an idle worker and wake its pending NEXT.\n\n        Refused while the workflow is escalated.\n\n        event_id: the durable event whose handling causes this assignment.\n        role: implementer, reviewer, rebase or closeout \u2014 the guide the worker fetches.\n        A post-merge CLOSE-OUT is always role \"closeout\", never \"implementer\".\n        pr_head_sha: the PR head a review or rebase is bound to.\n        ",
     "inputSchema": {
       "properties": {
         "agent": {
