@@ -20,6 +20,12 @@ Linux or macOS shell, `uv`, `git`, `tmux` (interactive Claude Code trial
 only), and whichever harness CLIs you trial, logged in: `claude`, `codex`,
 `opencode`, `agy`.
 
+The scratch clone's `uv sync --locked --all-packages` needs network access to
+download dependencies, or a populated uv cache available to that command.
+`setup-smoke.sh` redirects sync output to `SCRATCH/logs/uv-sync.log`; if setup
+exits before printing "scratch ready", inspect that log for download or
+installation errors.
+
 ## Set up
 
 ```sh

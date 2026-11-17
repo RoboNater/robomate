@@ -164,7 +164,7 @@ The investigation branch adds only this document and scratch trial tooling.
 | Bridge default when `timeout_s` is omitted | **100 s**, or `HUB_DEFAULT_WAIT_S` from the bridge's environment (trialled: unset held 100.0 s, `HUB_DEFAULT_WAIT_S=40` held 40.0 s) | `worker_mcp/config.py:22,131`; `client.py:1161` |
 | Bridge → hub HTTP read timeout | hold + 15 s | `client.py:377-404` `_stream_rpc` |
 | Hub clamp | `min(requested, max_wait_s)`; `max_wait_s` is `HUB_MAX_WAIT_S`, default 2.5 × `HUB_DEFAULT_WAIT_S` = **300 s** | `agent_hub_common/config.py:205-209,270-271`; `protocol.py:1083-1089` |
-| Hub activity hold | requested timeout + `HOLD_GRACE_S` (30 s) | `activity.py:150-157,219` |
+| Hub activity hold | `min(requested, HUB_MAX_WAIT_S)` + `HOLD_GRACE_S` (30 s) | `protocol.py:941,976,1027,1083-1089`; `activity.py:150-157,219-220` |
 
 The hub's own default (`HUB_DEFAULT_WAIT_S`, 120 s) only reaches a caller that
 talks to the hub without the bridge, because the bridge always sends a number.
