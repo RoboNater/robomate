@@ -1809,6 +1809,7 @@ class HubStore:
         if activated_row is not None:
             self._write_manifest(activated_row)
             self.signals.notify(EVENT_KEY)
+        self.signals.notify(EVENT_KEY)
         if status == WorkflowStatus.DONE and activated_row is None:
             # A released worker's NEXT returns the release marker.
             for agent_row in self.agents():
@@ -2451,6 +2452,7 @@ class HubStore:
                 res = (agent, True)
 
         self.signals.notify(EVENT_KEY)
+        self.signals.notify(context_key(context_id))
         if operation_id is None:
             return agent
         return res
@@ -3246,6 +3248,7 @@ class HubStore:
         self._clear_worker_diagnostics(agent)
         self.signals.notify(EVENT_KEY)
         self.signals.notify(context_key(self.task_context_id(task_id)))
+        self.signals.notify(task_key(task_id))
         if operation_id is None:
             return finished
         return res
@@ -3584,6 +3587,9 @@ class HubStore:
 
         def poll() -> TaskRecord | Released | dict[str, Any] | object | None:
             nonlocal initial, first_reply_id
+            current = self.agent_by_context(context_id)
+            if current is None or current.worker_instance_id != agent.worker_instance_id:
+                raise ConflictError(f"worker instance for agent {agent.name} has been superseded")
             outcome = self._claim_assignment(agent.name)
             if not isinstance(outcome, TaskRecord) or not outcome.already_held:
                 return changed if outcome is None and initial is not None else outcome
@@ -3703,14 +3709,30 @@ class HubStore:
     ) -> EventRecord | None:
         """Hold until Alice's inbox has an event, leasing it and acking prior delivery."""
 
+        from .closeout import inbox_window
+
         if ack is not None:
             self.ack_event(ack)
-        return await self._wait_for(
-            EVENT_KEY,
-            lambda: self.lease_next_event(lease_s),
-            timeout_s,
-            next_timeout=self._earliest_delivery_expires_s,
-        )
+        expired = object()
+        collection_timeout: float | None = None
+
+        def poll() -> EventRecord | object | None:
+            nonlocal collection_timeout
+            self._detect_pause(self._now(), self.monotonic_clock())
+            ended, collection_timeout = inbox_window(self)
+            event = self.lease_next_event(lease_s)
+            return event if event is not None else expired if ended else None
+
+        def next_timeout() -> float | None:
+            candidates = [self._earliest_delivery_expires_s(), collection_timeout]
+            return (
+                min(value for value in candidates if value is not None)
+                if any(value is not None for value in candidates)
+                else None
+            )
+
+        result = await self._wait_for(EVENT_KEY, poll, timeout_s, next_timeout)
+        return result if isinstance(result, EventRecord) else None
 
     # -- sweeper ------------------------------------------------------------
 
@@ -3840,6 +3862,8 @@ class HubStore:
                 agent = self.agent_by_name(event.payload["agent"])
                 if agent is not None:
                     self.signals.notify(context_key(agent.context_id))
+                if event.payload.get("task_id"):
+                    self.signals.notify(task_key(event.payload["task_id"]))
         return events
 
     def _expire_leases(self, connection: Connection, now: str) -> list[int]:

@@ -941,3 +941,50 @@ def test_collection_of_already_lost_worker_and_submitted_report_precedence(
     store.sweep(1)
     assert store.get_closeout_reports(run_id)["submitted"] == ["bob"]
     assert store.status_summary()["closeout"]["submitted_count"] == 1
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_inbox_hold_ends_at_collection_deadline(
+    store: HubStore, frozen_clock: FrozenClock, monkeypatch: pytest.MonkeyPatch, paused: bool
+) -> None:
+    """Exercise the timer itself, without supplying an unrelated inbox notification."""
+    from agent_hub.signals import EVENT_KEY
+
+    run_id = prepare(store, 300)
+    while (event := store.lease_next_event()) is not None:
+        store.ack_event(event.delivery_id)
+    if paused:
+        store.set_workflow_status(WorkflowStatus.PAUSED, "Pause", actor="alice", session=None)
+        frozen_clock.advance(400)
+        store.set_workflow_status(WorkflowStatus.ACTIVE, "Resume", actor="alice", session=None)
+    waits = []
+    original_wait = asyncio.wait_for
+
+    async def timer(awaitable: Any, timeout: float | None) -> Any:
+        waits.append(timeout)
+        if timeout is not None and 0 < timeout <= 300:
+            # Only a collection-window timer may advance this hub deadline.
+            frozen_clock.advance(timeout)
+            awaitable.close()
+            raise TimeoutError
+        return await original_wait(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", timer)
+    pending = asyncio.create_task(store.wait_for_event(1800))
+    try:
+        await wait_until(lambda: pending.done() or store.signals.waiting(EVENT_KEY), "inbox hold")
+        await wait_until(pending.done, "collection deadline ends inbox hold")
+        assert await pending is None
+        assert waits[0] == pytest.approx(300, abs=0.001)
+        assert any(
+            m["reason"] == "deadline_expired" for m in store.get_closeout_reports(run_id)["missing"]
+        )
+        # Expiry is consumed once; the next call can hold for new work.
+        next_hold = asyncio.create_task(store.wait_for_event(1800))
+        await wait_until(lambda: store.signals.waiting(EVENT_KEY), "next inbox hold")
+        assert not next_hold.done()
+        next_hold.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await next_hold
+    finally:
+        pending.cancel()

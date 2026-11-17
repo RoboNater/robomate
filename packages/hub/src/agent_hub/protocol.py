@@ -976,7 +976,15 @@ class A2AProtocol:
         with self.store.worker_hold(
             agent.name, agent.worker_instance_id, "await_assignment", timeout_s
         ):
-            outcome = await self.store.await_assignment(agent.context_id, timeout_s)
+            try:
+                outcome = await self.store.await_assignment(agent.context_id, timeout_s)
+            except ConflictError as exc:
+                yield _sse(
+                    JSONRPCErrorResponse(
+                        id=request_id, error=InvalidRequestError(message=str(exc))
+                    ).model_dump(mode="json", exclude_none=True)
+                )
+                return
         if isinstance(outcome, Released):
             note_a2a(outcome="release")
             yield _sse(
