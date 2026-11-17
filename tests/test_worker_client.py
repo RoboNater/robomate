@@ -1364,3 +1364,26 @@ async def test_superseded_held_stream_returns_protocol_error(
             await pending
     finally:
         pending.cancel()
+
+
+async def test_replaced_instance_cannot_claim_work_when_stream_body_starts_late(
+    hub_store: HubStore,
+    settings: HubSettings,
+) -> None:
+    from agent_hub.protocol import A2AProtocol
+    from agent_hub.store import TaskRecord
+
+    old = hub_store.check_in("bob", worker_instance_id="old")
+    protocol = A2AProtocol(store=hub_store, settings=settings)
+    # StreamingResponse starts the body after sending its headers; takeover can
+    # land between request authentication and that first generator iteration.
+    stream = protocol._assignment_stream("request", old, 1800)
+    replacement = hub_store.check_in("bob", worker_instance_id="new", takeover=True)
+    task = hub_store.assign_task("bob", "implementer", "Build", "Build")
+    chunks = [chunk async for chunk in stream]
+    body = json.loads(chunks[0].decode().removeprefix("data: ").strip())
+    assert "superseded" in body["error"]["message"]
+    unchanged = hub_store.get_task(task.id)
+    assert unchanged is not None and unchanged.state is TaskState.SUBMITTED
+    claimed = await hub_store.await_assignment(replacement.context_id, 0)
+    assert isinstance(claimed, TaskRecord) and claimed.id == task.id

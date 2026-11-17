@@ -977,7 +977,9 @@ class A2AProtocol:
             agent.name, agent.worker_instance_id, "await_assignment", timeout_s
         ):
             try:
-                outcome = await self.store.await_assignment(agent.context_id, timeout_s)
+                outcome = await self.store.await_assignment(
+                    agent.context_id, timeout_s, worker_instance_id=agent.worker_instance_id
+                )
             except ConflictError as exc:
                 yield _sse(
                     JSONRPCErrorResponse(

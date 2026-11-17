@@ -3574,14 +3574,17 @@ class HubStore:
                     await asyncio.wait_for(woken.wait(), wait_step)
 
     async def await_assignment(
-        self, context_id: str, timeout_s: float
+        self, context_id: str, timeout_s: float, *, worker_instance_id: str | None = None
     ) -> TaskRecord | Released | dict[str, Any] | None:
         """Hold until this agent has a task or is released; None on timeout."""
 
         agent = self.agent_by_context(context_id)
         if agent is None:
             raise NotFoundError(f"unknown context: {context_id}")
-        key = (agent.name, agent.worker_instance_id)
+        expected_instance = (
+            agent.worker_instance_id if worker_instance_id is None else worker_instance_id
+        )
+        key = (agent.name, expected_instance)
         previous = self._redeliveries.get(key)
         initial: TaskRecord | None = None
         changed = object()
@@ -3590,7 +3593,7 @@ class HubStore:
         def poll() -> TaskRecord | Released | dict[str, Any] | object | None:
             nonlocal initial, first_reply_id
             current = self.agent_by_context(context_id)
-            if current is None or current.worker_instance_id != agent.worker_instance_id:
+            if current is None or current.worker_instance_id != expected_instance:
                 raise ConflictError(f"worker instance for agent {agent.name} has been superseded")
             outcome = self._claim_assignment(agent.name)
             if not isinstance(outcome, TaskRecord) or not outcome.already_held:
