@@ -2681,6 +2681,52 @@ def test_start_scripts_set_per_agent_temp_dir_and_create_directories(
     assert (win_out / "tmp" / "bob" / "uv-cache").is_dir()
 
 
+def test_codex_kickoff_and_resume_prompts_carry_the_long_exec_yield(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#558: a Codex hub wait must not yield back to the model every 30 s."""
+    run_dir, _ = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness="codex",
+        bob_harness="codex",
+        charlie_harness="codex",
+    )
+    fragments = (
+        "On Codex, a hub wait",
+        '`// @exec: {"yield_time_ms": 130000}`',
+        "pass the guide's `timeout_s` rather than a shorter value",
+        "call `wait` on that same cell with a correspondingly long yield",
+    )
+    for name in ("alice", "bob", "charlie"):
+        for path in (run_dir / f"{name}.prompt.md", run_dir / f"resume-{name}.prompt.md"):
+            text = path.read_text(encoding="utf-8")
+            for fragment in fragments:
+                assert fragment in text, (name, path.name, fragment)
+
+
+def test_non_codex_prompts_omit_the_codex_yield_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, _ = prepare(
+        tmp_path,
+        monkeypatch,
+        alice_harness="claude-code",
+        bob_harness="claude-code",
+        charlie_harness="claude-code",
+    )
+    # Worker kickoff prompts inline the shared guide, which carries the Codex
+    # paragraph for every worker; only the harness-specific sections and the
+    # resume prompts are conditional on the harness.
+    assert "On Codex, a hub wait" not in (run_dir / "alice.prompt.md").read_text(encoding="utf-8")
+    for name in ("alice", "bob", "charlie"):
+        resume = (run_dir / f"resume-{name}.prompt.md").read_text(encoding="utf-8")
+        assert "On Codex, a hub wait" not in resume
+    assert "On Codex, a hub wait" not in PREPARE_RUN.render_resume_prompt(
+        "bob", PurePosixPath("/runs/r")
+    )
+
+
 def test_codex_scripts_carry_isolated_uv_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

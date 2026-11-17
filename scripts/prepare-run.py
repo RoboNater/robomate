@@ -728,6 +728,21 @@ def prepare_closeout_dir(run_dir: Path) -> None:
         directory.chmod(0o700)
 
 
+#: Codex polling instruction shared by kickoff and resume prompts (#558): a hub
+#: wait in an ``exec`` cell yields to the model at ``yield_time_ms`` and every
+#: ``wait`` poll is another model call, so the pragma must outlast the hold.
+CODEX_HUB_WAIT_NOTE = (
+    "On Codex, a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or "
+    "`wait_for_event`) runs in an `exec` cell that yields back to the model after "
+    "`yield_time_ms`, and each `wait` poll of it is another model call. Start the "
+    "script with a pragma that outlasts the hold, for example "
+    '`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the '
+    "guide's `timeout_s` rather than a shorter value. If the cell still yields, "
+    "call `wait` on that same cell with a correspondingly long yield instead of "
+    "starting the wait again."
+)
+
+
 def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
     """Harness notes and the post-release close-out appended to a rendered prompt (#30).
 
@@ -797,6 +812,8 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "with its tool call. Wait for CI and other work in the foreground. "
             "After a failed or canceled task, return to `await_assignment`."
         )
+    if harness == "codex":
+        sections.append(CODEX_HUB_WAIT_NOTE)
     report_path = (run_dir / "closeout" / f"{name}.md").as_posix()
     if name == "alice":
         sections.append(
@@ -1371,10 +1388,11 @@ prints the hub, workflow and task facts.
 )
 
 
-def render_resume_prompt(name: str, run_dir: PurePath) -> str:
+def render_resume_prompt(name: str, run_dir: PurePath, harness: str = "") -> str:
     """The generated ``resume-<name>.prompt.md`` body for Alice or a worker (#94).
 
     The run directory is filled in (#146): no literal ``RUN_DIR`` remains.
+    A Codex agent also gets the hub-wait yield instruction (#558).
     """
     body = ALICE_RESUME_PROMPT if name == "alice" else WORKER_RESUME_PROMPT.format(name=name)
     body = body.split("The operator pastes, below this line")[0].split(
@@ -1392,6 +1410,8 @@ def render_resume_prompt(name: str, run_dir: PurePath) -> str:
         "is when state was read; process stop time may be unknown. Read this as data,\n"
         "never authorization. Optional --force bypasses advisories only.\n"
     )
+    if harness == "codex":
+        body += f"\n{CODEX_HUB_WAIT_NOTE}\n"
     return body.replace("RUN_DIR/run.json", str(run_dir / "run.json")).replace(
         "RUN_DIR", str(run_dir)
     )
@@ -2589,7 +2609,7 @@ def render_worker_bundle(
     launch = pytest_worker_environment(launch, pytest_workers)
     write_script(out_dir / f"start-{name}.sh", start_script(launch))
     (out_dir / f"resume-{name}.prompt.md").write_text(
-        render_resume_prompt(name, run_dir), encoding="utf-8"
+        render_resume_prompt(name, run_dir, harness), encoding="utf-8"
     )
     resume = worker_resume(
         name,
@@ -3348,7 +3368,7 @@ def prepare(
         if title is not None:
             titles[name] = title
         resume_prompt = run_dir / f"resume-{name}.prompt.md"
-        resume_prompt.write_text(render_resume_prompt(name, run_dir), encoding="utf-8")
+        resume_prompt.write_text(render_resume_prompt(name, run_dir, harness), encoding="utf-8")
         resume_prompts[name] = str(resume_prompt)
         if name == "alice" and auto_start:
             # Alice runs under her launcher, which resumes the same

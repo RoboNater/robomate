@@ -51,6 +51,29 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
 
 
+def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
+    """#558: Codex hands a hub wait back to the model at each short exec yield."""
+
+    worker = read("guides/worker.md")
+    prompt = read("prompts/worker.md")
+    orchestrator = read("guides/orchestrator.md")
+
+    assert prompt.endswith(worker)
+    for text in (worker, prompt, orchestrator):
+        assert_fragments(
+            text,
+            (
+                "On Codex, a hub wait",
+                "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`",
+                "`yield_time_ms`",
+                '`// @exec: {"yield_time_ms": 130000}`',
+                "pass the guide's `timeout_s` rather than a shorter value",
+                "call `wait` on that same cell with a correspondingly long yield",
+                "instead of starting the wait again",
+            ),
+        )
+
+
 def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
     """Long validation stays visible to the hub instead of tripping a stall (#170)."""
 

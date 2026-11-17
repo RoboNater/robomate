@@ -254,6 +254,17 @@ process exits when your turn ends. End your turn only once the workflow is
 command: keep waiting in the foreground with `wait_for_event` or the merge
 gate, each call kept under 120 s on Claude Code.
 
+<!-- Codex hub-wait polling: #558. -->
+
+On Codex, a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or
+`wait_for_event`) runs in an `exec` cell that yields back to the model after
+`yield_time_ms`, and each `wait` poll of it is another model call. Start the
+script with a pragma that outlasts the hold, for example
+`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the
+guide's `timeout_s` rather than a shorter value. If the cell still yields,
+call `wait` on that same cell with a correspondingly long yield instead of
+starting the wait again.
+
 Before a delivered event causes more than one action, call `log_decision` first
 with the checkpoint in `key`, not in `summary`, for example
 `log_decision(summary="...", rationale="...", key="event:<event-id>:<action>")`.
