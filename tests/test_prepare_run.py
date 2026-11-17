@@ -2693,16 +2693,36 @@ def test_codex_kickoff_and_resume_prompts_carry_the_long_exec_yield(
         charlie_harness="codex",
     )
     fragments = (
-        "On Codex, a hub wait",
         '`// @exec: {"yield_time_ms": 130000}`',
         "pass the guide's `timeout_s` rather than a shorter value",
         "call `wait` on that same cell with a correspondingly long yield",
     )
     for name in ("alice", "bob", "charlie"):
+        waits = (
+            "Alice's hub wait (`wait_for_event`)"
+            if name == "alice"
+            else "a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or "
+            "`wait_for_event`)"
+        )
         for path in (run_dir / f"{name}.prompt.md", run_dir / f"resume-{name}.prompt.md"):
             text = path.read_text(encoding="utf-8")
+            assert f"On Codex, {waits}" in text, (name, path.name)
             for fragment in fragments:
                 assert fragment in text, (name, path.name, fragment)
+
+
+def test_codex_hub_wait_note_names_only_the_roles_hub_waits() -> None:
+    """#558 r2-1: Alice's prompts must not name the worker-only wait tools."""
+    alice = PREPARE_RUN.codex_hub_wait_note("alice")
+    assert "Alice's hub wait (`wait_for_event`)" in alice
+    for worker_tool in ("await_assignment", "ask_alice", "ask_orchestrator"):
+        assert worker_tool not in alice
+    for name in ("bob", "charlie"):
+        note = PREPARE_RUN.codex_hub_wait_note(name)
+        assert (
+            "a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or "
+            "`wait_for_event`)" in note
+        )
 
 
 def test_non_codex_prompts_omit_the_codex_yield_note(

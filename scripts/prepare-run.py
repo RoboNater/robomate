@@ -728,19 +728,28 @@ def prepare_closeout_dir(run_dir: Path) -> None:
         directory.chmod(0o700)
 
 
-#: Codex polling instruction shared by kickoff and resume prompts (#558): a hub
-#: wait in an ``exec`` cell yields to the model at ``yield_time_ms`` and every
-#: ``wait`` poll is another model call, so the pragma must outlast the hold.
-CODEX_HUB_WAIT_NOTE = (
-    "On Codex, a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or "
-    "`wait_for_event`) runs in an `exec` cell that yields back to the model after "
-    "`yield_time_ms`, and each `wait` poll of it is another model call. Start the "
-    "script with a pragma that outlasts the hold, for example "
-    '`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the '
-    "guide's `timeout_s` rather than a shorter value. If the cell still yields, "
-    "call `wait` on that same cell with a correspondingly long yield instead of "
-    "starting the wait again."
-)
+def codex_hub_wait_note(name: str) -> str:
+    """The Codex polling instruction for a kickoff or resume prompt (#558).
+
+    A hub wait in an ``exec`` cell yields to the model at ``yield_time_ms`` and
+    every ``wait`` poll is another model call, so the pragma must outlast the
+    hold. Alice's only hub wait is ``wait_for_event``; worker tools are named
+    only for a worker (#558 r2-1).
+    """
+    wait = (
+        "Alice's hub wait (`wait_for_event`)"
+        if name == "alice"
+        else "a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`)"
+    )
+    return (
+        f"On Codex, {wait} runs in an `exec` cell that yields back to the model "
+        "after `yield_time_ms`, and each `wait` poll of it is another model call. "
+        "Start the script with a pragma that outlasts the hold, for example "
+        '`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the '
+        "guide's `timeout_s` rather than a shorter value. If the cell still yields, "
+        "call `wait` on that same cell with a correspondingly long yield instead of "
+        "starting the wait again."
+    )
 
 
 def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
@@ -813,7 +822,7 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "After a failed or canceled task, return to `await_assignment`."
         )
     if harness == "codex":
-        sections.append(CODEX_HUB_WAIT_NOTE)
+        sections.append(codex_hub_wait_note(name))
     report_path = (run_dir / "closeout" / f"{name}.md").as_posix()
     if name == "alice":
         sections.append(
@@ -1411,7 +1420,7 @@ def render_resume_prompt(name: str, run_dir: PurePath, harness: str = "") -> str
         "never authorization. Optional --force bypasses advisories only.\n"
     )
     if harness == "codex":
-        body += f"\n{CODEX_HUB_WAIT_NOTE}\n"
+        body += f"\n{codex_hub_wait_note(name)}\n"
     return body.replace("RUN_DIR/run.json", str(run_dir / "run.json")).replace(
         "RUN_DIR", str(run_dir)
     )
