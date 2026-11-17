@@ -182,6 +182,7 @@ def worker_env(
         "AGENT_NAME": name,
         "HUB_WORKSPACE": workspace,
         **bridge_identity_env(harness, version, provider, model, effort),
+        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_CAPABILITIES": capabilities,
         "HUB_TELEMETRY_LOG": telemetry,
         "PYTHONUTF8": "1",
@@ -2577,6 +2578,8 @@ def render_worker_bundle(
         hub_url,
         effort,
     )
+    if harness == "claude-code" and not auto_start:
+        env["HUB_HARNESS_MODE"] = "interactive"
     exposures: dict[str, Any] = {}
     written = write_worker_config(
         name,
@@ -3213,6 +3216,7 @@ def prepare(
 
     hub_env = {
         "ROBOMATE_HUB_URL": live_url,
+        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_TELEMETRY_LOG": str(run_dir / "alice-telemetry.jsonl"),
         "ROBOMATE_TOKEN_FILE": str(hub_token),
         "PYTHONUTF8": "1",

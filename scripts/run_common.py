@@ -156,7 +156,6 @@ def bridge_identity_env(
     (``agent-launcher.py``, used by ``start-run.py``, #268) all build from here.
     """
     return {
-        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_HARNESS_MODE": "print" if harness == "claude-code" else "headless",
         "HUB_HARNESS": harness,
         "HUB_HARNESS_VERSION": version,

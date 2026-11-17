@@ -1859,9 +1859,9 @@ def test_worker_env_includes_effort() -> None:
         "max",
     )
     assert env["HUB_EFFORT"] == "max"
+    assert env["HUB_MCP_TIMEOUT_S"] == "1900"
     assert PREPARE_RUN.bridge_identity_env("opencode", "1.18.32", "anthropic", "m", "high") == {
         "HUB_HARNESS": "opencode",
-        "HUB_MCP_TIMEOUT_S": "1900",
         "HUB_HARNESS_MODE": "headless",
         "HUB_HARNESS_VERSION": "1.18.32",
         "HUB_PROVIDER": "anthropic",
@@ -5271,3 +5271,30 @@ def test_interactive_safe_mode_keeps_permission_like_path_text(
 
 def test_powershell_shell_word_preserves_typographic_single_quotes() -> None:
     assert PREPARE_RUN.shell_word("C:/don’t ‘x’ ‚x‛", True) == "'C:/don’’t ‘‘x’’ ‚‚x‛‛'"
+
+
+def test_remote_interactive_claude_keeps_short_wait_profile(tmp_path: Path) -> None:
+    out = tmp_path / "remote"
+    PREPARE_RUN.render_worker_bundle(
+        "bob",
+        "claude-code",
+        "test",
+        "anthropic",
+        "",
+        "",
+        "/unread-token",
+        "http://hub.test:8420",
+        ROOT,
+        out,
+        tmp_path / "workspace",
+        out,
+        auto_start=False,
+    )
+    entry = json.loads((out / "configs/bob.mcp.json").read_text())["mcpServers"]["robomate"]
+    assert entry["env"]["HUB_HARNESS_MODE"] == "interactive"
+    assert entry["env"]["HUB_MCP_TIMEOUT_S"] == "1900"
+
+
+def test_joined_launcher_identity_does_not_override_old_static_client_budget() -> None:
+    identity = PREPARE_RUN.bridge_identity_env("codex", "test", "openai", "model", "high")
+    assert "HUB_MCP_TIMEOUT_S" not in identity
