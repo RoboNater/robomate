@@ -132,6 +132,17 @@ and never end it promising to continue once a background job finishes. Wait in
 the foreground instead: a foreground CI watch or bounded polling of the checks,
 with each call kept under 120 s on Claude Code.
 
+<!-- Codex hub-wait polling: #558. -->
+
+On Codex, a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or
+`wait_for_event`) runs in an `exec` cell that yields back to the model after
+`yield_time_ms`, and each `wait` poll of it is another model call. Start the
+script with a pragma that outlasts the hold, for example
+`// @exec: {"yield_time_ms": 130000}` for a 100 s `timeout_s`, and pass the
+guide's `timeout_s` rather than a shorter value. If the cell still yields,
+call `wait` on that same cell with a correspondingly long yield instead of
+starting the wait again.
+
 <!-- Validation cadence: #264. -->
 
 While implementing, run the affected test files during iteration, then the full
