@@ -1,0 +1,26 @@
+diff --git a/packages/common/src/agent_hub_common/orchestrator_tools.py b/packages/common/src/agent_hub_common/orchestrator_tools.py
+index 78d8b3a..2d0942b 100644
+--- a/packages/common/src/agent_hub_common/orchestrator_tools.py
++++ b/packages/common/src/agent_hub_common/orchestrator_tools.py
+@@ -14,7 +14,7 @@ from pydantic import Field
+ 
+ from .models import CLOSEOUT_WAIT_MAX_S, WorkflowStatus
+ 
+-Timeout = Annotated[float, Field(ge=0, le=120, allow_inf_nan=False)]
++Timeout = Annotated[float, Field(ge=0, le=7200, allow_inf_nan=False)]
+ CloseoutTimeout = Annotated[
+     float, Field(strict=True, gt=0, le=CLOSEOUT_WAIT_MAX_S, allow_inf_nan=False)
+ ]
+diff --git a/packages/worker_mcp/src/worker_mcp/tools.py b/packages/worker_mcp/src/worker_mcp/tools.py
+index 6d0cca9..79e417a 100644
+--- a/packages/worker_mcp/src/worker_mcp/tools.py
++++ b/packages/worker_mcp/src/worker_mcp/tools.py
+@@ -21,7 +21,7 @@ from pydantic import Field
+ from .client import WorkerHubClient
+ from .telemetry import HttpIO, current_http_io
+ 
+-Timeout = Annotated[float, Field(ge=0, le=300, allow_inf_nan=False)]
++Timeout = Annotated[float, Field(ge=0, le=7200, allow_inf_nan=False)]
+ T = TypeVar("T")
+ 
+ 
