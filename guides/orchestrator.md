@@ -728,9 +728,10 @@ Missing reports are recorded explicitly, not reconstructed for another author.
 
 Ordinary runs require no roadmap decision, adjudication, post-merge completion
 edit or roadmap update. The PR's `Closes` reference closes the issue; triage
-maintains the plan. After verified merge, assign the implementer a typed
-`closeout` task even when no findings or steps are pending, unless this run's
-policy explicitly sets `closeout: false`. The hub snapshots pending findings,
+maintains the plan. After verified merge, assign the implementer agent a typed
+`closeout` task (`role="closeout"`, never `implementer`) even when no findings
+or steps are pending, unless this run's policy explicitly sets `closeout: false`.
+The hub snapshots pending findings,
 indexed steps and effective repository settings into the assignment. The worker
 returns `CloseoutResult`; inspect failed or blocked outcomes and route correction.
 Retrospective reports are observations and do not replace this task.
