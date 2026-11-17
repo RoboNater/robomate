@@ -107,3 +107,12 @@ the client budget. Without it, old static entries retain 100 s holds. Claude
 Code entries keep the unknown/interactive 100 s default; a print launcher sets
 `HUB_HARNESS_MODE="print"` for its measured 1500 s profile. Do not mark an
 interactive session as print.
+
+The checker audits Codex's static entry, OpenCode's global JSON/JSONC entries
+(and `OPENCODE_CONFIG` when set), and Antigravity's global MCP entry. It checks
+client timeout units and rejects `HUB_MCP_TIMEOUT_S` values that overstate the
+real client budget. It reads each file separately; project/plugin/managed
+merges and inline overlays still need to be checked in their client. Config
+locations and JSONC syntax follow the [OpenCode config documentation](https://opencode.ai/docs/config/);
+Antigravity's seconds, zero/default and negative/unlimited timeout settings
+follow its [MCP documentation](https://antigravity.google/docs/mcp).

@@ -246,8 +246,11 @@ completed or active phase.
 
 Keep the `delivery_id` of the event being handled. After its action finishes,
 pass it as `ack` on the next `wait_for_event(ack=<delivery_id>)`; do not ack
-before the action. A timeout is normal, so wait again until the wall-time rail
-expires.
+before the action. A timeout is normal. While a closeout collection is open,
+`wait_for_event` returning `event: null` means call
+`get_closeout_reports(run_id)` before waiting again: collection deadline expiry
+can end the hold without queuing an event. Proceed once no worker remains `awaiting_report`; otherwise wait again
+until the wall-time rail expires.
 
 <!-- Headless turn end: #115. -->
 
@@ -716,8 +719,10 @@ with `request_closeout_reports(run_id)` (run `closeout_wait_s` window, default
 300 seconds, maximum 1800 seconds, pause-aware). Open tasks take precedence; idle workers receive
 an explicit request from `await_assignment`, submit with their own bridge,
 and resume waiting. Use `get_closeout_reports(run_id)` to read their observations
-and missing reasons. Proceed as soon as no worker remains `awaiting_report`;
-do not wait out the deadline. A `worker_lost` missing reason records
+and missing reasons. After any `event: null` inbox result during collection, re-read
+`get_closeout_reports(run_id)` before another hold; the collection deadline can
+end the wait without an inbox event. Proceed as soon as no worker remains
+`awaiting_report`; do not wait out the deadline. A `worker_lost` missing reason records
 known loss immediately, including during a pause, and needs no further waiting.
 Rejoining before finalization clears that reason and restores the original,
 pause-aware submission window. Lost, crashed or unresponsive agents remain

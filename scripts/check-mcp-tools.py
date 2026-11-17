@@ -28,7 +28,9 @@ Workflow: after running the setup prompt, run once with --save. After each
 
 It contacts no hub. It does start the bridge with `uv run --locked`, which
 syncs the checkout's .venv, so run it only when no robomate run is active.
-It also reports a Codex static timeout shorter than the measured hold profile.
+It also audits Codex, OpenCode and Antigravity static client timeouts and
+bridge budget advertisements. Config files are read only; client merges and
+inline overlays are not reproduced.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ import datetime
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -167,6 +170,91 @@ def check_timeout(harness: str, timeout_s: object, mode: str = "unknown") -> lis
     return []
 
 
+def json_config_paths() -> list[tuple[str, Path]]:
+    """Static global entries, plus OpenCode's explicitly selected config.
+
+    Audit files individually; do not try to reproduce a client's merge of
+    project settings, plugins, managed settings or inline environment overlays.
+    """
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
+    if not base.is_absolute():
+        base = Path.home() / ".config"
+    paths = [("opencode", base / "opencode" / name) for name in ("opencode.json", "opencode.jsonc")]
+    if selected := os.environ.get("OPENCODE_CONFIG"):
+        paths.append(("opencode", Path(selected).expanduser()))
+    paths.append(("antigravity", Path.home() / ".gemini/config/mcp_config.json"))
+    return list(dict.fromkeys(paths))
+
+
+def jsonc_object(text: str) -> dict:
+    """Read JSON/JSONC without interpreting comments inside quoted strings."""
+    tokens = r'"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/'
+    stripped = re.sub(tokens, lambda match: " " if match[0].startswith("/") else match[0], text)
+    trailing = r'"(?:\\.|[^"\\])*"|,\s*(?=[}\]])'
+    stripped = re.sub(
+        trailing, lambda match: "" if match[0].startswith(",") else match[0], stripped
+    )
+    value = json.loads(stripped)
+    if not isinstance(value, dict):
+        raise ValueError("configuration must be an object")
+    return value
+
+
+def check_client_timeout(harness: str, entry: dict) -> list[str]:
+    """Check client units and reject an advertisement overstating its budget."""
+    field, units, default = {
+        "codex": ("tool_timeout_sec", 1, 300),
+        "opencode": ("timeout", 1000, None),
+        "antigravity": ("timeoutSeconds", 1, 180),
+    }[harness]
+    raw = entry.get(field, default)
+    numeric = isinstance(raw, int | float) and not isinstance(raw, bool) and math.isfinite(raw)
+    unlimited = harness == "antigravity" and numeric and raw < 0
+    if harness == "antigravity" and numeric and raw == 0:
+        raw = default  # Antigravity 0 retains its default per-tool timeout.
+    actual = raw / units if numeric else raw
+    problems = [] if unlimited else check_timeout(harness, actual)
+    env = entry.get("environment" if harness == "opencode" else "env", {})
+    if not isinstance(env, dict):
+        return problems + [f"{harness}: bridge environment must be an object"]
+    if "HUB_MCP_TIMEOUT_S" in env:
+        try:
+            advertised = float(env["HUB_MCP_TIMEOUT_S"])
+        except (TypeError, ValueError):
+            advertised = float("nan")
+        if not math.isfinite(advertised) or advertised <= 0:
+            problems.append(f"{harness}: HUB_MCP_TIMEOUT_S must be positive finite seconds")
+        elif not unlimited and numeric and advertised > actual:
+            problems.append(
+                f"{harness}: HUB_MCP_TIMEOUT_S={advertised:g}s exceeds the real "
+                f"{field} client budget ({actual:g}s)"
+            )
+    return problems
+
+
+def check_json_configs() -> list[str]:
+    problems = []
+    for harness, path in json_config_paths():
+        if not path.exists():
+            continue
+        try:
+            config = jsonc_object(path.read_text(encoding="utf-8"))
+            section = config.get("mcp" if harness == "opencode" else "mcpServers", {})
+            if not isinstance(section, dict):
+                raise ValueError("MCP configuration must be an object")
+            entry = section.get("robomate")
+            if entry is None or entry is False:
+                continue
+            if not isinstance(entry, dict):
+                raise ValueError("robomate entry must be an object")
+            problems.extend(
+                f"{problem} ({path})" for problem in check_client_timeout(harness, entry)
+            )
+        except (OSError, ValueError) as exc:
+            problems.append(f"{harness}: can't parse {path}: {exc}")
+    return problems
+
+
 def check_codex(checkout: Path, tools: set[str]) -> tuple[list[str], bool]:
     """Return (problems, checked) for Codex's robomate entry."""
     path = codex_config()
@@ -185,7 +273,7 @@ def check_codex(checkout: Path, tools: set[str]) -> tuple[list[str], bool]:
             return [], False
         return [f"Codex: {path} has no [mcp_servers.robomate] entry"], True
 
-    problems = check_timeout("codex", entry.get("tool_timeout_sec", 330))
+    problems = check_client_timeout("codex", entry)
     approved = {
         name
         for name, table in entry.get("tools", {}).items()
@@ -296,6 +384,7 @@ def main() -> int:
 
     codex_problems, codex_checked = check_codex(checkout, tools)
     problems += codex_problems
+    problems += check_json_configs()
     if not codex_checked:
         print(f"Codex config not checked ({codex_config()})")
 
