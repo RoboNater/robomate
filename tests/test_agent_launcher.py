@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
@@ -536,11 +537,20 @@ def test_hanging_opencode_reports_pending_before_exit(
                     )
 
             snapshot = area["sessions"] / "bob.permission.json"
-            before = json.loads(snapshot.read_text())["observed_at"]
+
+            def observed() -> float:
+                # The publisher replaces this file atomically; Windows can deny
+                # a read that lands during the replace (the viewer retries).
+                try:
+                    return float(json.loads(snapshot.read_text())["observed_at"])
+                except OSError:
+                    return 0.0
+
+            before = wait_until_sync(observed, "the permission snapshot is readable")
             reply("unrelated", "per_1")
             reply("ses_7Fa9b2C", "unrelated")
             wait_until_sync(
-                lambda: json.loads(snapshot.read_text())["observed_at"] > before,
+                lambda: observed() > before,
                 "the observer reads unrelated replies",
             )
             assert permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW) == diagnostic
@@ -550,6 +560,7 @@ def test_hanging_opencode_reports_pending_before_exit(
                 "the matching reply clears the diagnostic",
             )
         except BaseException as exc:
+            traceback.print_exc()
             errors.append(exc)
         finally:
             if pid is not None:
