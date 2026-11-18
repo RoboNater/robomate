@@ -4700,3 +4700,8 @@ def test_status_renders_only_current_local_permission_observation(
     monkeypatch.setattr(cli, "_hub_location", lambda *a: None)
     cli._status(False, None)
     assert "permission ask pending" not in capsys.readouterr().out
+
+
+def test_scratch_572_deliberate_failure() -> None:
+    # Scratch check for #572 fail-fast; never merged.
+    assert False
