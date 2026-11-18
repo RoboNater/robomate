@@ -67,7 +67,10 @@ the prepared runs; extra harness words go after `--harness-args`.
 The session log is the operator's data, which agents never read. Each launch,
 exit, conversation ID, wait and stop is one JSON line carrying the agent,
 role, harness, conversation ID, hub ID, workflow ID and the hub's `run_id`;
-launch rows add the model, effort and worktree that `resume` and `ask` reuse.
+launch rows add the model, effort and worktree that `resume` and `ask` reuse,
+the launcher's own PID (`launcher_pid`), and the harness process name it saw
+at launch (`process`). The launcher prints that PID with every launch, for
+example `start (claude-code) pid N, conversation pending; launcher pid M`.
 Starting an agent on a different harness keeps the earlier harness's log
 beside it as `<agent>.<n>.jsonl`.
 
@@ -97,7 +100,12 @@ the prepared worker launcher does. A refused takeover or an unbound bridge
 ends the launcher (exit 4) instead of trying the seat again. The launcher
 stops on `done` or the worker's release (0), spent resumes (1), an unreadable
 or different hub or workflow (3), nothing safe to resume (4), a pause (5) or
-Ctrl-C (130), and then names `agent-launcher.py resume <agent>`.
+Ctrl-C/SIGINT, SIGHUP or SIGTERM (130), and then names
+`agent-launcher.py resume <agent>`. On POSIX a terminal Ctrl-C runs the same
+handler as SIGTERM, so the loop records the child's `exit` and the bridge's
+`joined` row before the `stop`; the next `resume` therefore needs no
+`--confirm-stopped` (#534). Windows keeps the `KeyboardInterrupt` fallback,
+which records the child's `exit` row before the stop.
 
 ### Resuming by hand
 
@@ -118,6 +126,36 @@ options apply: `--resume-session`, `--hub-id`, `--workflow-id`,
 kept for the operator in `sessions/<agent>-resume.md`; the agent receives
 only the fixed continuation, never a path into the hub's state. After the
 first launch, supervision continues with a fresh backoff budget.
+
+### Stopping by hand
+
+```sh
+uv run --project <robomate checkout> python scripts/agent-launcher.py stop bob
+```
+
+`stop` is local process control with the same `--hub` / `--sessions-dir`
+selection as `resume` and `ask`; it never calls the hub and changes no
+workflow or agent state. When a launcher is attached (its OS lock is held),
+`stop` sends it SIGTERM, waits boundedly for the launcher's `stop` row, and
+reports the rows written. On POSIX the launcher exits 130 through its normal
+interrupt path, so the log gains the child's `exit` before the `stop`. When
+no launcher is attached but the newest launch has no `exit` after it and its
+recorded harness PID still runs, `stop` checks the live process name against
+the one recorded at launch, terminates that PID (SIGKILL after the usual
+grace on POSIX), and writes an `exit` row marked
+`"stopped_by": "agent-launcher stop"`. When neither is running it reports
+that and changes nothing. A PID whose name changed, or an older launch row
+with no recorded process identity, may have been reused: `stop` leaves it
+alone (exit 4) and says so rather than guessing; the process name is the
+check recovery already applies, and #176 tracks a stronger creation identity.
+
+After `stop` or Ctrl-C, a following `resume` passes the recorded-exit guard
+without `--confirm-stopped`. Keep `--confirm-stopped` for real unknowns: a
+SIGKILLed launcher with no stop afterwards, a host crash where the harness is
+gone too, or a log written before this change. On Windows the launcher cannot
+receive a console-safe per-process SIGTERM, so `stop` terminates it and then
+terminates its orphaned harness with the same reuse check, recording the
+`exit` row on the launcher's behalf.
 
 ### Asking an agent
 
@@ -341,8 +379,9 @@ logged to `RUN_DIR/<name>-sessions.jsonl`; `run.json` records the path and
 backoff settings. Waits include `delay_s` and `next_attempt`. The launcher stops
 on release or workflow `done` (exit 0), spent resumes (1), unreadable or changed
 hub/workflow (3), missing workflow/ID or an attached predecessor (4), pause
-(5), or Ctrl-C/SIGTERM (130). On interruption it stops only its own harness
-child. It checks status again after a backoff before launching a successor.
+(5), or Ctrl-C/SIGHUP/SIGTERM (130). On interruption it stops only its own
+harness child and records its exit row before stopping (#534). It checks
+status again after a backoff before launching a successor.
 
 When automatic attempts are spent, preserve the workspace and pending task,
 question/result, verify the old harness is gone, then run the generated script
@@ -442,9 +481,10 @@ unsupervised. The launcher:
   never replays the kickoff or guesses an ID), or when the hub stays unreadable
   or names another hub or workflow after `--read-retries` reads (exit 3: it
   never guesses `done`).
-- on Ctrl-C or SIGTERM, stops only the harness process it started, launches
-  nothing more, and exits 130. A long backoff wait is interruptible: Ctrl-C
-  stops the launcher promptly.
+- on Ctrl-C, SIGHUP or SIGTERM, stops only the harness process it started,
+  launches nothing more, and exits 130. The child's `exit` row is written
+  before the stop, so a later resume needs no `--confirm-stopped`; a long
+  backoff wait is interruptible too.
 
 `prepare-run.py --max-resumes N --resume-delay-s S --resume-max-delay-s MAX
 --resume-total-s TOTAL --resume-series-reset-s RESET` sets the backoff for the
@@ -672,9 +712,13 @@ exit, or an attached worker bridge refuses launch. Alice also refuses while
 her old RPC session has a live hold or a heartbeat less than 60 seconds old.
 Wait for detach/expiry, or have the operator inspect and stop its orphan bridge;
 then retry. No option bypasses these guards. Workers never stop predecessors.
-When no exit was recorded (including interactive runs), the operator must
-verify both old harness and launcher are stopped and add `--confirm-stopped`.
-That confirmation supplies no timestamp and cannot bypass a known attachment.
+For a launcher started by `agent-launcher.py`, stop it with `stop <agent>` or
+Ctrl-C; both record the child's `exit`, so the next resume needs no
+`--confirm-stopped` (#534). When no exit was recorded (an older log, a
+SIGKILLed launcher with no stop afterwards, or a host crash/interactive run
+where the harness is also gone), the operator must verify both old harness and
+launcher are stopped and add `--confirm-stopped`. That confirmation supplies no
+timestamp and cannot bypass a known attachment.
 
 A recorded PID may have been reused after a reboot or a hard launcher exit.
 The refusal shows the current process name when available; that name alone

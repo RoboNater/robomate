@@ -7,6 +7,7 @@ pinned hub reads, child supervision, session logs and #158 backoff.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -310,7 +311,9 @@ class Launcher:
         self.conversation: str | None = None
         self.child: subprocess.Popen[str] | None = None
         self.child_exit_at: str | None = None
+        self.last_exit_code: int | None = None
         self.interrupted = False
+        self.resumes = 0
         self.resume_deadline: float | None = None
 
     def resume_name(self) -> str:
@@ -423,6 +426,7 @@ class Launcher:
         if self.interrupted:
             raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
 
+        self.resumes = resumes
         cwd = Path(getattr(self.args, "cwd", None) or Path.cwd()).resolve()
         environment = launch_environment(cwd, getattr(self.args, "env", None))
         argv = launch.argv
@@ -482,11 +486,14 @@ class Launcher:
             action,
             resumes=resumes,
             pid=self.child.pid,
+            launcher_pid=os.getpid(),
+            # A later `stop` compares this with the live process name (#534, #176).
+            process=process_identity(self.child.pid),
             **({"launch_id": launch_id} if self.harness == "opencode" else {}),
         )
         say(
             f"{action} ({self.harness}) pid {self.child.pid},"
-            f" conversation {self.conversation or 'pending'}"
+            f" conversation {self.conversation or 'pending'}; launcher pid {os.getpid()}"
         )
         if launch.stdin is not None:
             threading.Thread(
@@ -559,6 +566,7 @@ class Launcher:
         self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")
         relay.join(RELAY_GRACE_S)
         self.child = None
+        self.last_exit_code = code
         if self.conversation is None and self.harness == "devin":
             found = exported_conversation(self.base)
             if found is not None:
@@ -607,10 +615,55 @@ class Launcher:
             child.wait()
 
     def interrupt(self, *_: object) -> None:
-        """SIGTERM: stop the child and launch nothing more."""
+        """SIGTERM (and, on POSIX, SIGINT/SIGHUP): stop the child and launch nothing more."""
 
         self.interrupted = True
         self.stop_child(wait=False)
+
+    def reap_interrupted(self) -> int | None:
+        """Stop and reap the child an exception-based KeyboardInterrupt found.
+
+        This is the fallback for an interrupt raised as an exception instead of
+        delivered to ``interrupt``: Windows Ctrl-C and
+        ``_thread.interrupt_main()``. Returns None when no child was running,
+        so no exit row is needed.
+        """
+
+        child = self.child
+        if child is None:
+            return None
+        self.stop_child(wait=True)
+        self.child = None
+        self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")
+        return child.returncode
+
+    def log_interrupted_exit(self, code: int) -> None:
+        """Record the interrupted child's exit row when the loop did not (#534)."""
+
+        if last_event(self.args.sessions) not in ("start", "resume", "manual_resume"):
+            return
+        self.log("exit", resumes=self.resumes, exit_code=code, exited_at=self.child_exit_at)
+
+    def interrupted_fallback(self) -> None:
+        """Keep an interrupted child's exit row before the launcher stops with 130.
+
+        A handler-driven interrupt writes the row in ``run()``; this covers the
+        exception path, where a Windows Ctrl-C or ``_thread.interrupt_main``
+        skips the loop (and, for a joined launcher, its join scan).
+        """
+
+        self.interrupted = True
+        code = self.reap_interrupted()
+        if code is None and last_event(self.args.sessions) in (
+            "start",
+            "resume",
+            "manual_resume",
+        ):
+            # The child was reaped but the loop had not logged its exit yet.
+            code = self.last_exit_code
+        if code is not None:
+            self.log_interrupted_exit(code)
+            self.last_exit_code = None
 
     def resumable(self, exit_code: int, resumes: int) -> str:
         """Read the pinned hub and return "done" or "resume"; stop for anything else."""
@@ -803,6 +856,60 @@ def _kill_if_running(child: subprocess.Popen[str]) -> None:
         child.kill()
 
 
+def process_identity(pid: int) -> str | None:
+    """The child's process name, recorded for a later PID-reuse check (#534, #176).
+
+    ``agent_recovery`` imports this module, so the import stays local. The name
+    is the check recovery already applies; ``None`` means it was unavailable,
+    which a later ``stop`` treats as unknown rather than as a match.
+    """
+
+    from agent_recovery import process_name
+
+    name = process_name(pid)
+    return None if name.startswith("unavailable") else name
+
+
+def last_event(path: Path) -> str | None:
+    """The last complete event in a session log, if it is readable."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("event"), str):
+            return row["event"]
+    return None
+
+
+@contextlib.contextmanager
+def interrupt_handlers(launcher: Launcher) -> Iterator[None]:
+    """Make SIGTERM, and on POSIX SIGINT and SIGHUP, stop the child cleanly (#534).
+
+    A terminal Ctrl-C sends SIGINT to the launcher and its harness; the handler
+    lets the loop write the child's exit and join scan before it stops with
+    130, as SIGTERM already did. Windows keeps the ``KeyboardInterrupt``
+    fallback: ``os.kill`` there cannot deliver a console-safe SIGINT.
+    """
+
+    names = ("SIGTERM",) if os.name == "nt" else ("SIGTERM", "SIGINT", "SIGHUP")
+    previous: list[tuple[int, Any]] = []
+    for name in names:
+        number = getattr(signal, name, None)
+        if number is not None:
+            previous.append((number, signal.signal(number, launcher.interrupt)))
+    try:
+        yield
+    finally:
+        for number, handler in reversed(previous):
+            signal.signal(number, handler)
+
+
 def _feed(stream: TextIO | None, text: str) -> None:
     if stream is None:
         return
@@ -936,42 +1043,39 @@ def main(
             say(hint)
         raise
     launcher = launcher_type(args, reader)
-    previous = signal.signal(signal.SIGTERM, launcher.interrupt)
-    try:
-        from agent_recovery import agent_lock
+    with interrupt_handlers(launcher):
+        try:
+            from agent_recovery import agent_lock
 
-        with agent_lock(args.sessions):
-            try:
-                return launcher.run()
-            except KeyboardInterrupt:
-                launcher.interrupted = True
-                launcher.stop_child(wait=True)
-                return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
-            except Stop as stop:
-                return _stopped(launcher, stop)
-    except KeyboardInterrupt:
-        launcher.interrupted = True
-        launcher.stop_child(wait=True)
-        return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
-    except Stop as stop:
-        say(str(stop))
-        if args.recover:
-            say(ask_hint(args.sessions, launcher.agent))
-        return stop.code
-    except OpenCodeConfigError as exc:
-        say(f"Harness configuration failure: {exc}")
-        return EXIT_CANNOT_RESUME
-    except (OSError, ValueError, urllib.error.URLError) as exc:
-        say(
-            f"Recovery/launch unavailable: {exc}. Restore the original run files and hub "
-            "reachability, then retry the resume script; do not replay kickoff."
-        )
-        if args.recover:
-            say(ask_hint(args.sessions, launcher.agent))
-        return EXIT_HUB_UNREADABLE
-    finally:
-        launcher.stop_child(wait=True)
-        signal.signal(signal.SIGTERM, previous)
+            with agent_lock(args.sessions):
+                try:
+                    return launcher.run()
+                except KeyboardInterrupt:
+                    launcher.interrupted_fallback()
+                    return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
+                except Stop as stop:
+                    return _stopped(launcher, stop)
+        except KeyboardInterrupt:
+            launcher.interrupted_fallback()
+            return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
+        except Stop as stop:
+            say(str(stop))
+            if args.recover:
+                say(ask_hint(args.sessions, launcher.agent))
+            return stop.code
+        except OpenCodeConfigError as exc:
+            say(f"Harness configuration failure: {exc}")
+            return EXIT_CANNOT_RESUME
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            say(
+                f"Recovery/launch unavailable: {exc}. Restore the original run files and hub "
+                "reachability, then retry the resume script; do not replay kickoff."
+            )
+            if args.recover:
+                say(ask_hint(args.sessions, launcher.agent))
+            return EXIT_HUB_UNREADABLE
+        finally:
+            launcher.stop_child(wait=True)
 
 
 def _stopped(launcher: Launcher, stop: Stop) -> int:

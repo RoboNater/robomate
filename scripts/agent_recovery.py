@@ -10,6 +10,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,10 +24,18 @@ from agent_interactive import add_launch_controls, split_arguments
 from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log_session, say
 from agent_sessions import exact_id as exact_id
 
+_LOCK_HOLDER = re.compile(rb"launcher_pid (\d+)")
+
 
 @contextmanager
 def agent_lock(sessions: Path) -> Iterator[None]:
-    """An OS lock survives neither exit nor crash; shared by start and resume."""
+    """An OS lock survives neither exit nor crash; shared by start and resume.
+
+    While the lock is held, the holder appends ``launcher_pid <pid>`` so
+    ``agent-launcher.py stop`` can signal it (#534). Only a holder appends, so
+    the last such line belongs to the current one.
+    """
+
     with sessions.with_suffix(".lock").open("a+b") as stream:
         stream.seek(0)
         stream.write(b"0")
@@ -49,12 +58,50 @@ def agent_lock(sessions: Path) -> Iterator[None]:
                 "exit, or have the operator stop that predecessor before retrying.",
             ) from exc
         try:
+            stream.seek(0, os.SEEK_END)
+            stream.write(f"\nlauncher_pid {os.getpid()}\n".encode())
+            stream.flush()
+            stream.seek(0)
             yield
         finally:
             if os.name == "nt":
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def launcher_attached(log: Path) -> bool:
+    """Whether a launcher holds ``log``'s lock, without creating or changing it (#534)."""
+
+    path = log.with_suffix(".lock")
+    if not path.exists():
+        return False
+    try:
+        with path.open("r+b") as stream:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return True
+    return False
+
+
+def lock_holder_pid(log: Path) -> int | None:
+    """The launcher PID the current lock holder appended, when it is recorded (#534)."""
+
+    try:
+        data = log.with_suffix(".lock").read_bytes()
+    except OSError:
+        return None
+    found = _LOCK_HOLDER.findall(data)
+    return int(found[-1]) if found else None
 
 
 def add_options(parser: argparse.ArgumentParser, *, public: bool = False) -> None:
@@ -807,6 +854,51 @@ def process_exists(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def process_alive(pid: int) -> bool:
+    """Whether ``pid`` is still running, not merely an unreaped or terminated one.
+
+    ``process_exists`` answers the predecessor guard conservatively: a Windows
+    process object or a POSIX zombie still exists until it is reaped. ``stop``
+    needs the narrower answer before it terminates or reports (#534).
+    """
+
+    if os.name == "nt":
+        import ctypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.GetExitCodeProcess.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        kernel.GetExitCodeProcess.restype = ctypes.c_int
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_uint32()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # A killed child stays a zombie until its parent reaps it; it is not running.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return True
+    fields = stat.rsplit(")", 1)[-1].split()
+    return not fields or fields[0] != "Z"
 
 
 def bash_executable(*, windows: bool | None = None) -> str:
