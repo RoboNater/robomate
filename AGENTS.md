@@ -59,7 +59,16 @@ other packages; it must depend on none of them.
 
 ## Validation
 
-On pull requests, the first pytest step in `test` and `windows` runs only changed test files.
+On a pull request, `test` and `windows` first run the PR's added, modified or
+renamed `tests/test_*.py` files ("Run changed test files", after `mypy`); a
+failure there ends the job in a few minutes, before the full suite starts.
+For Windows-only behaviour you can't check locally, push with the PR open and
+watch that step: `gh pr checks` reports only whole jobs, so read the step with
+`gh api repos/RoboNater/robomate/actions/runs/<run-id>/jobs -q '.jobs[] |
+select(.name=="windows") | .steps[] | select(.name=="Run changed test files")
+| .conclusion'`. Changed helpers such as `tests/conftest.py` and
+`tests/fake_harness.py` run only in the full suite, and pushes to `main` skip
+the step. It adds to, and doesn't replace, local runs of the affected tests.
 
 ```sh
 uv sync --locked --all-packages --dev
