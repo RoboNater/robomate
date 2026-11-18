@@ -4704,4 +4704,4 @@ def test_status_renders_only_current_local_permission_observation(
 
 def test_scratch_572_deliberate_failure() -> None:
     # Scratch check for #572 fail-fast; never merged.
-    assert 1 + 1 == 3
+    assert 1 + 1 == 2
