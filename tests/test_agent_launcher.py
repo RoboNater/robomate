@@ -1099,7 +1099,9 @@ def interrupt_when_running(area: dict[str, Path], how: str) -> threading.Thread:
         if how == "sigint":
             os.kill(os.getpid(), signal.SIGINT)
         elif how == "sighup":
-            os.kill(os.getpid(), signal.SIGHUP)
+            # SIGHUP is POSIX-only; Windows mypy has no attribute for it.
+            name = "SIGHUP"
+            os.kill(os.getpid(), getattr(signal, name))
         else:
             # A pending KeyboardInterrupt, then the terminal's SIGINT to the child.
             _thread.interrupt_main()
