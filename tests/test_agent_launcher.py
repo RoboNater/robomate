@@ -1098,6 +1098,8 @@ def interrupt_when_running(area: dict[str, Path], how: str) -> threading.Thread:
         )
         if how == "sigint":
             os.kill(os.getpid(), signal.SIGINT)
+        elif how == "sighup":
+            os.kill(os.getpid(), signal.SIGHUP)
         else:
             # A pending KeyboardInterrupt, then the terminal's SIGINT to the child.
             _thread.interrupt_main()
@@ -1108,16 +1110,16 @@ def interrupt_when_running(area: dict[str, Path], how: str) -> threading.Thread:
     return thread
 
 
-@pytest.mark.parametrize("how", ["sigint", "keyboard"])
+@pytest.mark.parametrize("how", ["sigint", "sighup", "keyboard"])
 def test_ctrl_c_keeps_the_join_and_exit_rows_before_stopping(
     area: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     how: str,
 ) -> None:
-    """#534: Ctrl-C writes exit after the join scan, so no --confirm-stopped is needed."""
+    """#534: Ctrl-C, SIGHUP and the fallback write exit after the join scan."""
 
-    if how == "sigint" and os.name == "nt":
-        pytest.skip("os.kill(self, SIGINT) terminates the whole process on Windows")
+    if how in ("sigint", "sighup") and os.name == "nt":
+        pytest.skip("os.kill(self, SIGINT/SIGHUP) terminates the whole process on Windows")
 
     monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["hang"]))
@@ -2619,6 +2621,9 @@ def test_stop_stops_an_attached_launcher_and_resume_needs_no_confirmation(
         start = wait_for_launch(area)
         assert start["launcher_pid"] == process.pid
         assert start["pid"] != process.pid
+        # The held lock body names only its current holder (#534 r1-2).
+        lock = (area["sessions"] / "bob.lock").read_text(encoding="utf-8")
+        assert lock == f"launcher_pid {process.pid}\n"
 
         assert CLI.main(stop_words(area), programs=programs(area)) == 0
         process.wait(timeout=LIVENESS_S)
@@ -2740,7 +2745,12 @@ def test_stop_with_nothing_running_changes_nothing(
     assert files(area["root"], area["harness_dir"]) == before
 
     now = datetime.now(UTC)
-    saved_log(area, "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00004", now - timedelta(minutes=2), now - timedelta(minutes=1))
+    saved_log(
+        area,
+        "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00004",
+        now - timedelta(minutes=2),
+        now - timedelta(minutes=1),
+    )
     before = files(area["root"], area["harness_dir"])
     content = (area["sessions"] / "bob.jsonl").read_bytes()
     assert CLI.main(stop_words(area), programs=programs(area)) == 0

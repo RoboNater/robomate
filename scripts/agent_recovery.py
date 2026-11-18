@@ -31,15 +31,14 @@ _LOCK_HOLDER = re.compile(rb"launcher_pid (\d+)")
 def agent_lock(sessions: Path) -> Iterator[None]:
     """An OS lock survives neither exit nor crash; shared by start and resume.
 
-    While the lock is held, the holder appends ``launcher_pid <pid>`` so
-    ``agent-launcher.py stop`` can signal it (#534). Only a holder appends, so
-    the last such line belongs to the current one.
+    While the lock is held, its body names the holder as ``launcher_pid <pid>``
+    so ``agent-launcher.py stop`` can signal it (#534). The body is replaced
+    after the lock is acquired, so it stays one line and only a holder writes
+    it; a reader can still catch the brief gap before the new holder records
+    itself, so ``stop`` re-reads after a moment.
     """
 
     with sessions.with_suffix(".lock").open("a+b") as stream:
-        stream.seek(0)
-        stream.write(b"0")
-        stream.flush()
         stream.seek(0)
         try:
             if os.name == "nt":
@@ -58,8 +57,9 @@ def agent_lock(sessions: Path) -> Iterator[None]:
                 "exit, or have the operator stop that predecessor before retrying.",
             ) from exc
         try:
-            stream.seek(0, os.SEEK_END)
-            stream.write(f"\nlauncher_pid {os.getpid()}\n".encode())
+            stream.seek(0)
+            stream.truncate()
+            stream.write(f"launcher_pid {os.getpid()}\n".encode())
             stream.flush()
             stream.seek(0)
             yield

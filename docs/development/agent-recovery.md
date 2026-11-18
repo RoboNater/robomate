@@ -143,7 +143,9 @@ no launcher is attached but the newest launch has no `exit` after it and its
 recorded harness PID still runs, `stop` checks the live process name against
 the one recorded at launch, terminates that PID (SIGKILL after the usual
 grace on POSIX), and writes an `exit` row marked
-`"stopped_by": "agent-launcher stop"`. When neither is running it reports
+`"stopped_by": "agent-launcher stop"`. That orphan path does not reconstruct a
+missing `joined` row, so the next resume may send the plain join line instead
+of the bounded takeover (#571). When neither is running it reports
 that and changes nothing. A PID whose name changed, or an older launch row
 with no recorded process identity, may have been reused: `stop` leaves it
 alone (exit 4) and says so rather than guessing; the process name is the

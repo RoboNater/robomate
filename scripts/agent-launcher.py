@@ -966,7 +966,12 @@ def stop_agent(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     # An attached launcher may be mid-append: tolerate a partial last line.
     rows = live_rows(log) if attached else saved_rows(log)
     if attached:
-        pid = lock_holder_pid(log) or newest_launcher_pid(rows)
+        # A just-acquired holder replaces the lock body after taking it: prefer
+        # the PID recorded a moment later so a stale predecessor is not signalled.
+        pid = lock_holder_pid(log)
+        time.sleep(STOP_POLL_S)
+        pid = lock_holder_pid(log) or pid
+        pid = pid or newest_launcher_pid(rows)
         if pid is None:
             raise common.Stop(
                 common.EXIT_CANNOT_RESUME,
