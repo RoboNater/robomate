@@ -90,7 +90,12 @@ sequence = json.loads(os.environ.get("FAKE_ERRORS", "[]"))
 if sequence:
     with open(os.environ["FAKE_LOG"], encoding="utf-8") as log:
         index = sum(1 for _ in log) - 1
-    print(sequence[min(index, len(sequence) - 1)], flush=True)
+    line = sequence[min(index, len(sequence) - 1)]
+    if "--session-id" in argv:
+        line = line.replace("CLAUDE_SESSION", argv[argv.index("--session-id") + 1])
+    elif "--resume" in argv and "CLAUDE_SESSION" in line:
+        line = line.replace("CLAUDE_SESSION", argv[argv.index("--resume") + 1])
+    print(line, flush=True)
 export = os.environ.get("FAKE_EXPORT_ID")
 if export and "--export" in argv:
     # Devin writes its ATIF export after each turn (#224).
@@ -267,6 +272,7 @@ def test_repeated_provider_errors_stop(
     monkeypatch: pytest.MonkeyPatch,
     sequence: list[str],
     expected_runs: int,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("FAKE_ERRORS", json.dumps(sequence))
     monkeypatch.setenv("FAKE_EXIT", "1")
@@ -278,6 +284,12 @@ def test_repeated_provider_errors_stop(
     rows = sessions(run_dir)
     assert rows[-1]["reason"] == "repeated_non_retryable_provider_error"
     assert len([r for r in rows if r["event"] == "wait"]) == expected_runs - 1
+    diagnostic = capsys.readouterr().err
+    if "authentication_error" in sequence[-1]:
+        assert "Replace the provider API key" in diagnostic
+    else:
+        assert "github.com/RoboNater/robomate/issues/330" in diagnostic
+    assert "manually resume with resume-alice" in diagnostic
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "antigravity", "devin", "opencode"])
@@ -286,6 +298,14 @@ def test_other_harnesses_and_retryable_errors_back_off(
 ) -> None:
     use_harness(harness, monkeypatch)
     line = error_line(400, "invalid_request_error", retry=harness == "opencode")
+    session = {
+        "claude-code": "CLAUDE_SESSION",
+        "codex": CODEX_ID,
+        "antigravity": IDS["antigravity"],
+        "devin": IDS["devin"],
+        "opencode": IDS["opencode"],
+    }[harness]
+    line = line.replace(str(IDS["opencode"]), str(session))
     monkeypatch.setenv("FAKE_ERRORS", json.dumps([line]))
     monkeypatch.setenv("FAKE_EXIT", "1")
     result = LAUNCHER.main(
@@ -311,13 +331,13 @@ def test_ineligible_exit_clears_provider_streak(
     run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, middle: str
 ) -> None:
     line = error_line(400, "invalid_request_error")
-    monkeypatch.setenv("FAKE_ERRORS", json.dumps([line, middle, line]))
+    monkeypatch.setenv("FAKE_ERRORS", json.dumps([line, middle, line, middle]))
     monkeypatch.setenv("FAKE_EXIT", "1")
     result = LAUNCHER.main(
-        start_args(run_dir, fake, "opencode", "--max-resumes", "2"), ScriptedReader(wf("active"))
+        start_args(run_dir, fake, "opencode", "--max-resumes", "3"), ScriptedReader(wf("active"))
     )
     assert result == LAUNCHER.EXIT_RESUMES_SPENT
-    assert len(launches(run_dir)) == 3
+    assert len(launches(run_dir)) == 4
 
 
 def test_long_run_breaks_provider_streak(
@@ -329,7 +349,7 @@ def test_long_run_breaks_provider_streak(
     launcher = LAUNCHER.Launcher(
         LAUNCHER.parse_args(
             start_args(
-                run_dir, fake, "opencode", "--max-resumes", "2", "--resume-series-reset-s", "30"
+                run_dir, fake, "opencode", "--max-resumes", "3", "--resume-series-reset-s", "30"
             )
         ),
         ScriptedReader(wf("active")),
@@ -345,7 +365,7 @@ def test_long_run_breaks_provider_streak(
     launcher.run_child = run_child
     with pytest.raises(LAUNCHER.Stop) as stopped:
         launcher.run()
-    assert stopped.value.reason == "resumes_spent"
+    assert stopped.value.reason == "repeated_non_retryable_provider_error"
     assert len(launches(run_dir)) == 3
 
 
