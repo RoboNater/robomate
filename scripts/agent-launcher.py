@@ -10,6 +10,7 @@ Run it from the hub's checkout (or name the hub with ``--hub``)::
     uv run --project <robomate checkout> python scripts/agent-launcher.py start bob \\
         --role implementer --harness claude-code [--model M] [--effort E] [--interactive]
     uv run --project <robomate checkout> python scripts/agent-launcher.py resume bob
+    uv run --project <robomate checkout> python scripts/agent-launcher.py stop bob
     uv run --project <robomate checkout> python scripts/agent-launcher.py ask bob
     uv run --project <robomate checkout> python scripts/agent-launcher.py doctor \\
         --run <run_id> --harness codex
@@ -34,11 +35,15 @@ workflow taken from the hub with #223's evidence when the log predates it),
 and resumes the saved conversation with a fixed continuation whose join
 instruction matches that conversation: no recorded join sends the plain join
 line, while a recorded join sends a bounded ``join(..., takeover=true)`` for
-its own seat only (#512). ``ask`` opens a saved conversation
-interactively with its hub tools disabled; it needs no hub. ``--interactive``
-(#222) starts or resumes without automatic resume and still records the
-session. ``doctor`` is Denise's optional entry, separate from all of this: it
-reads the selected run locally, works with the hub stopped, and never joins.
+its own seat only (#512). ``stop`` is local process control: it stops an
+attached launcher with SIGTERM and waits for its ``stop`` row, or else stops
+the recorded harness of an interrupted launcher and writes its ``exit`` row,
+leaving hub, workflow and agent state untouched (#534). ``ask`` opens a saved
+conversation interactively with its hub tools disabled; it needs no hub.
+``--interactive`` (#222) starts or resumes without automatic resume and still
+records the session. ``doctor`` is Denise's optional entry, separate from all
+of this: it reads the selected run locally, works with the hub stopped, and
+never joins.
 
 Every start and resume gives the harness, and so its ``robomate mcp`` bridge,
 the agent's declared identity (#402): ``HUB_HARNESS``, ``HUB_HARNESS_VERSION``
@@ -55,8 +60,9 @@ an inherited one). The launch rows record them, so ``resume`` applies them again
 ``start-run.py`` (#268) starts every agent of a scripted run this way.
 
 Exit codes as the prepared launchers: 0 done or released; 1 resumes spent;
-2 usage; 3 hub unreadable; 4 nothing safe to resume; 5 paused; 130 interrupted.
-An interactive or ask session returns the harness's own exit code.
+2 usage; 3 hub unreadable; 4 nothing safe to resume (and ``stop``: a recorded
+process it will not guess about, or a stop it cannot confirm); 5 paused; 130
+interrupted. An interactive or ask session returns the harness's own exit code.
 """
 
 from __future__ import annotations
@@ -70,10 +76,12 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -84,7 +92,14 @@ sys.path.insert(0, str(SCRIPTS))
 import agent_launcher as common  # noqa: E402
 from agent_hub_common.discovery import HUB_ID_ENV  # noqa: E402
 from agent_interactive import split_arguments  # noqa: E402
-from agent_recovery import agent_lock, prepare  # noqa: E402
+from agent_recovery import (  # noqa: E402
+    agent_lock,
+    launcher_attached,
+    lock_holder_pid,
+    prepare,
+    process_alive,
+    process_name,
+)
 from agent_sessions import conversation as saved_conversation  # noqa: E402
 from agent_sessions import exact_id  # noqa: E402
 from agent_worker import WorkerLauncher, WorkerReader, telemetry_size  # noqa: E402
@@ -116,6 +131,11 @@ DOCTOR_HARNESSES = ("claude-code", "codex")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 #: The xdist budget a scripted run gives each agent (prepare-run's ``pytest_workers``).
 PYTEST_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+#: How long ``stop`` waits for a signalled launcher's stop row (#534).
+STOP_WAIT_S = 30.0
+STOP_POLL_S = 0.1
+#: How long a terminated launcher's Windows byte-range lock may take to clear.
+LOCK_SETTLE_S = 1.0
 
 Programs = Mapping[str, list[str]]
 
@@ -749,6 +769,248 @@ def set_aside(path: Path, harness: str) -> None:
     raise Usage(f"too many earlier logs beside {path}; move some aside")
 
 
+# -- stopping by hand (#534) ----------------------------------------------------------
+
+
+def live_rows(path: Path) -> list[dict[str, Any]]:
+    """Complete rows for a log another process may be appending to; skip a partial line."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def newest_launcher_pid(rows: list[dict[str, Any]]) -> int | None:
+    """The launcher PID a launch row recorded, for a log or lock without one (#534)."""
+
+    for row in reversed(rows):
+        pid = row.get("launcher_pid")
+        if row.get("event") in LAUNCH_EVENTS and isinstance(pid, int) and pid > 0:
+            return pid
+    return None
+
+
+def report_events(events: list[str]) -> str:
+    return ", ".join(events) if events else "none"
+
+
+def stop_launcher(log: Path, agent: str, pid: int) -> int:
+    """SIGTERM the attached launcher and wait, boundedly, for its stop row (#534)."""
+
+    before = len(live_rows(log))
+    if process_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            raise common.Stop(
+                common.EXIT_CANNOT_RESUME,
+                "stop_unidentified",
+                f"Could not signal {agent}'s launcher pid {pid}: {exc}. Nothing was changed.",
+            ) from None
+    deadline = time.monotonic() + STOP_WAIT_S
+    while time.monotonic() < deadline:
+        new = live_rows(log)[before:]
+        events = [str(row.get("event")) for row in new]
+        if "stop" in events:
+            say(f"stopped {agent}'s launcher pid {pid}; rows written: {report_events(events)}")
+            return 0
+        if not process_alive(pid):
+            break
+        time.sleep(STOP_POLL_S)
+    if not process_alive(pid):
+        # A hard stop (Windows TerminateProcess, SIGKILL) leaves the harness
+        # running and wrote no stop row: finish the job the way the orphan
+        # path does, so a later resume still finds a recorded exit. Never do
+        # that while the lock is still held by someone else.
+        new = live_rows(log)[before:]
+        if "stop" in [str(row.get("event")) for row in new]:
+            say(f"stopped {agent}'s launcher pid {pid}")
+            return 0
+        if launcher_attached(log):
+            holder = lock_holder_pid(log)
+            if holder is not None and holder != pid:
+                raise common.Stop(
+                    common.EXIT_CANNOT_RESUME,
+                    "stop_unconfirmed",
+                    f"{agent}'s launcher lock is held by pid {holder}, not the recorded pid "
+                    f"{pid}. Inspect that process; nothing else was changed.",
+                )
+            # A terminated holder's lock can take a moment to clear on Windows.
+            deadline = time.monotonic() + LOCK_SETTLE_S
+            while launcher_attached(log) and time.monotonic() < deadline:
+                holder = lock_holder_pid(log)
+                if holder is not None and holder != pid:
+                    raise common.Stop(
+                        common.EXIT_CANNOT_RESUME,
+                        "stop_unconfirmed",
+                        f"{agent}'s launcher lock is held by pid {holder}, not the recorded "
+                        f"pid {pid}. Inspect that process; nothing else was changed.",
+                    )
+                time.sleep(STOP_POLL_S)
+            if launcher_attached(log) and lock_holder_pid(log) != pid:
+                # Still held by an unknown or different holder: never stop a
+                # harness that may belong to the new holder (#534 r2-1).
+                holder = lock_holder_pid(log)
+                by = f" by pid {holder}" if holder is not None else ""
+                raise common.Stop(
+                    common.EXIT_CANNOT_RESUME,
+                    "stop_unconfirmed",
+                    f"{agent}'s launcher pid {pid} is gone, but its lock is still held{by}. "
+                    "Inspect that process; nothing else was changed.",
+                )
+        say(f"{agent}'s launcher pid {pid} exited without a stop row")
+        return stop_orphaned(log, agent)
+    raise common.Stop(
+        common.EXIT_CANNOT_RESUME,
+        "stop_unconfirmed",
+        f"Sent SIGTERM to {agent}'s launcher pid {pid}, but no stop row appeared within "
+        f"{STOP_WAIT_S:g} s. Inspect that process; nothing else was changed.",
+    )
+
+
+def terminate_recorded(pid: int) -> bool:
+    """Terminate one recorded harness process, boundedly; True once it is gone."""
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError as exc:
+        say(f"could not signal harness pid {pid}: {exc}")
+        return False
+    deadline = time.monotonic() + common.CHILD_KILL_AFTER_S
+    while time.monotonic() < deadline:
+        if not process_alive(pid):
+            return True
+        time.sleep(STOP_POLL_S)
+    if os.name != "nt":
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            return not process_alive(pid)
+        deadline = time.monotonic() + common.CHILD_KILL_AFTER_S
+        while time.monotonic() < deadline:
+            if not process_alive(pid):
+                return True
+            time.sleep(STOP_POLL_S)
+    return not process_alive(pid)
+
+
+def record_stopped_exit(log: Path, agent: str, launch: Mapping[str, Any], pid: int) -> None:
+    """Write the exit row for a harness ``stop`` terminated in the launcher's place."""
+
+    common.log_session(
+        log,
+        event="exit",
+        agent=str(launch.get("agent") or agent),
+        harness=launch.get("harness"),
+        role=launch.get("role"),
+        conversation_id=launch.get("conversation_id"),
+        hub_id=launch.get("hub_id"),
+        workflow_id=launch.get("workflow_id"),
+        run_id=launch.get("run_id"),
+        pid=pid,
+        exit_code=None,
+        exited_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        stopped_by="agent-launcher stop",
+    )
+
+
+def stop_orphaned(log: Path, agent: str) -> int:
+    """Stop the last launch's harness when no launcher is attached (#534)."""
+
+    rows = saved_rows(log)
+    launches = [i for i, row in enumerate(rows) if row.get("event") in LAUNCH_EVENTS]
+    if not launches:
+        say(f"Nothing is running for {agent}: no launch is recorded. Nothing was changed.")
+        return 0
+    last = launches[-1]
+    launch = rows[last]
+    if any(row.get("event") == "exit" for row in rows[last + 1 :]):
+        say(f"Nothing is running for {agent}: the last launch has its exit row.")
+        return 0
+    pid = launch.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        say(f"Nothing is running for {agent}: the last launch records no harness PID.")
+        return 0
+    if not process_alive(pid):
+        say(
+            f"Nothing is running for {agent}: recorded harness pid {pid} is gone. Nothing was "
+            "changed; use --confirm-stopped on resume if no exit was recorded."
+        )
+        return 0
+    recorded = launch.get("process")
+    current = process_name(pid)
+    if not isinstance(recorded, str) or not recorded:
+        raise common.Stop(
+            common.EXIT_CANNOT_RESUME,
+            "stop_unidentified",
+            f"{agent}'s recorded harness pid {pid} is alive, but this launch recorded no "
+            "process identity, so it may have been reused. Check the process yourself before "
+            "stopping it; nothing was changed.",
+        )
+    if current.startswith("unavailable") or current != recorded:
+        raise common.Stop(
+            common.EXIT_CANNOT_RESUME,
+            "stop_unidentified",
+            f"{agent}'s recorded harness pid {pid} is now {current!r}, recorded as "
+            f"{recorded!r}; the PID may have been reused. Left it alone. Verify the process "
+            "before stopping it; nothing was changed.",
+        )
+    if not terminate_recorded(pid):
+        raise common.Stop(
+            common.EXIT_CANNOT_RESUME,
+            "stop_unconfirmed",
+            f"Could not confirm that {agent}'s harness pid {pid} exited; no exit row was "
+            "written. Inspect that process.",
+        )
+    record_stopped_exit(log, agent, launch, pid)
+    say(
+        f"stopped {agent}'s recorded harness pid {pid}; wrote an exit row marked "
+        '"stopped_by": "agent-launcher stop".'
+    )
+    return 0
+
+
+def stop_agent(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
+    """Stop the agent's launcher, or its recorded harness, without touching the hub."""
+
+    del extra, tools
+    sessions = Path(args.sessions_dir) if args.sessions_dir else locate(args).sessions
+    log = log_path(sessions, args.agent)
+    attached = launcher_attached(log)
+    # An attached launcher may be mid-append: tolerate a partial last line.
+    rows = live_rows(log) if attached else saved_rows(log)
+    if attached:
+        # A just-acquired holder replaces the lock body after taking it: prefer
+        # the PID recorded a moment later so a stale predecessor is not signalled.
+        pid = lock_holder_pid(log)
+        time.sleep(STOP_POLL_S)
+        pid = lock_holder_pid(log) or pid
+        pid = pid or newest_launcher_pid(rows)
+        if pid is None:
+            raise common.Stop(
+                common.EXIT_CANNOT_RESUME,
+                "stop_unidentified",
+                f"A launcher holds {args.agent}'s lock but recorded no PID. Inspect that "
+                "process yourself; nothing was changed.",
+            )
+        return stop_launcher(log, args.agent, pid)
+    return stop_orphaned(log, args.agent)
+
+
 # -- supervised launchers -------------------------------------------------------------
 
 
@@ -768,6 +1030,8 @@ class Joined(common.Launcher):
     joined = False
     pending_stop: tuple[str, common.Stop] | None = None
     """A terminal join outcome, raised after the child's exit row is written (r1-1 on #512)."""
+    join_offset: int | None = None
+    """Where the current child's bridge telemetry starts, for an interrupted scan (#534)."""
 
     def setup(self, args: argparse.Namespace) -> None:
         self.agent = args.agent
@@ -775,6 +1039,7 @@ class Joined(common.Launcher):
         self.orchestrator = args.role == "orchestrator"
         self.joined = False
         self.pending_stop = None
+        self.join_offset = None
         self.continue_prompt = continuation(args.agent, args.role, joined=False)
 
     def resume_name(self) -> str:
@@ -890,10 +1155,19 @@ class Joined(common.Launcher):
     def run_child(self, launch: common.Launch, action: str, resumes: int) -> int:
         self.launched = True
         offset = telemetry_size(self.bridge_log())
+        self.join_offset = offset
         code = super().run_child(launch, action, resumes)
         self.scan_join(offset)
         self.continue_prompt = continuation(self.agent, self.role, joined=self.joined)
         return code
+
+    def log_interrupted_exit(self, code: int) -> None:
+        """Keep the #512 join scan before a KeyboardInterrupt's exit row (#534)."""
+
+        if self.join_offset is not None:
+            self.scan_join(self.join_offset)
+            self.continue_prompt = continuation(self.agent, self.role, joined=self.joined)
+        super().log_interrupted_exit(code)
 
     def read_hub(self) -> dict[str, Any] | None:
         pinned = self.workflow_id
@@ -1061,32 +1335,32 @@ def make_reader(tools: Tools, place: Place, agent: str, role: str) -> common.Hub
 def supervise(launcher: Joined, sessions: Path) -> int:
     """common.main's supervision, with this launcher's own hints."""
 
-    previous = signal.signal(signal.SIGTERM, launcher.interrupt)
-    try:
-        with agent_lock(sessions):
-            try:
-                return launcher.run()
-            except KeyboardInterrupt:
-                launcher.interrupted = True
-                launcher.stop_child(wait=True)
-                return stopped(launcher, common.Stop(common.EXIT_INTERRUPTED, "interrupted", ""))
-            except common.Stop as stop:
-                return stopped(launcher, stop)
-    except common.Stop as stop:
-        say(str(stop))
-        return stop.code
-    except common.OpenCodeConfigError as exc:
-        say(f"harness configuration failure: {exc}")
-        return common.EXIT_CANNOT_RESUME
-    except (OSError, ValueError, urllib.error.URLError) as exc:
-        say(
-            f"launch unavailable: {exc}. Restore hub reachability, then run "
-            f"{launcher.resume_name()}"
-        )
-        return common.EXIT_HUB_UNREADABLE
-    finally:
-        launcher.stop_child(wait=True)
-        signal.signal(signal.SIGTERM, previous)
+    with common.interrupt_handlers(launcher):
+        try:
+            with agent_lock(sessions):
+                try:
+                    return launcher.run()
+                except KeyboardInterrupt:
+                    launcher.interrupted_fallback()
+                    return stopped(
+                        launcher, common.Stop(common.EXIT_INTERRUPTED, "interrupted", "")
+                    )
+                except common.Stop as stop:
+                    return stopped(launcher, stop)
+        except common.Stop as stop:
+            say(str(stop))
+            return stop.code
+        except common.OpenCodeConfigError as exc:
+            say(f"harness configuration failure: {exc}")
+            return common.EXIT_CANNOT_RESUME
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            say(
+                f"launch unavailable: {exc}. Restore hub reachability, then run "
+                f"{launcher.resume_name()}"
+            )
+            return common.EXIT_HUB_UNREADABLE
+        finally:
+            launcher.stop_child(wait=True)
 
 
 def stopped(launcher: Joined, stop: common.Stop) -> int:
@@ -1195,6 +1469,7 @@ def run_interactive(
     codex_home = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
     before = codex_rollouts(codex_home) if row["harness"] == "codex" else set()
     child = subprocess.Popen(argv, cwd=cwd, env=dict(env))
+    row = row | {"launcher_pid": os.getpid(), "process": common.process_identity(child.pid)}
     common.log_session(log, event=event, pid=child.pid, interactive=True, **row)
     try:
         code = child.wait()
@@ -1808,6 +2083,11 @@ def parser() -> argparse.ArgumentParser:
     hub_options(again)
     interactive_options(again)
     backoff_options(again)
+    halt = commands.add_parser(
+        "stop", help="stop the agent's attached launcher or its recorded harness"
+    )
+    halt.add_argument("agent")
+    hub_options(halt)
     question = commands.add_parser("ask", help="ask a saved conversation questions; no hub")
     question.add_argument("agent")
     question.add_argument("conversation_id", nargs="?")
@@ -1879,7 +2159,13 @@ def main(
     tools = Tools(programs or {}, reader, workspace or robomate_workspace)
     try:
         args, extra = parse(sys.argv[1:] if argv is None else argv)
-        action = {"start": start, "resume": resume, "ask": ask, "doctor": doctor}[args.action]
+        action = {
+            "start": start,
+            "resume": resume,
+            "stop": stop_agent,
+            "ask": ask,
+            "doctor": doctor,
+        }[args.action]
         return action(args, extra, tools)
     except Usage as exc:
         say(str(exc))

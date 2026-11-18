@@ -10,6 +10,8 @@ with legacy state, so `--hub <checkout>` finds the state directory and
 
 from __future__ import annotations
 
+import _thread
+import argparse
 import importlib.util
 import io
 import json
@@ -18,6 +20,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
@@ -35,7 +38,7 @@ from fake_harness import (
     live_own_pids,
 )
 from test_alice_launcher import ID_LINES, IDS, LAUNCHER, ROOT
-from timing import wait_until_sync
+from timing import LIVENESS_S, wait_until_sync
 
 # One shared autouse fixture (fake_harness.py), re-exported here by alias so
 # ruff does not treat the pytest fixture as an unused import (#464 r1-3).
@@ -49,6 +52,7 @@ CLI = importlib.util.module_from_spec(SPEC)
 sys.modules["agent_launcher_cli"] = CLI
 SPEC.loader.exec_module(CLI)
 WORKER = sys.modules["agent_worker"]
+RECOVERY = importlib.import_module("agent_recovery")
 
 HUB = "hub-1"
 RUN = "20261109_abcdef12"
@@ -533,11 +537,20 @@ def test_hanging_opencode_reports_pending_before_exit(
                     )
 
             snapshot = area["sessions"] / "bob.permission.json"
-            before = json.loads(snapshot.read_text())["observed_at"]
+
+            def observed() -> float:
+                # The publisher replaces this file atomically; Windows can deny
+                # a read that lands during the replace (the viewer retries).
+                try:
+                    return float(json.loads(snapshot.read_text())["observed_at"])
+                except OSError:
+                    return 0.0
+
+            before = wait_until_sync(observed, "the permission snapshot is readable")
             reply("unrelated", "per_1")
             reply("ses_7Fa9b2C", "unrelated")
             wait_until_sync(
-                lambda: json.loads(snapshot.read_text())["observed_at"] > before,
+                lambda: observed() > before,
                 "the observer reads unrelated replies",
             )
             assert permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW) == diagnostic
@@ -547,6 +560,7 @@ def test_hanging_opencode_reports_pending_before_exit(
                 "the matching reply clears the diagnostic",
             )
         except BaseException as exc:
+            traceback.print_exc()
             errors.append(exc)
         finally:
             if pid is not None:
@@ -1081,6 +1095,161 @@ def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
     assert log[3]["delay_s"] == 0.05
     assert log[-1]["reason"] == "released"
     assert all(row["run_id"] == RUN and row["conversation_id"] == conversation for row in log)
+
+
+def interrupt_when_running(area: dict[str, Path], how: str) -> threading.Thread:
+    """Interrupt the launcher as a terminal Ctrl-C would (#534)."""
+
+    def interrupt() -> None:
+        pid_file = area["harness_dir"] / "pid"
+        pid = int(
+            wait_until_sync(
+                lambda: pid_file.read_text(encoding="utf-8") if pid_file.exists() else "",
+                "the fake harness hangs mid-task",
+            )
+        )
+        if how == "sigint":
+            os.kill(os.getpid(), signal.SIGINT)
+        elif how == "sighup":
+            # SIGHUP is POSIX-only; Windows mypy has no attribute for it.
+            name = "SIGHUP"
+            os.kill(os.getpid(), getattr(signal, name))
+        else:
+            # A pending KeyboardInterrupt, then the terminal's SIGINT to the child.
+            _thread.interrupt_main()
+            os.kill(pid, signal.SIGINT)
+
+    thread = threading.Thread(target=interrupt)
+    thread.start()
+    return thread
+
+
+@pytest.mark.parametrize("how", ["sigint", "sighup", "keyboard"])
+def test_ctrl_c_keeps_the_join_and_exit_rows_before_stopping(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    how: str,
+) -> None:
+    """#534: Ctrl-C, SIGHUP and the fallback write exit after the join scan."""
+
+    if how in ("sigint", "sighup") and os.name == "nt":
+        pytest.skip("os.kill(self, SIGINT/SIGHUP) terminates the whole process on Windows")
+
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["hang"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+
+    interrupt = interrupt_when_running(area, how)
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=FakeHub(after_launches(area, active)),
+        workspace=workspace_of(area),
+    )
+    interrupt.join()
+
+    assert code == LAUNCHER.EXIT_INTERRUPTED
+    log = rows(area)
+    assert [row["event"] for row in log] == ["start", "joined", "exit", "stop"]
+    assert log[-1]["reason"] == "interrupted"
+    conversation = log[0]["conversation_id"]
+    assert log[1]["conversation_id"] == conversation
+    assert log[2]["exit_code"] != 0
+
+    # The recorded exit and conversation get past exit_unknown without the flag.
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = snapshotting(FakeHub(after_launches(area, active, active, released)))
+    assert (
+        invoke(
+            [
+                "resume",
+                "bob",
+                "--hub",
+                str(area["checkout"]),
+                "--read-retry-delay-s",
+                "0",
+                "--resume-session",
+                conversation,
+            ],
+            programs=programs(area),
+            reader=hub,
+        )
+        == 0
+    )
+    assert len(launches(area)) == 2
+    assert any(row["event"] == "manual_resume" for row in rows(area))
+
+
+def test_keyboard_fallback_records_exit_after_a_joined_row(tmp_path: Path) -> None:
+    """#534 Windows CI: the interrupt can land after scan_join, before the exit row."""
+
+    log = tmp_path / "bob.jsonl"
+    base = {
+        "agent": "bob",
+        "harness": "claude-code",
+        "role": "implementer",
+        "conversation_id": IDS["claude-code"],
+        "hub_id": HUB,
+        "workflow_id": WORKFLOW,
+        "run_id": RUN,
+    }
+    log.write_text(
+        "".join(
+            json.dumps(row) + "\n"
+            for row in (
+                base | {"event": "start", "timestamp": "2026-11-18T00:00:00+00:00"},
+                base | {"event": "joined", "timestamp": "2026-11-18T00:00:01+00:00"},
+            )
+        ),
+        encoding="utf-8",
+    )
+    launcher = LAUNCHER.Launcher.__new__(LAUNCHER.Launcher)
+    launcher.args = argparse.Namespace(sessions=log)
+    launcher.agent = "bob"
+    launcher.harness = "claude-code"
+    launcher.conversation = IDS["claude-code"]
+    launcher.hub_id = HUB
+    launcher.workflow_id = WORKFLOW
+    launcher.child = None
+    launcher.child_exit_at = "2026-11-18T00:00:02+00:00"
+    launcher.last_exit_code = 1
+    launcher.pending_launch = None
+    launcher.resumes = 0
+
+    launcher.interrupted_fallback()
+
+    values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in values] == ["start", "joined", "exit"]
+    assert values[-1]["exit_code"] == 1
+
+
+def test_keyboard_fallback_records_a_launch_lost_to_the_interrupt(tmp_path: Path) -> None:
+    """#534 Windows CI: the interrupt can land between Popen and the launch row."""
+
+    log = tmp_path / "bob.jsonl"
+    launcher = LAUNCHER.Launcher.__new__(LAUNCHER.Launcher)
+    launcher.args = argparse.Namespace(sessions=log)
+    launcher.agent = "bob"
+    launcher.harness = "claude-code"
+    launcher.conversation = IDS["claude-code"]
+    launcher.hub_id = HUB
+    launcher.workflow_id = WORKFLOW
+    launcher.child = None
+    launcher.child_exit_at = "2026-11-18T00:00:01+00:00"
+    launcher.last_exit_code = 1
+    launcher.pending_launch = (
+        "start",
+        {"resumes": 0, "pid": 4242, "launcher_pid": os.getpid(), "process": "python"},
+    )
+    launcher.resumes = 0
+
+    launcher.interrupted_fallback()
+
+    values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in values] == ["start", "exit"]
+    assert values[0]["pid"] == 4242
+    assert values[-1]["exit_code"] == 1
 
 
 def test_automatic_resume_without_a_recorded_join_sends_the_plain_join_line(
@@ -2426,6 +2595,328 @@ def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
 
     # Cleanup swept only this test's own children; none remain alive.
     assert live_own_pids(fake_supervision.pids) == []
+
+
+# -- stop by hand (#534) -----------------------------------------------------------
+
+# A real launcher process, with the production signal handling and supervision,
+# whose hub reader is scripted in-process so no HTTP is needed. The subprocess
+# is the launcher PID that `stop` finds in the lock and the launch rows.
+BACKGROUND_LAUNCHER = """\
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("agent_launcher_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(spec)
+sys.modules["agent_launcher_cli"] = cli
+spec.loader.exec_module(cli)
+config = json.loads(sys.argv[2])
+
+
+class Reader:
+    def read(self):
+        return (
+            config["hub_id"],
+            {
+                "id": config["workflow_id"],
+                "status": "active",
+                "run_id": config["run_id"],
+            },
+        )
+
+
+cli.sandbox_preflight = lambda harness: None
+cli.check_mcp_entry = lambda harness: None
+programs = {name: [sys.executable, config["fake"]] for name in cli.PROGRAMS}
+raise SystemExit(cli.main(config["words"], programs=programs, reader=Reader()))
+"""
+
+
+def spawn_background_launcher(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> subprocess.Popen[str]:
+    """Run the real launcher in a subprocess, hanging its fake harness (#534)."""
+
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["hang"]))
+    helper = area["root"] / "background launcher.py"
+    helper.write_text(BACKGROUND_LAUNCHER, encoding="utf-8")
+    config = {
+        "fake": str(area["fake"]),
+        "hub_id": HUB,
+        "workflow_id": WORKFLOW,
+        "run_id": RUN,
+        "words": [
+            "start",
+            "bob",
+            "--role",
+            "implementer",
+            "--harness",
+            "claude-code",
+            "--hub",
+            str(area["checkout"]),
+            "--workdir",
+            str(area["worktree"]),
+            "--max-resumes",
+            "0",
+            "--resume-delay-s",
+            "0",
+            "--read-retry-delay-s",
+            "0",
+        ],
+    }
+    return subprocess.Popen(
+        [sys.executable, str(helper), str(ROOT / "scripts/agent-launcher.py"), json.dumps(config)],
+        cwd=area["root"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def wait_for_launch(area: dict[str, Path]) -> dict[str, Any]:
+    """The recorded start row, once the background launcher has written it."""
+
+    def started() -> dict[str, Any] | None:
+        path = area["sessions"] / "bob.jsonl"
+        try:
+            values = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        except (OSError, ValueError):
+            return None
+        return values[0] if values and values[0].get("event") == "start" else None
+
+    row = wait_until_sync(started, "the background launcher records its start")
+    assert row is not None
+    return row
+
+
+def stop_words(area: dict[str, Path]) -> list[str]:
+    return ["stop", "bob", "--hub", str(area["checkout"])]
+
+
+def test_stop_stops_an_attached_launcher_and_resume_needs_no_confirmation(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+) -> None:
+    """#534: stop signals the recorded launcher PID and waits for its stop row."""
+
+    process = spawn_background_launcher(area, monkeypatch)
+    try:
+        start = wait_for_launch(area)
+        launcher_pid = start["launcher_pid"]
+        # uv's Windows venv python.exe is a trampoline: the recorded launcher
+        # PID is the real interpreter, not the Popen handle (#534 Windows CI).
+        assert launcher_pid != start["pid"]
+        assert RECOVERY.process_alive(launcher_pid)
+        # The held lock body names only its current holder (#534 r1-2). Skip
+        # the locked first byte, which Windows denies to another process.
+        lock = area["sessions"] / "bob.lock"
+        with lock.open("rb") as stream:
+            stream.seek(1)
+            assert stream.read() == f"launcher_pid {launcher_pid}\n".encode()
+
+        assert CLI.main(stop_words(area), programs=programs(area)) == 0
+        process.wait(timeout=LIVENESS_S)
+        err = process.stderr.read() if process.stderr is not None else ""
+        assert f"launcher pid {launcher_pid}" in err
+
+        events = [row["event"] for row in rows(area)]
+        if os.name == "nt":
+            # TerminateProcess cannot run the launcher's handler: stop records
+            # the orphaned harness's exit itself.
+            assert events == ["start", "exit"]
+            assert rows(area)[-1]["stopped_by"] == "agent-launcher stop"
+        else:
+            assert process.returncode == LAUNCHER.EXIT_INTERRUPTED
+            assert events == ["start", "exit", "stop"]
+            assert rows(area)[-1]["reason"] == "interrupted"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=LIVENESS_S)
+
+    # The recorded exit lets the next resume proceed without --confirm-stopped.
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = snapshotting(FakeHub(after_launches(area, active, active, released)))
+    conversation = rows(area)[0]["conversation_id"]
+    assert (
+        invoke(
+            [
+                "resume",
+                "bob",
+                "--hub",
+                str(area["checkout"]),
+                "--read-retry-delay-s",
+                "0",
+                "--resume-session",
+                conversation,
+            ],
+            programs=programs(area),
+            reader=hub,
+        )
+        == 0
+    )
+    assert len(launches(area)) == 2
+    assert live_own_pids(fake_supervision.pids) == []
+
+
+def test_stop_terminates_an_orphaned_harness_and_records_its_exit(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+) -> None:
+    """#534: no launcher attached, but the recorded harness PID still runs."""
+
+    process = spawn_background_launcher(area, monkeypatch)
+    harness_pid = 0
+    try:
+        start = wait_for_launch(area)
+        harness_pid = start["pid"]
+        process.kill()
+        process.wait(timeout=LIVENESS_S)
+        assert wait_until_sync(
+            lambda: RECOVERY.process_alive(harness_pid),
+            "the orphaned fake harness still runs",
+        )
+
+        assert CLI.main(stop_words(area), programs=programs(area)) == 0
+        assert wait_until_sync(
+            lambda: not RECOVERY.process_alive(harness_pid),
+            "the recorded harness is terminated",
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=LIVENESS_S)
+
+    stopped = [row for row in rows(area) if row.get("event") == "exit"]
+    assert len(stopped) == 1
+    assert stopped[0]["pid"] == harness_pid
+    assert stopped[0]["stopped_by"] == "agent-launcher stop"
+    assert live_own_pids(fake_supervision.pids) == []
+
+
+def test_stop_leaves_a_reused_harness_pid_alone(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#534: a live recorded PID whose process name changed is not ours to stop."""
+
+    process = spawn_background_launcher(area, monkeypatch)
+    try:
+        start = wait_for_launch(area)
+        harness_pid = start["pid"]
+        process.kill()
+        process.wait(timeout=LIVENESS_S)
+        monkeypatch.setattr(CLI, "process_name", lambda pid: "unrelated.exe")
+
+        assert CLI.main(stop_words(area), programs=programs(area)) == LAUNCHER.EXIT_CANNOT_RESUME
+        err = capsys.readouterr().err
+        assert "may have been reused" in err and "Left it alone" in err
+        assert not any(row.get("event") == "exit" for row in rows(area))
+        assert RECOVERY.process_alive(harness_pid)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=LIVENESS_S)
+
+
+def test_stop_with_nothing_running_changes_nothing(
+    area: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#534: no launcher and no recorded harness means a report, not a write."""
+
+    area["sessions"].mkdir(parents=True)
+    before = files(area["root"], area["harness_dir"])
+    assert CLI.main(stop_words(area), programs=programs(area)) == 0
+    assert "no launch is recorded" in capsys.readouterr().err
+    assert files(area["root"], area["harness_dir"]) == before
+
+    now = datetime.now(UTC)
+    saved_log(
+        area,
+        "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00004",
+        now - timedelta(minutes=2),
+        now - timedelta(minutes=1),
+    )
+    before = files(area["root"], area["harness_dir"])
+    content = (area["sessions"] / "bob.jsonl").read_bytes()
+    assert CLI.main(stop_words(area), programs=programs(area)) == 0
+    assert "has its exit row" in capsys.readouterr().err
+    assert (area["sessions"] / "bob.jsonl").read_bytes() == content
+    assert files(area["root"], area["harness_dir"]) == before
+
+
+def test_stop_does_not_clean_up_under_an_unknown_lock_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#534 r2-1: a held lock with no readable holder is not the dead launcher's."""
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    start = {
+        "agent": "bob",
+        "harness": "claude-code",
+        "role": "implementer",
+        "event": "start",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "conversation_id": "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00005",
+        "hub_id": HUB,
+        "workflow_id": WORKFLOW,
+        "run_id": RUN,
+        "pid": 4242,
+        "launcher_pid": 999999,
+        "process": "python",
+    }
+    log = sessions / "bob.jsonl"
+    log.write_text(json.dumps(start) + "\n", encoding="utf-8")
+    monkeypatch.setattr(CLI, "launcher_attached", lambda path: True)
+    monkeypatch.setattr(CLI, "lock_holder_pid", lambda path: None)
+    monkeypatch.setattr(CLI, "process_alive", lambda pid: False)
+    monkeypatch.setattr(CLI, "LOCK_SETTLE_S", 0.01)
+
+    code = CLI.main(["stop", "bob", "--sessions-dir", str(sessions)])
+
+    assert code == LAUNCHER.EXIT_CANNOT_RESUME
+    assert "lock is still held" in capsys.readouterr().err
+    values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert not any(row.get("event") == "exit" for row in values)
+
+
+def test_stop_without_a_process_identity_leaves_the_pid_alone(
+    area: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#534: an older launch row's live PID is unknown, not a match."""
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        area["sessions"].mkdir(parents=True)
+        start = {
+            "agent": "bob",
+            "harness": "claude-code",
+            "role": "implementer",
+            "event": "start",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "conversation_id": IDS["claude-code"],
+            "hub_id": HUB,
+            "workflow_id": WORKFLOW,
+            "run_id": RUN,
+            "pid": child.pid,
+            "workdir": str(area["worktree"]),
+        }
+        (area["sessions"] / "bob.jsonl").write_text(json.dumps(start) + "\n", encoding="utf-8")
+
+        assert CLI.main(stop_words(area), programs=programs(area)) == LAUNCHER.EXIT_CANNOT_RESUME
+        err = capsys.readouterr().err
+        assert "recorded no process identity" in err
+        assert not any(row.get("event") == "exit" for row in rows(area))
+        assert RECOVERY.process_alive(child.pid)
+    finally:
+        child.kill()
+        child.wait(timeout=LIVENESS_S)
 
 
 # -- Windows-safe liveness (#464 r2-1) --------------------------------------------
