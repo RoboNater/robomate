@@ -11,6 +11,7 @@ with legacy state, so `--hub <checkout>` finds the state directory and
 from __future__ import annotations
 
 import _thread
+import argparse
 import importlib.util
 import io
 import json
@@ -1167,6 +1168,48 @@ def test_ctrl_c_keeps_the_join_and_exit_rows_before_stopping(
     )
     assert len(launches(area)) == 2
     assert any(row["event"] == "manual_resume" for row in rows(area))
+
+
+def test_keyboard_fallback_records_exit_after_a_joined_row(tmp_path: Path) -> None:
+    """#534 Windows CI: the interrupt can land after scan_join, before the exit row."""
+
+    log = tmp_path / "bob.jsonl"
+    base = {
+        "agent": "bob",
+        "harness": "claude-code",
+        "role": "implementer",
+        "conversation_id": IDS["claude-code"],
+        "hub_id": HUB,
+        "workflow_id": WORKFLOW,
+        "run_id": RUN,
+    }
+    log.write_text(
+        "".join(
+            json.dumps(row) + "\n"
+            for row in (
+                base | {"event": "start", "timestamp": "2026-11-18T00:00:00+00:00"},
+                base | {"event": "joined", "timestamp": "2026-11-18T00:00:01+00:00"},
+            )
+        ),
+        encoding="utf-8",
+    )
+    launcher = LAUNCHER.Launcher.__new__(LAUNCHER.Launcher)
+    launcher.args = argparse.Namespace(sessions=log)
+    launcher.agent = "bob"
+    launcher.harness = "claude-code"
+    launcher.conversation = IDS["claude-code"]
+    launcher.hub_id = HUB
+    launcher.workflow_id = WORKFLOW
+    launcher.child = None
+    launcher.child_exit_at = "2026-11-18T00:00:02+00:00"
+    launcher.last_exit_code = 1
+    launcher.resumes = 0
+
+    launcher.interrupted_fallback()
+
+    values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in values] == ["start", "joined", "exit"]
+    assert values[-1]["exit_code"] == 1
 
 
 def test_automatic_resume_without_a_recorded_join_sends_the_plain_join_line(
@@ -2621,16 +2664,19 @@ def test_stop_stops_an_attached_launcher_and_resume_needs_no_confirmation(
     process = spawn_background_launcher(area, monkeypatch)
     try:
         start = wait_for_launch(area)
-        assert start["launcher_pid"] == process.pid
-        assert start["pid"] != process.pid
+        launcher_pid = start["launcher_pid"]
+        # uv's Windows venv python.exe is a trampoline: the recorded launcher
+        # PID is the real interpreter, not the Popen handle (#534 Windows CI).
+        assert launcher_pid != start["pid"]
+        assert RECOVERY.process_alive(launcher_pid)
         # The held lock body names only its current holder (#534 r1-2).
         lock = (area["sessions"] / "bob.lock").read_text(encoding="utf-8")
-        assert lock == f"launcher_pid {process.pid}\n"
+        assert lock == f"launcher_pid {launcher_pid}\n"
 
         assert CLI.main(stop_words(area), programs=programs(area)) == 0
         process.wait(timeout=LIVENESS_S)
         err = process.stderr.read() if process.stderr is not None else ""
-        assert f"launcher pid {process.pid}" in err
+        assert f"launcher pid {launcher_pid}" in err
 
         events = [row["event"] for row in rows(area)]
         if os.name == "nt":

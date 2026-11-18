@@ -640,7 +640,7 @@ class Launcher:
     def log_interrupted_exit(self, code: int) -> None:
         """Record the interrupted child's exit row when the loop did not (#534)."""
 
-        if last_event(self.args.sessions) not in ("start", "resume", "manual_resume"):
+        if not launch_without_exit(self.args.sessions):
             return
         self.log("exit", resumes=self.resumes, exit_code=code, exited_at=self.child_exit_at)
 
@@ -654,10 +654,10 @@ class Launcher:
 
         self.interrupted = True
         code = self.reap_interrupted()
-        if code is None and last_event(self.args.sessions) in (
-            "start",
-            "resume",
-            "manual_resume",
+        if (
+            code is None
+            and self.last_exit_code is not None
+            and launch_without_exit(self.args.sessions)
         ):
             # The child was reaped but the loop had not logged its exit yet.
             code = self.last_exit_code
@@ -870,21 +870,27 @@ def process_identity(pid: int) -> str | None:
     return None if name.startswith("unavailable") else name
 
 
-def last_event(path: Path) -> str | None:
-    """The last complete event in a session log, if it is readable."""
+def launch_without_exit(path: Path) -> bool:
+    """Whether the last launch in a session log has no exit row after it."""
 
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
-        return None
-    for line in reversed(lines):
+        return False
+    last_launch = -1
+    last_exit = -1
+    for index, line in enumerate(lines):
         try:
             row = json.loads(line)
         except ValueError:
             continue
-        if isinstance(row, dict) and isinstance(row.get("event"), str):
-            return row["event"]
-    return None
+        if not isinstance(row, dict):
+            continue
+        if row.get("event") in ("start", "resume", "manual_resume"):
+            last_launch = index
+        elif row.get("event") == "exit":
+            last_exit = index
+    return last_launch > last_exit
 
 
 @contextlib.contextmanager
