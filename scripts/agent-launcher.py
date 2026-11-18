@@ -836,12 +836,26 @@ def stop_launcher(log: Path, agent: str, pid: int) -> int:
             say(f"stopped {agent}'s launcher pid {pid}")
             return 0
         if launcher_attached(log):
-            raise common.Stop(
-                common.EXIT_CANNOT_RESUME,
-                "stop_unconfirmed",
-                f"{agent}'s launcher lock is still held, but the recorded pid {pid} is gone. "
-                "Inspect the process holding it; nothing else was changed.",
-            )
+            holder = lock_holder_pid(log)
+            if holder is not None and holder != pid:
+                raise common.Stop(
+                    common.EXIT_CANNOT_RESUME,
+                    "stop_unconfirmed",
+                    f"{agent}'s launcher lock is held by pid {holder}, not the recorded pid "
+                    f"{pid}. Inspect that process; nothing else was changed.",
+                )
+            # A terminated holder's lock can take a moment to clear on Windows.
+            deadline = time.monotonic() + 1.0
+            while launcher_attached(log) and time.monotonic() < deadline:
+                time.sleep(STOP_POLL_S)
+            holder = lock_holder_pid(log)
+            if launcher_attached(log) and holder is not None and holder != pid:
+                raise common.Stop(
+                    common.EXIT_CANNOT_RESUME,
+                    "stop_unconfirmed",
+                    f"{agent}'s launcher lock is held by pid {holder}, not the recorded pid "
+                    f"{pid}. Inspect that process; nothing else was changed.",
+                )
         say(f"{agent}'s launcher pid {pid} exited without a stop row")
         return stop_orphaned(log, agent)
     raise common.Stop(
