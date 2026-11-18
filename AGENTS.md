@@ -59,6 +59,8 @@ other packages; it must depend on none of them.
 
 ## Validation
 
+On pull requests, the first pytest step in `test` and `windows` runs only changed test files.
+
 ```sh
 uv sync --locked --all-packages --dev
 uv run --locked ruff check .
