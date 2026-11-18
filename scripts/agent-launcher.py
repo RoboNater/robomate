@@ -808,16 +808,17 @@ def stop_launcher(log: Path, agent: str, pid: int) -> int:
     """SIGTERM the attached launcher and wait, boundedly, for its stop row (#534)."""
 
     before = len(live_rows(log))
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    except OSError as exc:
-        raise common.Stop(
-            common.EXIT_CANNOT_RESUME,
-            "stop_unidentified",
-            f"Could not signal {agent}'s launcher pid {pid}: {exc}. Nothing was changed.",
-        ) from None
+    if process_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            raise common.Stop(
+                common.EXIT_CANNOT_RESUME,
+                "stop_unidentified",
+                f"Could not signal {agent}'s launcher pid {pid}: {exc}. Nothing was changed.",
+            ) from None
     deadline = time.monotonic() + STOP_WAIT_S
     while time.monotonic() < deadline:
         new = live_rows(log)[before:]
