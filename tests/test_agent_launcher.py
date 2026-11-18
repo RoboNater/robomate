@@ -2850,6 +2850,42 @@ def test_stop_with_nothing_running_changes_nothing(
     assert files(area["root"], area["harness_dir"]) == before
 
 
+def test_stop_does_not_clean_up_under_an_unknown_lock_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#534 r2-1: a held lock with no readable holder is not the dead launcher's."""
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    start = {
+        "agent": "bob",
+        "harness": "claude-code",
+        "role": "implementer",
+        "event": "start",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "conversation_id": "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00005",
+        "hub_id": HUB,
+        "workflow_id": WORKFLOW,
+        "run_id": RUN,
+        "pid": 4242,
+        "launcher_pid": 999999,
+        "process": "python",
+    }
+    log = sessions / "bob.jsonl"
+    log.write_text(json.dumps(start) + "\n", encoding="utf-8")
+    monkeypatch.setattr(CLI, "launcher_attached", lambda path: True)
+    monkeypatch.setattr(CLI, "lock_holder_pid", lambda path: None)
+    monkeypatch.setattr(CLI, "process_alive", lambda pid: False)
+    monkeypatch.setattr(CLI, "LOCK_SETTLE_S", 0.01)
+
+    code = CLI.main(["stop", "bob", "--sessions-dir", str(sessions)])
+
+    assert code == LAUNCHER.EXIT_CANNOT_RESUME
+    assert "lock is still held" in capsys.readouterr().err
+    values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert not any(row.get("event") == "exit" for row in values)
+
+
 def test_stop_without_a_process_identity_leaves_the_pid_alone(
     area: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

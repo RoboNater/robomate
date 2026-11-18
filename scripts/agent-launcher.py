@@ -134,6 +134,8 @@ PYTEST_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 #: How long ``stop`` waits for a signalled launcher's stop row (#534).
 STOP_WAIT_S = 30.0
 STOP_POLL_S = 0.1
+#: How long a terminated launcher's Windows byte-range lock may take to clear.
+LOCK_SETTLE_S = 1.0
 
 Programs = Mapping[str, list[str]]
 
@@ -845,16 +847,27 @@ def stop_launcher(log: Path, agent: str, pid: int) -> int:
                     f"{pid}. Inspect that process; nothing else was changed.",
                 )
             # A terminated holder's lock can take a moment to clear on Windows.
-            deadline = time.monotonic() + 1.0
+            deadline = time.monotonic() + LOCK_SETTLE_S
             while launcher_attached(log) and time.monotonic() < deadline:
+                holder = lock_holder_pid(log)
+                if holder is not None and holder != pid:
+                    raise common.Stop(
+                        common.EXIT_CANNOT_RESUME,
+                        "stop_unconfirmed",
+                        f"{agent}'s launcher lock is held by pid {holder}, not the recorded "
+                        f"pid {pid}. Inspect that process; nothing else was changed.",
+                    )
                 time.sleep(STOP_POLL_S)
-            holder = lock_holder_pid(log)
-            if launcher_attached(log) and holder is not None and holder != pid:
+            if launcher_attached(log) and lock_holder_pid(log) != pid:
+                # Still held by an unknown or different holder: never stop a
+                # harness that may belong to the new holder (#534 r2-1).
+                holder = lock_holder_pid(log)
+                by = f" by pid {holder}" if holder is not None else ""
                 raise common.Stop(
                     common.EXIT_CANNOT_RESUME,
                     "stop_unconfirmed",
-                    f"{agent}'s launcher lock is held by pid {holder}, not the recorded pid "
-                    f"{pid}. Inspect that process; nothing else was changed.",
+                    f"{agent}'s launcher pid {pid} is gone, but its lock is still held{by}. "
+                    "Inspect that process; nothing else was changed.",
                 )
         say(f"{agent}'s launcher pid {pid} exited without a stop row")
         return stop_orphaned(log, agent)
