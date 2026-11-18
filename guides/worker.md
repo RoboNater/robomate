@@ -143,6 +143,8 @@ starting the wait again.
 
 <!-- Validation cadence: #264. -->
 
+On pull requests, the first pytest step in `test` and `windows` runs only changed test files.
+
 While implementing, run the affected test files during iteration, then the full
 `uv run --locked pytest -n auto` suite once before submitting. Reviewers run
 changed-code tests, the issue's acceptance commands and touched entry points;
