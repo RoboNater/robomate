@@ -25,6 +25,9 @@ from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log
 from agent_sessions import exact_id as exact_id
 
 _LOCK_HOLDER = re.compile(rb"launcher_pid (\d+)")
+#: The lock body's first byte is the MSVCRT lock target; a Windows reader of it
+#: is denied, so the recorded holder starts at offset 1 (#534 r1-2).
+_LOCK_BODY_OFFSET = 1
 
 
 @contextmanager
@@ -32,10 +35,11 @@ def agent_lock(sessions: Path) -> Iterator[None]:
     """An OS lock survives neither exit nor crash; shared by start and resume.
 
     While the lock is held, its body names the holder as ``launcher_pid <pid>``
-    so ``agent-launcher.py stop`` can signal it (#534). The body is replaced
-    after the lock is acquired, so it stays one line and only a holder writes
-    it; a reader can still catch the brief gap before the new holder records
-    itself, so ``stop`` re-reads after a moment.
+    after the one locked byte so ``agent-launcher.py stop`` can read it on
+    Windows too (#534). The body is replaced after the lock is acquired, so it
+    stays one line and only a holder writes it; a reader can still catch the
+    brief gap before the new holder records itself, so ``stop`` re-reads after
+    a moment.
     """
 
     with sessions.with_suffix(".lock").open("a+b") as stream:
@@ -59,7 +63,7 @@ def agent_lock(sessions: Path) -> Iterator[None]:
         try:
             stream.seek(0)
             stream.truncate()
-            stream.write(f"launcher_pid {os.getpid()}\n".encode())
+            stream.write(b"0" + f"launcher_pid {os.getpid()}\n".encode())
             stream.flush()
             stream.seek(0)
             yield
@@ -94,10 +98,13 @@ def launcher_attached(log: Path) -> bool:
 
 
 def lock_holder_pid(log: Path) -> int | None:
-    """The launcher PID the current lock holder appended, when it is recorded (#534)."""
+    """The launcher PID the current lock holder recorded, when it is readable (#534)."""
 
     try:
-        data = log.with_suffix(".lock").read_bytes()
+        with log.with_suffix(".lock").open("rb") as stream:
+            # Skip the locked byte: Windows denies reading it from another process.
+            stream.seek(_LOCK_BODY_OFFSET)
+            data = stream.read()
     except OSError:
         return None
     found = _LOCK_HOLDER.findall(data)

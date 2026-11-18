@@ -1203,12 +1203,41 @@ def test_keyboard_fallback_records_exit_after_a_joined_row(tmp_path: Path) -> No
     launcher.child = None
     launcher.child_exit_at = "2026-11-18T00:00:02+00:00"
     launcher.last_exit_code = 1
+    launcher.pending_launch = None
     launcher.resumes = 0
 
     launcher.interrupted_fallback()
 
     values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert [row["event"] for row in values] == ["start", "joined", "exit"]
+    assert values[-1]["exit_code"] == 1
+
+
+def test_keyboard_fallback_records_a_launch_lost_to_the_interrupt(tmp_path: Path) -> None:
+    """#534 Windows CI: the interrupt can land between Popen and the launch row."""
+
+    log = tmp_path / "bob.jsonl"
+    launcher = LAUNCHER.Launcher.__new__(LAUNCHER.Launcher)
+    launcher.args = argparse.Namespace(sessions=log)
+    launcher.agent = "bob"
+    launcher.harness = "claude-code"
+    launcher.conversation = IDS["claude-code"]
+    launcher.hub_id = HUB
+    launcher.workflow_id = WORKFLOW
+    launcher.child = None
+    launcher.child_exit_at = "2026-11-18T00:00:01+00:00"
+    launcher.last_exit_code = 1
+    launcher.pending_launch = (
+        "start",
+        {"resumes": 0, "pid": 4242, "launcher_pid": os.getpid(), "process": "python"},
+    )
+    launcher.resumes = 0
+
+    launcher.interrupted_fallback()
+
+    values = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [row["event"] for row in values] == ["start", "exit"]
+    assert values[0]["pid"] == 4242
     assert values[-1]["exit_code"] == 1
 
 
@@ -2669,9 +2698,12 @@ def test_stop_stops_an_attached_launcher_and_resume_needs_no_confirmation(
         # PID is the real interpreter, not the Popen handle (#534 Windows CI).
         assert launcher_pid != start["pid"]
         assert RECOVERY.process_alive(launcher_pid)
-        # The held lock body names only its current holder (#534 r1-2).
-        lock = (area["sessions"] / "bob.lock").read_text(encoding="utf-8")
-        assert lock == f"launcher_pid {launcher_pid}\n"
+        # The held lock body names only its current holder (#534 r1-2). Skip
+        # the locked first byte, which Windows denies to another process.
+        lock = area["sessions"] / "bob.lock"
+        with lock.open("rb") as stream:
+            stream.seek(1)
+            assert stream.read() == f"launcher_pid {launcher_pid}\n".encode()
 
         assert CLI.main(stop_words(area), programs=programs(area)) == 0
         process.wait(timeout=LIVENESS_S)

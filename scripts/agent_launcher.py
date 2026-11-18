@@ -312,6 +312,7 @@ class Launcher:
         self.child: subprocess.Popen[str] | None = None
         self.child_exit_at: str | None = None
         self.last_exit_code: int | None = None
+        self.pending_launch: tuple[str, dict[str, Any]] | None = None
         self.interrupted = False
         self.resumes = 0
         self.resume_deadline: float | None = None
@@ -416,6 +417,26 @@ class Launcher:
 
     # -- running the harness ------------------------------------------------------
 
+    def launch_fields(self, action: str, resumes: int, launch_id: str) -> dict[str, Any]:
+        """A launch row's fields, kept aside so an interrupt cannot lose the row (#534).
+
+        ``run_child`` clears ``pending_launch`` after the row is written; the
+        KeyboardInterrupt fallback writes it if the interrupt landed first.
+        """
+
+        fields: dict[str, Any] = {
+            "resumes": resumes,
+            "pid": self.child.pid if self.child is not None else None,
+            "launcher_pid": os.getpid(),
+        }
+        self.pending_launch = (action, fields)
+        # A later `stop` compares this with the live process name (#534, #176).
+        if self.child is not None:
+            fields["process"] = process_identity(self.child.pid)
+        if self.harness == "opencode":
+            fields["launch_id"] = launch_id
+        return fields
+
     def run_child(self, launch: Launch, action: str, resumes: int) -> int:
         """Run one harness process, relaying its output and watching for its conversation ID.
 
@@ -442,6 +463,7 @@ class Launcher:
             if match and tuple(map(int, match.groups())) >= (2, 1, 325):
                 position = argv.index("-p") if "-p" in argv else len(argv)
                 argv = [*argv[:position], "--permission-prompts", "none", *argv[position:]]
+        launch_id = ""
         if self.harness == "opencode":
             from opencode_headless import prepare
             from permission_trace import PermissionTrace
@@ -484,13 +506,9 @@ class Launcher:
             self.stop_child(wait=True)
         self.log(
             action,
-            resumes=resumes,
-            pid=self.child.pid,
-            launcher_pid=os.getpid(),
-            # A later `stop` compares this with the live process name (#534, #176).
-            process=process_identity(self.child.pid),
-            **({"launch_id": launch_id} if self.harness == "opencode" else {}),
+            **self.launch_fields(action, resumes, launch_id),
         )
+        self.pending_launch = None
         say(
             f"{action} ({self.harness}) pid {self.child.pid},"
             f" conversation {self.conversation or 'pending'}; launcher pid {os.getpid()}"
@@ -653,6 +671,11 @@ class Launcher:
         """
 
         self.interrupted = True
+        if self.pending_launch is not None:
+            action, fields = self.pending_launch
+            if not launch_recorded(self.args.sessions, fields):
+                self.log(action, **fields)
+            self.pending_launch = None
         code = self.reap_interrupted()
         if (
             code is None
@@ -868,6 +891,26 @@ def process_identity(pid: int) -> str | None:
 
     name = process_name(pid)
     return None if name.startswith("unavailable") else name
+
+
+def launch_recorded(path: Path, fields: Mapping[str, Any]) -> bool:
+    """Whether the last launch row in a session log already records ``fields``."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    last: dict[str, Any] | None = None
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("event") in ("start", "resume", "manual_resume"):
+            last = row
+    return last is not None and all(
+        last.get(key) == fields.get(key) for key in ("pid", "resumes", "launcher_pid")
+    )
 
 
 def launch_without_exit(path: Path) -> bool:
