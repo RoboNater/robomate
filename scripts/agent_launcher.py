@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
 import re
@@ -228,6 +229,13 @@ def log_session(path: Path, **fields: object) -> None:
     record = {"timestamp": datetime.now(UTC).isoformat(timespec="seconds"), **fields}
     with _JOURNAL_LOCK, path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def safe_output_streams() -> None:
+    """Configure only this launcher's streams; do not alter the child environment."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def say(message: str) -> None:
@@ -649,9 +657,25 @@ class Launcher:
 
         if stream is None:
             return
+        try:
+            self._relay_lines(stream, observation)
+        except Exception as exc:
+            with contextlib.suppress(OSError, UnicodeError):
+                say(f"output relay ended unexpectedly: {type(exc).__name__}: {exc}")
+
+    def _relay_lines(
+        self, stream: TextIO, observation: list[tuple[str | None, ProviderSignature | None]]
+    ) -> None:
+        output_failed = False
         for line in stream:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            try:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            except (UnicodeEncodeError, OSError) as exc:
+                if not output_failed:
+                    with contextlib.suppress(OSError, UnicodeError):
+                        say(f"output relay could not write a line: {type(exc).__name__}")
+                    output_failed = True
             if self.harness == "opencode":
                 provider = "unknown"
                 if "--model" in self.base[:-1]:
@@ -666,7 +690,8 @@ class Launcher:
                 if found is not None:
                     self.conversation = found
                     self.log("conversation")
-                    say(f"conversation {found}")
+                    with contextlib.suppress(OSError, UnicodeError):
+                        say(f"conversation {found}")
 
     def stop_child(self, *, wait: bool) -> None:
         """Terminate this launcher's own harness child, killing it after 10 s.
@@ -1170,6 +1195,7 @@ def main(
     launcher_type: type[Launcher] = Launcher,
     worker: bool = False,
 ) -> int:
+    safe_output_streams()
     try:
         args = parse_args(argv, worker=worker)
     except SystemExit as exc:

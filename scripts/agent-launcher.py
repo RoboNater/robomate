@@ -517,9 +517,10 @@ def grants(
     if harness == "claude-code":
         sandbox: dict[str, Any] = {
             "enabled": True,
-            "failIfUnavailable": True,
             "network": {"allowedDomains": forge_hosts(workdir)},
         }
+        if sys.platform.startswith("linux"):
+            sandbox["failIfUnavailable"] = True
         filesystem: dict[str, list[str]] = {}
         if token_file is not None:
             filesystem["denyRead"] = [str(token_file.parent)]
@@ -1542,6 +1543,15 @@ def sandbox_preflight(harness: str) -> None:
         )
 
 
+def warn_windows_sandbox(agent: str, harness: str) -> None:
+    if sys.platform == "win32" and harness == "claude-code":
+        say(
+            f"warning: {agent} (claude-code) on Windows may run without a sandbox: "
+            "Claude Code's Windows sandbox is not guaranteed and "
+            "failIfUnavailable is off on this platform"
+        )
+
+
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     sandbox_preflight(args.harness)
     try:
@@ -1572,6 +1582,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         bridge_telemetry(place.sessions, args.agent),
     )
     identity.prepare()
+    warn_windows_sandbox(args.agent, args.harness)
     granted = grants(args.harness, workdir, place.token_file, identity.uv_cache)
     granted += identity.bridge_flags()
     granted += hub_flags(args.harness, place)
@@ -1673,6 +1684,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         telemetry_log=bridge_telemetry(place.sessions, args.agent),
     )
     identity.prepare()
+    warn_windows_sandbox(args.agent, harness)
     granted = grants(harness, workdir, place.token_file, identity.uv_cache)
     granted += identity.bridge_flags()
     granted += hub_flags(harness, place)
@@ -2156,6 +2168,7 @@ def main(
     reader: common.HubReader | None = None,
     workspace: Callable[[str, str | None], Path] | None = None,
 ) -> int:
+    common.safe_output_streams()
     tools = Tools(programs or {}, reader, workspace or robomate_workspace)
     try:
         args, extra = parse(sys.argv[1:] if argv is None else argv)
