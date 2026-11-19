@@ -1431,6 +1431,19 @@ async def test_assignment_metadata_contract(
             "UPDATE workflow SET statement_sha256 = ?, branch = ? WHERE id = ?",
             (statement, branch, workflow_id),
         )
+    closeout = hub_store.assign_task("bob", "closeout", "Close out", "Finish")
+    with database(hub_store.path) as connection:
+        row = connection.execute(
+            "SELECT parts_json FROM message WHERE task_id = ? AND direction = 'from_alice'",
+            (closeout.id,),
+        ).fetchone()
+        closeout_metadata = json.loads(row["parts_json"])[0]["metadata"]
+        check_classified(closeout_metadata)
+        assert closeout_metadata[MetaKeys.CLOSEOUT_CONTEXT] == closeout.closeout_context
+    closeout_assignment = await worker.await_assignment(timeout_s=LIVENESS_S)
+    assert closeout_assignment["closeout_context"] == closeout.closeout_context
+    hub_store.cancel_task(closeout.id)
+
     task = hub_store.assign_task("bob", "reviewer", "Review", "Read it", pr_head_sha=head)
     with database(hub_store.path) as connection:
         row = connection.execute(
@@ -1444,8 +1457,8 @@ async def test_assignment_metadata_contract(
             (json.dumps(context), task.id),
         )
 
-    await worker.await_assignment(timeout_s=1.0)
-    assignment = await worker.await_assignment(timeout_s=1.0)
+    await worker.await_assignment(timeout_s=LIVENESS_S)
+    assignment = await worker.await_assignment(timeout_s=LIVENESS_S)
     obj = rendered[-1]
     metadata = obj.metadata
     assert metadata is not None
