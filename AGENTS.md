@@ -31,7 +31,9 @@ the MVP spec doesn't change it.
   as `shipped for #N (PR #M)`; release an unused claim if abandoned or dropped,
   without rewinding the next value over other claims. No new counter is needed
   for ordinary work.
-- **Lessons learned: #3** (earlier: [`docs/poc-lessons.md`](docs/poc-lessons.md)). **Minor nits: #4.**
+- **Lessons learned: #3** is the inbox; [`docs/development/lessons.md`](docs/development/lessons.md)
+  is the curated ledger of what became of each lesson (earlier: [`docs/poc-lessons.md`](docs/poc-lessons.md)).
+  **Minor nits: #4.**
 - **GitLab:** supported as of M5 ([plan](docs/development/implementation-plan-mvp-m5-gitlab.md)).
   Read #69 (test instance and sandbox) before any GitLab work or regression run.
 

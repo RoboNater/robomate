@@ -130,7 +130,10 @@ worker need not share a filesystem with the hub.
 Lessons are suggestions for operator triage into this repository's
 [#3](https://github.com/RoboNater/robomate/issues/3); minor nits go through the
 implementer's configured `nits_issue` (#4 here), and substantive follow-ups
-through §7.3's issues/label. Links in retrospectives make existing work visible;
+through §7.3's issues/label. During closeout review, the operator checks the
+[lessons ledger](lessons.md) before posting to #3. For a known lesson, link the
+earlier report and record the outcome and whether the remedy was available.
+Links in retrospectives make existing work visible;
 they do not replace `CloseoutResult` coverage checks. No automatic posting or
 filing based on report text is part of this decision.
 
