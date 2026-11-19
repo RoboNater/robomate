@@ -910,3 +910,23 @@ def test_served_orchestrator_guide_triages_ci_failures_before_repair(forge: str)
         "say so in the log",
     ):
         assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_guide_secures_followup_tracking_urls(forge: str) -> None:
+    """#588: agreed deferrals and operator-only items have a tracked URL before merge."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        (
+            "secure an open tracking issue URL for each agreed deferral or "
+            "operator-only item before merge"
+        ),
+        "`Closes #N` closes the source issue",
+        "route operator-only work to an `operator-run` issue",
+    ):
+        assert fragment in text
