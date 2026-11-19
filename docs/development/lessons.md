@@ -72,7 +72,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Give each negative case input that breaks only the rule under test; with overlapping safeguards, neutralize the fallback to isolate the layer a test claims to cover | [PR 494/2][c494], [PR 521/4][c521] | — (both found by the #467 check working in review) | tracked: [#588][i588] (reviewer clause, example in `testing-time-and-waits.md`) |
 | Prove a nested pytest inherited the warning policy by injecting a warning | [PR 466/4][c466] | — | reference (testing doc: [#589][i589]) |
 | A test message that avoids the old wording proves type-based detection | [PR 274][c274] item 2 | — | reference |
-| A test that checks a document for required or forbidden text must search only the section that carries the requirement, anchored so it fails if the section moves; show it fails when the text appears only outside that section | [PR 586/1][c586] | — | untriaged |
+| A test that checks a document for required or forbidden text must search only the section that carries the requirement, anchored so it fails if the section moves. Prove it by mutation: required text placed only outside the section must fail; forbidden text inside the section must fail, and outside it must pass | [PR 586/1][c586] | — | untriaged |
 
 ## Search for copies and consumers
 
