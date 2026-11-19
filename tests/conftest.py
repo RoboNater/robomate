@@ -1,5 +1,7 @@
 """Fixtures shared by the hub's HTTP and state tests."""
 
+import contextlib
+import importlib.util
 import json
 import os
 import random
@@ -68,6 +70,173 @@ LAUNCHER_ENV = (
     "ROBOMATE_LAUNCH_HUB_CHECKOUT",
     "ROBOMATE_OPERATOR_TOKEN_FILE",
 )
+
+# #531: names a launcher env-builder produces that ``isolated_machine_state``
+# deliberately leaves alone. Every collected builder name must land in exactly
+# one of ``LAUNCHER_ENV`` (or the fixture's ``ROBOMATE_TOKEN*`` prefix) or this
+# keep-list; each entry carries a one-line reason.
+LAUNCHER_KEPT: dict[str, str] = {
+    "PYTHONUTF8": "encoding for launcher subprocesses, not agent identity",
+    "UV_CACHE_DIR": "isolated uv cache location for the harness",
+    "PYTEST_XDIST_AUTO_NUM_WORKERS": "the run's xdist budget; the suite must honour it",
+    "PWD": "working directory launch_environment writes into the child",
+    "OPENCODE_CONFIG_CONTENT": "harness config, read by opencode, not by robomate's packages",
+}
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_script(module_name: str, relative: str) -> Any:
+    """Import a scripts/ file under a unique module name (importlib pattern)."""
+
+    path = _ROOT / relative
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def collect_launcher_env_keys() -> dict[str, set[str]]:
+    """Variable names each launcher env-builder puts on a child (#531).
+
+    Builders are called with dummy arguments (or, for ``hub_env``, read from
+    its dict literal via AST because it is not a function). Full-environment
+    builders contribute only the keys they add or rewrite, not every inherited
+    name. Returns ``{builder_name: names}`` for failure messages.
+    """
+
+    import ast
+    from unittest import mock
+
+    scripts = str(_ROOT / "scripts")
+    path_pushed = scripts not in sys.path
+    if path_pushed:
+        sys.path.insert(0, scripts)
+    try:
+        run_common = _load_script("launcher_env_run_common", "scripts/run_common.py")
+        prepare = _load_script("launcher_env_prepare_run", "scripts/prepare-run.py")
+        agent_launcher_cli = _load_script(
+            "launcher_env_agent_launcher_cli", "scripts/agent-launcher.py"
+        )
+        agent_launcher_common = _load_script(
+            "launcher_env_agent_launcher", "scripts/agent_launcher.py"
+        )
+
+        produced: dict[str, set[str]] = {}
+
+        produced["run_common.bridge_identity_env"] = set(
+            run_common.bridge_identity_env("opencode", "1.0.0", "anthropic", "m", "high")
+        )
+        produced["prepare-run.worker_env"] = set(
+            prepare.worker_env(
+                "bob",
+                "opencode",
+                "1.0.0",
+                "anthropic",
+                "m",
+                "",
+                "/tmp/workspace",
+                "/tmp/token",
+                "/tmp/telemetry.jsonl",
+            )
+        )
+
+        # Alice's hub_env is a dict literal inside prepare(), not a callable.
+        # Read its keys from the AST and expand **bridge_identity_env(...).
+        tree = ast.parse((_ROOT / "scripts/prepare-run.py").read_text(encoding="utf-8"))
+        hub_keys: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name) and t.id == "hub_env"]
+            if targets and isinstance(node.value, ast.Dict):
+                for key, value in zip(node.value.keys, node.value.values, strict=True):
+                    if key is None:
+                        # ``**bridge_identity_env(...)``: expand by calling it.
+                        if (
+                            isinstance(value, ast.Call)
+                            and isinstance(value.func, ast.Name)
+                            and value.func.id == "bridge_identity_env"
+                        ):
+                            hub_keys |= produced["run_common.bridge_identity_env"]
+                        else:
+                            raise AssertionError(
+                                "prepare-run hub_env unpacks an unrecognised call; "
+                                "extend collect_launcher_env_keys"
+                            )
+                    elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        hub_keys.add(key.value)
+                    else:
+                        raise AssertionError(
+                            f"prepare-run hub_env has a non-literal key: {ast.dump(key)}"
+                        )
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "hub_env"
+                    and isinstance(target.slice, ast.Constant)
+                    and isinstance(target.slice.value, str)
+                ):
+                    hub_keys.add(target.slice.value)
+        assert hub_keys, "prepare-run hub_env dict literal was not found"
+        produced["prepare-run.hub_env"] = hub_keys
+
+        place = agent_launcher_cli.Place(
+            url="http://127.0.0.1:8420",
+            token_file=Path("/tmp/token"),
+            sessions=Path("/tmp/sessions"),
+            selector=None,
+            explicit=True,
+            checkout=Path("/tmp/checkout"),
+            hub_id="hub-1",
+        )
+        produced["agent-launcher.hub_selection_env"] = set(
+            agent_launcher_cli.hub_selection_env(place)
+        )
+        # child_environment returns a full environment; keep only added keys.
+        baseline = {"LAUNCHER_ENV_BASELINE": "1"}
+        with mock.patch.dict(os.environ, baseline, clear=True):
+            child = agent_launcher_cli.child_environment(place)
+        produced["agent-launcher.child_environment"] = set(child) - set(baseline)
+
+        identity = agent_launcher_cli.Identity(
+            harness="opencode",
+            model="m",
+            effort="high",
+            version="1.0.0",
+            uv_cache=Path("/tmp/uv"),
+            pytest_workers=4,
+            telemetry_log=Path("/tmp/telemetry.jsonl"),
+        )
+        produced["agent-launcher.Identity.environment"] = set(identity.environment())
+        produced["agent-launcher.opencode_environment"] = set(
+            agent_launcher_cli.opencode_environment("high", safe=True)
+        )
+
+        # launch_environment returns a full environment; keep only added keys.
+        launch_base: dict[str, str] = {}
+        launch_out = agent_launcher_common.launch_environment("/tmp/work", launch_base)
+        produced["agent_launcher.launch_environment"] = set(launch_out) - set(launch_base)
+
+        return produced
+    finally:
+        if path_pushed:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(scripts)
+
+
+def launcher_env_stripped(names: set[str]) -> set[str]:
+    """Collected names the fixture must strip: not on the keep-list.
+
+    Classification (``test_conftest``) separately proves each is in
+    ``LAUNCHER_ENV`` or matches ``ROBOMATE_TOKEN*``; building REQUIRED and the
+    guide check from ``names - LAUNCHER_KEPT`` keeps them from disagreeing.
+    """
+
+    return names - set(LAUNCHER_KEPT)
 
 
 class MonotonicClock:

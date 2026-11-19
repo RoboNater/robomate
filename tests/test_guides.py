@@ -1,6 +1,7 @@
 """The hub's role-guide route (spec §4.2): static markdown behind the token."""
 
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from agent_hub.guides import guide_response
 from agent_hub_common import HubSettings, RebaseResult, TaskRole
 from agent_hub_common.discovery import HubEndpoint
-from conftest import BASE_URL, TOKEN
+from conftest import BASE_URL, TOKEN, collect_launcher_env_keys, launcher_env_stripped
 from fastapi import FastAPI, HTTPException
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
@@ -780,22 +781,32 @@ def test_worker_smoke_documents_submit_limit_and_alternatives() -> None:
 
 
 def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
-    """#541: a pinned ROBOMATE_HUB_ID outranks the smoke checkout's bound hub."""
+    """#541, #531: a pinned ROBOMATE_HUB_ID outranks the smoke checkout's bound hub.
+
+    Every collected stripped launcher variable must appear in the smoke recipe,
+    or be covered by a family the recipe names explicitly (``ROBOMATE_TOKEN*``,
+    "every ``HUB_*`` launcher variable"). Kept names stay out.
+    """
     guide = (Path(__file__).parents[1] / "guides" / "worker.md").read_text()
     normalized = " ".join(guide.split())
-    for fragment in (
-        "`ROBOMATE_HUB_URL`",
-        "`ROBOMATE_TOKEN*`",
-        "`ROBOMATE_HUB_ID`",
-        "`ROBOMATE_LAUNCH_HUB_CHECKOUT`",
-        "`AGENT_NAME`",
-        "`HUB_TELEMETRY_LOG`",
-        "`HUB_HARNESS`",
-        "`HUB_HARNESS_VERSION`",
-        "`HUB_HARNESS_MODE`",
-        "`HUB_MODEL`",
-        "`HUB_PROVIDER`",
-        "`HUB_EFFORT`",
-    ):
-        assert fragment in normalized
+    produced = collect_launcher_env_keys()
+    stripped = launcher_env_stripped({name for names in produced.values() for name in names})
+    families: tuple[tuple[str, Callable[[str], bool]], ...] = (
+        ("ROBOMATE_TOKEN*", lambda name: name.startswith("ROBOMATE_TOKEN")),
+        ("every `HUB_*` launcher variable", lambda name: name.startswith("HUB_")),
+    )
+    missing: list[str] = []
+    for name in sorted(stripped):
+        if any(match(name) for _, match in families):
+            continue
+        if f"`{name}`" not in normalized:
+            missing.append(name)
+    assert not missing, (
+        f"smoke recipe in guides/worker.md does not name: {', '.join(missing)}; "
+        "add each to the recipe and regenerate prompts/worker.md with "
+        "`uv run --locked python scripts/sync-worker-prompt.py`"
+    )
+    # Families the recipe must actually name for the coverage rules above.
+    assert "`ROBOMATE_TOKEN*`" in normalized
+    assert "every `HUB_*` launcher variable" in normalized
     assert "`ROBOMATE_HUB_ID` would otherwise pin discovery to the run's hub" in normalized
