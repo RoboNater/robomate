@@ -39,6 +39,7 @@ from agent_hub_common import (
 from agent_hub_common.config_layers import repository_config_path
 from agent_hub_common.discovery import (
     BINDING_FILENAME,
+    HUB_ID_ENV,
     Binding,
     DiscoveryError,
     HubEndpoint,
@@ -649,7 +650,47 @@ def _connect(selector: str | None) -> tuple[HubEndpoint, LocalHub | None]:
     return hub, None
 
 
+def _pinned_label(hub_id: str) -> str:
+    """A pinned hub as messages name it: its registered name and id, else its id."""
+
+    for entry in recorded_entries():
+        if str(entry.get("hub_id")) == hub_id:
+            name = entry.get("name")
+            return f"hub {name} ({hub_id})" if name else f"hub {hub_id}"
+    return f"hub {hub_id}"
+
+
+def _refuse_pinned_down(selector: str | None) -> None:
+    """Refuse `down` when the launcher's pin and this checkout name different hubs (#541).
+
+    `find_hub` ranks `ROBOMATE_HUB_ID` above the checkout binding (#511), so in
+    a launched agent's environment a hand-run smoke `robomate down` from the
+    smoke checkout would stop the run's hub: an operator-only action. That
+    mismatch is the smoke state, so refuse and name both hubs instead of acting.
+    """
+
+    if selector is not None:
+        return
+    pinned = (os.environ.get(HUB_ID_ENV) or "").strip()
+    if not pinned:
+        return
+    try:
+        checkout, _ = resolve_checkout(Path.cwd())
+    except DiscoveryError:
+        return
+    bound = local_hub(checkout)
+    if bound is None or bound.hub_id == pinned:
+        return
+    raise DiscoveryError(
+        f"refusing to stop pinned {_pinned_label(pinned)}: checkout {checkout} is bound "
+        f"to {bound.label()} ({bound.hub_id}). {HUB_ID_ENV} names the launcher's hub, "
+        "not this checkout's; stop this checkout's hub with "
+        "`robomate down --hub <name | hub_id | checkout path>`"
+    )
+
+
 def _down(selector: str | None) -> None:
+    _refuse_pinned_down(selector)
     endpoint, hub = _connect(selector)
     label = hub.label() if hub is not None else "hub"
     operator_token = read_token_file(operator_token_path(), "operator token")

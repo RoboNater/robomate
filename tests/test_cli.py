@@ -1527,6 +1527,38 @@ def test_down_reports_auth_failure(
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
+def test_down_refuses_the_pinned_hub_when_the_checkout_is_bound_to_another(
+    repository: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#541: a smoke `down` must stop the smoke checkout's hub, never the pin's."""
+
+    root, env = repository
+    wt_a, wt_b = tmp_path / "wt-a", tmp_path / "wt-b"
+    _commit_and_add_worktrees(root, wt_a, wt_b)
+    hub_a, hub_b = start(wt_a, env), start(wt_b, env)
+    try:
+        a, b = await_hub(wt_a, hub_a), await_hub(wt_b, hub_b)
+        pinned = {**env, "ROBOMATE_HUB_ID": str(a["hub_id"])}
+        refused = _inproc_cli(monkeypatch, capsys, wt_b, pinned, "down")
+        assert refused.returncode == 1
+        assert f"hub wt-a ({a['hub_id']})" in refused.stderr
+        assert f"hub wt-b ({b['hub_id']})" in refused.stderr
+        assert "--hub <name | hub_id | checkout path>" in refused.stderr
+        assert hub_a.poll() is None and hub_b.poll() is None
+        # Naming the checkout's hub explicitly is the way out, and it works.
+        stopped = _inproc_cli(monkeypatch, capsys, wt_b, pinned, "down", "--hub", "wt-b")
+        assert stopped.returncode == 0, stopped.stderr
+        assert hub_b.wait(timeout=PROCESS_EXIT_TIMEOUT_S) == 0
+        assert hub_a.poll() is None
+    finally:
+        for checkout, process in ((wt_a, hub_a), (wt_b, hub_b)):
+            if process.poll() is None:
+                stop(checkout, env, process)
+
+
 def test_down_tells_a_slow_hub_from_an_unreachable_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

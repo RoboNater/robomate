@@ -777,3 +777,25 @@ def test_worker_smoke_documents_submit_limit_and_alternatives() -> None:
         assert fragment in normalized
     # No credential spread toward #404: the GH_CONFIG_DIR workaround stays out.
     assert "GH_CONFIG_DIR" not in guide
+
+
+def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
+    """#541: a pinned ROBOMATE_HUB_ID outranks the smoke checkout's bound hub."""
+    guide = (Path(__file__).parents[1] / "guides" / "worker.md").read_text()
+    normalized = " ".join(guide.split())
+    for fragment in (
+        "`ROBOMATE_HUB_URL`",
+        "`ROBOMATE_TOKEN*`",
+        "`ROBOMATE_HUB_ID`",
+        "`ROBOMATE_LAUNCH_HUB_CHECKOUT`",
+        "`AGENT_NAME`",
+        "`HUB_TELEMETRY_LOG`",
+        "`HUB_HARNESS`",
+        "`HUB_HARNESS_VERSION`",
+        "`HUB_HARNESS_MODE`",
+        "`HUB_MODEL`",
+        "`HUB_PROVIDER`",
+        "`HUB_EFFORT`",
+    ):
+        assert fragment in normalized
+    assert "`ROBOMATE_HUB_ID` would otherwise pin discovery to the run's hub" in normalized
