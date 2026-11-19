@@ -1056,6 +1056,24 @@ def test_grants_are_flags_for_the_measured_harnesses(
     assert CLI.grants("opencode", linked, None) == []
 
 
+@pytest.mark.parametrize("main", [CLI.main, CLI.common.main], ids=["agent", "legacy"])
+def test_launcher_main_configures_output_streams(
+    monkeypatch: pytest.MonkeyPatch, main: Callable[..., int]
+) -> None:
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stdout", stdout)
+        patch.setattr(sys, "stderr", stderr)
+        with pytest.raises(SystemExit) as exc:
+            main(["--help"])
+        assert exc.value.code == 0
+        assert stdout.encoding == stderr.encoding == "utf-8"
+        assert stdout.errors == stderr.errors == "backslashreplace"
+    stdout.close()
+    stderr.close()
+
+
 def test_relay_survives_unencodable_output(monkeypatch: pytest.MonkeyPatch) -> None:
     launcher = CLI.common.Launcher.__new__(CLI.common.Launcher)
     launcher.harness = "codex"
