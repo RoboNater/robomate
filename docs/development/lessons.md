@@ -7,7 +7,8 @@ lesson and see whether its remedy has shipped.
 
 Each entry is one rule. **Sources** link to the lesson's comment on #3,
 labelled by the run's PR and the item number within that comment (`PR 560/1`).
-The six lessons in #3's own body are labelled `#3 body/1`–`/6`. Sources list
+The six lessons from #3's original body, now in [a comment][c3body], are
+labelled `#3 body/1`–`/6`. Sources list
 separate incidents; a second write-up of the same incident is marked *same
 incident*, and a related technique is marked *related*. **Recurred** gives
 incidents after the first, and whether a remedy was already available to that
@@ -18,6 +19,8 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 ## Dispositions
 
+- **untriaged**: recorded from #3, but no remedy decided yet; triage sets one
+  of the dispositions below.
 - **applied**: the remedy shipped; the link names where.
 - **tracked**: an open issue owns it.
 - **planned**: accepted in triage but not filed yet; becomes *tracked* when
@@ -28,13 +31,15 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 ## Updating this ledger
 
-- **New lesson.** Post it to #3 in the usual layout first. Then add a row here,
-  or a source to an existing row, in the next docs change that touches this
-  file. Closeout review is the natural time to do both.
-- **Recurrence.** On #3, post `Recurrence of <link to the entry's source>` with
-  what happened, its consequence, and whether the remedy was available in that
-  run, instead of writing the lesson again. Add the incident to the row's
-  **Recurred** cell.
+- **Posting.** [#3][i3]'s body says how to post a lesson: check this ledger
+  first, then post it as a recurrence, a related lesson or a new lesson.
+- **Curating.** In a docs PR, add every lesson from each visible #3 comment:
+  - a new lesson gets a new row, or a new source on an existing row;
+  - a recurrence goes in the row's **Recurred** cell;
+  - a related lesson goes there marked *related*, or broadens the row's rule.
+
+  Use `untriaged` when the remedy isn't decided. After the PR merges, hide the
+  covered comments on #3 as *Resolved*.
 - **Disposition change.** When an issue is filed, a remedy merges, or a
   decision retires a lesson, update the row and its link.
 - This file is a development doc, not a served guide: agents read it when
@@ -44,8 +49,8 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
-| Read every full SHA in evidence back from the forge | [#3 body/1][i3] | [PR 463 trailer][c463] (remedy available: lesson only) | applied: `guides/implementer.md`, `guides/reviewer.md` require the full verified SHA |
-| Run documented and acceptance commands live; tests that grep for fragments of a command, or call it in-process, are not enough | [#3 body/2][i3], [PR 259/1–2][c259] | — | applied: `guides/implementer.md`, `guides/reviewer.md`, AGENTS.md ("run every script and entry point") |
+| Read every full SHA in evidence back from the forge | [#3 body/1][c3body] | [PR 463 trailer][c463] (remedy available: lesson only) | applied: `guides/implementer.md`, `guides/reviewer.md` require the full verified SHA |
+| Run documented and acceptance commands live; tests that grep for fragments of a command, or call it in-process, are not enough | [#3 body/2][c3body], [PR 259/1–2][c259] | — | applied: `guides/implementer.md`, `guides/reviewer.md`, AGENTS.md ("run every script and entry point") |
 | Report a smoke run or check that didn't run as not done; quote its real output | [PR 259/1][c259] | [PR 294/4][c294] (remedy available: lesson only) | tracked: [#286][i286] (run-record drift); pilot proposed in [#286 comment][e286]: record tested commit, platform and outcome in the PR record |
 | Re-run lint and format after the last edit; report only the final state | [PR 570][c570] | — | tracked: [#286 pilot][e286] |
 | Read a test's assertions against the spec, not only whether it passes | [PR 259/3][c259] | — | reference |
@@ -67,12 +72,13 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Give each negative case input that breaks only the rule under test; with overlapping safeguards, neutralize the fallback to isolate the layer a test claims to cover | [PR 494/2][c494], [PR 521/4][c521] | — (both found by the #467 check working in review) | applied: [#588][i588] (`guides/reviewer.md` step 4; repair checklist in `testing-time-and-waits.md`) |
 | Prove a nested pytest inherited the warning policy by injecting a warning | [PR 466/4][c466] | — | reference (testing doc: [#589][i589]) |
 | A test message that avoids the old wording proves type-based detection | [PR 274][c274] item 2 | — | reference |
+| A test that checks a document for required or forbidden text must search only the section that carries the requirement, anchored so it fails if the section moves. Prove it by mutation: required text placed only outside the section must fail; forbidden text inside the section must fail, and outside it must pass | [PR 586/1][c586] | — | untriaged |
 
 ## Search for copies and consumers
 
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
-| When a shared rule, instruction, name, field, query or validator changes, search for its copies and trace its callers and readers of persisted data; report out-of-scope instances separately | [#3 body/5][i3], [PR 306/1][c306] | [PR 410/1][c410], [PR 449/2][c449], [PR 560/2][c560] (lesson only); [PR 283/1][c283], [PR 284/4][c284], [PR 494/1][c494], [PR 474/1][c474] *related* | applied: [#588][i588] (AGENTS.md "Changing things"; a reviewer groups instances of one defect into one finding) |
+| When a shared rule, instruction, name, field, query or validator changes, search for its copies and trace its callers and readers of persisted data; when a check covers a set (for example every place that sets an environment variable), find its producers by searching, not from a hand-kept list; report out-of-scope instances separately | [#3 body/5][c3body], [PR 306/1][c306] | [PR 410/1][c410], [PR 449/2][c449], [PR 560/2][c560] (lesson only); [PR 586][c586r] (producers of a set; remedy tracked, not shipped; found in review, reported as [#592][i592]); [PR 283/1][c283], [PR 284/4][c284], [PR 494/1][c494], [PR 474/1][c474] *related* | applied: [#588][i588] (AGENTS.md "Changing things"; a reviewer groups instances of one defect into one finding); the producers-of-a-set part is untriaged |
 | A new assignment field must be tested all the way to the worker | [PR 348/1][c348] | — | applied: [#351][i351] |
 | Check a roadmap decision against every place #2 names the issue | [PR 405][c405] item 2 | [PR 406][c406] (same day; lesson not yet posted) | retired: [#408][i408] removed roadmap edits from ordinary runs |
 
@@ -86,7 +92,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Isolate both user config directories in tests; run platform-branched paths on both platforms | [PR 284/1][c284] | — | applied: conftest `isolated_machine_state` |
 | Name the platform a local test count comes from; local counts can't speak for skipped platform cases | [PR 284/1][c284] | [PR 344/6][c344] (lesson only) | tracked: [#286 pilot][e286] records platform |
 | Approve Windows-only code only after Windows CI or native evidence on that head | [PR 476/5][c476] | — | applied: [#588][i588] (`guides/reviewer.md` approval decision, scoped to material native-Windows paths) |
-| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][i3] | — | reference (testing doc candidate) |
+| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][c3body] | — | reference (testing doc candidate) |
 | `mypy --platform` reproduces a platform-only failure | [PR 86/6][c86] | [PR 89/3][c89] *same day, related* | reference (testing doc candidate) |
 | Don't monkeypatch `os.name` on Windows Python 3.12 | [PR 86/4][c86] | — | reference (testing doc candidate) |
 | Git for Windows `bin/bash.exe` is a forwarding launcher; log argv at every hop; PowerShell treats typographic quotes as quotes | [PR 344/1–2, 4][c344] | — | reference |
@@ -143,17 +149,18 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
 | Fetch the role guide on every assignment, including closeout | [PR 560/1][c560] | — (the worker guide already required it) | tracked: [#564][i564] (actionable error); proposal in [#564 comment][e564]: trial delivering the guide with the assignment if skips keep costing work |
-| Resume a crashed Alice with `takeover=true`, then reconcile | [#3 body/4][i3] | — | applied: `guides/orchestrator.md`, recovery docs |
+| Resume a crashed Alice with `takeover=true`, then reconcile | [#3 body/4][c3body] | — | applied: `guides/orchestrator.md`, recovery docs |
 | Name the event that sources CLOSE-OUT | [PR 274][c274] item 3 | — | applied: [#275][i275] |
 | A small implementer model stalled on design-heavy work; repeated unresolved questions mean Alice should inspect progress | [PR 521/1][c521] | — | reference (#434 covers the mistyped-ID spin) |
 | Recovery by accident isn't recovery; check a stuck agent's calls, not its latest output | [PR 432/3–4][c432] | — | applied in part: [#434][i434] |
 | Nonblocking findings are worth a fix cycle | [PR 560/4][c560] | — | applied: `guides/reviewer.md`, operator decision |
+| To hold a ready PR's merge for a condition outside the workflow, Alice escalates with `ask_user`; the hub refuses `check_merge_gate` while escalated, so the hold survives restarts | [PR 586/2][c586] | — | untriaged |
 | Escalate a finding whose fixes keep missing | [PR 344/5][c344] | — | reference (the orchestrator guide escalates repeated disagreement) |
 | Cite the operator question id wherever authority is claimed | [PR 390/3][c390] | — | reference |
 | `Closes #N` on an evidence-only PR closes the issue early | [PR 390/4][c390] | — | tracked: [#389][i389] |
 | Check typed result payloads before submitting | [PR 476/6][c476] | — | applied: [#478][i478] |
 | An agent's own memory doesn't carry to the next run | [PR 78/3][c78] | — | reference |
-| Check when a shared-body edit happens, not only what it says | [#3 body/3][i3] | — | reference |
+| Check when a shared-body edit happens, not only what it says | [#3 body/3][c3body] | — | reference |
 | Plan bookkeeping needs an owner; coordinate parallel planning PRs | [PR 78/7][c78], [PR 237/2][c237] | — | reference |
 | Pairing waits, single-worker starts, idle workers, wall-time budgets | [PR 86/8][c86], [PR 89/6][c89], [PR 89/10][c89], [PR 379/8][c379] | — | reference |
 | Grant filesystem access only from run-assigned metadata | [PR 521/2][c521] | — | reference |
@@ -212,6 +219,10 @@ Candidates for a short testing reference. Clock and wait techniques belong in
 [i590]: https://github.com/RoboNater/robomate/issues/590
 [e286]: https://github.com/RoboNater/robomate/issues/286#issuecomment-7012046991
 [e564]: https://github.com/RoboNater/robomate/issues/564#issuecomment-7012047562
+[i592]: https://github.com/RoboNater/robomate/issues/592
+[c3body]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015867200
+[c586]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015950995
+[c586r]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015950470
 [c78]: https://github.com/RoboNater/robomate/issues/3#issuecomment-5944704905
 [c86]: https://github.com/RoboNater/robomate/issues/3#issuecomment-5953239222
 [c89]: https://github.com/RoboNater/robomate/issues/3#issuecomment-5957589613
