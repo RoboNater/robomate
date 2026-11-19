@@ -474,7 +474,10 @@ the reviewer marks `optional, no follow-up` stays in the review comment and
 is never filed. Handle findings now and trigger RE-REVIEW if the head
 changes, or decline them. After a decline, give the reviewer a same-head
 task to file and reference a follow-up issue for each declined finding that
-is neither marked `optional, no follow-up` nor overruled. If the implementer
+is neither marked `optional, no follow-up` nor overruled. Through that same
+FOLLOW-UP route, secure an open tracking issue URL for each agreed deferral or
+operator-only item before merge, because `Closes #N` closes the source issue;
+route operator-only work to an `operator-run` issue. If the implementer
 reports the same head with no changes, the existing approval remains bound
 to that head.
 
@@ -527,7 +530,14 @@ Route every failed term rather than weakening the invariant:
 - stale base or conflicts: REBASE.
 - `mergeable == unknown` or `ci == pending`: call the gate again until the
   wall-time rail expires.
-- `ci == fail`: give the implementer one CI repair task, then require review of
+- `ci == fail`: before assigning a repair, read the failed step and compare its
+  signature (exit code, killed process, message) with what the change does, even
+  in files the PR didn't touch. An identifiable infrastructure failure (for
+  example a download error after the tests passed) justifies re-running the job
+  on that evidence; that re-run is not a code repair task. When the diagnosis
+  depends on a pre-existing flake, reproduce it on the base under comparable
+  conditions. A passing same-head re-run alone leaves the cause unresolved; say
+  so in the log. Give the implementer one CI repair task, then require review of
   any new head. Escalate after CI is red on the original run and that repair
   attempt.
 - `ci == cancelled` or `no_checks`: the gate has already polled for 60 seconds;

@@ -69,7 +69,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 |---|---|---|---|
 | Show a regression test fails without the fix, in a checkout like CI's | [PR 266][c266] item 3, [PR 306/2][c306] | [PR 379/1][c379], [PR 466/1][c466] (no remedy until #467); [PR 457/2][c457] *related* | applied: [#467][i467] / PR #484 (`guides/reviewer.md`, `guides/implementer.md`) |
 | A condition wait that is already true makes the test vacuous; run a test with its feature off | [PR 379/2][c379], [PR 432/7][c432] | — | applied: [#381][i381] (`testing-time-and-waits.md`) |
-| Give each negative case input that breaks only the rule under test; with overlapping safeguards, neutralize the fallback to isolate the layer a test claims to cover | [PR 494/2][c494], [PR 521/4][c521] | — (both found by the #467 check working in review) | tracked: [#588][i588] (reviewer clause, example in `testing-time-and-waits.md`) |
+| Give each negative case input that breaks only the rule under test; with overlapping safeguards, neutralize the fallback to isolate the layer a test claims to cover | [PR 494/2][c494], [PR 521/4][c521] | — (both found by the #467 check working in review) | applied: [#588][i588] (`guides/reviewer.md` step 4; repair checklist in `testing-time-and-waits.md`) |
 | Prove a nested pytest inherited the warning policy by injecting a warning | [PR 466/4][c466] | — | reference (testing doc: [#589][i589]) |
 | A test message that avoids the old wording proves type-based detection | [PR 274][c274] item 2 | — | reference |
 | A test that checks a document for required or forbidden text must search only the section that carries the requirement, anchored so it fails if the section moves. Prove it by mutation: required text placed only outside the section must fail; forbidden text inside the section must fail, and outside it must pass | [PR 586/1][c586] | — | untriaged |
@@ -78,7 +78,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
-| When a shared rule, instruction, name, field, query or validator changes, search for its copies and trace its callers and readers of persisted data; when a check covers a set (for example every place that sets an environment variable), find its producers by searching, not from a hand-kept list; report out-of-scope instances separately | [#3 body/5][c3body], [PR 306/1][c306] | [PR 410/1][c410], [PR 449/2][c449], [PR 560/2][c560] (lesson only); [PR 586][c586r] (producers of a set; remedy tracked, not shipped; found in review, reported as [#592][i592]); [PR 283/1][c283], [PR 284/4][c284], [PR 494/1][c494], [PR 474/1][c474] *related* | tracked: [#588][i588] (AGENTS.md rule; reviewers group instances of one defect into one finding); the producers-of-a-set part is untriaged: #588 was scoped before it, so check #588's merged wording |
+| When a shared rule, instruction, name, field, query or validator changes, search for its copies and trace its callers and readers of persisted data; when a check covers a set (for example every place that sets an environment variable), find its producers by searching, not from a hand-kept list; report out-of-scope instances separately | [#3 body/5][c3body], [PR 306/1][c306] | [PR 410/1][c410], [PR 449/2][c449], [PR 560/2][c560] (lesson only); [PR 586][c586r] (producers of a set; remedy tracked, not shipped; found in review, reported as [#592][i592]); [PR 283/1][c283], [PR 284/4][c284], [PR 494/1][c494], [PR 474/1][c474] *related* | applied: [#588][i588] (AGENTS.md "Changing things"; a reviewer groups instances of one defect into one finding); the producers-of-a-set part is untriaged |
 | A new assignment field must be tested all the way to the worker | [PR 348/1][c348] | — | applied: [#351][i351] |
 | Check a roadmap decision against every place #2 names the issue | [PR 405][c405] item 2 | [PR 406][c406] (same day; lesson not yet posted) | retired: [#408][i408] removed roadmap edits from ordinary runs |
 
@@ -91,7 +91,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | `os.kill(pid, 0)` sends Ctrl-C on Windows; use `process_alive` | [PR 472/3][c472] | — | applied: native probe in `agent_hub_common.registry` and `tests/fake_harness.py`; launcher tests assert the Windows path never sends signal 0 |
 | Isolate both user config directories in tests; run platform-branched paths on both platforms | [PR 284/1][c284] | — | applied: conftest `isolated_machine_state` |
 | Name the platform a local test count comes from; local counts can't speak for skipped platform cases | [PR 284/1][c284] | [PR 344/6][c344] (lesson only) | tracked: [#286 pilot][e286] records platform |
-| Approve Windows-only code only after Windows CI or native evidence on that head | [PR 476/5][c476] | — | tracked: [#588][i588] (reviewer approval clause, scoped to paths that require native Windows) |
+| Approve Windows-only code only after Windows CI or native evidence on that head | [PR 476/5][c476] | — | applied: [#588][i588] (`guides/reviewer.md` approval decision, scoped to material native-Windows paths) |
 | Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][c3body] | — | reference (testing doc candidate) |
 | `mypy --platform` reproduces a platform-only failure | [PR 86/6][c86] | [PR 89/3][c89] *same day, related* | reference (testing doc candidate) |
 | Don't monkeypatch `os.name` on Windows Python 3.12 | [PR 86/4][c86] | — | reference (testing doc candidate) |
@@ -130,15 +130,15 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
-| Read the failed step and compare its signature with the change before assigning a repair; an identifiable infrastructure failure justifies a re-run; a passing same-head re-run alone leaves the cause unresolved | [PR 344/3][c344], [PR 472/1][c472] | [PR 344/7][c344], [PR 410/2][c410] (infrastructure); [PR 348/4][c348], [PR 466/2][c466] *related* | tracked: [#588][i588] (`guides/orchestrator.md` `ci == fail` route) |
+| Read the failed step and compare its signature with the change before assigning a repair; an identifiable infrastructure failure justifies a re-run; a passing same-head re-run alone leaves the cause unresolved | [PR 344/3][c344], [PR 472/1][c472] | [PR 344/7][c344], [PR 410/2][c410] (infrastructure); [PR 348/4][c348], [PR 466/2][c466] *related* | applied: [#588][i588] (`guides/orchestrator.md` `ci == fail` route) |
 | Transient license-download failures | [PR 344/7][c344] | [PR 410/2][c410] | applied: [#417][i417] (retry) |
 
 ## Requirements and scope
 
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
-| Requirements live in issue comments too; retrieve the discussion and carry its acceptance items into the review checklist | [PR 432/6][c432] | [PR 457/1][c457] | tracked: [#588][i588] (forge issue reads return body and full discussion; `guides/reviewer.md` already counts comment-stated scope) |
-| Agreed deferrals and operator-only work need a live tracking URL before `Closes #N` closes the source | [PR 457/1][c457], [PR 459/3][c459] | — | tracked: [#588][i588] |
+| Requirements live in issue comments too; retrieve the discussion and carry its acceptance items into the review checklist | [PR 432/6][c432] | [PR 457/1][c457] | applied: [#588][i588] (forge appendices read the body and full discussion; `guides/reviewer.md` step 3 carries comment acceptance items) |
+| Agreed deferrals and operator-only work need a live tracking URL before `Closes #N` closes the source | [PR 457/1][c457], [PR 459/3][c459] | — | applied: [#588][i588] (`guides/reviewer.md` step 5; FOLLOW-UP route in `guides/orchestrator.md`, operator-only work goes to an `operator-run` issue) |
 | An unmet explicit acceptance item is blocking; pass the statement of work verbatim | [PR 294/2–3][c294] | — | applied: [#296][i296], [#297][i297] |
 | A plan must not name an unreserved shared counter; reserve before use | [PR 236/1][c236], [PR 259/5][c259] | — | applied: [#409][i409], AGENTS.md |
 | A new mandatory step must say when it applies; define every term an agent must act on | [PR 484/2–3][c484] | — | reference |

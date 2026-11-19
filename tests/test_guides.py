@@ -832,3 +832,101 @@ def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
     assert not present_kept, (
         f"keep-list names must stay out of the smoke recipe: {', '.join(present_kept)}"
     )
+
+
+@pytest.mark.parametrize("role", ["implementer", "reviewer", "worker", "orchestrator"])
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_issue_read_recipe_returns_body_and_full_discussion(role: str, forge: str) -> None:
+    """#588: a piped issue read must bring back the body and every note, not page one."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode("utf-8").split()
+    )
+    if forge == "github":
+        assert "--json title,body,comments" in text
+        assert "prints only the comments" in text
+    else:
+        assert "--comments --per-page 100" in text
+        assert "`--page 2`, `--page 3`" in text
+        assert "until a page comes back short" in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_reviewer_guide_carries_comment_items_deferrals_and_mutations(forge: str) -> None:
+    """#588: comment-stated scope, tracked deferrals and isolated negative cases."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "reviewer", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        "Carry each acceptance item stated in the issue's comments into the checklist",
+        "Give each negative case input that is valid except for the rule under test",
+        "When safeguards overlap, neutralize the fallback",
+        "Surface and verify each agreed deferral or operator-only item as a finding",
+        "`Closes #N` closes the source issue",
+        "FOLLOW-UP route before merge",
+        "operator-run",
+        "suggestions nobody agreed to pursue can stay in the thread",
+    ):
+        assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_reviewer_guide_requires_native_windows_evidence(forge: str) -> None:
+    """#588: native-Windows paths are approved only on passing evidence at the head."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "reviewer", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        "When a material path requires native Windows",
+        "approve only after the relevant checks have passed on native Windows at the reviewed head",
+        "Cite the CI result or the native validation command and outcome",
+        "passed while they skipped, is not a pass",
+    ):
+        assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_guide_triages_ci_failures_before_repair(forge: str) -> None:
+    """#588: a failed check is diagnosed before any repair task is assigned."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        "before assigning a repair, read the failed step",
+        "compare its signature (exit code, killed process, message) with what the change does",
+        "An identifiable infrastructure failure",
+        "that re-run is not a code repair task",
+        "reproduce it on the base under comparable conditions",
+        "A passing same-head re-run alone leaves the cause unresolved",
+        "say so in the log",
+    ):
+        assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_guide_secures_followup_tracking_urls(forge: str) -> None:
+    """#588: agreed deferrals and operator-only items have a tracked URL before merge."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        (
+            "secure an open tracking issue URL for each agreed deferral or "
+            "operator-only item before merge"
+        ),
+        "`Closes #N` closes the source issue",
+        "route operator-only work to an `operator-run` issue",
+    ):
+        assert fragment in text

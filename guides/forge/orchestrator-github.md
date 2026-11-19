@@ -1,6 +1,9 @@
 # GitHub Orchestrator Appendix
 
-Read issues with `gh issue view <number> --repo <owner>/<repository>`.
+Read issues, including their full discussion, with
+`gh issue view <number> --repo <owner>/<repository> --json title,body,comments`.
+When its output is piped or redirected, `--comments` alone prints only the
+comments; the `--json` form returns the body and every comment together.
 Read a change request and its discussion with `gh pr view <pr_url> --comments`
 and its diff with `gh pr diff <pr_url>`.
 For resume and result verification, read the full current head, state, base
