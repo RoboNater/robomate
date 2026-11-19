@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from agent_hub_common import ImplementerOutcome, ReviewerVerdict, WorkflowPolicy
@@ -52,6 +54,31 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
         ),
     )
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
+
+
+def test_worker_prompt_sync_check_accepts_crlf_prompt(tmp_path: Path) -> None:
+    """An older Windows checkout may still have CRLF in the generated prompt."""
+
+    guide_dir = tmp_path / "guides"
+    prompt_dir = tmp_path / "prompts"
+    script_dir = tmp_path / "scripts"
+    guide_dir.mkdir()
+    prompt_dir.mkdir()
+    script_dir.mkdir()
+
+    (guide_dir / "worker.md").write_bytes((ROOT / "guides/worker.md").read_bytes())
+    prompt = (ROOT / "prompts/worker.md").read_bytes().replace(b"\r\n", b"\n")
+    (prompt_dir / "worker.md").write_bytes(prompt.replace(b"\n", b"\r\n"))
+    script = script_dir / "sync-worker-prompt.py"
+    script.write_bytes((ROOT / "scripts/sync-worker-prompt.py").read_bytes())
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--check"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:

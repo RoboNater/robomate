@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "guides" / "worker.md"
 PROMPT = ROOT / "prompts" / "worker.md"
+# Keep this prompt-only preamble here; the rest of the prompt mirrors GUIDE.
 PREFIX = (
     b"You are `$AGENT_NAME`, a persistent robo-agents worker. Follow the inlined\n"
     b"worker etiquette below. Check in, pull assignments, and continue until Alice\n"
@@ -17,6 +18,12 @@ PREFIX = (
     b"\n"
 )
 FIX_COMMAND = "uv run --locked python scripts/sync-worker-prompt.py"
+
+
+def normalize_newlines(content: bytes) -> bytes:
+    """Normalize CRLF copies left in existing Windows checkouts for comparison."""
+
+    return content.replace(b"\r\n", b"\n")
 
 
 def main() -> int:
@@ -30,7 +37,7 @@ def main() -> int:
 
     expected = PREFIX + GUIDE.read_bytes()
     if args.check:
-        if PROMPT.is_file() and PROMPT.read_bytes() == expected:
+        if PROMPT.is_file() and normalize_newlines(PROMPT.read_bytes()) == expected:
             return 0
         print(
             f"prompts/worker.md is out of date; run `{FIX_COMMAND}`.",
