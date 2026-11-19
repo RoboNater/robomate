@@ -1004,7 +1004,9 @@ def test_start_and_resume_name_the_worktree_and_drop_the_launcher_venv(
         assert operator_bin.resolve() in entries
 
 
-def test_grants_are_flags_for_the_measured_harnesses(area: dict[str, Path], tmp_path: Path) -> None:
+def test_grants_are_flags_for_the_measured_harnesses(
+    area: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q")
@@ -1036,13 +1038,103 @@ def test_grants_are_flags_for_the_measured_harnesses(area: dict[str, Path], tmp_
     assert roots[:4] == [own, *(str(common / leaf) for leaf in ("objects", "refs", "logs"))]
     assert str(common) not in roots
 
+    monkeypatch.setattr(sys, "platform", "linux")
     settings = CLI.grants("claude-code", area["checkout"], area["state"] / "token")
     sandbox = json.loads(settings[1])["sandbox"]
     assert settings[0] == "--settings"
     assert sandbox["failIfUnavailable"] is True
     assert sandbox["filesystem"]["denyRead"] == [str(area["state"])]
     assert sandbox["network"]["allowedDomains"] == ["github.com", "api.github.com"]
+    monkeypatch.setattr(sys, "platform", "win32")
+    windows = json.loads(CLI.grants("claude-code", area["checkout"], area["state"] / "token")[1])[
+        "sandbox"
+    ]
+    assert not windows.get("failIfUnavailable", False)
+    assert windows["enabled"] is True
+    assert windows["filesystem"] == sandbox["filesystem"]
+    assert windows["network"] == sandbox["network"]
     assert CLI.grants("opencode", linked, None) == []
+
+
+def test_relay_survives_unencodable_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    launcher = CLI.common.Launcher.__new__(CLI.common.Launcher)
+    launcher.harness = "codex"
+    launcher.conversation = None
+    launcher.log = lambda *args, **kwargs: None
+    output = io.BytesIO()
+    stream = io.TextIOWrapper(output, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stream)
+    launcher.relay(io.StringIO("bad ∧\n" + ID_LINES["codex"] + "\nlater\n"), [])
+    stream.flush()
+    assert b"later" in output.getvalue()
+    assert launcher.conversation == IDS["codex"]
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_windows_sandbox_warning_once_per_start_and_manual_resume(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = FakeHub(after_launches(area, active, active, released))
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "claude-code"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    assert output.err.count("warning: bob (claude-code) on Windows") == (platform == "win32")
+    assert "warning: bob" not in output.out
+
+    (area["harness_dir"] / "launches.jsonl").unlink()
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    now = datetime.now(UTC)
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00003"
+    saved_log(area, conversation, now - timedelta(minutes=10), now - timedelta(minutes=1))
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    status = after_launches(
+        area,
+        {"workflow": live, "agents": [agent_row()]},
+        {"workflow": live, "agents": [agent_row("released", context="c2")]},
+    )
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.snapshot":
+            return {"hub_id": HUB, "workflow": live, "tasks": [], "taken_at": now.isoformat()}
+        if method == "hub.questions":
+            return {"questions": []}
+        return status(method)
+
+    assert (
+        invoke(
+            [
+                "resume",
+                "bob",
+                "--hub",
+                str(area["checkout"]),
+                "--read-retry-delay-s",
+                "0",
+                "--resume-session",
+                conversation,
+            ],
+            programs=programs(area),
+            reader=FakeHub(answer),
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    assert output.err.count("warning: bob (claude-code) on Windows") == (platform == "win32")
+    assert "warning: bob" not in output.out
 
 
 def test_kill_mid_task_resumes_the_same_conversation_with_backoff(
