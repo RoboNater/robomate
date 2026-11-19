@@ -10,7 +10,13 @@ import pytest
 from agent_hub.guides import guide_response
 from agent_hub_common import HubSettings, RebaseResult, TaskRole
 from agent_hub_common.discovery import HubEndpoint
-from conftest import BASE_URL, TOKEN, collect_launcher_env_keys, launcher_env_stripped
+from conftest import (
+    BASE_URL,
+    LAUNCHER_KEPT,
+    TOKEN,
+    collect_launcher_env_keys,
+    launcher_env_stripped,
+)
 from fastapi import FastAPI, HTTPException
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
@@ -780,15 +786,26 @@ def test_worker_smoke_documents_submit_limit_and_alternatives() -> None:
     assert "GH_CONFIG_DIR" not in guide
 
 
+def _smoke_recipe_section(guide: str) -> str:
+    """The isolated-smoke limits block only, whitespace-normalized."""
+
+    start = guide.find("<!-- Isolated smoke hub")
+    assert start != -1, "guides/worker.md lost the isolated smoke hub section"
+    end = guide.find("\n## ", start)
+    assert end != -1, "guides/worker.md smoke section has no following heading"
+    return " ".join(guide[start:end].split())
+
+
 def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
     """#541, #531: a pinned ROBOMATE_HUB_ID outranks the smoke checkout's bound hub.
 
-    Every collected stripped launcher variable must appear in the smoke recipe,
-    or be covered by a family the recipe names explicitly (``ROBOMATE_TOKEN*``,
-    "every ``HUB_*`` launcher variable"). Kept names stay out.
+    Every collected stripped launcher variable must appear in the smoke-recipe
+    section, or be covered by a family the recipe names explicitly
+    (``ROBOMATE_TOKEN*``, "every ``HUB_*`` launcher variable"). Kept names
+    must stay out of that section.
     """
     guide = (Path(__file__).parents[1] / "guides" / "worker.md").read_text()
-    normalized = " ".join(guide.split())
+    section = _smoke_recipe_section(guide)
     produced = collect_launcher_env_keys()
     stripped = launcher_env_stripped({name for names in produced.values() for name in names})
     families: tuple[tuple[str, Callable[[str], bool]], ...] = (
@@ -799,7 +816,7 @@ def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
     for name in sorted(stripped):
         if any(match(name) for _, match in families):
             continue
-        if f"`{name}`" not in normalized:
+        if f"`{name}`" not in section:
             missing.append(name)
     assert not missing, (
         f"smoke recipe in guides/worker.md does not name: {', '.join(missing)}; "
@@ -807,6 +824,11 @@ def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
         "`uv run --locked python scripts/sync-worker-prompt.py`"
     )
     # Families the recipe must actually name for the coverage rules above.
-    assert "`ROBOMATE_TOKEN*`" in normalized
-    assert "every `HUB_*` launcher variable" in normalized
-    assert "`ROBOMATE_HUB_ID` would otherwise pin discovery to the run's hub" in normalized
+    assert "`ROBOMATE_TOKEN*`" in section
+    assert "every `HUB_*` launcher variable" in section
+    assert "`ROBOMATE_HUB_ID` would otherwise pin discovery to the run's hub" in section
+    # Kept names stay out of the recipe (they may appear elsewhere in the guide).
+    present_kept = sorted(name for name in LAUNCHER_KEPT if f"`{name}`" in section)
+    assert not present_kept, (
+        f"keep-list names must stay out of the smoke recipe: {', '.join(present_kept)}"
+    )
