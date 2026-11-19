@@ -202,6 +202,12 @@ A new or upgraded dependency must meet the policy in
 [`docs/dependency-licenses.md`](docs/dependency-licenses.md); an exception needs
 the owner's approval before merge.
 
+When a change alters shared behaviour or instructions (a rule, phrase, name,
+field, constant, query or validator), search the repository for its copies
+(guides, `prompts/`, scripts, docs, tests) and trace its callers and any readers
+of persisted data. Fix copies within the task's scope and report the rest
+separately. A reviewer reports every instance of the same defect as one finding.
+
 Keep work scoped to the assigned task and report unrelated findings
 separately. An issue that changes behaviour names, under Tests, the commands a
 reviewer will run to see it work — not only the properties that must hold — so

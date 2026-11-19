@@ -286,7 +286,14 @@ matches the CI history is which tests fail. To repair a flaky test:
    the test, and confirm it fails. If it still passes, it is vacuous: change
    what it waits for or counts (see [Wait for the behaviour](#wait-for-the-behaviour-not-a-side-effect-that-precedes-it))
    until the mutation fails it. Name the mutation, and the failure it
-   produced, in the PR. Reading the test doesn't substitute: the first #354
+   produced, in the PR. Isolate the layer the test claims to cover: a negative
+   case needs input that is valid except for the rule under test, and with
+   overlapping safeguards the fallback must be neutralized. If a validator
+   rejects a malformed value in a shape check before the range check the test
+   targets, the test proves the shape rule; make the value well-formed and out
+   of range, and neutralize the shape check if it still fires first
+   ([guides/reviewer.md step 4](../../guides/reviewer.md)). Reading the test
+   doesn't substitute: the first #354
    liveness test passed with every heartbeat removed, because all its sweeps
    fell inside the first pause's grace (#379 r1-1), and only deleting the
    heartbeats showed it. For the role-guide form of this check, see

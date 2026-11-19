@@ -23,10 +23,12 @@ RE-REVIEW rather than forcing or bypassing the check.
 
 ### GitLab CLI equivalents for reads
 
-- **Read an issue** (kickoff, plan):
+- **Read an issue** (kickoff, plan), including its full discussion:
   ```sh
-  glab issue view <iid> -R <host>/<project>
+  glab issue view <iid> -R <host>/<project> --comments --per-page 100
   ```
+  `--comments` returns one page of notes (20 by default). Read further pages
+  with `--page 2`, `--page 3`, ... until a page comes back short.
 - **Read a change request** (resume, review verification):
   ```sh
   glab mr view <iid> -R <host>/<project> --comments

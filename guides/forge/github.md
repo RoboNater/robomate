@@ -5,10 +5,13 @@ what to do; this appendix says how to do it on GitHub.
 
 ## Change requests (pull requests)
 
-- **Read an issue** (implementer, reviewer):
+- **Read an issue** (implementer, reviewer), including its full discussion:
   ```sh
-  gh issue view <issue-number-or-url>
+  gh issue view <issue-number-or-url> --json title,body,comments
   ```
+  `gh issue view --comments` prints only the comments when its output is piped
+  or redirected. The `--json` form above returns the body and every comment
+  together; confirm both came back before relying on the read.
 - **Read a change request** (reviewer):
   ```sh
   gh pr view <number-or-url> --comments

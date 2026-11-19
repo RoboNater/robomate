@@ -1063,3 +1063,31 @@ def test_agent_stalled_with_pushed_head_inspects_pr_and_state() -> None:
             "no cancel, fail, reassign, lease change, or process control",
         ),
     )
+
+
+def test_agents_md_searches_copies_and_consumers_of_shared_changes() -> None:
+    """#588: a shared-behaviour change searches its copies and consumers first."""
+
+    assert_fragments(
+        read("AGENTS.md"),
+        (
+            "When a change alters shared behaviour or instructions",
+            "search the repository for its copies (guides, `prompts/`, scripts, docs, tests)",
+            "trace its callers and any readers of persisted data",
+            "Fix copies within the task's scope and report the rest separately",
+            "A reviewer reports every instance of the same defect as one finding",
+        ),
+    )
+
+
+def test_testing_doc_isolates_mutation_negative_cases() -> None:
+    """#588: a negative case is valid except for the rule it claims to test."""
+
+    assert_fragments(
+        read("docs/development/testing-time-and-waits.md"),
+        (
+            "a negative case needs input that is valid except for the rule under test",
+            "with overlapping safeguards the fallback must be neutralized",
+            "neutralize the shape check if it still fires first",
+        ),
+    )

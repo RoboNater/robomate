@@ -13,10 +13,14 @@ selects the repository.
 
 ## Change requests (merge requests)
 
-- **Read an issue** (implementer, reviewer):
+- **Read an issue** (implementer, reviewer), including its full discussion:
   ```sh
-  glab issue view <issue-number-or-url> -R <host>/<project>
+  glab issue view <issue-number-or-url> -R <host>/<project> --comments --per-page 100
   ```
+  `--comments` returns one page of notes (20 by default). Read further pages
+  with `--page 2`, `--page 3`, ... until a page comes back short, so a note
+  beyond the first page is not missed. Confirm the body and every note came
+  back before relying on the read.
 - **Read a change request** (reviewer):
   ```sh
   glab mr view <iid> -R <host>/<project> --comments
