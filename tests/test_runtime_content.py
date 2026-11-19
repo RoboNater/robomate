@@ -68,17 +68,30 @@ def test_worker_prompt_sync_check_accepts_crlf_prompt(tmp_path: Path) -> None:
 
     (guide_dir / "worker.md").write_bytes((ROOT / "guides/worker.md").read_bytes())
     prompt = (ROOT / "prompts/worker.md").read_bytes().replace(b"\r\n", b"\n")
-    (prompt_dir / "worker.md").write_bytes(prompt.replace(b"\n", b"\r\n"))
+    prompt_file = prompt_dir / "worker.md"
+    prompt_file.write_bytes(prompt.replace(b"\n", b"\r\n"))
     script = script_dir / "sync-worker-prompt.py"
     script.write_bytes((ROOT / "scripts/sync-worker-prompt.py").read_bytes())
 
+    check_command = [sys.executable, str(script), "--check"]
     result = subprocess.run(
-        [sys.executable, str(script), "--check"],
+        check_command,
         capture_output=True,
         check=False,
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+    prompt_file.write_bytes(prompt_file.read_bytes() + b"stale")
+    stale_result = subprocess.run(
+        check_command,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert stale_result.returncode == 1
+    assert "prompts/worker.md" in stale_result.stderr
+    assert "uv run --locked python scripts/sync-worker-prompt.py" in stale_result.stderr
 
 
 def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
