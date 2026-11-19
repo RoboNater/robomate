@@ -34,7 +34,10 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     prompt = read("prompts/worker.md")
     skill = read("skills/worker/SKILL.md")
 
-    assert prompt.endswith(guide)
+    assert prompt.endswith(guide), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     assert_fragments(
         guide,
         (
@@ -65,7 +68,10 @@ def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
         "instead of starting the wait again",
     )
 
-    assert prompt.endswith(worker)
+    assert prompt.endswith(worker), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     for text in (worker, prompt):
         assert_fragments(
             text,
@@ -93,7 +99,10 @@ def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
     skill = read("skills/worker/SKILL.md")
     prompt = read("prompts/worker.md")
 
-    assert prompt.endswith(worker)
+    assert prompt.endswith(worker), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     for text in (worker, skill, implementer):
         assert_fragments(
             text,
@@ -713,7 +722,10 @@ def test_worker_guide_and_skill_document_join_and_takeover() -> None:
     prompt = read("prompts/worker.md")
     skill = read("skills/worker/SKILL.md")
 
-    assert prompt.endswith(guide)
+    assert prompt.endswith(guide), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     for text in (guide, prompt, skill):
         assert_fragments(
             text,
@@ -751,7 +763,10 @@ def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> N
     skill = read("skills/worker/SKILL.md")
     orchestrator = read("guides/orchestrator.md")
 
-    assert prompt.endswith(worker)
+    assert prompt.endswith(worker), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     # 1. On every assignment carrying statement_sha256, read the statement;
     # the assignment text points but does not replace it.
     for text in (worker, prompt, implementer, reviewer):

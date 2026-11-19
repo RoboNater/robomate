@@ -187,6 +187,11 @@ for a subprocess hub) and passes under the same conditions.
 
 ## Changing things
 
+Editing `guides/worker.md` requires regenerating `prompts/worker.md` in the same PR with
+`uv run --locked python scripts/sync-worker-prompt.py`.
+Issue and statement scope lists that include `guides/worker.md` must also include
+`prompts/worker.md`.
+
 A new or upgraded dependency must meet the policy in
 [`docs/dependency-licenses.md`](docs/dependency-licenses.md); an exception needs
 the owner's approval before merge.
