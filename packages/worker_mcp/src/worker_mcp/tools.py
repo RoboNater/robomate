@@ -162,7 +162,7 @@ def create_worker_mcp(
     ) -> dict[str, Any]:
         """Poll the hub for the next task assignment.
 
-        Returns {task_id, role, instructions}, {release: true}, {timeout: true},
+        Returns {task_id, role, title, instructions}, {release: true}, {timeout: true},
         or {closeout_requested: true, run_id, deadline, instructions}. On a
         closeout request submit_closeout_report, then await again; do not exit.
         A closeout assignment carries closeout_context, the stored obligations and settings.

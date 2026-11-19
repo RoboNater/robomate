@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -1387,3 +1387,84 @@ async def test_replaced_instance_cannot_claim_work_when_stream_body_starts_late(
     assert unchanged is not None and unchanged.state is TaskState.SUBMITTED
     claimed = await hub_store.await_assignment(replacement.context_id, 0)
     assert isinstance(claimed, TaskRecord) and claimed.id == task.id
+
+
+async def test_assignment_metadata_contract(
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Classify hub metadata and carry every worker field through the real path."""
+    from agent_hub import protocol
+    from agent_hub.database import database
+    from agent_hub_common.constants import (
+        INTERNAL_ASSIGNMENT_KEYS,
+        WORKER_ASSIGNMENT_FIELDS,
+        MetaKeys,
+    )
+
+    classified = set(WORKER_ASSIGNMENT_FIELDS) | INTERNAL_ASSIGNMENT_KEYS
+    assert not set(WORKER_ASSIGNMENT_FIELDS) & INTERNAL_ASSIGNMENT_KEYS
+
+    def check_classified(metadata: dict[str, Any]) -> None:
+        assert {key for key in metadata if key.startswith("hub.")} <= classified
+
+    rendered: list[Any] = []
+    original = protocol._task_object
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        task_object = original(*args, **kwargs)
+        rendered.append(task_object)
+        return task_object
+
+    monkeypatch.setattr(protocol, "_task_object", capture)
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    await worker.check_in()
+    workflow_id = hub_store.get_state()["workflow"]["id"]
+    head = "a" * 40
+    branch = "robomate/testhub/bob/99"
+    context = {"obligations": ["example"]}
+    with database(hub_store.path) as connection:
+        statement, _ = hub_store._store_statement(connection, "Work", "test", "2026-01-01")
+        connection.execute(
+            "UPDATE workflow SET statement_sha256 = ?, branch = ? WHERE id = ?",
+            (statement, branch, workflow_id),
+        )
+    task = hub_store.assign_task("bob", "reviewer", "Review", "Read it", pr_head_sha=head)
+    with database(hub_store.path) as connection:
+        row = connection.execute(
+            "SELECT parts_json FROM message WHERE task_id = ? AND direction = 'from_alice'",
+            (task.id,),
+        ).fetchone()
+        stored_metadata = json.loads(row["parts_json"])[0]["metadata"]
+        check_classified(stored_metadata)
+        connection.execute(
+            "UPDATE task SET closeout_context_json = ? WHERE id = ?",
+            (json.dumps(context), task.id),
+        )
+
+    await worker.await_assignment(timeout_s=1.0)
+    assignment = await worker.await_assignment(timeout_s=1.0)
+    obj = rendered[-1]
+    metadata = obj.metadata
+    assert metadata is not None
+    check_classified(metadata)
+    assert obj.status.message is not None
+    check_classified(obj.status.message.metadata or {})
+    expected = {
+        MetaKeys.ROLE: "reviewer",
+        MetaKeys.TITLE: "Review",
+        MetaKeys.PR_HEAD_SHA: head,
+        MetaKeys.RUN_ID: task.run_id,
+        MetaKeys.STATEMENT_SHA256: statement,
+        MetaKeys.BRANCH: branch,
+        MetaKeys.ALREADY_HELD: True,
+        MetaKeys.CLOSEOUT_CONTEXT: context,
+    }
+    assert set(expected) == set(WORKER_ASSIGNMENT_FIELDS)
+    for key, value in expected.items():
+        assert metadata[key] == value
+        assert assignment[WORKER_ASSIGNMENT_FIELDS[key]] == value
+    assert assignment["task_id"] == task.id
+    assert assignment["instructions"] == "Read it"

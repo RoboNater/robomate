@@ -76,3 +76,25 @@ class MetaKeys(StrEnum):
     CLOSEOUT_CONTEXT = "hub.closeout_context"
     CLOSEOUT_REQUESTED = "hub.closeout_requested"
     CLOSEOUT_DEADLINE = "hub.closeout_deadline"
+
+
+# Assignment metadata is classified here for the end-to-end contract guard.
+# Keys in the internal set are deliberately not passed to workers.
+WORKER_ASSIGNMENT_FIELDS = {
+    MetaKeys.ROLE: "role",
+    MetaKeys.TITLE: "title",
+    MetaKeys.PR_HEAD_SHA: "pr_head_sha",
+    MetaKeys.RUN_ID: "run_id",
+    MetaKeys.STATEMENT_SHA256: "statement_sha256",
+    MetaKeys.BRANCH: "branch",
+    MetaKeys.ALREADY_HELD: "already_held",
+    MetaKeys.CLOSEOUT_CONTEXT: "closeout_context",
+}
+INTERNAL_ASSIGNMENT_KEYS = frozenset(
+    {
+        MetaKeys.KIND,
+        MetaKeys.ASSIGNEE,
+        MetaKeys.LEASE_EXPIRES,
+        MetaKeys.RESULT,
+    }
+)
