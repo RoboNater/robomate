@@ -52,6 +52,7 @@ EXIT_HUB_UNREADABLE = 3
 EXIT_CANNOT_RESUME = 4
 EXIT_PAUSED = 5
 EXIT_NEVER_JOINED = 6
+EXIT_PROVIDER_ERROR = 7
 EXIT_INTERRUPTED = 130
 
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
@@ -98,6 +99,45 @@ class Stop(Exception):
 class Launch:
     argv: list[str]
     stdin: str | None
+
+
+ProviderSignature = tuple[str, int, str, str | None, bool]
+
+
+def provider_error(line: str, provider: str) -> tuple[str | None, ProviderSignature | None] | None:
+    """Extract only the two known permanent OpenCode provider failures."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    try:
+        if not isinstance(event, dict) or event.get("type") != "error":
+            return None
+        session = event.get("sessionID")
+        session = session if isinstance(session, str) else None
+        error = event["error"]
+        data = error["data"]
+        status = data["statusCode"]
+        retryable = data["isRetryable"]
+        body = json.loads(data["responseBody"])
+        detail = body["error"]
+        kind, code = detail["type"], detail.get("code")
+        if (
+            error["name"] != "APIError"
+            or type(status) is not int
+            or retryable is not False
+            or not isinstance(kind, str)
+            or (code is not None and not isinstance(code, str))
+        ):
+            return session, None
+        if not (
+            (status == 400 and kind == "invalid_request_error")
+            or (status == 401 and kind == "authentication_error" and code == "api_key_expired")
+        ):
+            return session, None
+        return session, (provider, status, kind, code, False)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None, None
 
 
 def instruction(path: Path) -> str:
@@ -316,6 +356,7 @@ class Launcher:
         self.interrupted = False
         self.resumes = 0
         self.resume_deadline: float | None = None
+        self.provider_observation: list[tuple[str | None, ProviderSignature | None]] | None = None
 
     def resume_name(self) -> str:
         """How the operator resumes this agent by hand, for stop messages."""
@@ -520,7 +561,11 @@ class Launcher:
         # The output is relayed on its own thread and the child's exit is
         # awaited here, so a descendant that inherited the pipe (a bridge, a
         # shell) cannot hold recovery up after the harness itself exits.
-        relay = threading.Thread(target=self.relay, args=(self.child.stdout,), daemon=True)
+        observation: list[tuple[str | None, ProviderSignature | None]] = []
+        self.provider_observation = None
+        relay = threading.Thread(
+            target=self.relay, args=(self.child.stdout, observation), daemon=True
+        )
         relay.start()
         if self.harness == "opencode" and trace is not None:
             from agent_hub_common.launcher_observations import ObservationPublisher
@@ -583,6 +628,8 @@ class Launcher:
             code = self.child.wait()
         self.child_exit_at = datetime.now(UTC).isoformat(timespec="seconds")
         relay.join(RELAY_GRACE_S)
+        if not relay.is_alive():
+            self.provider_observation = list(observation)
         self.child = None
         self.last_exit_code = code
         if self.conversation is None and self.harness == "devin":
@@ -593,7 +640,11 @@ class Launcher:
                 say(f"conversation {found}")
         return code
 
-    def relay(self, stream: TextIO | None) -> None:
+    def relay(
+        self,
+        stream: TextIO | None,
+        observation: list[tuple[str | None, ProviderSignature | None]],
+    ) -> None:
         """Copy the harness's output through, noting its conversation ID once."""
 
         if stream is None:
@@ -601,6 +652,15 @@ class Launcher:
         for line in stream:
             sys.stdout.write(line)
             sys.stdout.flush()
+            if self.harness == "opencode":
+                provider = "unknown"
+                if "--model" in self.base[:-1]:
+                    model = self.base[self.base.index("--model") + 1]
+                    if "/" in model and model.split("/", 1)[0]:
+                        provider = model.split("/", 1)[0]
+                event = provider_error(line, provider)
+                if event is not None:
+                    observation.append(event)
             if self.conversation is None:
                 found = conversation_in(self.harness, line)
                 if found is not None:
@@ -789,6 +849,7 @@ class Launcher:
             action = "start"
         resumes = 0
         failures_in_series = 0
+        previous_error: ProviderSignature | None = None
         # The budget anchor: the first exit of the current series. Healthy
         # running time before it never spends the budget, and a series reset
         # refills it (r1-1: anchoring at launcher start stopped long-lived
@@ -820,6 +881,32 @@ class Launcher:
                     f"ran {run_duration:.0f} s, starting a new backoff series "
                     f"at {self.args.resume_delay_s:g} s"
                 )
+            if run_duration >= self.args.resume_series_reset_s:
+                previous_error = None
+            observations = self.provider_observation
+            signature: ProviderSignature | None = None
+            if exit_code != 0 and observations and self.conversation:
+                candidates = {
+                    item for session, item in observations if session == self.conversation
+                }
+                if len(candidates) == 1 and all(
+                    session == self.conversation for session, _ in observations
+                ):
+                    signature = next(iter(candidates))
+            if signature is not None and signature == previous_error:
+                remedy = (
+                    "Replace the provider API key in the harness credential source"
+                    if signature[1] == 401
+                    else "Inspect the request or conversation; see https://github.com/RoboNater/robomate/issues/330"
+                )
+                raise Stop(
+                    EXIT_PROVIDER_ERROR,
+                    "repeated_non_retryable_provider_error",
+                    f"Repeated provider error {signature[1]} {signature[2]}"
+                    f"{' api_key_expired' if signature[1] == 401 else ''}. {remedy}, "
+                    f"then manually resume with {self.resume_name()}.",
+                )
+            previous_error = signature
             delay = backoff_delay(
                 self.args.resume_delay_s, self.args.resume_max_delay_s, failures_in_series
             )

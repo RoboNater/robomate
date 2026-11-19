@@ -86,6 +86,16 @@ record = {
 }
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(record) + "\\n")
+sequence = json.loads(os.environ.get("FAKE_ERRORS", "[]"))
+if sequence:
+    with open(os.environ["FAKE_LOG"], encoding="utf-8") as log:
+        index = sum(1 for _ in log) - 1
+    line = sequence[min(index, len(sequence) - 1)]
+    if "--session-id" in argv:
+        line = line.replace("CLAUDE_SESSION", argv[argv.index("--session-id") + 1])
+    elif "--resume" in argv and "CLAUDE_SESSION" in line:
+        line = line.replace("CLAUDE_SESSION", argv[argv.index("--resume") + 1])
+    print(line, flush=True)
 export = os.environ.get("FAKE_EXPORT_ID")
 if export and "--export" in argv:
     # Devin writes its ATIF export after each turn (#224).
@@ -207,6 +217,156 @@ def events(run_dir: Path) -> list[str]:
         for record in sessions(run_dir)
         if record["event"] != "permission_observation"
     ]
+
+
+def error_line(status: int, kind: str, code: str | None = None, *, retry: bool = False) -> str:
+    return json.dumps(
+        {
+            "type": "error",
+            "timestamp": time.time_ns(),
+            "sessionID": IDS["opencode"],
+            "error": {
+                "name": "APIError",
+                "data": {
+                    "statusCode": status,
+                    "isRetryable": retry,
+                    "responseBody": json.dumps({"error": {"type": kind, "code": code}}),
+                },
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "sequence, expected_runs",
+    [
+        ([error_line(400, "invalid_request_error"), error_line(400, "invalid_request_error")], 2),
+        (
+            [
+                error_line(401, "authentication_error", "api_key_expired"),
+                error_line(401, "authentication_error", "api_key_expired"),
+            ],
+            2,
+        ),
+        (
+            [
+                error_line(400, "invalid_request_error"),
+                error_line(401, "authentication_error", "api_key_expired"),
+            ]
+            * 2,
+            5,
+        ),
+        (
+            [
+                error_line(400, "invalid_request_error"),
+                error_line(401, "authentication_error", "api_key_expired"),
+                error_line(401, "authentication_error", "api_key_expired"),
+            ],
+            3,
+        ),
+    ],
+)
+def test_repeated_provider_errors_stop(
+    run_dir: Path,
+    fake: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sequence: list[str],
+    expected_runs: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_ERRORS", json.dumps(sequence))
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    result = LAUNCHER.main(
+        start_args(run_dir, fake, "opencode", "--max-resumes", "5"), ScriptedReader(wf("active"))
+    )
+    assert result == 7
+    assert len(launches(run_dir)) == expected_runs
+    rows = sessions(run_dir)
+    assert rows[-1]["reason"] == "repeated_non_retryable_provider_error"
+    assert len([r for r in rows if r["event"] == "wait"]) == expected_runs - 1
+    diagnostic = capsys.readouterr().err
+    if "authentication_error" in sequence[-1]:
+        assert "Replace the provider API key" in diagnostic
+    else:
+        assert "github.com/RoboNater/robomate/issues/330" in diagnostic
+    assert "manually resume with resume-alice" in diagnostic
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex", "antigravity", "devin", "opencode"])
+def test_other_harnesses_and_retryable_errors_back_off(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, harness: str
+) -> None:
+    use_harness(harness, monkeypatch)
+    line = error_line(400, "invalid_request_error", retry=harness == "opencode")
+    session = {
+        "claude-code": "CLAUDE_SESSION",
+        "codex": CODEX_ID,
+        "antigravity": IDS["antigravity"],
+        "devin": IDS["devin"],
+        "opencode": IDS["opencode"],
+    }[harness]
+    line = line.replace(str(IDS["opencode"]), str(session))
+    monkeypatch.setenv("FAKE_ERRORS", json.dumps([line]))
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    result = LAUNCHER.main(
+        start_args(run_dir, fake, harness, "--max-resumes", "2"), ScriptedReader(wf("active"))
+    )
+    assert result == LAUNCHER.EXIT_RESUMES_SPENT
+    assert len(launches(run_dir)) == 3
+
+
+@pytest.mark.parametrize(
+    "middle",
+    [
+        "ordinary crash",
+        '{"type":"error","error":{}}',
+        error_line(429, "rate_limit_error", retry=True),
+        error_line(400, "invalid_request_error")
+        + "\n"
+        + error_line(401, "authentication_error", "api_key_expired"),
+    ],
+    ids=["crash", "malformed", "retryable", "conflicting"],
+)
+def test_ineligible_exit_clears_provider_streak(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, middle: str
+) -> None:
+    line = error_line(400, "invalid_request_error")
+    monkeypatch.setenv("FAKE_ERRORS", json.dumps([line, middle, line, middle]))
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    result = LAUNCHER.main(
+        start_args(run_dir, fake, "opencode", "--max-resumes", "3"), ScriptedReader(wf("active"))
+    )
+    assert result == LAUNCHER.EXIT_RESUMES_SPENT
+    assert len(launches(run_dir)) == 4
+
+
+def test_long_run_breaks_provider_streak(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock(monkeypatch)
+    monkeypatch.setenv("FAKE_ERRORS", json.dumps([error_line(400, "invalid_request_error")]))
+    monkeypatch.setenv("FAKE_EXIT", "1")
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir, fake, "opencode", "--max-resumes", "3", "--resume-series-reset-s", "30"
+            )
+        ),
+        ScriptedReader(wf("active")),
+    )
+    real_run_child = launcher.run_child
+
+    def run_child(launch: Any, action: str, resumes: int) -> Any:
+        result = real_run_child(launch, action, resumes)
+        if resumes == 1:
+            clock.now += 30
+        return result
+
+    launcher.run_child = run_child
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.reason == "repeated_non_retryable_provider_error"
+    assert len(launches(run_dir)) == 3
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode", "antigravity", "devin"])
