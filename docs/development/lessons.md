@@ -86,9 +86,9 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Isolate both user config directories in tests; run platform-branched paths on both platforms | [PR 284/1][c284] | — | applied: conftest `isolated_machine_state` |
 | Name the platform a local test count comes from; local counts can't speak for skipped platform cases | [PR 284/1][c284] | [PR 344/6][c344] (lesson only) | tracked: [#286 pilot][e286] records platform |
 | Approve Windows-only code only after Windows CI or native evidence on that head | [PR 476/5][c476] | — | tracked: [#588][i588] (reviewer approval clause, scoped to paths that require native Windows) |
-| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][i3] | — | reference (testing doc: [#589][i589]) |
-| `mypy --platform` reproduces a platform-only failure | [PR 86/6][c86] | [PR 89/3][c89] *same day, related* | reference (testing doc: [#589][i589]) |
-| Don't monkeypatch `os.name` on Windows Python 3.12 | [PR 86/4][c86] | — | reference (testing doc: [#589][i589]) |
+| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][i3] | — | reference (testing doc candidate) |
+| `mypy --platform` reproduces a platform-only failure | [PR 86/6][c86] | [PR 89/3][c89] *same day, related* | reference (testing doc candidate) |
+| Don't monkeypatch `os.name` on Windows Python 3.12 | [PR 86/4][c86] | — | reference (testing doc candidate) |
 | Git for Windows `bin/bash.exe` is a forwarding launcher; log argv at every hop; PowerShell treats typographic quotes as quotes | [PR 344/1–2, 4][c344] | — | reference |
 | Python stand-ins don't certify a real npm `.cmd` shim | [PR 463/5][c463] | — | tracked: [#346][i346] |
 | PowerShell pipelines garble UTF-8 issue bodies | [PR 283/3][c283] | — | applied: [#255][i255], `editing-shared-bodies.md` |
@@ -171,9 +171,9 @@ Candidates for a short testing reference. Clock and wait techniques belong in
 | A new launcher preflight needs a stub in every subprocess test | [PR 550/2][c550] | reference (testing doc: [#589][i589]) |
 | A check of a harness's config must resolve its relocation variable; a Codex TOML key isn't a server entry | [PR 535][c535] | reference (testing doc: [#589][i589]) |
 | Ask the real OpenCode CLI for effective permissions | [PR 521/3][c521] | reference |
-| Drive transport code once against a real misbehaving local server | [PR 419][c419] | reference (testing doc: [#589][i589]) |
+| Drive transport code once against a real misbehaving local server | [PR 419][c419] | reference (testing doc candidate) |
 | Carry a total deadline through every transport phase; a concurrency cap can starve healthy peers | [PR 266][c266] items 1–2 | reference |
-| Set `dispatcher.operator_token` after the app's lifespan starts | [PR 345][c345] | reference (testing doc: [#589][i589]) |
+| Set `dispatcher.operator_token` after the app's lifespan starts | [PR 345][c345] | reference (testing doc candidate) |
 | Hold caps: `max_wait_s` and `TEST_WAIT_S` in test hubs; run the probe at 100 ms | [PR 379/3–4][c379] | applied in part: `probe-100` CI job |
 | Give each future-dated record its own "now"; pin a bad float base to reproduce a rounding flake | [PR 306/4][c306], [PR 405][c405] item 1 | reference (timing doc: [#589][i589]) |
 | Capture the real `monotonic` at import; a one-shot watchdog doesn't bound a resume loop | [PR 472/2, 4][c472], [PR 476/3][c476] *same incident* | applied: [#475][i475]; reference (timing doc: [#589][i589]) |
