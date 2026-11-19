@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from agent_hub_common import ImplementerOutcome, ReviewerVerdict, WorkflowPolicy
@@ -34,7 +36,10 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     prompt = read("prompts/worker.md")
     skill = read("skills/worker/SKILL.md")
 
-    assert prompt.endswith(guide)
+    assert prompt.endswith(guide), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     assert_fragments(
         guide,
         (
@@ -51,6 +56,44 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
 
 
+def test_worker_prompt_sync_check_accepts_crlf_prompt(tmp_path: Path) -> None:
+    """An older Windows checkout may still have CRLF in the generated prompt."""
+
+    guide_dir = tmp_path / "guides"
+    prompt_dir = tmp_path / "prompts"
+    script_dir = tmp_path / "scripts"
+    guide_dir.mkdir()
+    prompt_dir.mkdir()
+    script_dir.mkdir()
+
+    (guide_dir / "worker.md").write_bytes((ROOT / "guides/worker.md").read_bytes())
+    prompt = (ROOT / "prompts/worker.md").read_bytes().replace(b"\r\n", b"\n")
+    prompt_file = prompt_dir / "worker.md"
+    prompt_file.write_bytes(prompt.replace(b"\n", b"\r\n"))
+    script = script_dir / "sync-worker-prompt.py"
+    script.write_bytes((ROOT / "scripts/sync-worker-prompt.py").read_bytes())
+
+    check_command = [sys.executable, str(script), "--check"]
+    result = subprocess.run(
+        check_command,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    prompt_file.write_bytes(prompt_file.read_bytes() + b"stale")
+    stale_result = subprocess.run(
+        check_command,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert stale_result.returncode == 1
+    assert "prompts/worker.md" in stale_result.stderr
+    assert "uv run --locked python scripts/sync-worker-prompt.py" in stale_result.stderr
+
+
 def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
     """#558: Codex hands a hub wait back to the model at each short exec yield."""
 
@@ -65,7 +108,10 @@ def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
         "instead of starting the wait again",
     )
 
-    assert prompt.endswith(worker)
+    assert prompt.endswith(worker), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     for text in (worker, prompt):
         assert_fragments(
             text,
@@ -93,7 +139,10 @@ def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
     skill = read("skills/worker/SKILL.md")
     prompt = read("prompts/worker.md")
 
-    assert prompt.endswith(worker)
+    assert prompt.endswith(worker), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     for text in (worker, skill, implementer):
         assert_fragments(
             text,
@@ -713,7 +762,10 @@ def test_worker_guide_and_skill_document_join_and_takeover() -> None:
     prompt = read("prompts/worker.md")
     skill = read("skills/worker/SKILL.md")
 
-    assert prompt.endswith(guide)
+    assert prompt.endswith(guide), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     for text in (guide, prompt, skill):
         assert_fragments(
             text,
@@ -751,7 +803,10 @@ def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> N
     skill = read("skills/worker/SKILL.md")
     orchestrator = read("guides/orchestrator.md")
 
-    assert prompt.endswith(worker)
+    assert prompt.endswith(worker), (
+        "prompts/worker.md needs regenerating; run "
+        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    )
     # 1. On every assignment carrying statement_sha256, read the statement;
     # the assignment text points but does not replace it.
     for text in (worker, prompt, implementer, reviewer):
