@@ -124,7 +124,10 @@ primary check (#145). A worker may also smoke-run this repository's entry
 points by hand, but only as the isolated smoke run in
 [`guides/worker.md`](guides/worker.md): its own state directory, operator
 token file, `XDG_STATE_HOME`/`LOCALAPPDATA` and `XDG_CONFIG_HOME`/`APPDATA`,
-`ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` unset, its own port and a temporary
+`ROBOMATE_HUB_URL`, `ROBOMATE_TOKEN*`, `ROBOMATE_HUB_ID`,
+`ROBOMATE_LAUNCH_HUB_CHECKOUT` and every `HUB_*` launcher variable
+(`HUB_TELEMETRY_LOG`, `HUB_HARNESS`, `HUB_HARNESS_VERSION`, `HUB_MODEL`,
+`HUB_PROVIDER`, `HUB_EFFORT`) unset, its own port and a temporary
 checkout with an origin remote and `origin/HEAD` set (a GitHub-origin clone
 is preferred; a local-path clone serves with forge `unknown`), stopped before
 the task ends and reported in the result. It never touches the run's hub, its

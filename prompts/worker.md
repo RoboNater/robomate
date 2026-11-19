@@ -363,8 +363,12 @@ allowed, only under all of these limits:
   `HUB_STATE_DIR` is a fresh `mktemp -d` directory, or one under your
   workspace; `ROBOMATE_OPERATOR_TOKEN_FILE` is a file in that directory; and
   `XDG_STATE_HOME` and `XDG_CONFIG_HOME` (POSIX) or `LOCALAPPDATA` and
-  `APPDATA` (Windows) also point into that directory. `ROBOMATE_HUB_URL` and
-  `ROBOMATE_TOKEN*` from your MCP environment are unset for that command.
+  `APPDATA` (Windows) also point into that directory. `ROBOMATE_HUB_URL`,
+  `ROBOMATE_TOKEN*`, `ROBOMATE_HUB_ID` and `ROBOMATE_LAUNCH_HUB_CHECKOUT`
+  from your MCP environment are unset for that command, as is every `HUB_*`
+  launcher variable (`HUB_TELEMETRY_LOG`, `HUB_HARNESS`, `HUB_HARNESS_VERSION`,
+  `HUB_MODEL`, `HUB_PROVIDER` and `HUB_EFFORT`): `ROBOMATE_HUB_ID` would
+  otherwise pin discovery to the run's hub instead of this checkout's.
 - `robomate up` and `down` keep their state beside the checkout, in
   `<checkout>.robomate/<hub>/` (a legacy hub's, in the checkout's `.robomate/`),
   whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a
