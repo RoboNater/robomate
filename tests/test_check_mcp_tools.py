@@ -326,7 +326,7 @@ def test_static_json_config_locations(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert check.json_config_paths()[0] == ("opencode", tmp_path / ".config/opencode/opencode.json")
 
 
-@pytest.mark.parametrize("target_kind", ["checkout", "other-checkout", "broken"])
+@pytest.mark.parametrize("target_kind", ["checkout", "other-checkout", "wrong-skill", "broken"])
 def test_skill_directory_links(
     setup: Path,
     user_home: Path,
@@ -338,7 +338,9 @@ def test_skill_directory_links(
     capsys.readouterr()
     original = setup / "skills/worker"
     target = original
-    if target_kind != "checkout":
+    if target_kind == "wrong-skill":
+        target = setup / "skills/alice-orchestrator"
+    elif target_kind != "checkout":
         # A live link to the wrong checkout fails even with identical bytes.
         target = setup.with_name("checkout-other") / "skills/worker"
         write_skill(target, (original / "SKILL.md").read_bytes())
@@ -355,7 +357,8 @@ def test_skill_directory_links(
     assert "OpenCode" in findings[0]
     assert {
         "checkout": "OK",
-        "other-checkout": "outside the checked checkout",
+        "other-checkout": f"expected {original}",
+        "wrong-skill": f"expected {original}",
         "broken": "broken link",
     }[target_kind] in findings[0]
 

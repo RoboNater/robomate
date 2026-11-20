@@ -232,6 +232,7 @@ def check_skill(checkout: Path, installed: Path, installable: bool) -> tuple[str
     if not installable:
         return "FAIL", f"{installed} is not installable"
 
+    source_dir = checkout / "skills" / installed.name
     skill_file = installed / "SKILL.md"
     try:
         if installed.is_symlink() or installed.is_junction():
@@ -239,15 +240,15 @@ def check_skill(checkout: Path, installed: Path, installable: bool) -> tuple[str
                 target = installed.resolve(strict=True)
             except (FileNotFoundError, RuntimeError) as exc:
                 return "FAIL", f"{installed} is a broken link: {exc}"
-            if not target.is_relative_to(checkout):
-                return "FAIL", f"{installed} links outside the checked checkout to {target}"
+            if target != source_dir:
+                return "FAIL", f"{installed} links to {target}, expected {source_dir}"
             if not skill_file.is_file():
                 return "FAIL", f"{installed} links to {target}, which lacks a SKILL.md file"
             return "OK", f"{installed} links to {target}"
 
         if not skill_file.is_file():
             return "FAIL", f"{skill_file} is missing or is not a regular file"
-        source = checkout / "skills" / installed.name / "SKILL.md"
+        source = source_dir / "SKILL.md"
         actual = skill_file.read_bytes().replace(b"\r\n", b"\n")
         expected = source.read_bytes().replace(b"\r\n", b"\n")
         if actual != expected:
