@@ -247,6 +247,8 @@ bob_model = "claude-opus-5-5"
 bob_effort = "high"
 charlie_harness = "codex"
 pytest_workers = 4
+# For robomate worktrees:
+workspace_setup = "uv sync --locked --all-packages --dev"
 
 [policy]
 merge_method = "squash"
@@ -352,6 +354,7 @@ The standard helper's keys, and what replaces each:
 | `denise_settings_from`, `denise_*` | Same keys, validated at start. At the end the command prints `agent-launcher.py doctor --run <run_id>` with Denise's resolved harness, model and effort. The default uses the operator login; user hooks/plugins/skills may load. `denise_clean_login = true` (`--denise-clean-login`) appends `--clean-login` for a separate per-run login. MCP servers are disabled and explicit interactive permission modes override user defaults. User allow rules still apply; use `--clean-login` to avoid them (see [authentication](denise/guide.md#authentication-evidence-and-reports)). She is consulted on demand, never started with the team. |
 | `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done, its agents are released, or Ctrl-C. |
 | `pytest_workers` | Same key, the agents' `PYTEST_XDIST_AUTO_NUM_WORKERS`; 0 clears an inherited value. |
+| `workspace_setup` | Optional shell command run in each agent worktree before launch, with its isolated cache and temporary directory. Empty by default. On manual resume it runs again if `.venv` is missing. A failure stops that agent’s launcher and prints the output; during `start-run` startup, a launcher failure aborts the team and stops the hub, as with other preflight failures. Setup time counts against `join_window_s` (120 seconds by default); increase it for slow downloads. Setup output appears on failure. |
 | `stall_after_min`, `stall_action_after_min` | Read as `[policy]` keys. |
 | `--yes` (the hub is already running) | Not needed: the command starts or reuses the hub itself and never prompts. |
 | `--generate-default-config`, `--generate-config` | Same options. A merged config also saves `[policy]`. |
@@ -519,6 +522,8 @@ hub. See [hub discovery](mvp-spec.md#4-local-layout-discovery-multiple-hubs)
 for the full selection order.
 
 ## Linux sandbox grants
+
+For robomate runs, set `workspace_setup = "uv sync --locked --all-packages --dev"` in the start-run config. The launcher prepares each worktree and its uv cache before the sandbox starts, so first validation does not need PyPI network grants.
 
 ### Ubuntu 24.04 host setup
 
