@@ -1,4 +1,4 @@
-# Configure the robomate MCP entry in each agent harness
+# Configure the robomate MCP entry and skills in each agent harness
 
 This prompt and `scripts/check-mcp-tools.py` are interim: `robomate install`
 (§9.1) and harness profiles replace them in M3; remove both then.
@@ -49,10 +49,27 @@ may need a restart to load changes. Antigravity uses the path above; its
 optional. `codex mcp add` cannot set timeouts or approvals, and `agy mcp add`
 cannot set a timeout.
 
+## User skills
+
+Read `SKILL_INSTALLABLE` in [`scripts/check-mcp-tools.py`](../scripts/check-mcp-tools.py)
+from ROBOMATE_CHECKOUT. Each entry set to `True` installs the corresponding
+`ROBOMATE_CHECKOUT/skills/<name>/` directory. Entries set to `False` are
+retired. Keep backups of those entries outside the harness discovery paths.
+
+The setup and checker cover these user skill directories. Use the native
+user home for `~` (`%USERPROFILE%` on Windows).
+
+| Harness | Install here | Also check existing installs | Reference |
+|---|---|---|---|
+| Claude Code | `~/.claude/skills/`, or `$CLAUDE_CONFIG_DIR/skills/` when set | | [Claude Code skills](https://code.claude.com/docs/en/skills), [settings directory](https://code.claude.com/docs/en/settings) |
+| Codex CLI | `~/.agents/skills/` | `$CODEX_HOME/skills/` (defaults to `~/.codex/skills/`) | [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills), [legacy user directory](https://github.com/openai/codex/blob/main/codex-rs/ext/skills/src/host_roots.rs) |
+| OpenCode | `~/.config/opencode/skills/`, or `$XDG_CONFIG_HOME/opencode/skills/` when the variable is an absolute path | `~/.agents/skills/`, `~/.claude/skills/` | [OpenCode skills](https://opencode.ai/docs/skills/) |
+| Antigravity (`agy`) | `~/.gemini/config/skills/` | `~/.gemini/antigravity-cli/skills/`, `~/.gemini/skills/` | [Antigravity customization discovery](https://antigravity.google/docs/customization-discovery?tab=cli), [repository investigation](harness-investigation-opencode-antigravity.md) |
+
 ## Steps
 
 1. **Check for active runs.** Ask the operator, unless they've already said, whether any robomate run is in progress on this machine. A user-level entry is loaded by every session of that harness, including a running agent's next resume. OpenCode also merges its global config into the `OPENCODE_CONFIG` file that older prepared runs pass. If a run is active, stop and confirm before changing anything.
-2. **Take inventory.** Work out the environment: Linux, macOS, native Windows or WSL. Treat WSL as a separate machine here. Configure only the harnesses installed inside it, with a Linux path to a checkout on the WSL filesystem. Never share one checkout's `.venv` between Windows and WSL. For each harness, record whether its CLI (`claude`, `codex`, `opencode`, `agy`) is on `PATH`, and its `--version`. Skip absent harnesses and report them; don't install anything. Confirm `uv` is on `PATH`.
+2. **Take inventory.** Work out the environment: Linux, macOS, native Windows or WSL. Treat WSL as a separate machine here. Configure only the harnesses installed inside it, with a Linux path to a checkout on the WSL filesystem. Never share one checkout's `.venv` between Windows and WSL. For each harness, record whether its CLI (`claude`, `codex`, `opencode`, `agy`) is on `PATH`, and its `--version`. Skip MCP setup for absent harnesses and report them. Confirm `uv` is on `PATH`.
 3. **Prepare the checkout.** In ROBOMATE_CHECKOUT, run `uv sync --locked --all-packages` so the bridge starts quickly on first launch. Don't edit, pull or switch branches in the checkout. If `--locked` fails, stop and report it. Never relock or hand-edit `uv.lock`.
 4. **List the bridge's tools.** From ROBOMATE_CHECKOUT, run:
 
@@ -69,14 +86,19 @@ cannot set a timeout.
    3. If a `robomate` server already exists at any scope, show it. Leave exactly one user-level `robomate` entry, matching this spec. Report any project-scope `robomate` entries, but leave them alone. Don't touch other MCP servers, settings, comments or formatting: OpenCode configs may be JSONC with comments, so preserve them. Use the harness's own CLI (`claude mcp add` / `claude mcp remove`, `codex mcp add`) when it can express every setting. Otherwise, edit the file minimally.
    4. Verify. The file still parses. The harness's own listing shows the entry: `claude mcp get robomate`, `codex mcp list`, `opencode mcp list`, or the `agy` equivalent. Where a listing reports connection health, the server connects. A bridge outside a robomate worktree starts fine and only fails at `join`.
    5. For Codex, also check that the launcher's override style merges into the entry. Run `codex -c 'mcp_servers.robomate.env.HUB_HARNESS="codex"' mcp list` (adjust the quoting for PowerShell). It must succeed. Without a base entry, it fails with `invalid transport in mcp_servers.robomate`.
-6. **Save the tool baseline.** Run:
+6. **Install the skills.**
+   1. Check each user skill directory in the table for names in `SKILL_INSTALLABLE`. Process shared destinations once. In the primary directory for each installed harness, install all entries marked `True`. In the other directories, address existing installs only. Leave unrelated skills alone.
+   2. Confirm that each installable source directory contains `SKILL.md` before touching its destinations. Keep installable links that already resolve to the corresponding directory in ROBOMATE_CHECKOUT. Before replacing any other existing entry, including a broken link, move it to a uniquely named, dated backup outside all the directories harnesses scan. Move a symlink or junction itself and preserve its target. If the move fails, leave the original in place and report the error. For a retired entry, moving it to the backup completes its removal.
+   3. Create the destination's parent directory if needed and link the individual skill directory to its absolute source path in the checkout used for `--project`. On Windows, use `New-Item -ItemType Junction -Path $destination -Target $source`, which works without administrator rights or Developer Mode. On POSIX, use `ln -s "$source" "$destination"`. A pull of the checkout updates linked skills along with the bridge.
+   4. If the filesystem or permissions prevent creating the link, copy the source directory instead and report why. If the copy also fails, restore the backup if there was one and report the failure. Verify that the resulting link resolves to the source or that the copied `SKILL.md` matches the source.
+7. **Save the tool baseline.** Run:
 
    ```
    uv run --locked python scripts/check-mcp-tools.py --save
    ```
 
-   It records this checkout's tool list as the configured baseline. It also checks Codex's config, if there is one: every tool has an approval, no approval is left for a tool the bridge no longer serves, and the entry's `--project` names ROBOMATE_CHECKOUT. It must end with `OK:` and exit 0. If it lists a problem, fix it as in step 5 and run it again.
-7. **Don't:**
+   It records this checkout's tool list as the configured baseline. It checks Codex's approvals and checkout path, the static timeout settings described below, and installed skill links and copies. It reports absent installable skills for information. Expect the final `OK:` and exit 0. If it lists a problem, fix it as in step 5 or 6 and run it again.
+8. **Don't:**
    - start a robomate hub, run `robomate up` or `robomate submit`, or call `join`;
    - start an agent session with a prompt;
    - read any `*.robomate/` state or token directory;
@@ -88,8 +110,9 @@ cannot set a timeout.
 Give a table with one row per harness: installed version, config file, action (added, replaced, unchanged or skipped), backup path, and verification result. Then give:
 
 - the probed server version, tool count and tool list;
+- each skill destination and its outcome (linked, copied, removed or unchanged), its backup path if applicable, and the reason for any copy or failure;
 - any deviation from this spec that the current docs required;
-- the check script's path, and the exact command the operator runs after a `git pull`: step 6's command without `--save`, written out in full for this machine's shell;
+- the check script's path and step 7's command without `--save`, written out in full for this machine's shell for use after a `git pull`;
 - anything that needs the operator.
 
 ## For the operator, after setup (no action now)
@@ -97,10 +120,10 @@ Give a table with one row per harness: installed version, config file, action (a
 - Run `scripts/start-run.py` from ROBOMATE_CHECKOUT itself, so the hub and the bridges run the same robomate code.
 - Update ROBOMATE_CHECKOUT only when no robomate run on this machine is active. Every agent launch and resume starts a fresh bridge from it, and a hub doesn't detect a bridge from a different robomate version.
 - After a `git pull` of ROBOMATE_CHECKOUT, with no run active, run the check command from the report. It starts the bridge, which also syncs the checkout's `.venv`.
-  - `OK` (exit 0): the tool list is unchanged, so there's nothing to do.
-  - `RE-RUN` (exit 1): Codex's per-tool approvals, and any Antigravity allow-list, must change to match new or removed tools. Rerun this prompt. It saves a new baseline at the end.
+  - `OK` (exit 0) means the tool and setup checks passed.
+  - `RE-RUN` (exit 1) means the checker found a tool, config or skill problem. Rerun this prompt. It saves a new baseline at the end.
   - Exit 2: the bridge didn't start, or there's no baseline. Read the output.
-- The check watches tool names only. If this prompt itself changes, for example because a harness needs a new setting, rerun it anyway.
+- Rerun setup when this prompt changes to apply any new settings.
 
 New entries must also set bridge environment `HUB_MCP_TIMEOUT_S="1900"` to advertise
 the client budget. Without it, old static entries retain 100 s holds. Claude

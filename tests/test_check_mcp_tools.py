@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,17 +16,52 @@ spec.loader.exec_module(check)
 
 
 @pytest.fixture
-def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+def user_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return home
+
+
+@pytest.fixture
+def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_home: Path) -> Path:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "pyproject.toml").touch()
     (checkout / "uv.lock").touch()
+    write_skill(checkout / "skills/worker", b"# Worker\nJoin the hub.\n")
+    write_skill(checkout / "skills/alice-orchestrator", b"# Alice\n")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for name in ("XDG_STATE_HOME", "LOCALAPPDATA"):
+        monkeypatch.setenv(name, str(user_home / "state"))
     monkeypatch.setattr(check.shutil, "which", lambda _: None)
     monkeypatch.setattr(check, "json_config_paths", lambda: [], raising=False)
     monkeypatch.setattr(check, "probe", lambda *_: ({"name": "bridge", "version": "1"}, ["a", "b"]))
     return checkout
+
+
+def write_skill(path: Path, content: bytes) -> Path:
+    path.mkdir(parents=True)
+    skill = path / "SKILL.md"
+    skill.write_bytes(content)
+    return skill
+
+
+def link_skill(path: Path, target: Path) -> None:
+    path.parent.mkdir(parents=True)
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(path), str(target)], capture_output=True, text=True
+        )
+        if result.returncode:
+            pytest.skip(f"could not create a directory junction: {result.stderr or result.stdout}")
+    else:
+        try:
+            path.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"could not create a directory symlink: {exc}")
 
 
 def run(monkeypatch: pytest.MonkeyPatch, checkout: Path, *args: str) -> int:
@@ -287,3 +324,92 @@ def test_static_json_config_locations(monkeypatch: pytest.MonkeyPatch, tmp_path:
     ]
     monkeypatch.setenv("XDG_CONFIG_HOME", "relative")
     assert check.json_config_paths()[0] == ("opencode", tmp_path / ".config/opencode/opencode.json")
+
+
+@pytest.mark.parametrize("target_kind", ["checkout", "other-checkout", "wrong-skill", "broken"])
+def test_skill_directory_links(
+    setup: Path,
+    user_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target_kind: str,
+) -> None:
+    assert run(monkeypatch, setup, "--save") == 0
+    capsys.readouterr()
+    original = setup / "skills/worker"
+    target = original
+    if target_kind == "wrong-skill":
+        target = setup / "skills/alice-orchestrator"
+    elif target_kind != "checkout":
+        # A live link to the wrong checkout fails even with identical bytes.
+        target = setup.with_name("checkout-other") / "skills/worker"
+        write_skill(target, (original / "SKILL.md").read_bytes())
+    installed = user_home / ".claude/skills/worker"
+    link_skill(installed, target)
+    if target_kind == "broken":
+        (target / "SKILL.md").unlink()
+        target.rmdir()
+
+    assert run(monkeypatch, setup) == (0 if target_kind == "checkout" else 1)
+    findings = [line for line in capsys.readouterr().out.splitlines() if str(installed) in line]
+    assert len(findings) == 1
+    assert "Claude Code" in findings[0]
+    assert "OpenCode" in findings[0]
+    assert {
+        "checkout": "OK",
+        "other-checkout": f"expected {original}",
+        "wrong-skill": f"expected {original}",
+        "broken": "broken link",
+    }[target_kind] in findings[0]
+
+
+@pytest.mark.parametrize(
+    ("content", "status"),
+    [(b"# Worker\nJoin the hub.\n", 0), (b"# Worker\r\nJoin the hub.\r\n", 0), (b"# Old\n", 1)],
+)
+def test_skill_copies(
+    setup: Path,
+    user_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    content: bytes,
+    status: int,
+) -> None:
+    assert run(monkeypatch, setup, "--save") == 0
+    capsys.readouterr()
+    installed = write_skill(user_home / ".agents/skills/worker", content)
+
+    assert run(monkeypatch, setup) == status
+    findings = [line for line in capsys.readouterr().out.splitlines() if str(installed) in line]
+    assert len(findings) == 1
+    assert "Codex" in findings[0]
+    assert "OpenCode" in findings[0]
+    assert ("OK" if status == 0 else "differs from") in findings[0]
+    assert installed.read_bytes() == content
+
+
+def test_archived_skill_fails_even_without_a_baseline(
+    setup: Path,
+    user_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    installed = write_skill(user_home / ".config/opencode/skills/alice-relay", b"# Archived\n")
+    assert run(monkeypatch, setup) == 1
+    out = capsys.readouterr().out
+    assert f"{installed.parent}" in out
+    assert "not installable" in out
+
+
+def test_missing_installable_skill_is_reported_without_failing(
+    setup: Path,
+    user_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run(monkeypatch, setup, "--save") == 0
+    capsys.readouterr()
+    assert run(monkeypatch, setup) == 0
+    out = capsys.readouterr().out
+    assert f"INFO: Antigravity skill {user_home / '.gemini/config/skills/worker'}" in out
+    assert "absent" in out
