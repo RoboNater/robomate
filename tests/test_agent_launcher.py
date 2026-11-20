@@ -2790,6 +2790,7 @@ def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
 BACKGROUND_LAUNCHER = """\
 import importlib.util
 import json
+import os
 import sys
 
 spec = importlib.util.spec_from_file_location("agent_launcher_cli", sys.argv[1])
@@ -2813,7 +2814,11 @@ class Reader:
 
 cli.sandbox_preflight = lambda harness: None
 cli.check_mcp_entry = lambda harness: None
-programs = {name: [sys.executable, config["fake"]] for name in cli.PROGRAMS}
+# The Windows venv python.exe is a trampoline, not the fake harness process.
+# Stopping that wrapper alone leaves its interpreter running. Use the base
+# interpreter directly so the launch row identifies the fake harness itself.
+python = os.path.join(sys.base_prefix, "python.exe") if os.name == "nt" else sys.executable
+programs = {name: [python, config["fake"]] for name in cli.PROGRAMS}
 raise SystemExit(cli.main(config["words"], programs=programs, reader=Reader()))
 """
 
@@ -2959,6 +2964,11 @@ def test_stop_terminates_an_orphaned_harness_and_records_its_exit(
     try:
         start = wait_for_launch(area)
         harness_pid = start["pid"]
+        pid_file = area["harness_dir"] / "pid"
+        wait_until_sync(pid_file.exists, "the fake harness reports its pid")
+        fake_pid = wait_until_sync(lambda: pid_file.read_text() or None, "its pid is written")
+        assert fake_pid is not None
+        assert int(fake_pid) == harness_pid
         process.kill()
         process.wait(timeout=LIVENESS_S)
         assert wait_until_sync(
