@@ -359,9 +359,17 @@ def test_scripted_closeout_real_processes(
             assert before is not None
             assert before["closeout"]["state"] == "collecting"
             assert before["closeout"]["expected_count"] == 3
-            # Drive expiry and loss explicitly, through this test-only fixture.
-            frozen_clock.advance(161)
-            assert http.post("/test/advance", json={"seconds": frozen_clock.elapsed}).is_success
+            # Record the loss before allowing the closeout deadline to expire.
+            frozen_clock.advance(61)
+            assert http.post("/test/advance", json={"seconds": 61}).is_success
+            wait_until_sync(
+                lambda: any(
+                    a["name"] == "charlie" and a["status"] == "lost" for a in status()["agents"]
+                ),
+                "charlie is marked lost",
+            )
+            frozen_clock.advance(100)
+            assert http.post("/test/advance", json={"seconds": 100}).is_success
             wait_until_sync(lambda: alice.poll() is not None, "mock Alice completes closeout")
             assert alice.returncode == 0, (tmp_path / "alice.log").read_text()
             wait_until_sync(lambda: bob.poll() is not None, "mock worker receives release")
