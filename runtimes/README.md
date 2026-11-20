@@ -77,10 +77,12 @@ the same file.
 
 ## Step 5 runtime prompts
 
-Before launch, expose the checked-in skills to Claude Code by copying or
-symlinking each required directory into `.claude/skills/` in that runtime's
-workspace (or into `~/.claude/skills/` for a user-wide installation). The
-launch scripts will automate this. For example, Alice needs
+For user-wide installs, follow the [MCP setup prompt](../docs/mcp-setup-prompt.md)
+to link each skill to the same checkout the bridge uses. Use directory
+junctions on Windows and symlinks on POSIX. Copy only if linking fails.
+
+For a project-local Claude Code setup, link the required skill directories
+into `.claude/skills/` in that runtime's workspace. For example, Alice needs
 `skills/alice-orchestrator/` installed as
 `.claude/skills/alice-orchestrator/`, while a Claude worker needs
 `skills/worker/` installed as `.claude/skills/worker/`.

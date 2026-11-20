@@ -22,15 +22,15 @@ Usage (any OS):
 Workflow: after running the setup prompt, run once with --save. After each
 `git pull` of the checkout, run without --save. Exit status:
 
-    0  tools unchanged; no need to re-run the prompt
+    0  tool and setup checks passed
     1  re-run the prompt, then run again with --save
     2  couldn't decide (no baseline yet, or the bridge failed to start)
 
 It contacts no hub. It does start the bridge with `uv run --locked`, which
 syncs the checkout's .venv, so run it only when no robomate run is active.
-It also audits Codex, OpenCode and Antigravity static client timeouts and
-bridge budget advertisements. Config files are read only; client merges and
-inline overlays are not reproduced.
+It also audits Codex, OpenCode and Antigravity static client timeouts, bridge
+budget advertisements, and user-level robomate skill installs. Config and
+skill files are read only; client merges and inline overlays are not reproduced.
 """
 
 from __future__ import annotations
@@ -52,6 +52,13 @@ from pathlib import Path
 from agent_hub_common.waits import HTTP_MARGIN_S, profile_wait_s
 
 PROBE_TIMEOUT_S = 180
+
+# Installability for each robomate skill. The MCP setup prompt reads this map.
+SKILL_INSTALLABLE = {
+    "alice-orchestrator": True,
+    "alice-relay": False,
+    "worker": True,
+}
 
 
 def snapshot_path() -> Path:
@@ -170,20 +177,96 @@ def check_timeout(harness: str, timeout_s: object, mode: str = "unknown") -> lis
     return []
 
 
+def opencode_config_dir() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
+    if not base.is_absolute():
+        base = Path.home() / ".config"
+    return base / "opencode"
+
+
 def json_config_paths() -> list[tuple[str, Path]]:
     """Static global entries, plus OpenCode's explicitly selected config.
 
     Audit files individually; do not try to reproduce a client's merge of
     project settings, plugins, managed settings or inline environment overlays.
     """
-    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser()
-    if not base.is_absolute():
-        base = Path.home() / ".config"
-    paths = [("opencode", base / "opencode" / name) for name in ("opencode.json", "opencode.jsonc")]
+    base = opencode_config_dir()
+    paths = [("opencode", base / name) for name in ("opencode.json", "opencode.jsonc")]
     if selected := os.environ.get("OPENCODE_CONFIG"):
         paths.append(("opencode", Path(selected).expanduser()))
     paths.append(("antigravity", Path.home() / ".gemini/config/mcp_config.json"))
     return list(dict.fromkeys(paths))
+
+
+def skill_roots() -> dict[Path, list[str]]:
+    """Group harnesses by user skill directory so shared paths are audited once."""
+    home = Path.home()
+    claude_home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude").expanduser()
+    agents_skills = home / ".agents/skills"
+    gemini_home = home / ".gemini"
+    harness_roots = {
+        "Claude Code": (claude_home / "skills",),
+        "Codex": (agents_skills, codex_config().parent / "skills"),
+        "OpenCode": (opencode_config_dir() / "skills", agents_skills, home / ".claude/skills"),
+        "Antigravity": (
+            gemini_home / "config/skills",
+            gemini_home / "antigravity-cli/skills",
+            gemini_home / "skills",
+        ),
+    }
+    roots: dict[Path, list[str]] = {}
+    for harness, paths in harness_roots.items():
+        for path in dict.fromkeys(paths):
+            roots.setdefault(path, []).append(harness)
+    return roots
+
+
+def check_skill(checkout: Path, installed: Path, installable: bool) -> tuple[str, str] | None:
+    # Unlike exists(), lstat() detects dangling links and junctions.
+    try:
+        installed.lstat()
+    except FileNotFoundError:
+        return ("INFO", f"{installed} is absent") if installable else None
+    except OSError as exc:
+        return "FAIL", f"can't inspect {installed}: {exc}"
+    if not installable:
+        return "FAIL", f"{installed} is not installable"
+
+    skill_file = installed / "SKILL.md"
+    try:
+        if installed.is_symlink() or installed.is_junction():
+            try:
+                target = installed.resolve(strict=True)
+            except (FileNotFoundError, RuntimeError) as exc:
+                return "FAIL", f"{installed} is a broken link: {exc}"
+            if not target.is_relative_to(checkout):
+                return "FAIL", f"{installed} links outside the checked checkout to {target}"
+            if not skill_file.is_file():
+                return "FAIL", f"{installed} links to {target}, which lacks a SKILL.md file"
+            return "OK", f"{installed} links to {target}"
+
+        if not skill_file.is_file():
+            return "FAIL", f"{skill_file} is missing or is not a regular file"
+        source = checkout / "skills" / installed.name / "SKILL.md"
+        actual = skill_file.read_bytes().replace(b"\r\n", b"\n")
+        expected = source.read_bytes().replace(b"\r\n", b"\n")
+        if actual != expected:
+            return "FAIL", f"{skill_file} differs from {source}"
+        return "OK", f"{skill_file} matches {source}"
+    except OSError as exc:
+        return "FAIL", f"can't check {installed}: {exc}"
+
+
+def check_skills(checkout: Path) -> bool:
+    """Print one finding per installed skill or absent installable skill."""
+    ok = True
+    for root, harnesses in skill_roots().items():
+        for name, installable in SKILL_INSTALLABLE.items():
+            if finding := check_skill(checkout, root / name, installable):
+                status, detail = finding
+                print(f"{status}: {', '.join(harnesses)} skill {detail}")
+                ok = ok and status != "FAIL"
+    return ok
 
 
 def jsonc_object(text: str) -> dict:
@@ -387,8 +470,9 @@ def main() -> int:
     problems += check_json_configs()
     if not codex_checked:
         print(f"Codex config not checked ({codex_config()})")
+    skills_ok = check_skills(checkout)
 
-    if problems:
+    if problems or not skills_ok:
         for problem in problems:
             print(f"  - {problem}")
         print("RE-RUN the setup prompt, then run this again with --save.")
@@ -399,7 +483,7 @@ def main() -> int:
             "version, run again with --save."
         )
         return 2
-    print("OK: tool list unchanged; no need to re-run the setup prompt.")
+    print("OK: tool and setup checks passed; no need to re-run the setup prompt.")
     return 0
 
 
