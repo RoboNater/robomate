@@ -95,6 +95,7 @@ DEFAULTS: dict[str, str | int | float | bool] = {
     "denise_clean_login": False,
     "auto_start": True,
     "pytest_workers": 0,
+    "workspace_setup": "",
     "max_resumes": -1,
     "resume_delay_s": launcher_defaults.DEFAULT_RESUME_DELAY_S,
     "resume_max_delay_s": launcher_defaults.DEFAULT_RESUME_MAX_DELAY_S,
@@ -121,6 +122,7 @@ COMMENTS = {
     "denise_clean_login": "Use a separate per-run doctor login instead of the operator login.",
     "auto_start": "false prints each agent's interactive start command instead.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
+    "workspace_setup": "Optional shell command to prepare each agent worktree before launch.",
     "max_resumes": "Launcher resume bounds; max_resumes = -1 is unlimited.",
     "join_window_s": "Maximum seconds for the team to join before startup fails.",
 }
@@ -203,7 +205,7 @@ def parser() -> argparse.ArgumentParser:
             group.add_argument(flag, action=argparse.BooleanOptionalAction, default=None)
         else:
             kind = float if key in SECONDS_KEYS else int if isinstance(default, int) else str
-            group.add_argument(flag, type=kind, default=None)
+            group.add_argument(flag, type=kind, default=None, help=COMMENTS.get(key))
     for key in POLICY_SHORTHANDS:
         result.add_argument(
             "--" + key.replace("_", "-"), type=float, default=None, help=f"[policy] {key}"
@@ -800,6 +802,8 @@ def launch_words(run: Run, agent: str, *, interactive: bool) -> list[str]:
         "--pytest-workers",
         str(values["pytest_workers"]),
     ]
+    if values["workspace_setup"]:
+        words += ["--workspace-setup", str(values["workspace_setup"])]
     for key in ("model", "effort"):
         if values[f"{agent}_{key}"]:
             words += [f"--{key}", str(values[f"{agent}_{key}"])]

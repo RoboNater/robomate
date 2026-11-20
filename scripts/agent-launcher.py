@@ -369,6 +369,7 @@ class Identity:
     telemetry_log: Path | None = None
     """The bridge's own JSONL (#512): the launcher reads its join rows, and the
     bridge writes no other run data there."""
+    workspace_setup: str = ""
 
     def environment(self) -> dict[str, str]:
         provider = resolve_provider(self.harness, self.model)
@@ -377,6 +378,8 @@ class Identity:
             values["HUB_TELEMETRY_LOG"] = str(self.telemetry_log)
         if self.uv_cache is not None:
             values["UV_CACHE_DIR"] = str(self.uv_cache)
+        if self.lane_tmp is not None:
+            values.update({key: str(self.lane_tmp) for key in ("TMPDIR", "TEMP", "TMP")})
         if self.pytest_workers:
             values[PYTEST_WORKERS] = str(self.pytest_workers)
         return values
@@ -415,6 +418,7 @@ class Identity:
             "uv_cache_dir": str(self.uv_cache) if self.uv_cache is not None else None,
             "pytest_workers": self.pytest_workers,
             "lane_tmp_dir": str(self.lane_tmp) if self.lane_tmp is not None else None,
+            "workspace_setup": self.workspace_setup,
         }
 
     def prepare(self) -> None:
@@ -443,6 +447,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
         Path(cache) if isinstance(cache, str) and cache else None,
         workers if type(workers) is int and workers >= 0 else None,
         Path(lane_tmp) if isinstance(lane_tmp, str) and lane_tmp else None,
+        workspace_setup=str(saved.get("workspace_setup") or ""),
     )
 
 
@@ -1154,6 +1159,8 @@ class Joined(common.Launcher):
         super().log(event, **extra, **fields)
 
     def run_child(self, launch: common.Launch, action: str, resumes: int) -> int:
+        if resumes == 0 and (not self.args.recover or not (Path(self.args.cwd) / ".venv").is_dir()):
+            setup_workspace(self.args.identity.workspace_setup, Path(self.args.cwd), self.args.env)
         self.launched = True
         offset = telemetry_size(self.bridge_log())
         self.join_offset = offset
@@ -1552,6 +1559,21 @@ def warn_windows_sandbox(agent: str, harness: str) -> None:
         )
 
 
+def setup_workspace(command: str, workdir: Path, env: Mapping[str, str]) -> None:
+    """Run the operator's setup in the worktree before starting the harness."""
+    if not command.strip():
+        return
+    done = subprocess.run(
+        command, shell=True, cwd=workdir, env=dict(env), capture_output=True, text=True
+    )
+    if done.returncode:
+        output = (done.stdout + done.stderr).strip()
+        raise Usage(
+            f"workspace setup failed (exit {done.returncode}): {output}\n"
+            "Fix the setup command or environment, then start or resume the agent again."
+        )
+
+
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     sandbox_preflight(args.harness)
     try:
@@ -1580,6 +1602,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         args.pytest_workers,
         Path(args.lane_tmp_dir).resolve() if args.lane_tmp_dir else None,
         bridge_telemetry(place.sessions, args.agent),
+        args.workspace_setup,
     )
     identity.prepare()
     warn_windows_sandbox(args.agent, args.harness)
@@ -1632,6 +1655,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             **best_effort_hub(place, tools, args.agent, args.role),
         }
         with agent_lock(log):
+            setup_workspace(identity.workspace_setup, workdir, env)
             return run_interactive(argv, log=log, row=row, event="start", cwd=workdir, env=env)
     base = headless_base(
         args.harness,
@@ -1743,6 +1767,8 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                     ),
                 )
             )
+            if not (workdir / ".venv").is_dir():
+                setup_workspace(identity.workspace_setup, workdir, env)
             announce(harness, args.safe_mode, extra)
             print(f"Send this once the conversation is open: {text}", flush=True)
             row = {
@@ -2074,6 +2100,9 @@ def parser() -> argparse.ArgumentParser:
     )
     begin.add_argument(
         "--uv-cache-dir", help="the agent's own isolated UV_CACHE_DIR, created owner-only (#285)"
+    )
+    begin.add_argument(
+        "--workspace-setup", default="", help="shell command to prepare the worktree before launch"
     )
     begin.add_argument("--lane-tmp-dir", help="the agent's explicitly assigned temporary root")
     begin.add_argument(

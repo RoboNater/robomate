@@ -374,7 +374,7 @@ def test_each_agent_starts_headless_with_its_harness_model_effort_and_bounds(
     values, policy = settings(
         "--run-dir", str(tmp_path / "run"), "--bob-model", "m-b", "--bob-effort", "max",
         "--charlie-model", "gpt-c", "--pytest-workers", "3", "--max-resumes", "2",
-        "--resume-total-s", "90",
+        "--resume-total-s", "90", "--workspace-setup", "prepare environment",
     )  # fmt: skip
     run_dir = Path(values["run_dir"])
     run = START.Run(values, policy, run_dir, run_dir / "run", "run")
@@ -398,6 +398,7 @@ def test_each_agent_starts_headless_with_its_harness_model_effort_and_bounds(
         assert cache.parent.is_dir()
         if os.name != "nt":
             assert cache.parent.stat().st_mode & 0o777 == 0o700
+        assert option("--workspace-setup") == "prepare environment"
         assert option("--pytest-workers") == "3"
         assert option("--max-resumes") == "2"
         assert option("--resume-total-s") == "90"

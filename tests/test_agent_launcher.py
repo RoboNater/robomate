@@ -16,6 +16,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -1844,6 +1845,65 @@ def test_start_exports_identity_uv_cache_and_workers_to_every_launch(
         assert row["pytest_workers"] == 3
 
 
+def setup_command(code: str) -> str:
+    words = [sys.executable, "-c", code]
+    return subprocess.list2cmdline(words) if os.name == "nt" else shlex.join(words)
+
+
+def test_workspace_setup_runs_per_start_and_failure_is_isolated(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cache = area["root"] / "tmp" / "bob" / "uv-cache"
+    command = setup_command(
+        "import json, os; from pathlib import Path; "
+        "Path('setup.json').write_text(json.dumps([os.getcwd(), os.environ['UV_CACHE_DIR'], "
+        "os.environ['TMPDIR']]))"
+    )
+    active = {"workflow": workflow(), "agents": []}
+
+    def run(agent: str, *options: str) -> int:
+        released = {"workflow": workflow(), "agents": [agent_row("released", name=agent)]}
+        previous = len(launches(area))
+
+        def answer(method: str) -> dict[str, Any]:
+            if method == "hub.info":
+                return {"hub_id": HUB}
+            return active if len(launches(area)) == previous else released
+
+        return invoke(
+            start_words(area, agent, "implementer", "claude-code", *options),
+            programs=programs(area),
+            reader=FakeHub(answer, agent),
+            workspace=workspace_of(area),
+        )
+
+    assert (
+        run(
+            "bob",
+            "--workspace-setup",
+            command,
+            "--uv-cache-dir",
+            str(cache),
+            "--lane-tmp-dir",
+            str(cache.parent),
+        )
+        == 0
+    )
+    assert json.loads((area["worktree"] / "setup.json").read_text()) == [
+        str(area["worktree"]),
+        str(cache),
+        str(cache.parent),
+    ]
+    (area["worktree"] / "setup.json").unlink()
+    assert run("charlie") == 0
+    assert not (area["worktree"] / "setup.json").exists()
+    before = len(launches(area))
+    failing = setup_command("import sys; print('setup broke'); sys.exit(7)")
+    assert run("denise", "--workspace-setup", failing) != 0
+    assert "setup broke" in capsys.readouterr().err
+    assert len(launches(area)) == before
+
+
 @pytest.mark.parametrize(("option", "expected"), [([], "7"), (["--pytest-workers", "0"], None)])
 def test_pytest_workers_zero_clears_an_inherited_budget(
     area: dict[str, Path],
@@ -1883,14 +1943,18 @@ def test_negative_pytest_workers_is_refused(area: dict[str, Path]) -> None:
     assert launches(area) == []
 
 
+@pytest.mark.parametrize("environment_exists", [True, False])
 def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, environment_exists: bool
 ) -> None:
     """A guarded resume of a start-run agent keeps #402's identity and #285's cache (#268)."""
 
     conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00002"
     now = datetime.now(UTC)
     cache = area["root"] / "run" / "tmp" / "bob" / "uv-cache"
+    if environment_exists:
+        (area["worktree"] / ".venv").mkdir()
+    setup = setup_command("from pathlib import Path; Path('setup-ran').touch()")
     saved_log(
         area,
         conversation,
@@ -1901,6 +1965,7 @@ def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(
         harness_version="2.1.999",
         uv_cache_dir=str(cache),
         pytest_workers=2,
+        workspace_setup=setup,
     )
     live = workflow(created=(now - timedelta(minutes=5)).isoformat())
     status = after_launches(
@@ -1923,6 +1988,7 @@ def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(
     )
 
     assert code == 0
+    assert (area["worktree"] / "setup-ran").exists() is (not environment_exists)
     (launch,) = launches(area)
     assert {key: launch["env"][key] for key in IDENTITY} == {
         "HUB_HARNESS": "claude-code",
