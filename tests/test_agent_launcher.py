@@ -1944,8 +1944,12 @@ def test_negative_pytest_workers_is_refused(area: dict[str, Path]) -> None:
 
 
 @pytest.mark.parametrize("environment_exists", [True, False])
+@pytest.mark.parametrize("interactive", [True, False])
 def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, environment_exists: bool
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    environment_exists: bool,
+    interactive: bool,
 ) -> None:
     """A guarded resume of a start-run agent keeps #402's identity and #285's cache (#268)."""
 
@@ -1982,7 +1986,8 @@ def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(
         return status(method)
 
     code = invoke(
-        ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"],
+        ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+        + (["--interactive"] if interactive else []),
         programs=programs(area),
         reader=FakeHub(answer),
     )
@@ -2015,7 +2020,10 @@ def test_interactive_start_does_not_resume_but_records_the_session(
 ) -> None:
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:3"]))
     hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": []}))
-    words = start_words(area, "bob", "implementer", "codex", "--interactive")
+    setup = setup_command("from pathlib import Path; Path('interactive-setup').touch()")
+    words = start_words(
+        area, "bob", "implementer", "codex", "--interactive", "--workspace-setup", setup
+    )
     words += ["--safe-mode"] if safe else []
 
     code = invoke(
@@ -2026,6 +2034,7 @@ def test_interactive_start_does_not_resume_but_records_the_session(
     )
 
     assert code == 3
+    assert (area["worktree"] / "interactive-setup").exists()
     (launch,) = launches(area)
     assert launch["argv"][-3:] == ["--extra", "x y", "Join robomate as bob, implementer."]
     assert ("--approve-for-me" in launch["argv"]) is not safe
