@@ -961,3 +961,7 @@ def test_forge_appendices_state_the_body_file_rule(appendix: str) -> None:
         "POSIX shells and PowerShell",
     ):
         assert fragment in normalized, f"{appendix} missing {fragment!r}"
+    if appendix.endswith("gitlab.md"):
+        # glab api -F is key=value; the value starts with @ to read a file (r1-1).
+        assert "`-F <field>=@<file>`" in normalized, f"{appendix} missing key=@file form"
+        assert "`-F <field>@<file>`" not in normalized, f"{appendix} shows key@file without ="
