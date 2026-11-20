@@ -464,7 +464,7 @@ def test_hanging_opencode_reports_pending_before_exit(
     detached = {"workflow": workflow(), "agents": [agent_row()]}
     released = {"workflow": workflow(), "agents": [agent_row("released")]}
     hub = FakeHub(after_launches(area, detached, released))
-    errors: list[BaseException] = []
+    errors: list[str] = []
     from agent_hub_common.discovery import HubEndpoint
     from robomate import cli as status_cli
 
@@ -560,12 +560,16 @@ def test_hanging_opencode_reports_pending_before_exit(
                 lambda: not permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW),
                 "the matching reply clears the diagnostic",
             )
-        except BaseException as exc:
-            traceback.print_exc()
-            errors.append(exc)
+        except BaseException:
+            errors.append(traceback.format_exc())
         finally:
             if pid is not None:
-                os.kill(pid, signal.SIGTERM)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass  # The harness already exited.
+                except OSError:
+                    errors.append(traceback.format_exc())
 
     inspector = threading.Thread(target=inspect_and_kill)
     inspector.start()
