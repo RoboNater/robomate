@@ -85,7 +85,8 @@ For a project-local Claude Code setup, link the required skill directories
 into `.claude/skills/` in that runtime's workspace. For example, Alice needs
 `skills/alice-orchestrator/` installed as
 `.claude/skills/alice-orchestrator/`, while a Claude worker needs
-`skills/worker/` installed as `.claude/skills/worker/`.
+`skills/worker/` installed as `.claude/skills/worker/`. The prepared-run
+launch scripts will automate this for Alice's workspace.
 
 Start Alice with [`prompts/alice.md`](../prompts/alice.md), filling in every
 repository, issue, account, close-out, and policy value; Claude Code then loads
