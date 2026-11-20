@@ -567,7 +567,7 @@ def test_hanging_opencode_reports_pending_before_exit(
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
-                    pass  # The harness already exited.
+                    pass  # POSIX: the harness already exited.
                 except OSError:
                     errors.append(traceback.format_exc())
 
@@ -585,7 +585,7 @@ def test_hanging_opencode_reports_pending_before_exit(
         )
     finally:
         inspector.join()
-    assert not errors
+    assert not errors, "\n\n".join(errors)
     assert permission_diagnostic(area["sessions"], "bob", HUB, WORKFLOW) is None
     assert not list(area["sessions"].glob("permission-*.jsonl"))
 
