@@ -1,5 +1,11 @@
 # GitHub Orchestrator Appendix
 
+Write every Markdown body (PR description, comment, issue body) to a uniquely
+named file in the agent's own temporary directory — never a shared `/tmp` path
+(#3's incident uploaded a stale file from an earlier run) — and pass
+that file with `--body-file`. Never pass Markdown inline. This applies on both
+POSIX shells and PowerShell.
+
 Read issues, including their full discussion, with
 `gh issue view <number> --repo <owner>/<repository> --json title,body,comments`.
 When its output is piped or redirected, `--comments` alone prints only the

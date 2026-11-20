@@ -107,7 +107,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Edit a shared issue or PR body so that a failure writes nothing | [PR 78/1][c78] | — | applied: AGENTS.md, PR #82, `editing-shared-bodies.md` |
 | `set -e` doesn't stop a sequence in Claude Code's Bash tool | [PR 236/2][c236] | — | applied: [#255][i255] |
 | `gh -q .body` appends a newline | [PR 236/7][c236] | — | applied: `editing-shared-bodies.md` |
-| Pass Markdown bodies to `gh` from a file | [PR 294/5][c294] | [PR 560/3][c560] (lesson only) | tracked: [#563][i563] |
+| Pass Markdown bodies to `gh` from a file | [PR 294/5][c294] | [PR 560/3][c560] (lesson only) | applied: [#563][i563] (`guides/forge/github.md`, `guides/forge/gitlab.md`, `guides/forge/orchestrator-github.md`, `guides/forge/orchestrator-gitlab.md`) |
 | A shared `/tmp` collides across runs | [PR 78/2][c78] | — | applied: [#81][i81] |
 | `gh pr view --json headRefOid` lags a push | [PR 78/4][c78] | — | applied: PR #82, forge appendices |
 | `addopts = "-q"` hid pytest counts | [PR 78/5][c78] | — | applied: PR #82 |

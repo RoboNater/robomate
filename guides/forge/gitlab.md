@@ -11,6 +11,13 @@ project's path (for example, `RoboNater/robomate-glab-sandbox`), and
 `glab api` call, and `-R <host>/<project>` wherever a `glab` subcommand
 selects the repository.
 
+Write every Markdown body (MR description, review note, issue body) to a
+uniquely named file in the agent's own temporary directory — never a shared
+`/tmp` path (#3's roadmap incident uploaded a stale file from an earlier run) —
+and pass that file with `-F <field>@<file>` (for example `-F
+description=@mr-description.md`). Never pass Markdown inline. This applies on
+both POSIX shells and PowerShell.
+
 ## Change requests (merge requests)
 
 - **Read an issue** (implementer, reviewer), including its full discussion:
@@ -27,11 +34,13 @@ selects the repository.
   glab mr diff <iid> -R <host>/<project>
   ```
   `view` shows the title, body, and discussion; `diff` shows the raw diff.
-- **Create merge request** (implementer; flags checked against
-  `glab mr create --help` on 1.36.0):
+- **Create merge request** (implementer; `glab mr create --help` on the
+  minimum 1.36.0 has no description-from-file flag, so create through the
+  REST API with the same `@file` form the review-note recipe uses):
   ```sh
-  glab mr create -R <host>/<project> --source-branch <branch> --target-branch <base_branch> --title "..." --description "..." --yes
+  glab api --hostname <host> --method POST projects/<group%2Fproject>/merge_requests -F source_branch=<branch> -F target_branch=<base_branch> -F title=<title> -F description=@mr-description.md
   ```
+  Read `.iid` and `.web_url` from the response.
 - **Verify MR head SHA** (implementer, reviewer, rebase):
   `glab mr view` does not output raw JSON, so read the head SHA via `glab api`:
   ```sh
