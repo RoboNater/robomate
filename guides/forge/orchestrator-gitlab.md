@@ -1,5 +1,11 @@
 # GitLab Orchestrator Appendix
 
+Write every Markdown body (MR description, note, issue body) to a uniquely
+named file in the agent's own temporary directory — never a shared `/tmp` path
+(#3's incident uploaded a stale file from an earlier run) — and pass
+that file with `-F <field>=@<file>` (for example `-F description=@<file>`).
+Never pass Markdown inline. This applies on both POSIX shells and PowerShell.
+
 When the forge is GitLab, checkpoint the event/action and run:
 
 ```text

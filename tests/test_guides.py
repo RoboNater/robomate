@@ -930,3 +930,38 @@ def test_served_orchestrator_guide_secures_followup_tracking_urls(forge: str) ->
         "route operator-only work to an `operator-run` issue",
     ):
         assert fragment in text
+
+
+@pytest.mark.parametrize("role", ["worker", "implementer", "reviewer", "rebase", "orchestrator"])
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_guides_never_pass_markdown_bodies_inline(role: str, forge: str) -> None:
+    """#563: Bash and PowerShell silently mangle inline Markdown bodies."""
+
+    text = bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode("utf-8")
+    for inline in ('--body "', '--description "', '--message "'):
+        assert inline not in text, f"{role}/{forge} still shows inline {inline!r}"
+    if forge == "github":
+        assert "--body-file" in text
+
+
+@pytest.mark.parametrize(
+    "appendix",
+    ["github.md", "gitlab.md", "orchestrator-github.md", "orchestrator-gitlab.md"],
+)
+def test_forge_appendices_state_the_body_file_rule(appendix: str) -> None:
+    """#563: each appendix says where the body file lives and that shells mangle inline Markdown."""
+
+    text = (CHECKED_IN_GUIDES / "forge" / appendix).read_text(encoding="utf-8")
+    normalized = " ".join(text.split())
+    for fragment in (
+        "uniquely named file",
+        "agent's own temporary directory",
+        "never a shared `/tmp` path",
+        "Never pass Markdown inline",
+        "POSIX shells and PowerShell",
+    ):
+        assert fragment in normalized, f"{appendix} missing {fragment!r}"
+    if appendix.endswith("gitlab.md"):
+        # glab api -F is key=value; the value starts with @ to read a file (r1-1).
+        assert "`-F <field>=@<file>`" in normalized, f"{appendix} missing key=@file form"
+        assert "`-F <field>@<file>`" not in normalized, f"{appendix} shows key@file without ="
