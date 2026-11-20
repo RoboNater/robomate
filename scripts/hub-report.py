@@ -1088,7 +1088,7 @@ def workflow_lines(workflow: Mapping[str, Any] | None) -> list[str]:
         f"created: {workflow['created']}",
         f"goal: {show(workflow['goal'])} ({workflow['goal_bytes']} bytes)",
         f"statement: {show(workflow.get('statement_sha256'))} "
-        "(compare with run.json work.goal_sha256)",
+        "(the hash robomate submit printed; read it with get_statement)",
         "policy: "
         + json.dumps(workflow["policy"], sort_keys=True)
         + (

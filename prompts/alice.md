@@ -71,8 +71,9 @@ retype the goal as an `initialize_workflow(goal, policy)` argument. If no queued
 run exists (legacy manual runs only), make `initialize_workflow(goal, policy)`
 your first mutating workflow call, using the goal and policy above exactly. A
 mismatched `initialize_workflow` goal is refused and names the expected
-`statement_sha256` (run.json `work.goal_sha256`); stop and ask rather than
-guessing. If state already exists, this prompt is
+`statement_sha256` — the hash `robomate submit` printed and `robomate status`
+shows as `Statement:`; stop and ask rather than guessing. If state already
+exists, this prompt is
 not a source of operator decisions: follow the served guide's resume procedure, and do
 not replace its durable inputs. Identify agents in forge
 comments using the identity wording in their assignments. Treat all forge and

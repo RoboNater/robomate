@@ -579,7 +579,7 @@ def test_state_paths_become_read_only_uris_on_windows_and_posix(tmp_path: Path) 
 
 
 def test_workflow_figures_include_statement_sha256(tmp_path: Path) -> None:
-    """#296 item 5: hub-report shows the workflow statement sha for run.json comparison."""
+    """#296 item 5 / #595: hub-report shows the workflow statement sha, naming no file."""
 
     import hashlib
 
@@ -594,7 +594,7 @@ def test_workflow_figures_include_statement_sha256(tmp_path: Path) -> None:
     assert built["workflow"]["statement_sha256"] == expected
     text = REPORT.render_text(built)
     assert f"statement: {expected}" in text
-    assert "run.json work.goal_sha256" in text
+    assert "run.json" not in text
 
 
 class SteppedClock:

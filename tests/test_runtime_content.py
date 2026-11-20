@@ -304,6 +304,14 @@ def test_alice_prompt_uses_the_validated_default_policy() -> None:
     assert json.loads(skill_match.group("policy")) == WorkflowPolicy().model_dump(mode="json")
 
 
+def test_alice_prompt_never_names_run_json_for_a_submitted_run() -> None:
+    """#595: a submitted run has no run.json, so the prompt cites submit/status instead."""
+    prompt = read("prompts/alice.md")
+    assert "run.json" not in prompt
+    assert "shows as `Statement:`" in prompt
+    assert "`robomate submit` printed" in prompt
+
+
 def test_readme_documents_durable_alice_initialization() -> None:
     # The PoC README, which documented this contract, moved to docs/ when robomate
     # was seeded; README.md now describes the MVP.
