@@ -59,11 +59,14 @@ Fresh prepared runs may still start with `get_state` through their configured br
 2. Call `get_state` before taking action.
    - With a queued run (the `robomate submit` / prepare-run path, #296), start
      the oldest queued run with `start_workflow()` (no statement) before any
-     other mutating workflow tool (join only registers identity). The queue
-     carries the verbatim goal; `run.json` `work.goal_sha256` names its
-     expected `statement_sha256`. Never retype the goal as
-     `initialize_workflow(goal, policy)`: a mismatched `initialize_workflow`
-     is refused and names the expected sha — stop and ask rather than guessing.
+     other mutating workflow tool (join only registers identity). The queued
+     statement is authoritative and the queue carries the verbatim goal: its
+     expected `statement_sha256` is the hash `robomate submit` printed and
+     `robomate status` shows as `Statement:` (a prepared run's own kickoff
+     prompt carries the same hash as its expected goal SHA-256). Never retype
+     the goal as `initialize_workflow(goal, policy)`: a mismatched
+     `initialize_workflow` is refused and names the expected sha — stop and
+     ask rather than guessing.
      Only when no queued run exists (legacy/manual runs), call
      `initialize_workflow(goal, policy)`; with `robomate submit` (M2), the
      operator queues statements that arrive as `work_submitted` events, or
@@ -785,6 +788,6 @@ to `done`, and report a compact summary listing every issue the statement
 names and every PR the run opened or merged, approved and merged SHAs, review
 URL, tests/checks, pairing and each role-policy rule, each worker's
 recorded harness/provider/model/model source, and the workflow
-`statement_sha256` beside `run.json` `work.goal_sha256` so a mismatch is
-visible afterwards (#296). Ack the final processed event on
-the next wait before concluding.
+`statement_sha256` (#296) for the operator to compare with the hash
+`robomate submit` printed and `robomate status` shows. Ack the final
+processed event on the next wait before concluding.

@@ -705,8 +705,8 @@ def render_alice_prompt(
         + goal
         + "\n\nExpected goal SHA-256: "
         + sha
-        + " (run.json work.goal_sha256; call start_workflow() with no statement, "
-        + "then verify with get_state)\n\n"
+        + " (this prepared run's run.json work.goal_sha256; call start_workflow() "
+        + "with no statement, then verify with get_state)\n\n"
         + prompt[end:]
     )
     prompt = prompt.replace("<account>", account if account else "<account>")
@@ -834,8 +834,9 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "addressed, and any lessons learned worth mentioning to the closeout report. "
             "Record every guide instruction replaced by the statement of work, and its "
             "replacement, in your closeout report. "
-            "Include the workflow statement_sha256 beside run.json work.goal_sha256 "
-            "so a mismatch is visible afterwards (#296)."
+            "Include the workflow statement_sha256 (#296) so an operator can compare it "
+            "with the hash robomate submit printed; on this prepared run also compare it "
+            "with run.json work.goal_sha256 so a mismatch is visible afterwards."
         )
     else:
         sections.append(

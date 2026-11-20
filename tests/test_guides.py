@@ -749,6 +749,18 @@ def test_served_orchestrator_guide_states_closeout_policy_window(forge: str) -> 
     assert "default and maximum worker window" not in text.lower()
 
 
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_guide_never_sends_alice_looking_for_run_json(forge: str) -> None:
+    """#595: a submitted run has no run.json, so the served guide names no file."""
+
+    response = guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge)
+    assert response.status_code == 200
+    text = bytes(response.body).decode("utf-8")
+    assert "run.json" not in text
+    assert "shows as `Statement:`" in text
+    assert "`robomate submit` printed" in text
+
+
 def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> None:
     """#245: gh's local deletion can fail after the server has merged the PR."""
 

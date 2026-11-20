@@ -980,7 +980,7 @@ class HubStore:
                         "or policy; use get_state to resume it, or queue a different run with "
                         "start_workflow(statement) and start it after this one is done. "
                         f"Expected statement_sha256={expected_sha} "
-                        "(run.json work.goal_sha256; read it with get_statement)"
+                        "(read it with get_statement)"
                     )
                 return str(live["id"])
             queued = self._queued_rows(connection)
@@ -1003,7 +1003,7 @@ class HubStore:
                         "call start_workflow() with no statement to start it, or "
                         "initialize_workflow with its exact goal and policy to confirm it. "
                         f"Expected statement_sha256={expected_sha} "
-                        "(run.json work.goal_sha256; read it with get_statement)"
+                        "(read it with get_statement)"
                     )
             else:
                 workflow_id = uuid4().hex
