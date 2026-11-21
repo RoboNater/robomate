@@ -700,10 +700,11 @@ def _closeout_context(
     ).model_dump(mode="json")
 
 
-# Offending values are truncated and capped so a free-text source cannot flood
-# the rejection (#594): the message names what to fix, not the payload.
+# Free-text sources are truncated and capped so a payload cannot flood the
+# rejection (#594). Pending finding IDs are identifiers the worker must act on:
+# _closeout_list always renders them whole, in every clause.
 _CLOSEOUT_SOURCE_CHARS = 40
-_CLOSEOUT_LIST_ITEMS = 8
+_CLOSEOUT_FREE_ITEMS = 8
 
 
 def _closeout_source_text(value: str) -> str:
@@ -712,18 +713,21 @@ def _closeout_source_text(value: str) -> str:
     return value[:_CLOSEOUT_SOURCE_CHARS] + "..."
 
 
-def _closeout_list(values: Sequence[str]) -> str:
+def _closeout_list(values: Sequence[str], pending: set[str]) -> str:
     unique = sorted(dict.fromkeys(values))
-    shown = ", ".join(repr(_closeout_source_text(value)) for value in unique[:_CLOSEOUT_LIST_ITEMS])
-    if len(unique) > _CLOSEOUT_LIST_ITEMS:
-        return f"{shown}, +{len(unique) - _CLOSEOUT_LIST_ITEMS} more"
-    return shown
+    parts = [repr(value) for value in unique if value in pending]
+    free = [value for value in unique if value not in pending]
+    parts.extend(repr(_closeout_source_text(value)) for value in free[:_CLOSEOUT_FREE_ITEMS])
+    if len(free) > _CLOSEOUT_FREE_ITEMS:
+        parts.append(f"+{len(free) - _CLOSEOUT_FREE_ITEMS} more")
+    return ", ".join(parts)
 
 
 def _closeout_accepted(pending: set[str]) -> str:
     if not pending:
         return "implementer, orchestrator, or none pending"
-    return f"implementer, orchestrator, or pending finding IDs {_closeout_list(sorted(pending))}"
+    ids = _closeout_list(sorted(pending), pending)
+    return f"implementer, orchestrator, or pending finding IDs {ids}"
 
 
 def _validate_closeout(result: CloseoutResult, context: dict[str, Any] | None) -> None:
@@ -741,11 +745,11 @@ def _validate_closeout(result: CloseoutResult, context: dict[str, Any] | None) -
     duplicated = [source for source, count in counts.items() if count > 1]
     missing = sorted(pending - set(sources))
     if unknown:
-        problems.append(f"unknown source {_closeout_list(unknown)}")
+        problems.append(f"unknown source {_closeout_list(unknown, pending)}")
     if duplicated:
-        problems.append(f"duplicate source {_closeout_list(duplicated)}")
+        problems.append(f"duplicate source {_closeout_list(duplicated, pending)}")
     if missing:
-        problems.append(f"missing pending ID {_closeout_list(missing)}")
+        problems.append(f"missing pending ID {_closeout_list(missing, pending)}")
     if problems:
         raise ValueError(
             "closeout items rejected: "

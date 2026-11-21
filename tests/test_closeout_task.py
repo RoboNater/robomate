@@ -36,6 +36,10 @@ def test_missing_step_keeps_task_open(hub_store: HubStore, monkeypatch: pytest.M
 
 
 def _seed_finding(store: HubStore) -> None:
+    _seed_findings(store, "r1-1")
+
+
+def _seed_findings(store: HubStore, *ids: str) -> None:
     from agent_hub_common import Finding, ReviewerResult, ReviewerVerdict
 
     store.check_in("charlie")
@@ -45,7 +49,7 @@ def _seed_finding(store: HubStore) -> None:
         "charlie",
         ReviewerResult(
             verdict=ReviewerVerdict.CHANGES_REQUESTED,
-            nonblocking_findings=[Finding(id="r1-1", text="A finding")],
+            nonblocking_findings=[Finding(id=finding_id, text="A finding") for finding_id in ids],
             summary="Review",
         ),
     )
@@ -559,6 +563,10 @@ def test_unknown_id_rejected_even_when_all_pending_covered(hub_store: HubStore) 
         hub_store.submit_result(task.id, "bob", result)
     message = str(error.value)
     assert "unknown source" in message and "r9-9" in message
+    # r1-1 has its item, so it belongs to the accepted list alone (#594 / r1-1).
+    assert "pending finding IDs 'r1-1'" in message
+    assert "missing pending ID" not in message
+    assert "duplicate source" not in message
     _assert_open_without_completion(hub_store, task.id)
 
 
@@ -588,28 +596,70 @@ def test_unknown_source_names_value_accepted_values_and_guide(hub_store: HubStor
 
 
 def test_missing_pending_id_is_named(hub_store: HubStore) -> None:
-    _seed_finding(hub_store)
+    ids = [f"r1-{n}" for n in range(1, 10)]
+    _seed_findings(hub_store, *ids)
     hub_store.check_in("bob")
     task = hub_store.assign_task("bob", "closeout", "Close", "Close")
     with pytest.raises(ValueError) as error:
         hub_store.submit_result(task.id, "bob", _result([], []))
     message = str(error.value)
-    assert "missing pending ID" in message and "r1-1" in message
+    # Every pending ID is named, not only the first eight (#594 / r1-1).
+    assert f"missing pending ID {', '.join(repr(value) for value in ids)}" in message
     assert "implementer" in message and "orchestrator" in message
     assert 'get_role_guide("closeout")' in message
     _assert_open_without_completion(hub_store, task.id)
 
 
 def test_duplicate_source_is_named(hub_store: HubStore) -> None:
-    _seed_finding(hub_store)
+    ids = [f"r1-{n}" for n in range(1, 10)]
+    _seed_findings(hub_store, *ids)
     hub_store.check_in("bob")
     task = hub_store.assign_task("bob", "closeout", "Close", "Close")
-    items = [_item(reason="first"), _item(reason="second")]
+    items = [_item(finding_id, reason="first") for finding_id in ids]
+    items += [_item(finding_id, reason="second") for finding_id in ids]
     with pytest.raises(ValueError) as error:
         hub_store.submit_result(task.id, "bob", _result(items, []))
     message = str(error.value)
-    assert "duplicate source" in message and "r1-1" in message
+    # Every duplicated ID is named, not only the first eight (#594 / r1-1).
+    assert f"duplicate source {', '.join(repr(value) for value in ids)}" in message
+    assert "missing pending ID" not in message
     assert 'get_role_guide("closeout")' in message
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_accepted_list_names_every_pending_id_next_to_an_unknown_source(
+    hub_store: HubStore,
+) -> None:
+    ids = [f"r1-{n}" for n in range(1, 10)]
+    _seed_findings(hub_store, *ids)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    items = [_item(finding_id, reason="covered") for finding_id in ids]
+    items.append(_item("free-text source", reason="unknown"))
+    with pytest.raises(ValueError) as error:
+        hub_store.submit_result(task.id, "bob", _result(items, []))
+    message = str(error.value)
+    assert "unknown source 'free-text source'" in message
+    # The accepted list carries every pending ID, not only the first eight (#594 / r1-1).
+    assert f"pending finding IDs {', '.join(repr(value) for value in ids)}" in message
+    assert "missing pending ID" not in message
+    assert "duplicate source" not in message
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_pending_ids_sharing_a_long_prefix_stay_distinguishable(hub_store: HubStore) -> None:
+    first = "r1-" + "1" * 45
+    second = "r1-" + "1" * 44 + "2"
+    _seed_findings(hub_store, first, second)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    items = [_item(first, reason="covered"), _item(second, reason="covered")]
+    items.append(_item("free-text source", reason="unknown"))
+    with pytest.raises(ValueError) as error:
+        hub_store.submit_result(task.id, "bob", _result(items, []))
+    message = str(error.value)
+    assert f"pending finding IDs {first!r}, {second!r}" in message
+    assert "..." not in message
     _assert_open_without_completion(hub_store, task.id)
 
 
