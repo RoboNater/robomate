@@ -3451,6 +3451,11 @@ def test_resume_prompts_use_role_specific_first_hub_call() -> None:
     assert 'role="orchestrator"' in alice and "`takeover=true`" in alice
     assert "returned orchestrator guide's On resume" in alice
     assert "grants no workflow" in alice and "call `check_in`" not in alice
+    assert "do not end your turn to wait." in alice
+    assert (
+        "Do not end your turn until the workflow is `done`, "
+        "unless a required hub tool is unavailable." in " ".join(alice.split())
+    )
     assert "report the missing tools in your final message and end the turn" in alice
     for name in ("bob", "charlie"):
         assert "call `check_in`" in PREPARE_RUN.render_resume_prompt(name, PurePosixPath("/runs/r"))

@@ -1332,9 +1332,10 @@ same-conversation resume replaces only the bridge session; it grants no workflow
 authority and never changes the durable goal, policy or operator answers. The
 orchestrator bridge has no `check_in`.
 
-Keep the turn open until the workflow is `done` while hub tools are available.
-While `escalated`, hold on `wait_for_event` for the operator's answer. Every
-announcement of a step must come with its tool call while hub tools are available.
+Do not end your turn until the workflow is `done`, unless a required hub tool
+is unavailable. While `escalated`, hold on `wait_for_event` for the operator's
+answer and do not end your turn to wait. Each announcement of a step comes
+with its tool call.
 
 """
     + ORCHESTRATOR_HUB_BOUNDARY
