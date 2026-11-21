@@ -15,12 +15,21 @@ glab mr merge <iid> -R <host>/<project> --sha <approved head> --auto-merge=false
 Use `--squash` when `policy.merge_method == "squash"`, and `--squash=false` when
 `policy.merge_method == "merge"`.
 
-Then read the MR back from GitLab
-(`glab api --hostname <host> projects/<group%2Fproject>/merge_requests/<iid>`).
-Confirm `state == "merged"`. Record the merge commit SHA (`merge_commit_sha`) or
-squash commit SHA (`squash_commit_sha`) separately (`glab mr view` does not
-output these commit SHAs). Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every check name/bucket. Never merge from a stale or
+Read the MR back with `check_merge_gate(pr_url, expected_head_sha=<approved head>)`.
+Require `pr_state == merged`, `head_matches` and a non-null `merged_sha` before
+WRAP-UP; that gate reading is what records the forge's target commit in the hub.
+`glab api` and `glab mr view` are only a fallback when the gate cannot answer;
+they never substitute for the gate reading. Log the
+reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the
+review-comment URL and every check name/bucket. Never merge from a stale or
 unreadable gate.
+
+When the gate cannot answer, read the MR back from GitLab
+(`glab api --hostname <host> projects/<group%2Fproject>/merge_requests/<iid>`).
+Confirm `state == "merged"`, record the merge commit SHA (`merge_commit_sha`) or
+squash commit SHA (`squash_commit_sha`) separately (`glab mr view` does not
+output these commit SHAs), and log that this fallback does not record `merged_sha`
+in the hub.
 
 A `--sha` 409 conflict and a "Pipelines must succeed" refusal are the same safe
 outcome as a `--match-head-commit` refusal: GitLab refused to merge an unverified

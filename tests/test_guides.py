@@ -770,7 +770,11 @@ def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> Non
     assert "--delete-branch" not in text
     assert "--match-head-commit <approved head>" in text
     assert "git push origin --delete <branch>" in text
-    assert text.index('state == "MERGED"') < text.index("git push origin --delete <branch>")
+    appendix_start = text.index("# GitHub Orchestrator Appendix")
+    assert text.index(
+        "check_merge_gate(pr_url, expected_head_sha=<approved head>)",
+        appendix_start,
+    ) < text.index("git push origin --delete <branch>", appendix_start)
 
 
 def test_worker_guide_explains_held_task_id_recovery() -> None:
@@ -954,6 +958,19 @@ def test_served_guides_never_pass_markdown_bodies_inline(role: str, forge: str) 
         assert inline not in text, f"{role}/{forge} still shows inline {inline!r}"
     if forge == "github":
         assert "--body-file" in text
+
+
+@pytest.mark.parametrize(
+    "appendix",
+    ["orchestrator-github.md", "orchestrator-gitlab.md"],
+)
+def test_orchestrator_appendices_read_back_the_merge_with_the_gate(appendix: str) -> None:
+    """#553: the post-merge read-back records merged_sha in the hub, not the forge CLI."""
+
+    text = " ".join((CHECKED_IN_GUIDES / "forge" / appendix).read_text(encoding="utf-8").split())
+    assert "check_merge_gate(pr_url, expected_head_sha=<approved head>)" in text
+    for required in ("`pr_state == merged`", "`head_matches`", "`merged_sha`"):
+        assert required in text, f"{appendix} missing {required!r}"
 
 
 @pytest.mark.parametrize(
