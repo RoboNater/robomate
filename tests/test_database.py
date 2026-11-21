@@ -46,6 +46,23 @@ def test_initialization_creates_complete_schema_and_is_idempotent(tmp_path: Path
     assert not path.with_name(f"{path.name}-wal").exists()
 
 
+def test_failed_fresh_schema_is_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agent_hub.database as db
+
+    path = tmp_path / "hub.db"
+    monkeypatch.setattr(db, "SCHEMA", "CREATE TABLE partial (id INTEGER); INVALID SQL;")
+    with pytest.raises(sqlite3.OperationalError):
+        initialize_database(path)
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT name FROM sqlite_master WHERE name = 'partial'").fetchone()
+            is None
+        )
+
+
 def test_initialization_rejects_unknown_schema_version(tmp_path: Path) -> None:
     path = tmp_path / "hub.db"
     with sqlite3.connect(path) as connection:

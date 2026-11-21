@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
+from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -49,6 +52,33 @@ logger = logging.getLogger(__name__)
 
 # Sent by worker-mcp on every request; only the guide route reads it (#78).
 AGENT_HEADER = "X-Hub-Agent"
+
+
+async def _initialize_store(store: HubStore, settings: HubSettings) -> None:
+    """Run startup I/O without blocking the server watchdog or loop shutdown.
+
+    A daemon is deliberate: asyncio's default executor is joined by asyncio.run
+    even after its awaiter is cancelled, so a stalled disk would still prevent
+    a timed-out hub process from exiting. A cancelled startup must not serve;
+    the process exits and SQLite rolls back any interrupted transaction.
+    """
+    result: Future[None] = Future()
+
+    def initialize() -> None:
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            stage("database initialization started")
+            initialize_database(settings.database_path, settings.state_dir)
+            stage("closeout export retry started")
+            store.retry_closeout_exports()
+        except BaseException as exc:
+            result.set_exception(exc)
+        else:
+            result.set_result(None)
+
+    threading.Thread(target=initialize, name="hub-startup", daemon=True).start()
+    await asyncio.wrap_future(result)
 
 
 def select_gate(hub_info: Mapping[str, Any] | None) -> ForgeGate:
@@ -140,8 +170,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stage("lifespan entered")
-        initialize_database(resolved.database_path, resolved.state_dir)
-        store.retry_closeout_exports()
+        await _initialize_store(store, resolved)
         stage("database ready")
         # Silence is measured from here at the earliest: a restarted hub knows
         # nothing of the calls and holds before it (#144).

@@ -508,6 +508,37 @@ def test_startup_stages_reach_the_diagnostics_of_a_failed_up(
         pytest.fail(f"Missing registry lock timeout in full diagnostics:\n{message}", pytrace=False)
 
 
+def test_startup_watchdog_can_interrupt_blocking_database_initialization(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """A blocked lifespan must fail startup rather than disable the watchdog (#575)."""
+    root, env = repository
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "import time\n"
+        "import agent_hub.app as app\n"
+        "import agent_hub.main as main\n"
+        "main._START_TIMEOUT_S = 1\n"
+        "original = app.initialize_database\n"
+        "def delayed(*args, **kwargs):\n"
+        f"    time.sleep({LIVENESS_S + 15})\n"
+        "    return original(*args, **kwargs)\n"
+        "app.initialize_database = delayed\n",
+        encoding="utf-8",
+    )
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(shim), env.get("PYTHONPATH", ""))))
+    process = start(root, env)
+    try:
+        with pytest.raises(AssertionError, match="hub exited early") as caught:
+            await_hub(root, process)
+        assert "hub did not start serving within 1 s" in str(caught.value)
+        assert "database initialization started" in str(caught.value)
+    finally:
+        if process.poll() is None:
+            stop(root, env, process)
+
+
 @pytest.mark.parametrize("failure", ["hub_unlink", "hub_restore", "binding_unlink"])
 def test_up_preserves_registry_error_when_rollback_fails(
     repository: tuple[Path, dict[str, str]],
