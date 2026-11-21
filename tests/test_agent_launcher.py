@@ -625,7 +625,7 @@ stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
         "ROBOMATE_TOKEN_FILE", "ROBOMATE_HUB_ID", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
         "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
-        "PYTEST_XDIST_AUTO_NUM_WORKERS", "HUB_TELEMETRY_LOG", "AGENT_NAME",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS", "HUB_TELEMETRY_LOG", "AGENT_NAME", "AGENT_RUNTIME",
         "PWD", "VIRTUAL_ENV", "PATH")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
           "env": {k: os.environ.get(k) for k in keys}}
@@ -2590,6 +2590,7 @@ def test_doctor_login_and_no_inherited_hub_selection(
         "ROBOMATE_TOKEN_FILE": str(area["root"] / "ambient token"),
         "ROBOMATE_HUB_ID": "ambient-hub",
         "AGENT_NAME": "bob",
+        "AGENT_RUNTIME": "codex",
         "HUB_HARNESS": "codex",
         "HUB_TELEMETRY_LOG": str(area["root"] / "team telemetry.jsonl"),
         "CODEX_HOME": str(area["root"] / "team codex home"),
@@ -2615,6 +2616,7 @@ def test_doctor_login_and_no_inherited_hub_selection(
         "ROBOMATE_TOKEN_FILE",
         "ROBOMATE_HUB_ID",
         "AGENT_NAME",
+        "AGENT_RUNTIME",
         "HUB_HARNESS",
         "HUB_TELEMETRY_LOG",
     ):

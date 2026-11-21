@@ -2003,7 +2003,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         {
             key: value
             for key, value in environment.items()
-            if key != "AGENT_NAME" and not key.startswith("HUB_")
+            if key not in ("AGENT_NAME", "AGENT_RUNTIME") and not key.startswith("HUB_")
         },
     )
     environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
