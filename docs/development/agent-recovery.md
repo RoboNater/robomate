@@ -248,10 +248,14 @@ as a clearing flag. Codex gets `approval_policy=on-request` and
 `ROBOMATE_TOKEN*` along with worker identity and launcher variables.
 Denise reads `docs/denise/guide.md` and receives directory grants for the
 selected run, hub state, hub and target checkouts, and their git common
-directories. Any separate robomate tooling checkout is a read reference.
+directories. Both harnesses reserve `--add-dir` for these repair roots.
+The context names a separate robomate tooling checkout for reading the guide
+and recovery docs under the harness's normal interactive permissions.
 Use `--model`, `--effort` and `--clean-login` to configure the consultation.
-Live Bash and native PowerShell acceptance and host-specific grant checks
-are tracked in [#254](https://github.com/RoboNater/robomate/issues/254).
+Live Bash and native PowerShell acceptance checks include whether each harness
+can read the separate tooling checkout and which permissions it requests.
+These checks and host-specific grant checks are tracked in
+[#254](https://github.com/RoboNater/robomate/issues/254).
 
 ### Limits
 

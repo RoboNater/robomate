@@ -361,7 +361,7 @@ standard-run config/launcher help and fixtures. Document supported versus truste
 deferred combinations, credential setup, reports, consequential decisions and M2 handoff.
 
 ```sh
-uv run --locked pytest tests/test_denise.py tests/test_prepare_run.py tests/test_prep_standard_run_area.py tests/test_runtime_content.py tests/test_agent_recovery.py
+uv run --locked pytest tests/test_denise.py tests/test_agent_launcher.py tests/test_start_run.py tests/test_runtime_content.py tests/test_agent_recovery.py
 ```
 
 Extend the fake-harness and offline startup checks from Step 2. Use representative
@@ -382,6 +382,7 @@ tests alone. Any substantive production defect gets its own scoped fix PR.
 | Scenario and operator commands | Expected result and evidence |
 | --- | --- |
 | Separate target project: run `uv run --locked python scripts/start-run.py --config <config>` on Bash and native PowerShell, then run the printed `agent-launcher.py doctor` command | Interactive Claude Code and Codex consultations, correct target instructions and separate robomate source/docs, no extra joined agent or team session changes. Record actual read and write grants per host, including Codex extra-directory writes on native Windows. |
+| Separate tooling checkout: start Claude Code and Codex consultations and ask Denise to read the local guide and recovery docs | Record whether each harness can read the docs and which permission requests the operator sees on each host. |
 | Hub unavailable: operator uses `robomate down` in the selected hub checkout, then runs `agent-launcher.py doctor`. Later they request restoration with `robomate up` in the same checkout | Startup, diagnosis and report work without HTTP or MCP. Restore only when requested. Verify the same hub ID, state and port, and confirm the workflow is preserved. Distinguish a stopped hub from unreachable remote HTTP. Stop disposable hubs after the exercise. |
 | Agent returned to shell: operator verifies exit, starts Denise and requests guarded `agent-launcher.py resume <agent>` on its host | Preserve workspace, config and exact conversation. Verify live hub and task identity and the existing pending result. Explain a completed or released task. |
 | Attached/orphan predecessor: keep a sandbox predecessor attached and request resume | Existing lock/attachment refusal is explained. Denise requests an explicit decision before terminating the identified orphan. After the operator handles it, recheck and use guarded resume. No kill by guessed PID or forced duplicate; document any task lost while waiting. |
