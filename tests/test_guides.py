@@ -948,6 +948,58 @@ def test_served_orchestrator_guide_secures_followup_tracking_urls(forge: str) ->
         assert fragment in text
 
 
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_guides_state_the_refused_filing_fallback(forge: str) -> None:
+    """#366: a refused forge write becomes blocked, then an operator filing."""
+
+    orchestrator = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        "FOLLOW-UP route keeps filing in the worker's hands with no permission change",
+        "automatic approval review refuses that forge write",
+        "returns `blocked` naming the rejection and uses no other publication route",
+        "asks the operator with `ask_user` to file the issue by hand",
+        "records the resulting issue number",
+    ):
+        assert fragment in orchestrator
+
+    worker = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "worker", forge=forge).body).decode("utf-8").split()
+    )
+    for fragment in (
+        "follow-up issue-filing or change-request (PR) creation task",
+        "automatic approval review refuses the forge write",
+        "return `blocked` naming the rejection and use no other publication route",
+        "Alice then asks the operator, the operator files it, and Alice records the number",
+        "no alternate connector, tool or identity",
+        (
+            "for a blocked PR creation, Alice routes it to the operator through "
+            "generic escalation instead"
+        ),
+    ):
+        assert fragment in worker
+
+
+def test_github_appendix_uses_the_gh_cli_for_forge_writes() -> None:
+    """#366: a built-in connector drew the refusal and posts under another identity."""
+
+    appendix = " ".join(
+        (CHECKED_IN_GUIDES / "forge" / "github.md").read_text(encoding="utf-8").split()
+    )
+    for fragment in (
+        "Make every forge write with the `gh` CLI",
+        "not with a harness's built-in GitHub connector",
+        "`codex_apps/github.*`",
+        "posts under a different identity",
+        "gh issue create --title",
+        "--body-file",
+    ):
+        assert fragment in appendix
+
+
 @pytest.mark.parametrize("role", ["worker", "implementer", "reviewer", "rebase", "orchestrator"])
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
 def test_served_guides_never_pass_markdown_bodies_inline(role: str, forge: str) -> None:
