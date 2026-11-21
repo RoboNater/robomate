@@ -25,15 +25,21 @@ When the final merge gate invariant holds, checkpoint the event/action and run:
 gh pr merge <pr_url> --<merge_method> --match-head-commit <approved head>
 ```
 
-Read the PR back with the command above. Confirm `state == "MERGED"`, confirm
-the recorded head equals the approved head, and record `mergeCommit.oid`
-separately. A `--match-head-commit` refusal routes to the gate or RE-REVIEW.
-Use the read-back state to determine whether the merge happened, including when
-the CLI exits nonzero after a successful server-side merge. Once the merged state
+Read the PR back with `check_merge_gate(pr_url, expected_head_sha=<approved head>)`.
+Require `pr_state == merged`, `head_matches` and a non-null `merged_sha` before
+WRAP-UP; that gate reading is what records the forge's target commit in the hub.
+A `--match-head-commit` refusal routes to the gate or RE-REVIEW. Use the gate's
+`pr_state` to determine whether the merge happened, including when the CLI exits
+nonzero after a successful server-side merge. When the gate cannot answer, fall
+back to `gh pr view`: confirm `state == "MERGED"`, the recorded head equals the
+approved head, and read `mergeCommit.oid`, logging that this fallback does not
+record `merged_sha` in the hub. Use `gh pr view` for the `headRefName` branch-name
+lookup below too; it never substitutes for the gate reading. Once the merged state
 and approved head are verified, delete only the remote branch named by
 `headRefName`:
 
 ```sh
+gh pr view <pr_url> --json headRefName -q .headRefName
 git push origin --delete <branch>
 ```
 
