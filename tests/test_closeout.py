@@ -6,7 +6,6 @@ No live run state, agents, ports or external processes are used.
 
 import asyncio
 import json
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -299,18 +298,20 @@ def test_release_and_done_follow_final_report_without_a_wait(store: HubStore) ->
     store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
     while (event := store.lease_next_event()) is not None:
         store.ack_event(event.delivery_id)
-    started = time.monotonic()
     store.submit_closeout_report(run_id, "alice", "alice-session", "orchestrator", report())
-    # Her report queues nothing to acknowledge, so no ack wait can start.
+    # Her report queues nothing to acknowledge, so the release/done sequence
+    # below runs back-to-back with no wait call: the old path held a full hub
+    # wait (100 s, now up to 1800 s) just to ack that final event.
+    assert store.pending_events() == 0
     assert store.lease_next_event() is None
     store.release_agent("bob")
     store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
-    elapsed = time.monotonic() - started
-    # The old path held a full hub wait (100 s, now up to 1800 s) just to ack.
-    assert elapsed < 10.0, f"release/done after the final report took {elapsed:.1f} s"
     state = store.get_state()
     assert state["workflow"]["status"] == "done"
     assert state["unacked_delivered"] == []
+    assert state["queued_events"] == 0
+    bob = next(agent for agent in state["agents"] if agent["name"] == "bob")
+    assert bob["status"] == "released"
 
 
 def test_pause_expiry_restart_and_missing(store: HubStore) -> None:
