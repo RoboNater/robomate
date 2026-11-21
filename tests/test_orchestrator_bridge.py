@@ -752,6 +752,76 @@ async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
             await client.close()
 
 
+ORCHESTRATOR_ONLY_ARGS: dict[str, dict[str, Any]] = {
+    "get_state": {},
+    "request_closeout_reports": {"run_id": "20261121_00000000"},
+    "get_closeout_reports": {"run_id": "20261121_00000000"},
+    "initialize_workflow": {"goal": "Address issue #594"},
+    "start_workflow": {},
+    "wait_for_event": {},
+    "assign_task": {
+        "agent": "bob",
+        "role": "implementer",
+        "title": "Title",
+        "instructions": "Do it",
+        "event_id": 1,
+    },
+    "check_merge_gate": {
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "expected_head_sha": "a" * 40,
+    },
+    "reply": {"task_id": "0123456789abcdef0123456789abcdef", "text": "ok", "message_id": 1},
+    "set_task_state": {
+        "task_id": "0123456789abcdef0123456789abcdef",
+        "state": "canceled",
+        "note": "stop",
+    },
+    "release_agent": {"agent": "bob"},
+    "set_workflow_status": {"status": "active", "summary": "Working"},
+    "log_decision": {"summary": "Decision", "rationale": "Because"},
+    "ask_user": {"question": "Merge?"},
+    "withdraw_question": {"question_id": 1, "reason": "answered", "event_id": 1},
+}
+
+
+@pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+async def test_worker_joined_bridge_gets_the_orchestrator_only_message(
+    app: FastAPI, tmp_path: Path
+) -> None:
+    """#594: a joined worker is told the tool is orchestrator-only, never to re-join as one."""
+
+    from agent_hub_common.orchestrator_tools import OPERATIONS
+
+    shared = {"submit_closeout_report", "get_statement"}
+    assert set(ORCHESTRATOR_ONLY_ARGS) == set(OPERATIONS) - shared
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        client = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}), http)
+        server = create_worker_mcp(client, include_orchestrator=True)
+        try:
+            with pytest.raises(ToolError) as unjoined:
+                await _call(server, "get_state")
+            assert "call join(name=..., role='orchestrator') first" in str(unjoined.value)
+
+            await _call(server, "join", name="bob", role="implementer")
+            for tool, arguments in ORCHESTRATOR_ONLY_ARGS.items():
+                with pytest.raises(ToolError) as refused:
+                    await _call(server, tool, **arguments)
+                message = str(refused.value)
+                assert f"{tool} is orchestrator-only" in message
+                assert "forge" in message
+                assert "await_assignment(include_instructions=true)" in message
+                assert "join(name=..., role='orchestrator')" not in message
+        finally:
+            await client.close()
+
+
 async def test_unjoined_whoami_fails_closed_without_listing_hubs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
