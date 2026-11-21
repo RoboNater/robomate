@@ -275,6 +275,45 @@ def test_retry_membership_limits_and_secrets(store: HubStore) -> None:
         submit(report())
 
 
+def test_orchestrator_report_queues_no_inbox_event(store: HubStore) -> None:
+    """#610: Alice's own report is its receipt, not an event she must ack."""
+    run_id = prepare(store)
+    store.submit_closeout_report(run_id, "alice", "alice-session", "orchestrator", report())
+    store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
+    with database(store.path) as connection:
+        authors = [
+            json.loads(row[0])["author"]
+            for row in connection.execute(
+                "SELECT payload_json FROM event WHERE kind = 'closeout_report_submitted'"
+            )
+        ]
+    assert authors == ["bob"]
+    reports = store.get_closeout_reports(run_id)["reports"]
+    assert {entry["author"] for entry in reports} == {"alice", "bob"}
+
+
+def test_release_and_done_follow_final_report_without_a_wait(store: HubStore) -> None:
+    """#610: after Alice's own report, release and done need no inbox hold."""
+    run_id = prepare(store)
+    store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
+    while (event := store.lease_next_event()) is not None:
+        store.ack_event(event.delivery_id)
+    store.submit_closeout_report(run_id, "alice", "alice-session", "orchestrator", report())
+    # Her report queues nothing to acknowledge, so the release/done sequence
+    # below runs back-to-back with no wait call: the old path held a full hub
+    # wait (100 s, now up to 1800 s) just to ack that final event.
+    assert store.pending_events() == 0
+    assert store.lease_next_event() is None
+    store.release_agent("bob")
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    state = store.get_state()
+    assert state["workflow"]["status"] == "done"
+    assert state["unacked_delivered"] == []
+    assert state["queued_events"] == 0
+    bob = next(agent for agent in state["agents"] if agent["name"] == "bob")
+    assert bob["status"] == "released"
+
+
 def test_pause_expiry_restart_and_missing(store: HubStore) -> None:
     run_id = prepare(store, 10)
     first = store.get_closeout_reports(run_id)

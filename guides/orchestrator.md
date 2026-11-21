@@ -255,6 +255,13 @@ before the action. A timeout is normal. While a closeout collection is open,
 can end the hold without queuing an event. Proceed once no worker remains `awaiting_report`; otherwise wait again
 until the wall-time rail expires.
 
+Once nothing remains for which a further event could arrive — close-out done,
+your own `submit_closeout_report` submitted, no open task and no open question —
+do not wait for another event: release the workers and set the workflow `done`.
+Any unacknowledged final event is acknowledged with
+`wait_for_event(ack=<delivery_id>, timeout_s=0)` or not at all: `done` settles
+outstanding deliveries, so the final acknowledgement never costs a hold.
+
 <!-- Headless turn end: #115. -->
 
 In a headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) the
@@ -756,6 +763,10 @@ evidence required for verified). Omit credentials and transcripts; 32 KiB cap.
 Identical retries return the same receipt; different reports are rejected.
 Your report may arrive after the worker deadline, until run finalization.
 Missing reports are recorded explicitly, not reconstructed for another author.
+Your report's receipt is the record: the hub queues no inbox event for an
+orchestrator's own report. The next steps are `release_agent` for each worker,
+then `set_workflow_status(done)`, with no wait in between and no wait after
+your report.
 
 Ordinary runs require no roadmap decision, adjudication, post-merge completion
 edit or roadmap update. The PR's `Closes` reference closes the issue; triage
@@ -789,5 +800,7 @@ names and every PR the run opened or merged, approved and merged SHAs, review
 URL, tests/checks, pairing and each role-policy rule, each worker's
 recorded harness/provider/model/model source, and the workflow
 `statement_sha256` (#296) for the operator to compare with the hash
-`robomate submit` printed and `robomate status` shows. Ack the final
-processed event on the next wait before concluding.
+`robomate submit` printed and `robomate status` shows. Do not wait for
+another event before concluding: once close-out is done, your own report is
+submitted and no task or question is open, release the workers and set `done`
+with no wait.

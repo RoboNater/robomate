@@ -344,11 +344,16 @@ def submit(
                 canonical,
             ),
         )
-        store._add_event(
-            connection,
-            EventKind.CLOSEOUT_REPORT_SUBMITTED,
-            {"run_id": run_id, "author": author, "report_id": report_id},
-        )
+        # Alice's own report already returns its receipt; queueing it would give
+        # her only something to acknowledge, and the final ack held the whole
+        # hub wait before release/done (#610). Workers' reports still wake her
+        # to read the collection.
+        if kind == "worker":
+            store._add_event(
+                connection,
+                EventKind.CLOSEOUT_REPORT_SUBMITTED,
+                {"run_id": run_id, "author": author, "report_id": report_id},
+            )
         receipt = {
             "report_id": report_id,
             "run_id": run_id,

@@ -706,6 +706,13 @@ def test_replaying_a_delivered_event_changes_nothing_twice(
 
     # Alice dies without acking, and the lease lapses.
     clock.advance(EVENT_LEASE_S + 1.0)
+    if expected_kind in (EventKind.TASK_COMPLETED, EventKind.TASK_FAILED):
+        # Her action set the workflow done, which settles the delivery (#610):
+        # a finished run redelivers nothing, so there is no replay left to
+        # guard and the settled fingerprint stands.
+        assert store.get_state()["unacked_delivered"] == []
+        assert store.lease_next_event(lease_s=EVENT_LEASE_S) is None
+        return
     redelivered = store.lease_next_event(lease_s=EVENT_LEASE_S)
     assert redelivered is not None
     assert redelivered.id == delivered.id
