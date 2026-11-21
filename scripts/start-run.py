@@ -1040,6 +1040,8 @@ def report(run: Run) -> bool:
     if doctor["status"] != "ready":
         say(f"Denise skipped: {doctor['skip_reason']}")
     elif run_id:
+        if note := doctor.get("effort_note"):
+            say(note)
         words = [
             "uv",
             "run",
@@ -1071,9 +1073,6 @@ def start(values: dict[str, Any], policy: dict[str, Any]) -> int:
     name = hub_name(values)
     run = Run(values, policy, run_dir, run_dir / name, name)
     harnesses = {harness_of(values, agent) for agent in AGENTS}
-    doctor = denise(values)
-    if doctor["status"] == "ready":
-        harnesses.add(doctor["harness"])
     for harness in sorted(harnesses):
         check_mcp_entry(harness)
     run.versions = probe_versions(values)

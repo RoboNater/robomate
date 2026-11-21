@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import signal
 import sqlite3
 import subprocess
@@ -858,6 +859,127 @@ def test_final_report_passes_clean_login_from_cli_and_saved_config(
         )
         assert f"ask {agent} about this run with: {expected}" in output
         assert str(run.checkout) in expected
+
+
+@pytest.mark.parametrize("harness", ["opencode", "antigravity"])
+def test_report_skip_names_the_inherited_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+) -> None:
+    values, policy = settings("--bob-harness", harness, "--bob-effort", "high")
+    run = START.Run(values, policy, tmp_path, tmp_path / "checkout", "test", run_id="test-run")
+    monkeypatch.setattr(START, "hub_status", lambda _: None)
+    START.report(run)
+    output = capsys.readouterr().out
+    assert f"Denise skipped: inherited harness {harness} is not yet supported" in output
+    assert "--denise-harness claude or --denise-harness codex" in output
+    assert "consult Denise" not in output
+
+
+def test_doctor_only_harness_does_not_need_team_mcp(
+    smoke: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    values, policy = settings(
+        "--config", str(smoke["config"]), "--issue", "7", "--charlie-harness", "claude",
+        "--denise-harness", "codex",
+    )  # fmt: skip
+    checked: list[str] = []
+
+    def stop_after_preflight(_: dict[str, Any]) -> None:
+        raise RuntimeError("preflight finished")
+
+    monkeypatch.setattr(START, "check_mcp_entry", checked.append)
+    monkeypatch.setattr(START, "probe_versions", stop_after_preflight)
+    with pytest.raises(RuntimeError, match="preflight finished"):
+        START.start(values, policy)
+    assert checked == ["claude-code"]
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+) -> None:
+    run_id = "20261109_abcdef12"
+    checkout = tmp_path / "hub owner's checkout"
+    checkout.mkdir()
+    git("init", "-q", cwd=checkout)
+    state = checkout / ".robomate"
+    run_dir = state / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    hub = {"hub_id": "offline", "checkout": str(checkout), "url": "http://127.0.0.1:9"}
+    write(state / "hub.json", json.dumps(hub))
+    write(run_dir / "manifest.json", json.dumps({"run_id": run_id, "hub": hub}))
+    sessions = state / "sessions"
+    sessions.mkdir()
+    team_log = write(sessions / "alice.jsonl", "team session\n")
+    fake = write(
+        tmp_path / "fake doctor harness.py",
+        "import json, os, sys\n"
+        "words = sys.argv[1:]\n"
+        "if words[-3:] == ['mcp', 'list', '--json']:\n"
+        "    enabled = 'mcp_servers.robomate.enabled=false' not in words\n"
+        "    print(json.dumps([{'name': 'robomate', 'enabled': enabled}]))\n"
+        "else:\n"
+        "    with open(os.environ['FAKE_DOCTOR_LOG'], 'w', encoding='utf-8') as log:\n"
+        "        json.dump(words, log)\n",
+    )
+    bin_dir = tmp_path / "fake bin"
+    bin_dir.mkdir()
+    if os.name == "nt":
+        # The windows job exercises native PowerShell and the .cmd harness shim.
+        shim = bin_dir / f"{harness}.cmd"
+        shim.write_bytes(f'@"{sys.executable}" "{fake}" %*\r\n'.encode())
+    else:
+        shim = write(
+            bin_dir / harness, f'#!/bin/sh\nexec {shlex.join([sys.executable, str(fake)])} "$@"\n'
+        )
+        shim.chmod(0o700)
+    launch_log = tmp_path / "launch.json"
+    env = os.environ | {
+        "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+        "FAKE_DOCTOR_LOG": str(launch_log),
+        "PYTHONIOENCODING": "utf-8",
+    }
+    values, policy = settings(
+        "--denise-settings-from", "none", "--denise-harness", harness,
+        "--denise-model", "test model", "--denise-effort", "high",
+    )  # fmt: skip
+    run = START.Run(values, policy, tmp_path, checkout, "offline", run_id=run_id)
+    monkeypatch.setattr(START, "hub_status", lambda _: None)
+    START.report(run)
+    output = capsys.readouterr().out
+    (command,) = [
+        line.split("consult Denise about this run with: ", 1)[1]
+        for line in output.splitlines()
+        if "consult Denise about this run with: " in line
+    ]
+    shell = (
+        ["pwsh", "-NoProfile", "-Command", command + "\nexit $LASTEXITCODE"]
+        if os.name == "nt"
+        else ["bash", "-c", command]
+    )
+    result = subprocess.run(
+        shell, env=env, capture_output=True, encoding="utf-8", timeout=LIVENESS_S
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    words = json.loads(launch_log.read_bytes())
+    assert words[words.index("--model") + 1] == "test model"
+    if harness == "claude":
+        assert words[words.index("--effort") + 1] == "high"
+        assert words[-2] == "--" and "--strict-mcp-config" in words
+    else:
+        assert "model_reasoning_effort=high" in words
+        assert "mcp_servers.robomate.enabled=false" in words
+    assert words[-1].startswith("Read ") and "startup.md" in words[-1]
+    assert sorted(sessions.iterdir()) == [team_log]
+    assert team_log.read_bytes() == b"team session\n"
+    (report,) = (run_dir / "denise" / "reports").iterdir()
+    assert str(report) in result.stdout
 
 
 def test_missing_mcp_entry_refuses_before_clone(smoke: dict[str, Any]) -> None:

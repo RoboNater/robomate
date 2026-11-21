@@ -197,7 +197,7 @@ resume with their original goals; do not regenerate the goal to resume. `--alice
 ### Scripted run start (M2)
 
 Before starting, configure the static, user-level `robomate` MCP entry for each
-team harness and the resolved Denise harness. Use a stable robomate checkout
+team harness. A harness used only for Denise needs no MCP entry. Use a stable robomate checkout
 for `--project`, not a run lane. Follow the [MCP setup prompt](mcp-setup-prompt.md)
 for the entry and unattended settings, and run `scripts/check-mcp-tools.py`
 after updating that checkout. Devin's entry cannot currently be checked

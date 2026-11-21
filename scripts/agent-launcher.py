@@ -1898,8 +1898,7 @@ def doctor_codex_mcp_flags(argv: list[str], *, environment: dict[str, str], cwd:
             return entries
         except (OSError, subprocess.SubprocessError, ValueError):
             raise Usage(
-                "Codex MCP configuration probe failed; check configuration and harness arguments "
-                "(remove positional or session-only arguments that codex mcp list cannot accept); "
+                "Codex MCP configuration probe failed; check the Codex configuration and version; "
                 + remedy
             ) from None
 
@@ -1932,14 +1931,16 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     import denise
     from agent_hub_common.discovery import DiscoveryError, LocalHub, find_hub
 
+    if extra:
+        raise Usage("doctor does not accept --harness-args; use --model, --effort or --clean-login")
+    environment = cleared_environment()
     try:
-        hub = find_hub(Path.cwd(), selector=args.hub)
+        hub = find_hub(Path.cwd(), environment, selector=args.hub, list_hubs=False)
     except DiscoveryError as exc:
-        raise Usage(str(exc)) from None
-    if not isinstance(hub, LocalHub):
         raise Usage(
-            "the doctor reads a local hub's state: select it with --hub, not ROBOMATE_HUB_URL"
-        )
+            f"{exc}. Select a local hub with --hub <checkout>; restore its local state if missing."
+        ) from None
+    assert isinstance(hub, LocalHub)
     runs = hub.state_dir / "runs"
     available = (
         sorted(p.name for p in runs.iterdir() if (p / "manifest.json").is_file())
@@ -1963,28 +1964,48 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         raise Usage(
             f"{run_dir / 'manifest.json'} does not describe run {args.run}; restore it first"
         )
+    manifest_hub = manifest.get("hub")
+    saved_id = manifest_hub.get("hub_id") if isinstance(manifest_hub, dict) else None
+    if saved_id and hub.hub_id and saved_id != hub.hub_id:
+        raise Usage(
+            f"run {args.run} records hub {saved_id}, but the selected hub is {hub.hub_id}; "
+            "select the owning checkout with --hub or restore the matching manifest"
+        )
     try:
         settings = denise.resolve_settings(
             {}, settings_from="none", harness=args.harness, model=args.model, effort=args.effort
         )
     except ValueError as exc:
         raise Usage(str(exc)) from None
-    if settings["status"] != "ready":
-        raise Usage(settings["skip_reason"])
     harness = settings["harness"]
     profile_name = "codex" if harness == "codex" else "claude"
-    target = Path(args.target).resolve() if args.target else None
+    target = Path(args.target).expanduser().resolve() if args.target else hub.checkout.resolve()
+    target_common = denise.git_common_dir(target) if target.is_dir() else None
+    if args.target and not target_common:
+        raise Usage(f"--target {target} is not a Git checkout; pass the actual checkout root")
+    program = program_for(tools, harness)
+    if not shutil.which(program[0], path=environment.get("PATH")):
+        raise Usage(f"{program[0]} was not found; install {harness} or put it on PATH")
     context = denise.build_joined_context(
         manifest,
         run_dir=run_dir,
         state_dir=hub.state_dir,
         sessions_dir=Path(args.sessions_dir) if args.sessions_dir else hub.state_dir / "sessions",
+        hub_checkout=hub.checkout,
         target=target,
+        target_common=target_common,
         tooling_root=ROOT,
         settings=settings,
     )
     doctor_dir = context["doctor"]
-    environment = common.launch_environment(doctor_dir["workdir"], cleared_environment())
+    environment = common.launch_environment(
+        doctor_dir["workdir"],
+        {
+            key: value
+            for key, value in environment.items()
+            if key not in ("AGENT_NAME", "AGENT_RUNTIME") and not key.startswith("HUB_")
+        },
+    )
     environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
     login = ""
     if args.clean_login:
@@ -2007,36 +2028,34 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     write_roots = [
         root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
     ]
-    read_roots = [
-        root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "read"
-    ]
     prompt = f"Read {doctor_dir['startup']} and follow the instructions in it"
-    program = program_for(tools, harness)
     flags = model_flags(harness, settings["model"], settings["effort"], interactive=True)
     if harness == "codex":
         # No MCP server at all, and write grants only on the selected run's roots.
-        argv = [*program, "-C", doctor_dir["workdir"], *flags, *extra]
+        argv = [*program, "-C", doctor_dir["workdir"], *flags]
         argv += ["-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request"]
         for root in write_roots:
             argv += ["--add-dir", root]
         argv += doctor_codex_mcp_flags(argv, environment=environment, cwd=doctor_dir["workdir"])
         argv += [prompt]
     else:
-        argv = [*program, *flags, *extra, "--strict-mcp-config", "--permission-mode", "default"]
-        for root in [*write_roots, *read_roots]:
+        argv = [*program, *flags, "--strict-mcp-config", "--permission-mode", "default"]
+        for root in write_roots:
             argv += ["--add-dir", root]
         # Claude Code's variadic --add-dir consumes a trailing bare prompt as
         # another directory (#513); -- keeps the startup prompt positional.
         argv += ["--", prompt]
     print(
         f"Denise ({harness}) for run {args.run}: no hub tools; context {doctor_dir['context']}; "
-        f"report {report}; write roots: {', '.join(write_roots) or '(none)'}; "
-        f"harness arguments: {extra!a}.",
+        f"report {report}; write roots: {', '.join(write_roots) or '(none)'}.",
         flush=True,
     )
     if login:
         print(login, flush=True)
-    return subprocess.call(argv, cwd=doctor_dir["workdir"], env=environment)
+    try:
+        return subprocess.call(argv, cwd=doctor_dir["workdir"], env=environment)
+    except OSError as exc:
+        raise Usage(f"could not start {harness}: {exc}. Check the harness installation.") from None
 
 
 # -- arguments ------------------------------------------------------------------------
@@ -2082,7 +2101,7 @@ def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(
         prog="agent-launcher.py",
         description="Start, resume or ask a joined agent; Denise's doctor entry.",
-        epilog="Words after --harness-args go to the harness verbatim, after generated flags.",
+        epilog="Except for doctor, words after --harness-args go to the harness verbatim.",
         allow_abbrev=False,
     )
     commands = top.add_subparsers(dest="action", required=True)
