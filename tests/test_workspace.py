@@ -48,7 +48,30 @@ def repository(tmp_path: Path) -> Path:
     return origin
 
 
+def _skip_if_bootstrap_guard_refuses(destination: Path) -> None:
+    """#549: skip when the bootstrap script's coordination-checkout guard would fire.
+
+    ``scripts/bootstrap-workspace.py`` errors with "destination must be outside
+    the coordination checkout" for any destination inside the checkout that runs
+    it, and that guard is correct production behaviour which stays unchanged.
+    The tests here bootstrap into ``tmp_path``, so when pytest's base temp sits
+    inside the running checkout — native-Windows TEMP nested in a reviewer's
+    clone as a sandbox ACL workaround — the guard would refuse every
+    destination. Skip with the guard's own containment condition instead of
+    weakening or routing around the guard.
+    """
+
+    resolved = destination.resolve()
+    if resolved == ROOT or ROOT in resolved.parents:
+        pytest.skip(
+            "scripts/bootstrap-workspace.py would refuse this destination: "
+            "'destination must be outside the coordination checkout' — pytest's "
+            "base temp is inside the coordination checkout (#549)"
+        )
+
+
 def bootstrap(repository: Path, destination: Path, agent: str = "bob") -> dict[str, str]:
+    _skip_if_bootstrap_guard_refuses(destination)
     return cast(
         dict[str, str],
         json.loads(
@@ -213,6 +236,7 @@ async def test_worker_reports_persisted_identity(
 
 def test_bootstrap_missing_identity_error(repository: Path, tmp_path: Path) -> None:
     destination = tmp_path / "interrupted"
+    _skip_if_bootstrap_guard_refuses(destination)
     subprocess.run(["git", "clone", str(repository), str(destination)], check=True)
     result = subprocess.run(
         [*BOOTSTRAP, "bob", str(destination), str(repository)],
@@ -759,9 +783,12 @@ async def test_no_cwd_join_in_lane(client, settings) -> None:
     unjoined = WorkerSettings.unjoined(
         environ={"ROBOMATE_HUB_URL": "http://hub.test", "ROBOMATE_TOKEN": "test-token"}
     )
-    # Join FIRST so a missing autouse isolated_cwd fixture fails here: the
-    # no-cwd default resolves to this lane, silently adopting the clone (bob)
-    # or refusing a foreign identity (charlie) — the two cases are distinct.
+    # Join FIRST so a missing fixture fails here. Without the autouse
+    # isolated_cwd fixture the no-cwd default resolves to this lane, silently
+    # adopting the clone (bob) or refusing a foreign identity (charlie) — the
+    # two cases are distinct. Without the conftest's GIT_CEILING_DIRECTORIES
+    # fixture, discovery from the chdir'd cwd — inside the lane, because the
+    # basetemp is — finds the lane and the same two failures appear.
     async with WorkerHubClient(unjoined, http_client=client) as bridge:
         result = await bridge.join("bob", "implementer")
 
@@ -769,10 +796,12 @@ async def test_no_cwd_join_in_lane(client, settings) -> None:
     assert result["workspace_id"] is None
     assert result["workspace_path"] != str(lane)
 
-    # Host-independent invariant: the fixture keeps cwd off the identity-bearing
-    # lane, so the no-cwd bridge could not have detected its identity file.
+    # #461 invariant: the test cwd sits INSIDE the identity-bearing lane (the
+    # run's base temp is), yet carries no identity file, and the no-cwd bridge
+    # still could not have detected the lane identity: git discovery from cwd
+    # is stopped by GIT_CEILING_DIRECTORIES before it reaches the lane.
     cwd = Path.cwd()
-    assert cwd != lane and not cwd.is_relative_to(lane)
+    assert cwd != lane and cwd.is_relative_to(lane)
     assert not (cwd / ".git" / "robo-agents-workspace.json").exists()
 """
 
@@ -792,13 +821,18 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
     plain CI checkout never shows (#461).
 
     To make the regression host-independent, the no-``cwd`` join runs in a
-    *nested pytest* whose invocation directory IS a synthetic provisioned clone
-    carrying the identity for ``identity_agent``. Without the autouse
-    ``isolated_cwd`` fixture the inner ``Path.cwd()`` stays that lane, so the
-    inner join adopts (bob) or raises (charlie): both cases fail in any outer
-    checkout, including a plain CI checkout. With the fixture the inner cwd is a
-    clean temp dir and the join is a plain worktree. The repo's conftest is
-    copied in so the real fixture (present or removed) governs the inner run.
+    *nested pytest* whose invocation directory and base temp (#461, #549) are
+    both inside a synthetic provisioned clone carrying the identity for
+    ``identity_agent``. Without the autouse ``isolated_cwd`` fixture the inner
+    ``Path.cwd()`` stays the lane itself, so the inner join adopts (bob) or
+    raises (charlie); without the conftest's ``GIT_CEILING_DIRECTORIES``
+    fixture, git discovery from the inner cwd — inside the lane's work tree,
+    because the base temp is there — finds the lane again and detection fires.
+    Both cases fail in any outer checkout, including a plain CI checkout. The
+    repo's conftest is copied in so the real fixtures (present or removed)
+    govern the inner run. The outer ``bootstrap`` call skips this test when
+    pytest's base temp is inside the running checkout (#549), before the nested
+    run starts.
     """
     from agent_hub_common.workspace import read_identity
     from timing import LIVENESS_S
@@ -821,7 +855,10 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
     (inner / "test_inner.py").write_text(_INNER_NO_CWD_JOIN, encoding="utf-8")
 
     # A fresh master: drop the outer run's xdist/current-test markers so the
-    # nested pytest does not try to rejoin it, and give it its own basetemp.
+    # nested pytest does not try to rejoin it. Its basetemp is INSIDE the
+    # identity-bearing lane (#461, #549): pytest then chdirs the inner test
+    # into the lane's work tree, and only the copied conftest's
+    # GIT_CEILING_DIRECTORIES keeps discovery from finding the lane identity.
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
     env.pop("PYTHONPATH", None)
     env["ROBO_LANE"] = str(lane)
@@ -836,7 +873,7 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
             "-c",
             str(inner / "pyproject.toml"),
             "--basetemp",
-            str(inner / "run"),
+            str(lane / "basetemp"),
             str(inner / "test_inner.py"),
         ],
         cwd=lane,
