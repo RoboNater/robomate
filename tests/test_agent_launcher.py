@@ -132,6 +132,7 @@ def test_opencode_token_deny_preserves_inherited_read_precedence(tmp_path: Path)
                     "read": {"*": "allow", ".robomate/*": "allow"},
                     "*": "deny",
                     "r?ad": {"public/*": "allow"},
+                    "READ": {"public/private/*": "deny"},
                 }
             }
         }
@@ -142,6 +143,7 @@ def test_opencode_token_deny_preserves_inherited_read_precedence(tmp_path: Path)
     assert list(permission["read"].items()) == [
         ("*", "deny"),
         ("public/*", "allow"),
+        *([("public/private/*", "deny")] if os.name == "nt" else []),
         (token_dir.as_posix(), "deny"),
         (token_dir.as_posix() + "/*", "deny"),
         (".robomate", "deny"),

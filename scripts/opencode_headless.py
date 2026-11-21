@@ -44,12 +44,12 @@ def allowed_roots(worktree: Path, hub: Path | None, lane_tmp: Path | None) -> li
     return list(dict.fromkeys(roots))
 
 
-def deny_token_reads(permissions: dict[str, Any], token_dir: Path, worktree: Path) -> None:
+def _deny_token_reads(permissions: dict[str, Any], token_dir: Path, worktree: Path) -> None:
     # Rebuild the effective read rules in their original order before moving
     # the read entry to the end. A later wildcard must still govern other reads.
     reads: dict[str, str] = {}
     for tool, rules in permissions.items():
-        if "[" not in tool and fnmatchcase("read", tool):
+        if "[" not in tool and fnmatchcase("read", os.path.normcase(tool)):
             for pattern, action in ({"*": rules} if isinstance(rules, str) else rules).items():
                 reads.pop(pattern, None)
                 reads[pattern] = action
@@ -86,7 +86,7 @@ def policy(
     if token_dir is not None:
         if "*" in str(token_dir) or "?" in str(token_dir):
             raise ValueError("OpenCode token directory cannot contain wildcard characters")
-        deny_token_reads(permissions, token_dir, roots[0])
+        _deny_token_reads(permissions, token_dir, roots[0])
         pattern = token_dir.as_posix().rstrip("/") + "/*"
         external.pop(pattern, None)
         external[pattern] = "deny"
