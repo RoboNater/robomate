@@ -28,6 +28,7 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
+      - run: uv run --locked python scripts/sync-worker-prompt.py --check
       - &changed-tests
         name: Run changed test files
         if: github.event_name == 'pull_request'
@@ -65,6 +66,7 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
+      - run: uv run --locked python scripts/sync-worker-prompt.py --check
       - *changed-tests
       - run: uv run --locked pytest -n auto
       - run: uv run --locked python scripts/dependency-licenses.py --check
