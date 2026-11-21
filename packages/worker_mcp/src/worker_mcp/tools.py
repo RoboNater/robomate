@@ -327,6 +327,15 @@ def create_worker_mcp(
             async def forward(_self: Any, **kwargs: Any) -> dict[str, Any]:
                 resolved = await resolve()
                 if resolved.orchestrator is None or not resolved.orchestrator.joined:
+                    non_orchestrator = resolved.is_joined and (
+                        resolved.standing_role is not StandingRole.ORCHESTRATOR
+                    )
+                    if non_orchestrator:
+                        # A joined worker must not be told to re-join as orchestrator (#594).
+                        raise RuntimeError(
+                            f"{name} is orchestrator-only; workers read the forge or use "
+                            "await_assignment(include_instructions=true) instead"
+                        )
                     raise RuntimeError("call join(name=..., role='orchestrator') first")
                 return await resolved.orchestrator.call(name, kwargs)
 
