@@ -77,6 +77,7 @@ uv sync --locked --all-packages --dev
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
+uv run --locked python scripts/sync-worker-prompt.py --check
 uv run --locked pytest -n auto
 uv run --locked python scripts/dependency-licenses.py --check
 uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/

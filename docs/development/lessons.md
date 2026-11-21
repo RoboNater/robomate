@@ -86,7 +86,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
-| Generated and byte-compared files need `eol=lf`, and checks should normalize line endings on every input | [PR 584][c584] | earlier: `guides/**`, two [#4][i4] items; [PR 86/1][c86], [PR 86/3][c86], [PR 89/7][c89] *related* | tracked: [#587][i587] (`sync-worker-prompt.py` normalizes both inputs; CI runs `--check` on Linux and Windows); [#590][i590] (evaluate a repo-wide LF default) |
+| Generated and byte-compared files need `eol=lf`, and checks should normalize line endings on every input | [PR 584][c584] | earlier: `guides/**`, two [#4][i4] items; [PR 86/1][c86], [PR 86/3][c86], [PR 89/7][c89] *related* | applied: [#587][i587] (`sync-worker-prompt.py` normalizes both inputs; CI runs `--check` on Linux and Windows); tracked: [#590][i590] (evaluate a repo-wide LF default) |
 | On Windows, a venv `python.exe` starts the real interpreter as a child, so the recorded PID isn't `Popen.pid` | [PR 86/2][c86] (second, after #40 / PR #57) | [PR 476/1][c476] (remedy available: lesson only) | reference (testing doc: [#589][i589]) |
 | `os.kill(pid, 0)` sends Ctrl-C on Windows; use `process_alive` | [PR 472/3][c472] | — | applied: native probe in `agent_hub_common.registry` and `tests/fake_harness.py`; launcher tests assert the Windows path never sends signal 0 |
 | Isolate both user config directories in tests; run platform-branched paths on both platforms | [PR 284/1][c284] | — | applied: conftest `isolated_machine_state` |

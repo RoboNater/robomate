@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from agent_hub_common import ImplementerOutcome, ReviewerVerdict, WorkflowPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,8 +57,20 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
 
 
-def test_worker_prompt_sync_check_accepts_crlf_prompt(tmp_path: Path) -> None:
-    """An older Windows checkout may still have CRLF in the generated prompt."""
+def to_lf(data: bytes) -> bytes:
+    """Canonicalize copied source bytes to LF, whatever the checkout used."""
+
+    return data.replace(b"\r\n", b"\n")
+
+
+def to_crlf(data: bytes) -> bytes:
+    """Convert LF bytes to CRLF."""
+
+    return to_lf(data).replace(b"\n", b"\r\n")
+
+
+def sync_copy(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Copy the guide, prompt and sync script into a temporary checkout as LF bytes."""
 
     guide_dir = tmp_path / "guides"
     prompt_dir = tmp_path / "prompts"
@@ -66,12 +79,30 @@ def test_worker_prompt_sync_check_accepts_crlf_prompt(tmp_path: Path) -> None:
     prompt_dir.mkdir()
     script_dir.mkdir()
 
-    (guide_dir / "worker.md").write_bytes((ROOT / "guides/worker.md").read_bytes())
-    prompt = (ROOT / "prompts/worker.md").read_bytes().replace(b"\r\n", b"\n")
-    prompt_file = prompt_dir / "worker.md"
-    prompt_file.write_bytes(prompt.replace(b"\n", b"\r\n"))
+    guide_source = to_lf((ROOT / "guides/worker.md").read_bytes())
+    prompt_source = to_lf((ROOT / "prompts/worker.md").read_bytes())
+    (guide_dir / "worker.md").write_bytes(guide_source)
+    (prompt_dir / "worker.md").write_bytes(prompt_source)
     script = script_dir / "sync-worker-prompt.py"
     script.write_bytes((ROOT / "scripts/sync-worker-prompt.py").read_bytes())
+    return guide_dir / "worker.md", prompt_dir / "worker.md", script
+
+
+@pytest.mark.parametrize(
+    ("guide_crlf", "prompt_crlf"),
+    [(False, True), (True, False), (True, True)],
+    ids=("crlf-prompt", "crlf-guide", "crlf-both"),
+)
+def test_worker_prompt_sync_check_accepts_crlf_line_endings(
+    tmp_path: Path, guide_crlf: bool, prompt_crlf: bool
+) -> None:
+    """An older Windows checkout may keep CRLF in the guide or the prompt (#587)."""
+
+    guide_file, prompt_file, script = sync_copy(tmp_path)
+    if guide_crlf:
+        guide_file.write_bytes(to_crlf(guide_file.read_bytes()))
+    if prompt_crlf:
+        prompt_file.write_bytes(to_crlf(prompt_file.read_bytes()))
 
     check_command = [sys.executable, str(script), "--check"]
     result = subprocess.run(
@@ -92,6 +123,35 @@ def test_worker_prompt_sync_check_accepts_crlf_prompt(tmp_path: Path) -> None:
     assert stale_result.returncode == 1
     assert "prompts/worker.md" in stale_result.stderr
     assert "uv run --locked python scripts/sync-worker-prompt.py" in stale_result.stderr
+
+
+def test_worker_prompt_sync_generation_writes_lf_bytes_from_a_crlf_guide(
+    tmp_path: Path,
+) -> None:
+    """Generation must not copy a CRLF working copy's line endings into the prompt (#587)."""
+
+    guide_file, prompt_file, script = sync_copy(tmp_path)
+    guide_file.write_bytes(to_crlf(guide_file.read_bytes()))
+    prompt_file.write_bytes(b"stale prompt bytes\n")
+
+    generate = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert generate.returncode == 0, generate.stderr
+
+    expected = (ROOT / "prompts/worker.md").read_bytes().replace(b"\r\n", b"\n")
+    assert prompt_file.read_bytes() == expected
+
+    check = subprocess.run(
+        [sys.executable, str(script), "--check"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert check.returncode == 0, check.stderr
 
 
 def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:

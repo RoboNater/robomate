@@ -21,7 +21,7 @@ FIX_COMMAND = "uv run --locked python scripts/sync-worker-prompt.py"
 
 
 def normalize_newlines(content: bytes) -> bytes:
-    """Normalize CRLF copies left in existing Windows checkouts for comparison."""
+    """Normalize CRLF copies left in existing Windows checkouts on every input."""
 
     return content.replace(b"\r\n", b"\n")
 
@@ -35,7 +35,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    expected = PREFIX + GUIDE.read_bytes()
+    expected = PREFIX + normalize_newlines(GUIDE.read_bytes())
     if args.check:
         if PROMPT.is_file() and normalize_newlines(PROMPT.read_bytes()) == expected:
             return 0
