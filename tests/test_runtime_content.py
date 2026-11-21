@@ -57,8 +57,20 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
     assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
 
 
+def to_lf(data: bytes) -> bytes:
+    """Canonicalize copied source bytes to LF, whatever the checkout used."""
+
+    return data.replace(b"\r\n", b"\n")
+
+
+def to_crlf(data: bytes) -> bytes:
+    """Convert LF bytes to CRLF."""
+
+    return to_lf(data).replace(b"\n", b"\r\n")
+
+
 def sync_copy(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Copy the guide, prompt and sync script into a temporary checkout."""
+    """Copy the guide, prompt and sync script into a temporary checkout as LF bytes."""
 
     guide_dir = tmp_path / "guides"
     prompt_dir = tmp_path / "prompts"
@@ -67,17 +79,13 @@ def sync_copy(tmp_path: Path) -> tuple[Path, Path, Path]:
     prompt_dir.mkdir()
     script_dir.mkdir()
 
-    (guide_dir / "worker.md").write_bytes((ROOT / "guides/worker.md").read_bytes())
-    (prompt_dir / "worker.md").write_bytes((ROOT / "prompts/worker.md").read_bytes())
+    guide_source = to_lf((ROOT / "guides/worker.md").read_bytes())
+    prompt_source = to_lf((ROOT / "prompts/worker.md").read_bytes())
+    (guide_dir / "worker.md").write_bytes(guide_source)
+    (prompt_dir / "worker.md").write_bytes(prompt_source)
     script = script_dir / "sync-worker-prompt.py"
     script.write_bytes((ROOT / "scripts/sync-worker-prompt.py").read_bytes())
     return guide_dir / "worker.md", prompt_dir / "worker.md", script
-
-
-def to_crlf(data: bytes) -> bytes:
-    """Convert LF bytes to CRLF without doubling a CRLF working copy's own."""
-
-    return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
 
 
 @pytest.mark.parametrize(
