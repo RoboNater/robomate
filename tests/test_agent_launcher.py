@@ -121,6 +121,35 @@ def test_headless_policy_replaces_inherited_external_rules(tmp_path: Path) -> No
     assert "/broader/*" in inherited["agent"]["build"]["permission"]["external_directory"]
 
 
+def test_opencode_token_deny_preserves_inherited_read_precedence(tmp_path: Path) -> None:
+    from opencode_headless import policy
+
+    token_dir = tmp_path / ".robomate"
+    config = {
+        "agent": {
+            "build": {
+                "permission": {
+                    "read": {"*": "allow", ".robomate/*": "allow"},
+                    "*": "deny",
+                    "r?ad": {"public/*": "allow"},
+                }
+            }
+        }
+    }
+    permission = policy(config, [tmp_path, token_dir], "unique", token_dir=token_dir)["agent"][
+        "unique"
+    ]["permission"]
+    assert list(permission["read"].items()) == [
+        ("*", "deny"),
+        ("public/*", "allow"),
+        (token_dir.as_posix(), "deny"),
+        (token_dir.as_posix() + "/*", "deny"),
+        (".robomate", "deny"),
+        (".robomate/*", "deny"),
+    ]
+    assert permission["external_directory"][token_dir.as_posix() + "/*"] == "deny"
+
+
 def test_opencode_roots_use_git_common_dir_without_broadening_missing_metadata(
     tmp_path: Path,
 ) -> None:
@@ -179,6 +208,7 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
     monkeypatch.setenv("FAKE_OPENCODE_CONFIG", json.dumps(inherited))
     lane_tmp = area["root"] / "assigned tmp"
+    token_dir = area["state"].resolve()
     detached = {"workflow": workflow(), "agents": [agent_row()]}
     released = {"workflow": workflow(), "agents": [agent_row("released")]}
     hub = FakeHub(after_launches(area, detached, detached, released))
@@ -202,11 +232,16 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
         assert "file:///existing.mjs" in content["plugin"]
         assert any(p.endswith("/permission-events.mjs") for p in content["plugin"])
         assert content["agent"][name]["variant"] == "high"
-        rules = content["agent"][name]["permission"]["external_directory"]
+        permission = content["agent"][name]["permission"]
+        rules = permission["external_directory"]
         assert rules["*"] == "deny" and "/too-broad/*" not in rules
         assert rules[area["worktree"].as_posix() + "/*"] == "allow"
         assert rules[area["checkout"].as_posix() + "/*"] == "allow"
         assert rules[lane_tmp.as_posix() + "/*"] == "allow"
+        assert list(rules.items())[-1] == (token_dir.as_posix() + "/*", "deny")
+        read_dir = "../" + token_dir.relative_to(area["root"].resolve()).as_posix()
+        assert permission["read"][read_dir] == "deny"
+        assert permission["read"][read_dir + "/*"] == "deny"
         assert launch["cwd"] == launch["env"]["PWD"] == str(area["worktree"])
     assert len(names) == len(set(names)) == 2
     saved = CLI.saved_identity(rows(area)[0], "opencode", "", "")
@@ -932,7 +967,12 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     first, second = launches(area)
     line = f"Join robomate as {agent}, {role}."
     sent = first["stdin"] if harness == "codex" else first["argv"][-1]
-    assert sent == line
+    if role == "orchestrator":
+        assert sent.startswith(line)
+        assert "Use only the configured robomate MCP tools" in sent
+        assert "report the missing tools in your final message and end the turn" in sent
+    else:
+        assert sent == line
     for run in (first, second):
         assert Path(run["cwd"]).resolve() == area["worktree"].resolve()
         assert run["argv"][run["argv"].index("--model") : run["argv"].index("--model") + 2] == [
@@ -953,6 +993,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     resumed = second["stdin"] if harness == "codex" else second["argv"][-1]
     assert resumed == CLI.continuation(agent, role, joined=True)
     assert f'join(name="{agent}", role="{role}", takeover=true)' in resumed
+    if role == "orchestrator":
+        assert "report the missing tools in your final message and end the turn" in resumed
     conversation = IDS[harness] or rows(area, agent)[0]["conversation_id"]
     assert conversation in second["argv"]
     # Nothing outside the hub's sessions/ was written or changed.

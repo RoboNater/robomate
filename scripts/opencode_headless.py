@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 import tempfile
 import uuid
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +44,30 @@ def allowed_roots(worktree: Path, hub: Path | None, lane_tmp: Path | None) -> li
     return list(dict.fromkeys(roots))
 
 
-def policy(config: Mapping[str, Any], roots: list[Path], name: str) -> dict[str, Any]:
+def deny_token_reads(permissions: dict[str, Any], token_dir: Path, worktree: Path) -> None:
+    # Rebuild the effective read rules in their original order before moving
+    # the read entry to the end. A later wildcard must still govern other reads.
+    reads: dict[str, str] = {}
+    for tool, rules in permissions.items():
+        if "[" not in tool and fnmatchcase("read", tool):
+            for pattern, action in ({"*": rules} if isinstance(rules, str) else rules).items():
+                reads.pop(pattern, None)
+                reads[pattern] = action
+    # OpenCode 1.x evaluates read paths relative to its project worktree.
+    paths = [token_dir.as_posix()]
+    if os.path.normcase(token_dir.drive) == os.path.normcase(worktree.drive):
+        paths.append(Path(os.path.relpath(token_dir, worktree)).as_posix())
+    for path in paths:
+        for pattern in (path, path.rstrip("/") + "/*"):
+            reads.pop(pattern, None)
+            reads[pattern] = "deny"
+    permissions.pop("read", None)
+    permissions["read"] = reads
+
+
+def policy(
+    config: Mapping[str, Any], roots: list[Path], name: str, *, token_dir: Path | None = None
+) -> dict[str, Any]:
     """Copy build into a fresh agent so inherited dictionary key order cannot win.
 
     Global permissions still precede this agent. Other build settings and tool
@@ -57,11 +82,16 @@ def policy(config: Mapping[str, Any], roots: list[Path], name: str) -> dict[str,
     if isinstance(permissions, str):
         permissions = {"*": permissions}
     permissions = dict(permissions)
+    external = {"*": "deny", **{root.as_posix().rstrip("/") + "/*": "allow" for root in roots}}
+    if token_dir is not None:
+        if "*" in str(token_dir) or "?" in str(token_dir):
+            raise ValueError("OpenCode token directory cannot contain wildcard characters")
+        deny_token_reads(permissions, token_dir, roots[0])
+        pattern = token_dir.as_posix().rstrip("/") + "/*"
+        external.pop(pattern, None)
+        external[pattern] = "deny"
     permissions.pop("external_directory", None)
-    permissions["external_directory"] = {
-        "*": "deny",
-        **{root.as_posix().rstrip("/") + "/*": "allow" for root in roots},
-    }
+    permissions["external_directory"] = external
     build.update(permission=permissions, mode="primary")
     return {"agent": {name: build}}
 
@@ -74,6 +104,7 @@ def prepare(
     *,
     agent: str | None = None,
     lane_tmp: Path | None = None,
+    token_file: Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Read effective configuration without changing user files, then pin our agent."""
     env = dict(environment)
@@ -129,7 +160,10 @@ def prepare(
     roots = allowed_roots(worktree, Path(hub) if hub else None, lane_tmp)
     name = "robomate_headless_" + uuid.uuid4().hex
     overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))
-    overlay.setdefault("agent", {}).update(policy(config, roots, name)["agent"])
+    token_dir = token_file.resolve().parent if token_file is not None else None
+    overlay.setdefault("agent", {}).update(
+        policy(config, roots, name, token_dir=token_dir)["agent"]
+    )
     plugins = list(overlay.get("plugin", []))
     plugin = Path(__file__).with_name("permission-events.mjs").resolve().as_uri()
     if plugin not in plugins:

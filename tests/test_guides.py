@@ -220,6 +220,7 @@ def test_served_worker_boundaries_and_git_hygiene(forge: str) -> None:
     for fragment in (
         "Never read the hub's state or token directory",
         "the bridge, not the agent, reads it",
+        "Use only the configured robomate MCP tools to reach the hub",
         "fresh `origin/<default>` or the assigned SHA",
         "git status --porcelain --untracked-files=no",
         "Untracked harness files are not uncommitted work",
@@ -244,6 +245,24 @@ def test_served_worker_boundaries_and_git_hygiene(forge: str) -> None:
         "harness's temporary directory",
         "`git show origin/<default>:<path> > <path>` and restore it afterwards",
         "commit it to the work branch",
+    ):
+        assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_hub_boundary(forge: str) -> None:
+    response = guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge)
+    text = " ".join(bytes(response.body).decode("utf-8").split())
+    for fragment in (
+        "Never read the hub's state or token directory, including legacy `.robomate/`",
+        "This rule binds the agent and every tool it runs",
+        "Use only the configured robomate MCP tools to reach the hub",
+        "Never import robomate packages, call the hub's HTTP or RPC routes",
+        "run `robomate` CLI commands that require the hub token as a substitute",
+        "If `join` or another required hub tool is unavailable",
+        "report which tools are missing in your final message and end the turn",
+        "Do not search robomate's source, worktree binding, state or token paths "
+        "for another way in",
     ):
         assert fragment in text
 

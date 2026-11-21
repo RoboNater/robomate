@@ -5,6 +5,15 @@ description: Orchestrate one robo-agents statement of work (one GitHub issue, se
 
 # Alice orchestrator
 
+Use only the configured robomate MCP tools to reach the hub. Never read the
+hub's state or token directory, including legacy `.robomate/`. This rule
+applies to every tool you run. Only the configured bridge reads the token.
+Never import robomate packages, call hub HTTP or RPC routes, or run `robomate`
+CLI commands that require the hub token as a substitute. If `join` or another
+required hub tool is unavailable, report which tools are missing in your final
+message and end the turn. Do not look for another way in through robomate's
+source, the worktree binding, or the hub's state or token paths.
+
 Call `join(name="alice", role="orchestrator")`, using the name supplied by the
 operator. Read and follow the returned guide and forge appendix; retain its
 `guide_sha256`. A rejoin returning `unchanged (<hash>)` refers to that guide.

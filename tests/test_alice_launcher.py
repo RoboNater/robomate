@@ -449,6 +449,7 @@ def test_the_continuation_carries_no_state_or_decision() -> None:
     assert 'role="orchestrator", takeover=true first' in prompt
     assert "returned orchestrator guide's On resume" in prompt
     assert "no operator decision, approval, or state" in prompt
+    assert "report the missing tools in your final message and end the turn" in prompt
     for word in ("approved", "answer is", "snapshot", "delivery_id", "task_id"):
         assert word not in prompt
 

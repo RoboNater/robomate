@@ -616,9 +616,10 @@ acquire lock` / `Read-only file system (os error 30)` under that cache.
 The worktree itself and the harness's temporary directory are already writable.
 Never grant `<common>` itself: that opens shared `config` and `hooks/` while
 Codex still protects the worktree's own gitdir inside it. Grant the four
-specific git paths above instead. For Codex the token boundary is guide-only:
-no read-deny was found. The worker guide forbids reading the hub's state or
-token directory; a writable-root grant does not enforce that read boundary.
+specific git paths above instead. The launcher's `workspace-write` settings
+provide no path-specific read-deny. Newer Codex releases support separate
+named permission profiles with filesystem denies. Those profiles are outside
+the measured `workspace-write` grants used by this launcher.
 
 On both harnesses, create branches with
 `git switch --no-track -c <branch> origin/<default>` and push with
@@ -626,6 +627,20 @@ On both harnesses, create branches with
 protected git config. Agents never delete branches, local or remote; Codex
 cannot take `packed-refs.lock` under the narrow grant. Branch cleanup is an
 operator action (Step 8's `robomate clean`).
+
+### Hub token controls by harness
+
+Joined agents use the configured robomate MCP tools for all hub access. The
+bridge reads the token on their behalf. The guides forbid agents from reading
+the state or token directory, regardless of the harness controls below.
+
+| Harness | Launcher control and limits |
+| --- | --- |
+| Claude Code | Sandbox `denyRead` hides the token directory from sandboxed shell commands. The bridge runs outside that sandbox. Native Windows sandbox availability varies. |
+| Codex | The token boundary is guide-only with the launcher's `workspace-write` settings, whose roots control writes. [Codex 0.170.0 configuration schema](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/core/config.schema.json) |
+| OpenCode | Headless starts and resumes add `read` and `external_directory` denies for the token directory after the inherited read rules and launcher directory allows. These are tool permissions. Shell path checks are best effort and shell processes retain OS access. Interactive launches use the harness's configured permissions. Native Windows enforcement still needs a live check. [OpenCode 1.19.5 read tool](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/tool/read.ts) |
+| AntiGravity | The launcher uses the run's `--dangerously-skip-permissions` mode and supplies no per-launch token-directory deny. Antigravity documents user-configured `read_file` deny rules. [Antigravity CLI permissions](https://antigravity.google/docs/cli-permissions) |
+| Devin CLI | The launcher uses the run's `dangerous` mode and supplies no per-launch token-directory deny. The guide supplies the boundary for this mode. [Devin CLI investigation](harness-investigation-devin-cli.md) |
 
 ## Answering escalations
 
