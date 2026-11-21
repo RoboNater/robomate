@@ -197,11 +197,13 @@ resume with their original goals; do not regenerate the goal to resume. `--alice
 ### Scripted run start (M2)
 
 Before starting, configure the static, user-level `robomate` MCP entry for each
-team harness. A harness used only for Denise needs no MCP entry. Use a stable robomate checkout
-for `--project`, not a run lane. Follow the [MCP setup prompt](mcp-setup-prompt.md)
-for the entry and unattended settings, and run `scripts/check-mcp-tools.py`
-after updating that checkout. Devin's entry cannot currently be checked
-automatically; start-run warns. The preflight checks entry presence only.
+team harness. A harness used only for Denise needs no MCP entry, because Denise
+runs with MCP servers disabled (see the `denise_*` row below). Use a stable
+robomate checkout for `--project`, not a run lane. Follow the
+[MCP setup prompt](mcp-setup-prompt.md) for the entry and unattended settings,
+and run `scripts/check-mcp-tools.py` after updating that checkout. Devin's entry
+cannot currently be checked automatically; start-run warns. The preflight checks
+entry presence only.
 
 `scripts/start-run.py` (#268) is the joined successor of the standard run
 helper below: one command, with no interactive step, starts the hub of a fresh
