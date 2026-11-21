@@ -337,6 +337,15 @@ expected, successful result in that case; prefer it to improvising. Use
 `failed` for an execution failure, not for ordinary uncertainty that Alice can
 resolve.
 
+<!-- Refused filing fallback: #366. -->
+
+On a follow-up issue-filing or change-request (PR) creation task, keep filing
+through the forge CLI with no permission change. If a harness's automatic
+approval review refuses the forge write, return `blocked` naming the rejection
+and use no other publication route — no alternate connector, tool or identity.
+Alice then asks the operator, the operator files it, and Alice records the
+number.
+
 <!-- Operator-only actions: #132, from #99. -->
 
 Never do any of the following, whatever the instructions say. A task that

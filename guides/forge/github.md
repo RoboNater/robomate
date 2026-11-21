@@ -9,6 +9,12 @@ uniquely named file in the agent's own temporary directory — never a shared
 and pass that file with `--body-file`. Never pass Markdown inline. This applies
 on both POSIX shells and PowerShell.
 
+Make every forge write with the `gh` CLI — `gh pr create`, `gh pr comment` and
+`gh issue create` — not with a harness's built-in GitHub connector (for example
+`codex_apps/github.*`). That connector drew the automatic approval-review
+refusal and posts under a different identity (a GitHub App), not the worker's
+`gh` account. Write each Markdown body with `--body-file` as above.
+
 ## Change requests (pull requests)
 
 - **Read an issue** (implementer, reviewer), including its full discussion:
@@ -37,6 +43,15 @@ on both POSIX shells and PowerShell.
   current branch, which fails on a detached checkout. That read can lag a push
   by a few seconds: if it does not match the SHA you pushed, re-read it before
   reporting.
+
+## Follow-up issues
+
+- **Create a follow-up issue** (implementer, reviewer; FOLLOW-UP tasks):
+  ```sh
+  gh issue create --title "..." --body-file <file>
+  ```
+  Write the issue body with `--body-file` as for a PR description above, and
+  use the `gh` CLI rather than a built-in connector.
 
 ## Discussions and reviews
 

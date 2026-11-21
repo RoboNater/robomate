@@ -491,6 +491,17 @@ route operator-only work to an `operator-run` issue. If the implementer
 reports the same head with no changes, the existing approval remains bound
 to that head.
 
+<!-- Refused filing fallback: #366. -->
+
+The FOLLOW-UP route keeps filing in the worker's hands with no permission
+change: the worker files the issue with the forge CLI as it would any other
+task. If a harness's automatic approval review refuses that forge write, the
+worker returns `blocked` naming the rejection and uses no other publication
+route; do not retry through a different tool, connector or identity. Alice
+then asks the operator with `ask_user` to file the issue by hand and records
+the resulting issue number. The refusal is not authority to bypass the
+approval review or to weaken any permission.
+
 ## REBASE
 
 <!-- Stale-base routing: spec §5 REBASE and `guides/rebase.md`. -->
