@@ -157,3 +157,15 @@ def test_isolated_machine_state_strips_launcher_identity(tmp_path: Path) -> None
         f"nested test saw a launcher environment the fixture did not strip "
         f"(rc={result.returncode}):\n{result.stdout}\n{result.stderr}"
     )
+
+
+def test_isolated_machine_state_replaces_the_launcher_config_home(tmp_path: Path) -> None:
+    """#592: strip-then-set must leave the fixture's own ``XDG_CONFIG_HOME``.
+
+    ``XDG_CONFIG_HOME`` is on ``LAUNCHER_ENV`` because packages read it, but
+    the fixture also has to provide its own isolated value. Reversing the order
+    would delete the value it just set, and code under test would fall back to
+    the real user config.
+    """
+
+    assert os.environ["XDG_CONFIG_HOME"] == str(tmp_path / "xdg-config")
