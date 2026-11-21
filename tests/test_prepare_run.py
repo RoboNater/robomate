@@ -1960,7 +1960,8 @@ def test_rendered_prompts_forbid_ending_the_turn_to_wait(
     claude_rule = "Do not end your turn until `await_assignment` returns `release: true`."
     assert claude_rule in bob and claude_rule in charlie
     assert "do not use `run_in_background` for a wait" in bob
-    assert "Do not end your turn until the workflow is `done`." in alice
+    assert "Keep the turn open until the workflow is `done` while hub tools are available." in alice
+    assert "report which tools are missing in your final message and end the turn" in alice
     # #355: rendered workers retain session polling, bounded failure checks and
     # both platform fallbacks. These assertions do not prove child survival.
     for recipe in (
@@ -3450,6 +3451,12 @@ def test_resume_prompts_use_role_specific_first_hub_call() -> None:
     assert 'role="orchestrator"' in alice and "`takeover=true`" in alice
     assert "returned orchestrator guide's On resume" in alice
     assert "grants no workflow" in alice and "call `check_in`" not in alice
+    assert "do not end your turn to wait." in alice
+    assert (
+        "Do not end your turn until the workflow is `done`, "
+        "unless a required hub tool is unavailable." in " ".join(alice.split())
+    )
+    assert "report the missing tools in your final message and end the turn" in alice
     for name in ("bob", "charlie"):
         assert "call `check_in`" in PREPARE_RUN.render_resume_prompt(name, PurePosixPath("/runs/r"))
 

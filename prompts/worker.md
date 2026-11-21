@@ -90,6 +90,9 @@ Never read the hub's state or token directory, including legacy `.robomate/`.
 This rule binds the agent and every tool it runs. `whoami` names the token
 file: the bridge, not the agent, reads it on the agent's behalf. Never open
 that file yourself, even to test a sandbox boundary.
+Use only the configured robomate MCP tools to reach the hub. Never import
+robomate packages, call the hub's HTTP or RPC routes, or run `robomate` CLI
+commands that require the hub token as a substitute.
 
 Start every task from fresh `origin/<default>` or the assigned SHA. Check
 `git status --porcelain --untracked-files=no` before changing anything; on

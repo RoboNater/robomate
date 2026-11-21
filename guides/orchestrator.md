@@ -17,6 +17,17 @@ durable hub policy govern the workflow.
 
 ## Join
 
+Never read the hub's state or token directory, including legacy `.robomate/`.
+This rule binds the agent and every tool it runs. The configured MCP bridge
+reads the token on your behalf. Use only the configured robomate MCP tools
+to reach the hub. Never import robomate packages, call the hub's HTTP or RPC
+routes, or run `robomate` CLI commands that require the hub token as a substitute.
+
+If `join` or another required hub tool is unavailable, report which tools are
+missing in your final message and end the turn. The launcher log carries that
+message to the operator. Do not search robomate's source, worktree binding,
+state or token paths for another way in.
+
 Call `join(name, role="orchestrator", takeover=false)` with the operator's name
 and only identity fields you actually know. One orchestrator attaches per hub.
 An attached session is refused without `takeover=true`. A launcher or harness
@@ -621,7 +632,8 @@ still need an operator answer.
 When the answer arrives, call `log_decision` citing the question id and the
 answer, then `set_workflow_status(active, …)` before executing the action the
 answer selects. If the answer is unclear or picks no option, ask again with
-`ask_user` rather than guessing. End the turn only when the workflow is `done`.
+`ask_user` rather than guessing. End the turn only when the workflow is `done`
+or a required hub tool is unavailable.
 
 The hub enforces this (#132): `set_workflow_status(escalated)` is refused,
 leaving `escalated` is refused while any operator question is open, and

@@ -78,6 +78,7 @@ from agent_hub_common import MAX_STATEMENT_BYTES
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_interactive import quote_powershell  # noqa: E402
+from agent_launcher import ORCHESTRATOR_HUB_BOUNDARY  # noqa: E402
 from denise import render as render_denise  # noqa: E402
 from denise import resolve_settings as resolve_denise_settings  # noqa: E402
 from run_common import (  # noqa: E402
@@ -771,13 +772,13 @@ def prompt_sections(name: str, harness: str, run_dir: PurePath) -> str:
             "Claude Code print mode uses 1500 s; interactive mode uses 100 s. "
             "Only interactive mode backgrounds calls at 120 s."
         )
-        last = (
-            "the workflow is `done`"
+        turn = (
+            "Keep the turn open until the workflow is `done` while hub tools are available."
             if name == "alice"
-            else "`await_assignment` returns `release: true`"
+            else "Do not end your turn until `await_assignment` returns `release: true`."
         )
         wait = (
-            f"Do not end your turn until {last}. In print mode (`claude -p`) the "
+            f"{turn} In print mode (`claude -p`) the "
             "process exits when your turn ends, and a background job can wake you only "
             "while your turn is still running. Never end your turn to wait for CI, a "
             "background command, or a long test run, and do not use `run_in_background` "
@@ -1331,11 +1332,14 @@ same-conversation resume replaces only the bridge session; it grants no workflow
 authority and never changes the durable goal, policy or operator answers. The
 orchestrator bridge has no `check_in`.
 
-End your turn only when the workflow is `done`. While `escalated`, hold on
-`wait_for_event` for the operator's answer. Every announcement of a step must
-come with its tool call; do not end your turn to wait.
+Do not end your turn until the workflow is `done`, unless a required hub tool
+is unavailable. While `escalated`, hold on `wait_for_event` for the operator's
+answer and do not end your turn to wait. Each announcement of a step comes
+with its tool call.
 
 """
+    + ORCHESTRATOR_HUB_BOUNDARY
+    + "\n\n"
     + RESUME_PROMPT_SHARED
     + """\
 - If an event was delivered but never acknowledged, call `wait_for_event`

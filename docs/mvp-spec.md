@@ -1133,6 +1133,8 @@ supervisor exists, and notes. The hub clamps every hold to the joined agent's pr
 Devin's profile records its user-scope locations (`~/.config/devin/mcp_config.json` on
 POSIX, `%APPDATA%\devin\mcp_config.json` on Windows) and project-scope location
 (`.devin/mcp_config.json`), as for other harnesses.
+The [hub token controls by harness](user-guide.md#hub-token-controls-by-harness)
+record each launcher's read-deny support and its limits.
 
 ### 9.3 Certification — `robomate certify <harness>`
 Generalizes the Step 4B endurance gate (robo-agents #30; #13). `robomate certify` starts a throwaway hub on a
@@ -1370,14 +1372,19 @@ condition in §4 (#145).
   rule binds the agent and every tool it runs. It does not bind the agent's `robomate mcp`
   bridge, which reads the hub's token on the agent's behalf and names its token file in
   `whoami`; the bridge, not the agent, reads it.
+- Joined agents reach the hub only through their configured robomate MCP tools.
+  Importing robomate packages, calling the hub's HTTP or RPC routes, and running
+  CLI commands that require the hub token are forbidden as substitutes. If a
+  required tool is missing, the orchestrator reports it in the final message
+  and ends the turn.
 - Sandbox grants name the agent's worktree and needed subdirectories of the path printed
   by `git rev-parse --git-common-dir`, never the linked worktree's `.git` file. With the
   hub on the main checkout, that common directory is the main checkout's `.git` directory.
   Never grant the whole common directory or the hub's namespace
   `<worktree_root>/<hub>/` or its state directory (§6). The versioned Linux grants in
-  [`user-guide.md`](user-guide.md#linux-sandbox-grants) record Claude Code's token
-  `denyRead`; for Codex the token read boundary is guide-only. These joined-agent
-  boundaries do not describe Denise's operator-authorized recovery access (§5.1).
+  [`user-guide.md`](user-guide.md#hub-token-controls-by-harness) describe each
+  harness's token read controls. Denise's operator-authorized recovery access
+  is governed by §5.1.
 
 ---
 

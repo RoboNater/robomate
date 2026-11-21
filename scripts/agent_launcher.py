@@ -58,6 +58,18 @@ EXIT_INTERRUPTED = 130
 
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
+ORCHESTRATOR_HUB_BOUNDARY = (
+    "Use only the configured robomate MCP tools to reach the hub. Never read the hub's "
+    "state or token directory. Do not substitute robomate's "
+    "Python packages, hub HTTP or RPC, or CLI commands that require the hub token. If join "
+    "or another required hub tool is unavailable, report the missing tools in your final "
+    "message and end the turn. Do not search robomate's source, worktree binding, state "
+    "or token paths for another way in."
+)
+ORCHESTRATOR_TURN_RULE = (
+    "Do not end your turn until the workflow is done, unless a required hub tool is unavailable."
+)
+
 # The one prompt every automatic resume sends (#146). Fixed text: it names no
 # state, snapshot, operator decision or approval, so it cannot be mistaken for
 # one (#131).
@@ -72,7 +84,7 @@ CONTINUE_PROMPT = (
     "escalated or paused workflow as it is: escalation "
     "ends only through the operator's user_answered event. Do not initialize the "
     "workflow again and do not repeat completed work; continue the existing "
-    "assignment. Do not end your turn until the workflow is done."
+    f"assignment. {ORCHESTRATOR_TURN_RULE} {ORCHESTRATOR_HUB_BOUNDARY}"
 )
 
 _CODEX_ID = re.compile(r"session id:\s*([0-9a-fA-F][0-9a-fA-F-]{35})\b")
@@ -524,6 +536,7 @@ class Launcher:
                 self.args.sessions,
                 agent=self.agent,
                 lane_tmp=getattr(getattr(self.args, "identity", None), "lane_tmp", None),
+                token_file=self.args.token_file,
             )
             launch_id = uuid.uuid4().hex
             trace_path = self.args.sessions.with_name(f"permission-{launch_id}.jsonl")

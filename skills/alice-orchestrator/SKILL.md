@@ -5,13 +5,18 @@ description: Orchestrate one robo-agents statement of work (one GitHub issue, se
 
 # Alice orchestrator
 
-Call `join(name="alice", role="orchestrator")`, using the name supplied by the
-operator. Read and follow the returned guide and forge appendix; retain its
-`guide_sha256`. A rejoin returning `unchanged (<hash>)` refers to that guide.
-When a launcher or harness resumes this same Alice conversation, replace your
-prior bridge by calling `join` with your configured name, `role="orchestrator"`
-and `takeover=true` before `get_state`. This replaces only the session and grants
-no workflow authority. Replacing a different orchestrator needs the operator's
-request; ask if the identity or intent is unclear. Follow the returned guide's
-On resume procedure for an existing workflow.
+Reach the hub only with configured robomate MCP tools. The bridge reads the
+token. Never read hub state or token directories, including `.robomate/`, with
+any tool. Never substitute robomate imports, hub HTTP or RPC, or CLI commands
+requiring the token. If `join` or another required tool is missing, name it in
+your final message and end the turn. Do not look in source, the worktree
+binding, state or token paths for another route.
+
+Call `join(name="alice", role="orchestrator")` with the operator's name.
+Follow the guide and forge appendix. Keep `guide_sha256` to match
+`unchanged (<hash>)` on rejoin. To resume this conversation, call `join` with
+your name, `role="orchestrator"` and `takeover=true` before `get_state`.
+Takeover replaces the session only and grants no workflow authority. Require
+the operator's request to replace a different orchestrator. Ask if identity
+or intent is unclear. Follow the guide's On resume procedure.
 Prepared-run prompts remain supported until M2 Step 11.
