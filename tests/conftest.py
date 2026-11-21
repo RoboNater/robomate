@@ -71,19 +71,35 @@ LAUNCHER_ENV = (
     "ROBOMATE_OPERATOR_TOKEN_FILE",
 )
 
-# #531: names a launcher env-builder produces that ``isolated_machine_state``
-# deliberately leaves alone. Every collected builder name must land in exactly
-# one of ``LAUNCHER_ENV`` (or the fixture's ``ROBOMATE_TOKEN*`` prefix) or this
-# keep-list; each entry carries a one-line reason.
+# #531, #592: names a launcher env-builder produces that
+# ``isolated_machine_state`` deliberately leaves alone. Every collected builder
+# name must land in exactly one of ``LAUNCHER_ENV`` (or the fixture's
+# ``ROBOMATE_TOKEN*`` prefix) or this keep-list; each entry carries a one-line
+# reason.
 LAUNCHER_KEPT: dict[str, str] = {
     "PYTHONUTF8": "encoding for launcher subprocesses, not agent identity",
     "UV_CACHE_DIR": "isolated uv cache location for the harness",
     "PYTEST_XDIST_AUTO_NUM_WORKERS": "the run's xdist budget; the suite must honour it",
     "PWD": "working directory launch_environment writes into the child",
     "OPENCODE_CONFIG_CONTENT": "harness config, read by opencode, not by robomate's packages",
+    "ROBOMATE_PERMISSION_STATUS_DIR": "permission-observation status dir, read by the launcher",
+    "ROBOMATE_PERMISSION_EVENTS": "permission-trace path read by the harness plugin",
+    "ROBOMATE_PERMISSION_LAUNCH": "launch id correlating permission observations",
+    "TEMP": "harness subprocess temp directory, not agent identity",
+    "TMP": "Windows harness subprocess temp directory, not agent identity",
+    "TMPDIR": "POSIX harness subprocess temp directory, not agent identity",
+    "CODEX_HOME": "isolated Codex home for the harness, not read under packages/",
+    "OPENCODE_CONFIG": "OpenCode config path, read by opencode, not under packages/",
 }
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+# Environment assignments a generated start script writes before its harness:
+# ``NAME=value`` / ``export NAME=value`` and PowerShell's ``$env:NAME = value``.
+# Find them anywhere a word starts so a line carrying more than one assignment
+# (``A=1 B=2 cmd``) contributes every name.
+_SHELL_ENV_ASSIGN = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=")
+_POWERSHELL_ENV_ASSIGN = re.compile(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 def _load_script(module_name: str, relative: str) -> Any:
@@ -98,16 +114,57 @@ def _load_script(module_name: str, relative: str) -> Any:
     return module
 
 
-def collect_launcher_env_keys() -> dict[str, set[str]]:
-    """Variable names each launcher env-builder puts on a child (#531).
+def _script_subscript_keys(path: Path, mapping: str) -> set[str]:
+    """String keys a script assigns to ``mapping[...]`` (#592).
 
-    Builders are called with dummy arguments (or, for ``hub_env``, read from
-    its dict literal via AST because it is not a function). Full-environment
-    builders contribute only the keys they add or rewrite, not every inherited
-    name. Returns ``{builder_name: names}`` for failure messages.
+    Some launch paths set their environment on a local mapping inside a method
+    that cannot be called in isolation; read their literal keys from the AST,
+    as ``prepare-run.hub_env`` does for its dict literal.
     """
 
     import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == mapping
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)
+            ):
+                keys.add(target.slice.value)
+    assert keys, f"no {mapping}[...] assignments found in {path}"
+    return keys
+
+
+def _launch_script_env_keys(lines: list[str]) -> set[str]:
+    """Environment names a generated start script sets before its harness (#592)."""
+
+    keys: set[str] = set()
+    for line in lines:
+        keys.update(_SHELL_ENV_ASSIGN.findall(line))
+        keys.update(_POWERSHELL_ENV_ASSIGN.findall(line))
+    return keys
+
+
+def collect_launcher_env_keys() -> dict[str, set[str]]:
+    """Variable names each launcher env-builder puts on a child (#531, #592).
+
+    Builders are called with dummy arguments (or, for ``hub_env`` and
+    ``run_child``, read from their literals via AST because they are not
+    callable in isolation). Full-environment builders contribute only the keys
+    they add or rewrite, not every inherited name. Generated start-script
+    builders contribute the names their launch lines export. Returns
+    ``{builder_name: names}`` for failure messages.
+    """
+
+    import ast
+    import tempfile
     from unittest import mock
 
     scripts = str(_ROOT / "scripts")
@@ -116,7 +173,9 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
         sys.path.insert(0, scripts)
     try:
         run_common = _load_script("launcher_env_run_common", "scripts/run_common.py")
-        prepare = _load_script("launcher_env_prepare_run", "scripts/prepare-run.py")
+        opencode_headless = _load_script(
+            "launcher_env_opencode_headless", "scripts/opencode_headless.py"
+        )
         agent_launcher_cli = _load_script(
             "launcher_env_agent_launcher_cli", "scripts/agent-launcher.py"
         )
@@ -129,60 +188,119 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
         produced["run_common.bridge_identity_env"] = set(
             run_common.bridge_identity_env("opencode", "1.0.0", "anthropic", "m", "high")
         )
-        produced["prepare-run.worker_env"] = set(
-            prepare.worker_env(
-                "bob",
-                "opencode",
-                "1.0.0",
-                "anthropic",
-                "m",
-                "",
-                "/tmp/workspace",
-                "/tmp/token",
-                "/tmp/telemetry.jsonl",
+
+        # opencode_headless.prepare writes the permission status directory (and
+        # OPENCODE_CONFIG_CONTENT) onto the environment it returns (#592). Its
+        # ``opencode debug config`` probe is stubbed with this interpreter so no
+        # harness install is needed. Compare values, not just names: a lane may
+        # already export one of these, and the builder still rewrites it.
+        with tempfile.TemporaryDirectory() as sandbox:
+            worktree = Path(sandbox)
+            base_env = dict(os.environ)
+            _, headless_env = opencode_headless.prepare(
+                [sys.executable, "-c", "print('{}')", "run", "kickoff"],
+                base_env,
+                worktree,
+                worktree / "sessions" / "journal",
             )
+        produced["opencode_headless.prepare"] = {
+            name for name, value in headless_env.items() if base_env.get(name) != value
+        }
+
+        # ``run_child`` is a method that launches a harness, so read the keys it
+        # assigns to its local environment from the AST instead (#592).
+        produced["agent_launcher.run_child"] = _script_subscript_keys(
+            _ROOT / "scripts/agent_launcher.py", "environment"
         )
 
-        # Alice's hub_env is a dict literal inside prepare(), not a callable.
-        # Read its keys from the AST and expand **bridge_identity_env(...).
-        tree = ast.parse((_ROOT / "scripts/prepare-run.py").read_text(encoding="utf-8"))
-        hub_keys: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
-                continue
-            targets = [t.id for t in node.targets if isinstance(t, ast.Name) and t.id == "hub_env"]
-            if targets and isinstance(node.value, ast.Dict):
-                for key, value in zip(node.value.keys, node.value.values, strict=True):
-                    if key is None:
-                        # ``**bridge_identity_env(...)``: expand by calling it.
-                        if (
-                            isinstance(value, ast.Call)
-                            and isinstance(value.func, ast.Name)
-                            and value.func.id == "bridge_identity_env"
-                        ):
-                            hub_keys |= produced["run_common.bridge_identity_env"]
+        prepare_path = _ROOT / "scripts/prepare-run.py"
+        # The generated launch scripts are removed with #248; collect them only
+        # while their producer exists (#592).
+        if prepare_path.exists():
+            prepare = _load_script("launcher_env_prepare_run", "scripts/prepare-run.py")
+            produced["prepare-run.worker_env"] = set(
+                prepare.worker_env(
+                    "bob",
+                    "opencode",
+                    "1.0.0",
+                    "anthropic",
+                    "m",
+                    "",
+                    "/tmp/workspace",
+                    "/tmp/token",
+                    "/tmp/telemetry.jsonl",
+                )
+            )
+
+            # Alice's hub_env is a dict literal inside prepare(), not a callable.
+            # Read its keys from the AST and expand **bridge_identity_env(...).
+            tree = ast.parse(prepare_path.read_text(encoding="utf-8"))
+            hub_keys: set[str] = set()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                targets = [
+                    t.id for t in node.targets if isinstance(t, ast.Name) and t.id == "hub_env"
+                ]
+                if targets and isinstance(node.value, ast.Dict):
+                    for key, value in zip(node.value.keys, node.value.values, strict=True):
+                        if key is None:
+                            # ``**bridge_identity_env(...)``: expand by calling it.
+                            if (
+                                isinstance(value, ast.Call)
+                                and isinstance(value.func, ast.Name)
+                                and value.func.id == "bridge_identity_env"
+                            ):
+                                hub_keys |= produced["run_common.bridge_identity_env"]
+                            else:
+                                raise AssertionError(
+                                    "prepare-run hub_env unpacks an unrecognised call; "
+                                    "extend collect_launcher_env_keys"
+                                )
+                        elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                            hub_keys.add(key.value)
                         else:
                             raise AssertionError(
-                                "prepare-run hub_env unpacks an unrecognised call; "
-                                "extend collect_launcher_env_keys"
+                                f"prepare-run hub_env has a non-literal key: {ast.dump(key)}"
                             )
-                    elif isinstance(key, ast.Constant) and isinstance(key.value, str):
-                        hub_keys.add(key.value)
-                    else:
-                        raise AssertionError(
-                            f"prepare-run hub_env has a non-literal key: {ast.dump(key)}"
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "hub_env"
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                    ):
+                        hub_keys.add(target.slice.value)
+            assert hub_keys, "prepare-run hub_env dict literal was not found"
+            produced["prepare-run.hub_env"] = hub_keys
+
+            # launch_lines writes the start script's TEMP/TMP/TMPDIR, CODEX_HOME
+            # and OPENCODE_CONFIG lines. Render both hosts and both harnesses so
+            # the POSIX and PowerShell spellings are all collected.
+            launch_counter = 0
+            launch_keys: set[str] = set()
+            for harness in ("codex", "opencode"):
+                for host in ("posix", "nt"):
+                    # Path() must see the real host; only launch_lines renders
+                    # for the other one.
+                    launch_counter += 1
+                    workdir = Path(f"/tmp/work{launch_counter}")
+                    config = Path(f"/tmp/config{launch_counter}")
+                    prompt = Path(f"/tmp/prompt{launch_counter}.md")
+                    tmp_dir = Path(f"/tmp/tmp{launch_counter}")
+                    with mock.patch.object(os, "name", host):
+                        launch_keys |= _launch_script_env_keys(
+                            prepare.launch_lines(
+                                harness,
+                                workdir,
+                                config,
+                                prompt,
+                                None,
+                                tmp_dir=tmp_dir,
+                            )
                         )
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Subscript)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "hub_env"
-                    and isinstance(target.slice, ast.Constant)
-                    and isinstance(target.slice.value, str)
-                ):
-                    hub_keys.add(target.slice.value)
-        assert hub_keys, "prepare-run hub_env dict literal was not found"
-        produced["prepare-run.hub_env"] = hub_keys
+            produced["prepare-run.launch_lines"] = launch_keys
 
         place = agent_launcher_cli.Place(
             url="http://127.0.0.1:8420",
