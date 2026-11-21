@@ -1727,6 +1727,13 @@ class HubStore:
 
             if status == WorkflowStatus.DONE:
                 finalize(connection, workflow_id, self._now_iso())
+                # Nothing waits to ack after done, so settle deliveries now:
+                # a finished run must not redeliver its last event into a
+                # fresh wait (#610).
+                connection.execute(
+                    "UPDATE event SET state = 'acked', acked_at = ? WHERE state = 'delivered'",
+                    (self._now_iso(),),
+                )
             if row["status"] == "paused":
                 collection = connection.execute(
                     "SELECT paused_at FROM closeout_collection WHERE workflow_id = ?",

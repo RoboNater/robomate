@@ -459,7 +459,7 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
             "gives both `Closes acme/app#7` and `Closes acme/app#9`",
         ),
     )
-    wrap_up = section(skill, "## WRAP-UP", "Ack the final processed event")
+    wrap_up = skill.split("## WRAP-UP", 1)[1]
     assert_fragments(
         wrap_up,
         (
@@ -473,6 +473,35 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
     assert_fragments(
         durable_goal,
         ("replace that sentence with the statement text itself", "one run per pull request"),
+    )
+
+
+def test_alice_never_holds_for_a_final_ack() -> None:
+    """#610: release and done follow her own report with no final wait."""
+    skill = read("guides/orchestrator.md")
+    durable = section(skill, "## Durable event loop", "## Typed result routing")
+    assert_fragments(
+        durable,
+        (
+            "close-out done",
+            "your own `submit_closeout_report` submitted",
+            "no open task and no open question",
+            "do not wait for another event",
+            "release the workers and set the workflow `done`",
+            "`wait_for_event(ack=<delivery_id>, timeout_s=0)`",
+            "`done` settles",
+        ),
+    )
+    wrap_up = skill.split("## WRAP-UP", 1)[1]
+    assert_fragments(
+        wrap_up,
+        (
+            "the hub queues no inbox event for an orchestrator's own report",
+            "The next steps are `release_agent` for each worker,",
+            "then `set_workflow_status(done)`, with no wait in between",
+            "Do not wait for another event before concluding",
+            "release the workers and set `done` with no wait",
+        ),
     )
 
 

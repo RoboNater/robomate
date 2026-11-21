@@ -18,7 +18,13 @@ from agent_hub.mcp import create_mcp
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, MergeGate, PrState
 from agent_hub.orchestrator import CALLER, Caller, OrchestratorOps
 from agent_hub.store import MAX_CHECK_NAME_CHARS, HubStore
-from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, TaskState
+from agent_hub_common import (
+    MAX_MESSAGE_PART_BYTES,
+    AgentProfile,
+    EventKind,
+    TaskState,
+    WorkflowStatus,
+)
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from conftest import SESSION, rpc
 from fastapi import FastAPI
@@ -448,3 +454,22 @@ async def test_log_decision_warns_on_unkeyed_event_prefix(
     with caplog.at_level("WARNING", logger="agent_hub.orchestrator"):
         await ops.log_decision("Plan", "Because")
     assert "no key was passed" not in caplog.text
+
+
+def test_done_settles_an_unacknowledged_delivery(store: HubStore) -> None:
+    """#610: done acks a leased event; nothing redelivers into a finished run."""
+    while (event := store.lease_next_event()) is not None:
+        store.ack_event(event.delivery_id)
+    queued = store.append_event(EventKind.TASK_PROGRESS, {"agent": "bob", "task_id": "t1"})
+    leased = store.lease_next_event()
+    assert leased is not None and leased.id == queued.id
+    assert leased.delivery_id is not None
+    assert [entry["id"] for entry in store.get_state()["unacked_delivered"]] == [queued.id]
+
+    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+
+    assert store.get_state()["unacked_delivered"] == []
+    assert store.lease_next_event() is None
+    with sqlite3.connect(store.path) as connection:
+        state = connection.execute("SELECT state FROM event WHERE id = ?", (queued.id,)).fetchone()
+    assert state is not None and state[0] == "acked"
