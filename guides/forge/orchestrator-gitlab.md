@@ -18,8 +18,8 @@ Use `--squash` when `policy.merge_method == "squash"`, and `--squash=false` when
 Read the MR back with `check_merge_gate(pr_url, expected_head_sha=<approved head>)`.
 Require `pr_state == merged`, `head_matches` and a non-null `merged_sha` before
 WRAP-UP; that gate reading is what records the forge's target commit in the hub.
-`glab api` and `glab mr view` are only a fallback when the gate cannot answer, and
-for the branch-name lookup; they never substitute for the gate reading. Log the
+`glab api` and `glab mr view` are only a fallback when the gate cannot answer;
+they never substitute for the gate reading. Log the
 reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the
 review-comment URL and every check name/bucket. Never merge from a stale or
 unreadable gate.

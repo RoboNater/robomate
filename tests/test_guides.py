@@ -770,9 +770,11 @@ def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> Non
     assert "--delete-branch" not in text
     assert "--match-head-commit <approved head>" in text
     assert "git push origin --delete <branch>" in text
-    assert text.index("check_merge_gate(pr_url, expected_head_sha=<approved head>)") < text.index(
-        "git push origin --delete <branch>"
-    )
+    appendix_start = text.index("# GitHub Orchestrator Appendix")
+    assert text.index(
+        "check_merge_gate(pr_url, expected_head_sha=<approved head>)",
+        appendix_start,
+    ) < text.index("git push origin --delete <branch>", appendix_start)
 
 
 def test_worker_guide_explains_held_task_id_recovery() -> None:
