@@ -21,6 +21,7 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
+from agent_hub_common.startup import stage
 
 # v30 is #450's stored closeout task context.
 # v29 is #423's durable workflow export completion marker.
@@ -421,14 +422,17 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
         if current_version == SCHEMA_VERSION:
             return
         if current_version == 0:
-            connection.executescript(SCHEMA)
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            stage("fresh schema initialization started")
+            connection.executescript(
+                f"BEGIN IMMEDIATE;\n{SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+            )
             return
         if current_version > SCHEMA_VERSION:
             raise DatabaseVersionError(
                 f"database schema version {current_version} is incompatible with "
                 f"expected version {SCHEMA_VERSION}"
             )
+        stage("database migrations started")
         connection.execute("BEGIN IMMEDIATE")
         # Each step inspects the table rather than trusting the version number,
         # so it is safe to re-run and migrations compose across schema versions
@@ -470,6 +474,7 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
     # version is stamped only once it succeeds, so a failed rebuild leaves a
     # database that the next run migrates again rather than one that claims to
     # be current.
+    stage("database table rebuild started")
     _rebuild_drifted_tables(path)
     with database(path) as connection:
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
