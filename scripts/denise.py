@@ -62,17 +62,20 @@ def resolve_settings(
     resolved_model = model or (source.get("model", "") if same_harness else "")
     resolved_effort = effort or (source.get("effort", "") if same_harness else "")
     reason = ""
+    notes = {}
     remedy = "use --denise-harness claude or --denise-harness codex"
     if resolved_effort and effective not in EFFORT_SUPPORTED:
         if effort:
             raise ValueError(f"--denise-effort is unsupported for interactive {effective}; omit it")
-        reason = f"inherited effort has no interactive representation for {effective}; {remedy}"
+        notes["effort_note"] = (
+            f"Denise uses the {effective} default effort; "
+            f"inherited effort {resolved_effort!r} has no interactive representation"
+        )
+        resolved_effort = ""
     if effective not in SUPPORTED:
         if harness:
             raise ValueError(f"explicit --denise-harness {harness!r} is not supported; {remedy}")
-        reason = (
-            reason or f"inherited harness {effective} is not yet supported for Denise; {remedy}"
-        )
+        reason = f"inherited harness {effective} is not yet supported for Denise; {remedy}"
     return {
         "settings_from": settings_from,
         "harness": effective,
@@ -80,6 +83,7 @@ def resolve_settings(
         "effort": resolved_effort,
         "status": "skipped" if reason else "ready",
         "skip_reason": reason,
+        **notes,
     }
 
 
@@ -309,8 +313,6 @@ def render(
 # -- joined runs (M2 Step 10, #247) -------------------------------------------------
 
 DOCTOR_LEAVES = {
-    "context": "context.json",
-    "startup": "startup.md",
     "workdir": "workspace",
     "configs": "configs",
     "tmp": "tmp",
@@ -324,16 +326,17 @@ def build_joined_context(
     run_dir: Path,
     state_dir: Path,
     sessions_dir: Path,
-    target: Path | None,
+    hub_checkout: Path,
+    target: Path,
+    target_common: str | None,
     tooling_root: Path,
     settings: Mapping[str, str],
 ) -> dict[str, Any]:
     """Index a joined run from its locally readable ``runs/<run_id>/manifest.json``.
 
     No HTTP and no MCP: the hub may be stopped. The robomate tooling checkout
-    and the target repository checkout stay separate references; only the
-    target, its git common directory and the selected run's files are repair
-    roots. Missing metadata stays unknown.
+    and the target repository checkout stay separate references. Missing
+    metadata stays unknown.
     """
     host = socket.gethostname()
     run_dir = run_dir.resolve()
@@ -352,9 +355,14 @@ def build_joined_context(
             inventory[key]["purposes"].append(purpose)
         return item
 
-    target_path = target if target is not None else hub.get("checkout")
-    checkout = add(target_path, "selected target checkout")
-    common = git_common_dir(Path(checkout["path"])) if checkout["path"] else None
+    hub_checkout = hub_checkout.resolve()
+    same_checkout = target == hub_checkout
+    checkout = add(target, "selected target checkout")
+    hub_root = add(hub_checkout, "selected hub checkout")
+    hub_common = target_common if same_checkout else git_common_dir(hub_checkout)
+    target_origin = (
+        hub.get("origin") if same_checkout else git_value(target, "remote", "get-url", "origin")
+    )
     add(run_dir, "selected run files and doctor reports")
     state = add(state_dir, "selected hub durable state")
     sessions = reference(sessions_dir, host)
@@ -388,17 +396,21 @@ def build_joined_context(
         },
         "hub": {
             "name": hub.get("name"),
+            "checkout": hub_root,
+            "manifest_checkout": reference(hub.get("checkout"), host),
+            "git_common_dir": add(hub_common, "selected hub git common directory"),
             "state": state,
             "sessions": sessions,
+            "origin": safe_origin(str(hub.get("origin") or "")),
             "url": safe_origin(str(hub.get("url") or "")),
             "logs": [reference(state_dir / "hub.log", host)],
         },
         "target": {
             "checkout": checkout,
-            "git_common_dir": add(common, "selected target git common directory"),
-            "origin": safe_origin(str(hub.get("origin") or "")),
-            "forge": hub.get("forge"),
-            "default_branch": hub.get("default_branch"),
+            "git_common_dir": add(target_common, "selected target git common directory"),
+            "origin": safe_origin(str(target_origin or "")),
+            "forge": hub.get("forge") if same_checkout else None,
+            "default_branch": hub.get("default_branch") if same_checkout else None,
             "instruction_advice": "Read AGENTS.md in the actual affected checkout and applicable "
             "nested instructions; missing files are normal.",
         },
@@ -423,13 +435,12 @@ def build_joined_context(
 def render_joined(context: Mapping[str, Any]) -> Path:
     """Write the doctor's context, startup text and a new report skeleton; return the report.
 
-    Everything stays in the selected run's ``denise/``. Existing reports are
-    never touched: each consultation gets its own exclusively created file.
+    The report's exclusive filename also identifies its context and briefing.
+    A second consultation can start without changing the first one's inputs.
     """
     doctor = context["doctor"]
     for key in ("workdir", "configs", "tmp", "reports"):
         Path(doctor[key]).mkdir(parents=True, mode=0o700, exist_ok=True)
-    Path(doctor["context"]).write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")
     reports = Path(doctor["reports"])
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     for attempt in range(100):
@@ -447,6 +458,11 @@ def render_joined(context: Mapping[str, Any]) -> Path:
             continue
     else:
         raise OSError(f"no free report name in {reports}")
+    consultation = reports.parent / "consultations" / report.stem
+    consultation.mkdir(parents=True, mode=0o700)
+    doctor["context"] = str(consultation / "context.json")
+    doctor["startup"] = str(consultation / "startup.md")
+    Path(doctor["context"]).write_text(json.dumps(context, indent=2) + "\n", encoding="utf-8")
     Path(doctor["startup"]).write_text(
         "# Denise consultation context\n\n"
         f"Read the local guide: {context['tooling']['guide']['path']}\n"

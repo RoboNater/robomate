@@ -108,12 +108,11 @@ robomate log --timeline    # drill down when something looks wrong
   worktree and prints the path to start the harness in. IDE harnesses open that folder.
 - The statement of work can also be pasted to the orchestrator in chat; `robomate submit` is
   preferred because it is stored byte-for-byte (§7.1).
-- **Help on demand (M7, alongside M2).** `scripts/prep-standard-run.sh --config run-config.toml`
-  (or `.ps1`) generates `start-denise.sh` / `.ps1` alongside the team scripts. When help is
-  needed, the operator opens another terminal and runs it. Denise starts interactively with
-  short context for that selected run, even when the hub is down. Preparation never starts
-  her with Alice, Bob, or Charlie; she is optional and normal orchestration does not wait
-  for her. See §5.1 and the [M7 plan](development/implementation-plan-mvp-m7-denise.md).
+- **Help on demand (M7, alongside M2).** `scripts/start-run.py` prints a run-specific
+  `agent-launcher.py doctor` command. The operator can run it in another terminal to
+  open an interactive consultation with the selected run's context, even when the hub
+  is down. Team startup and orchestration proceed independently. See §5.1 and the
+  [M7 plan](development/implementation-plan-mvp-m7-denise.md).
 
 ---
 
@@ -500,20 +499,20 @@ She is a distinct interactive role, normally stopped, with no worker assignment,
 heartbeat, event lease, or orchestrator session. She never registers as Alice or a worker.
 Closing her terminal ends the consultation without releasing workers or changing workflow
 state. Starting her again reads current evidence; it does not replay a recovery action.
-M7 supplies generated start scripts and a local `docs/denise/guide.md`, outside the
-hub-served `guides/` directory, not a new hub service or MCP role. Harness/model/effort can
+M7 uses `agent-launcher.py doctor` and the local `docs/denise/guide.md`, outside the
+hub-served `guides/` directory. Harness/model/effort can
 inherit an existing agent's settings (initial default: Bob) or be overridden explicitly;
 only those settings are inherited, never that agent's identity, conversation, MCP
 configuration, or unattended launch policy.
-An unsupported inherited harness skips Denise's start script with a warning and a supported
-override remedy, while team preparation succeeds. Choosing `denise_settings_from`, even
+An unsupported inherited harness skips the consultation command with a warning and a supported
+override remedy, while team startup succeeds. Choosing `denise_settings_from`, even
 explicitly, still means inheritance; only a nonempty `denise_harness` override selects an
 explicit harness, whose lack of doctor support is a preparation error. Model and effort
 values pass through the harness adapters without a new allowlist. If an effort option
 cannot be rendered for the interactive harness, a nonempty `denise_effort` override errors.
-An inherited effort never skips Denise: preparation still generates her start script
-without the effort option, so she runs at the harness's default effort, and prints a note
-naming the inherited effort that is not applied. Never silently substitute values.
+For a supported harness, an inherited effort with no interactive representation is
+omitted from the consultation command. `start-run.py` prints a note naming that effort,
+and Denise uses the harness default.
 
 **Startup context.** A short local prompt identifies the run directory and manifest,
 expected hub identity and checkout, target repository, agents and workspace locations,
@@ -1392,7 +1391,7 @@ itself.
 | M0 | Seed robomate | `RoboNater/robomate` created with the PoC files and this spec; `poc-spec.md` frozen; PoC acceptance scripts archived (Appendix B); robo-agents #57 exported to `docs/poc-lessons.md`; Python distribution renamed `robomate`; roadmap issue, a minor-nits issue, and one issue per carried item (Appendix A) opened; robo-agents archived with a pointer to robomate | CI green in robomate; the roadmap lists M1–M6 with the carried issues attached; robo-agents is read-only |
 | M1 | Standalone hub + `robomate` CLI | `robomate up/down/status/ls`, `.robomate/` layout, registry, port reuse; orchestrator JSON-RPC route; `robomate mcp` bridge for all roles (existing tool names) with heartbeat and discovery; accounting on (#7); fix flaky tests (#6) | A real run completes with the hub from `robomate up`, and the orchestrator's session is restarted mid-run without disturbing workers |
 | Pre-M2 | Checkout-scoped hubs: identity, discovery, lifecycle | The checkout owns its hub, bare-repository layouts included; hub names; per-hub registry entries, `up.lock`, and port; discovery without silent attach and an explicit hub selector for the CLI; legacy hubs keep their state (§4). State stays in the checkout's `.robomate/`, reached through one resolver | Two hubs from two linked worktrees of one repository run at once with distinct names, state, and ports, and `robomate ls` shows both; stopping one leaves the other running; `down` and `status` in a checkout with no hub refuse and list both; a hub created before the change starts with its old state; the standard run path is unchanged |
-| M7 | Denise: interactive doctor agent | Optional generated `start-denise.sh` / `.ps1` from standard-run preparation; harness/model/effort inheritance and overrides; short run-specific context with robomate and target-repository references; local guide, selected-run repair access and operator authority rules (§5.1); hub-independent recovery reports | The operator starts Denise only when needed, with no hand-assembled briefing, on Bash and native PowerShell. Diagnosis works with the hub down and with a separate target repository. Recorded acceptance covers a stopped hub, an agent returned to the shell, an attached/orphan predecessor, a pending question or pause, and preservation of uncommitted work; normal team scripts and orchestration remain usable |
+| M7 | Denise: interactive doctor agent | Run-specific `agent-launcher.py doctor` command from `start-run.py`; harness/model/effort inheritance and overrides; short run-specific context with robomate and target-repository references; local guide, selected-run repair access and operator authority rules (§5.1); hub-independent recovery reports | The operator starts Denise only when needed, with no hand-assembled briefing, on Bash and native PowerShell. Diagnosis works with the hub down and with a separate target repository. Recorded acceptance covers a stopped hub, an agent returned to the shell, an attached/orphan predecessor, a pending question or pause, and preservation of uncommitted work. Normal team launch and orchestration remain usable |
 | M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no pasted launch prompts; Denise's separate context/profile/report files remain (§5.1). The same again from a second worktree's hub while the first runs |
 | M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; Devin CLI certified, or attempted and recorded; Devin Desktop (Devin Local) attempted via `join` and recorded; one real run with a non-Claude orchestrator |
 | M4 | Close-out and resilience | per-agent closeout report models, durable bounded collection before release (#215), `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: all-three and crashed-worker report collection survive restart with explicit missing reasons; report retries, identity/size/credential validation and pause-aware expiry; `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and any used counter claim closed out in the reservations issue, with no operator chat |
