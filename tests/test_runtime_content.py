@@ -623,7 +623,12 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
     )
     assert_fragments(
         section(agents, "## Invariants", "## Changing things"),
-        ("never starts or stops the run's hub or any agent", "isolated smoke run"),
+        (
+            "Joined workers never start or stop the run's hub or any agent",
+            "manual hub launch is the isolated smoke run",
+            "operator explicitly requests recovery",
+            "She may leave the restored run hub running",
+        ),
     )
     assert_fragments(
         read("guides/orchestrator.md"),

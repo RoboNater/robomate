@@ -336,7 +336,7 @@ briefing and report. The required `windows` CI job executes the command through 
 PowerShell and covers the Windows paths. Step 2 validation is unattended.
 
 ```sh
-uv run --locked pytest tests/test_denise.py tests/test_agent_launcher.py tests/test_start_run.py
+uv run --locked pytest tests/test_denise.py tests/test_agent_launcher.py tests/test_start_run.py tests/test_runtime_content.py
 ```
 
 [#254](https://github.com/RoboNater/robomate/issues/254) records live operator
