@@ -12,20 +12,19 @@ the spec if it settles a remaining choice differently.
 
 ## Outcome and boundaries
 
-M7 proceeds alongside M2. Preparing a run through
-`scripts/prep-standard-run.sh --config run-config.toml` (PowerShell: `.ps1`) generates a
-Denise start script without starting her. When trouble occurs, the operator opens a new
-terminal, runs `start-denise`, and gets an interactive assistant who knows which run to
-inspect and where robomate and the target project's instructions live. The hub may be down.
-The normal team has no dependency on Denise, her terminal, or her credentials.
+M7 proceeds alongside M2. `scripts/start-run.py` resolves Denise's settings and prints
+the command for `scripts/agent-launcher.py doctor`. When the operator needs help, they can
+run the command in a separate terminal, with the hub running or stopped. Denise gets the
+selected run's context and the paths to robomate and the target project's instructions.
+The team runs independently of her terminal and credentials.
 
 The operator's decision during #174 review replaces the original all-M7-before-M2
 ordering: M2 implementation continues on Track 2/lane A while M7 proceeds on Track 3.
 Only M2 Step 11 (#248), retirement of preparation, waits for completed Denise and a proven
-successor. The prepared-run first slice below remains wanted: it helps runs being prepared
-today and does not depend on unfinished M2 APIs. M2 Step 10 (#247) can proceed in parallel;
-Steps 10/11 then carry this behavior into the successor launcher before removing its old
-entry points. Operational assignments live on #2; the durable gate is in spec §13.
+successor. The prepared-run first slice shipped metadata and a local guide. M2 Step 10
+(#247) shipped the `doctor` entry, which Step 2 uses under the owner's November 19 scope
+decision in [#252](https://github.com/RoboNater/robomate/issues/252). Operational
+assignments live on #2. The durable gate is in spec §13.
 
 Denise diagnoses, explains and performs requested recovery within a distinct operator
 assistant role. She is not a fourth worker, a backup Alice, an always-on monitor, or a hub
@@ -79,13 +78,12 @@ effective values and the inheritance source so a later config edit cannot silent
 a generated consultation. Do not infer model identity from a vendor or claim an unknown
 effort value.
 
-Always generate the optional start script on supported combinations, regardless of team
-`auto_start`. There is no Denise auto-start or automatic recovery loop. If an inherited
-harness is not yet supported for Denise, prepare the team normally, skip `start-denise`,
-and warn with a concrete supported `--denise-harness` override. Record the skipped state
-and reason in the optional manifest object; do not point to a nonexistent script. "Explicit
-harness" means a nonempty `denise_harness` CLI/TOML override, not merely choosing
-`denise_settings_from`. Resolve and test the following defaults in Step 1:
+For supported combinations, `start-run.py` prints the optional consultation command
+regardless of team `auto_start`. An unsupported inherited harness leaves team startup
+available and produces a warning with a supported `--denise-harness` override.
+An explicit harness override is a nonempty `denise_harness` setting. Selecting
+`denise_settings_from` alone still uses inheritance. Step 1 tested these defaults
+through prepared-run metadata, and Step 2 carries them to the command:
 
 | Input | Result |
 | --- | --- |
@@ -93,7 +91,7 @@ harness" means a nonempty `denise_harness` CLI/TOML override, not merely choosin
 | Nonempty `denise_harness` naming a harness without doctor support | Preparation error naming that override and supported alternatives. |
 | Model/effort values, inherited or explicitly supplied | Forward through the existing adapters without a new model/effort allowlist or provider probe; the harness validates values when Denise is started. Never silently substitute a different value. |
 | Nonempty explicit `denise_effort` where the interactive harness has no supported way to render an effort option | Preparation error naming the unsupported option. This is an adapter capability check, not validation of the effort value. |
-| Inherited effort with no supported interactive representation | Keep team preparation working and still generate the doctor profile and `start-denise`, without the effort option: Denise uses the harness's default effort. Print a note naming the inherited effort that is not applied. Never skip Denise for effort alone. |
+| Inherited effort with no supported interactive representation | Keep the team and consultation available. For a supported harness, print a note naming the inherited effort and omit it from the consultation command so the harness uses its default. |
 | Invalid selector/type, or `denise_settings_from = "none"` without the required harness | Configuration error, independent of the unsupported-inheritance rule. |
 
 Initially implement interactive Claude Code and Codex on Bash/native PowerShell; then
@@ -102,25 +100,19 @@ unsupported for Denise until its interactive configuration and access behavior a
 its existing team prototype and #235 do not establish doctor support. A team using Devin
 can choose an explicit supported Denise harness.
 
-Proposed files, all inside the selected run:
+The joined launch keeps the following files inside the selected run:
 
 | File | Purpose |
 | --- | --- |
-| `start-denise.sh` / `start-denise.ps1` | Pin the run and tooling root, set a dedicated home/config, invoke an interactive harness, propagate its exit code. Native Windows also follows the existing Git Bash wrapper convention. |
-| `denise/context.json` | Small, non-secret path/identity/settings index; separates host names and host-local paths. |
-| `denise/startup.md` | Short generated briefing pointing to the context index and local guide. No log dumps, tokens, copied worker etiquette, or task-loop prompt. |
-| `denise/workspace/`, `denise/configs/`, `denise/tmp/` | Stable consultation working directory, isolated harness configuration/home and temporary files. No target branch checkout needed. |
+| `denise/consultations/<id>/context.json` | Small path, identity and settings index with host-local references. |
+| `denise/consultations/<id>/startup.md` | Short briefing with paths to the context, local guide and matching report. |
+| `denise/workspace/`, `denise/configs/`, `denise/tmp/` | Stable consultation working directory, optional clean-login profile and temporary files. |
 | `denise/reports/<UTC-time>-<unique-id>.md` | One consultation's diagnosis/actions/verification and outstanding items. Unique creation avoids overwriting an earlier report. |
 
-Add a separate optional top-level `denise` object to `run.json`: context/startup/script,
-workdir/config/report paths, effective settings, tooling root/version and local guide path.
-Include a ready/skipped status and skip reason, with script paths only when generated.
-Keep it outside `launch.agents`; status/accounting must not mistake Denise for a joined
-agent. Store only paths to credentials where needed by existing tooling, never secret
-contents. No DB or wire change is expected; before any future incompatible manifest change,
-audit consumers and document migration. Existing runs are not rewritten by preparation.
-The initial supported adoption path is a newly prepared run; an add-only retrofit helper
-for old runs is an open choice below. Never rerun preparation to fix a live run.
+Step 1's separate optional `denise` object in prepared `run.json` remains outside
+`launch.agents` and records the context paths, effective settings and ready/skipped
+status. Step 2 reads the joined run's `runs/<run_id>/manifest.json` and creates its
+own local consultation files on demand. Existing prepared manifests are preserved.
 
 ### Context discovery and diagnosis without a hub
 
@@ -219,8 +211,8 @@ The recovery procedure is:
    supported controls only when intervention requires it. Do not call orchestrator RPC
    under Alice's name to communicate or change her session. If Alice cannot be contacted,
    establish actual process/bridge state and obtain the operator's recovery decision.
-4. Prefer `robomate up/down` from the selected owning checkout and generated
-   `resume-<agent>` on that agent's host. Use #173's exact conversation, saved config,
+4. Prefer `robomate up/down` from the selected owning checkout and
+   `agent-launcher.py resume <agent>` on that agent's host. Use #173's exact conversation, saved config,
    identity checks and predecessor lock. Explain pause/question advisories and essential
    identity/attachment refusals. Never use `start-<agent>` or rerun prep as recovery.
 5. For an attached/orphan bridge, first establish which harness/launcher/bridge owns it;
@@ -316,36 +308,41 @@ profiles, start/resume/ask semantics, or authority.
 
 ### Step 2 — Interactive start on Claude Code and Codex
 
-Generate functional Bash/PowerShell wrappers and isolated doctor profiles with no bridge,
-team identity or unattended flags. Refresh local availability observations at launch,
-create a unique report skeleton and propagate harness failures. Missing HTTP is diagnostic,
-not a startup blocker. Bound missing-path/config errors with concrete remedies. Document
-the actual grant behavior for each supported host, including Codex extra-directory write
-grants on native Windows; Denise does not exercise #11's MCP-withholding symptom.
-Cover generated scripts by executing them with fake harness executables, not just parsing
-their text. Prove no HTTP is needed at startup, no worker check-in/orchestrator takeover
-occurs, no team session file changes, and repeated consultations keep separate reports.
-Carry forward Step 1's unsupported-inheritance tests through the emitted start-script
-path. Apply the default-effort rule above in settings resolution: an inherited effort
-the harness can't render no longer skips Denise, so before Step 3 an OpenCode or
-AntiGravity team's only skip reason is the unsupported harness, and the warning says so.
-In this same first-runnable PR, clarify `AGENTS.md`'s role wording for Denise's
-explicitly requested recovery (including leaving a restored run hub running), while
-retaining joined workers' restrictions and the isolated-smoke-only exception.
+[#247 / PR #463](https://github.com/RoboNater/robomate/pull/463) shipped the local
+`agent-launcher.py doctor` command for Claude Code and Codex. It resolves a saved
+run, prepares local context, grants selected directories, opens the harness interactively
+and creates a fresh report. [#509](https://github.com/RoboNater/robomate/pull/509)
+made the operator login the default, added opt-in clean login on both scripts and
+verified that Codex disables configured MCP servers. [#568](https://github.com/RoboNater/robomate/pull/568)
+keeps Claude Code's briefing argument separate from its variadic directory grants.
+
+Finish on the `scripts/start-run.py` and `scripts/agent-launcher.py doctor` path.
+A doctor-only harness needs no team MCP entry. Apply the default-effort rule in
+settings resolution so that, before Step 3, OpenCode and AntiGravity inheritance
+skips Denise only for the unsupported harness. Keep prepared-run tooling at Step 1.
+The optional carry-over from the Step 1 review about re-preparation diagnostics
+concerns that legacy path.
+
+Resolve the hub and run offline, give concrete remedies for missing or mismatched
+inputs, and pin each consultation's startup and context files to its own report.
+Launch with scoped directory grants and interactive permissions. Denise's explicitly
+requested recovery follows the local guide and may leave the restored hub running.
+`AGENTS.md` retains joined workers' isolated-smoke exception.
+
+Exercise the command printed by `start-run.py` using fake harness executables, with
+the hub stopped. Verify startup requires no HTTP, worker check-in or orchestrator
+takeover, team session files stay unchanged, and each consultation keeps its own
+briefing and report. The required `windows` CI job executes the command through native
+PowerShell and covers the Windows paths. Step 2 validation is unattended.
 
 ```sh
-uv run --locked pytest tests/test_denise.py tests/test_prepare_run.py tests/test_runtime_content.py
-bash scripts/prep-standard-run.sh --config <sandbox-config.toml>
-bash <run-dir>/start-denise.sh
+uv run --locked pytest tests/test_denise.py tests/test_agent_launcher.py tests/test_start_run.py
 ```
 
-On native Windows, run `pwsh -NoProfile -File scripts/prep-standard-run.ps1 --config
-<sandbox-config.toml>`, then `pwsh -NoProfile -File <run-dir>/start-denise.ps1`. The prep
-wrapper forwards arguments to Python and uses `--config`, not a PowerShell `-Config`
-parameter. Preparation requires the selected sandbox hub running as usual; starting Denise
-after stopping it must still work.
-Automated tests use isolated test hubs/fake harnesses. Live CLI grants and interactive UX
-are separate operator evidence, not inferred from fake-harness tests.
+[#254](https://github.com/RoboNater/robomate/issues/254) records live operator
+acceptance on Lane 4. It covers interactive startup on Claude Code and Codex,
+`start-run.py` on Bash and native PowerShell, and real filesystem grants on each
+host, including Codex extra-directory writes on native Windows.
 
 ### Step 3 — Remaining interactive harnesses, remote context and docs
 
@@ -355,7 +352,7 @@ model/effort flags and effective access independently. Interactive `opencode` re
 `agent.build.variant` in `OPENCODE_CONFIG_CONTENT`. Render an inherited OpenCode effort
 the same way if the interactive doctor session honours it; otherwise apply the
 default-effort rule. Either way, a team whose selected agent uses OpenCode gets
-`start-denise`. Cover Windows Git Bash wrappers and
+a runnable consultation command. Cover Windows Git Bash and
 remote-worker metadata, honest unavailable evidence and a concrete worker-host resume
 recommendation. Add usage/troubleshooting to `docs/user-guide.md`, recovery links in
 `docs/development/agent-recovery.md`, `guides/README.md`'s pointer to the separate local
@@ -367,32 +364,16 @@ deferred combinations, credential setup, reports, consequential decisions and M2
 uv run --locked pytest tests/test_denise.py tests/test_prepare_run.py tests/test_prep_standard_run_area.py tests/test_runtime_content.py tests/test_agent_recovery.py
 ```
 
-Run Step 2's prep/start commands for each supported harness/host; on Windows also execute
-the generated `start-denise.sh` under Git Bash. Representative remote-worker commands,
-with the networked sandbox hub already started by the operator and the token file
-provisioned through the existing trusted path:
-
-```sh
-# Hub host, from the robomate source checkout; --denise-harness is proposed by Step 1.
-uv run --locked python scripts/prepare-run.py --repository <target-origin> \
-    --hub-repo <hub-checkout> --run-dir <hub-run-dir> --issue <issue> \
-    --account <account> --remote-worker bob --denise-harness codex
-# Worker host, from its robomate source checkout; do not pass hub-only flags here.
-uv run --locked python scripts/prepare-run.py --worker-only bob \
-    --repository <target-origin> --run-dir <worker-run-dir> \
-    --hub-url <reachable-hub-url> --token-file <existing-token-file>
-# Hub host: remote evidence must remain explicitly attributed to the worker host.
-bash <hub-run-dir>/start-denise.sh
-```
-
-Use corresponding native paths and `.ps1` wrappers on Windows. Confirm Denise labels
-worker-host evidence correctly. Record exact host-specific commands in the implementation
-PR. No real remote credential
-provisioning, process termination or live operator action is delegated to a worker.
+Extend the fake-harness and offline startup checks from Step 2. Use representative
+remote-worker metadata to verify that Denise attributes evidence to the worker host and
+recommends running guarded resume on that host. Record exact validation commands in the
+implementation PR. Live remote provisioning and process control belong to the
+operator acceptance step.
 
 ### Step 4 — Operator acceptance and evidence
 
-Run the following scenarios on disposable runs, preserving artifacts and failures as well
+In [#254](https://github.com/RoboNater/robomate/issues/254), run the following scenarios
+on disposable runs, preserving artifacts and failures as well
 as successes. Record exact preparation/start/recovery commands, robomate commit, OS/shell,
 harness version/settings, original/final run and hub identities, decisions, report paths
 and sanitized evidence in `docs/evidence/m7-<run-id>.md`. Do not tick M7 complete from unit
@@ -400,11 +381,11 @@ tests alone. Any substantive production defect gets its own scoped fix PR.
 
 | Scenario and operator commands | Expected result and evidence |
 | --- | --- |
-| Separate target project: prepare with `bash scripts/prep-standard-run.sh --config <config>` or the documented `.ps1` equivalent; run `<run-dir>/start-denise.sh` / `.ps1` | Interactive consultation, correct target instructions and separate robomate source/docs; no hand-assembled briefing, no extra joined agent and no edits to team conversations. Repeat on Bash and native PowerShell, and record each harness's actual support. |
-| Hub unavailable: operator uses `robomate down` in the selected hub checkout, then runs `start-denise`; later requests restoration with `robomate up` in that same checkout | Startup/diagnosis/report work without HTTP or MCP. Restore only when requested; verify the same hub ID/state/port and no fresh workflow. Distinguish a stopped hub from unreachable remote HTTP. Stop disposable hubs after the exercise. |
-| Agent returned to shell: operator verifies exit, starts Denise, requests `<run-dir>/resume-bob.sh` (or corresponding agent/`.ps1`) on its host | Preserve workspace/config and exact conversation; verify live hub/task identity and existing pending result, not a replayed kickoff or a second active agent. Explain a completed/released task instead of resuming it. |
+| Separate target project: run `uv run --locked python scripts/start-run.py --config <config>` on Bash and native PowerShell, then run the printed `agent-launcher.py doctor` command | Interactive Claude Code and Codex consultations, correct target instructions and separate robomate source/docs, no extra joined agent or team session changes. Record actual read and write grants per host, including Codex extra-directory writes on native Windows. |
+| Hub unavailable: operator uses `robomate down` in the selected hub checkout, then runs `agent-launcher.py doctor`. Later they request restoration with `robomate up` in the same checkout | Startup, diagnosis and report work without HTTP or MCP. Restore only when requested. Verify the same hub ID, state and port, and confirm the workflow is preserved. Distinguish a stopped hub from unreachable remote HTTP. Stop disposable hubs after the exercise. |
+| Agent returned to shell: operator verifies exit, starts Denise and requests guarded `agent-launcher.py resume <agent>` on its host | Preserve workspace, config and exact conversation. Verify live hub and task identity and the existing pending result. Explain a completed or released task. |
 | Attached/orphan predecessor: keep a sandbox predecessor attached and request resume | Existing lock/attachment refusal is explained. Denise requests an explicit decision before terminating the identified orphan. After the operator handles it, recheck and use guarded resume. No kill by guessed PID or forced duplicate; document any task lost while waiting. |
-| Pending question or pause: inspect with `robomate inbox --json` and `robomate status --json`; try relevant `resume-alice` and worker resume scripts | Explain role-specific advice; Alice may need to resume to handle the question. No automatic answer/status change. If the operator decides, use `robomate answer <id> <answer>` and verify answered status, then leave normal workflow progression to Alice. An advisory override never bypasses identity/attachment checks. |
+| Pending question or pause: inspect with `robomate inbox --json` and `robomate status --json`; try the relevant `agent-launcher.py resume` commands | Explain role-specific advice. Alice may need to resume to handle the question. If the operator decides, use `robomate answer <id> <answer>` and verify answered status, then leave normal workflow progression to Alice. Identity and attachment checks still apply to advisory overrides. |
 | Preserved uncommitted work: make a known sandbox worker edit, save `git -C <workspace> status --short` and `git -C <workspace> diff`, interrupt the agent and recover through Denise | Same branch/workspace and edit after recovery; preserve IDs and pending questions/results. No reset, clean, new clone, DB deletion or prep replay. Report verification and any unresolved ambiguity. |
 | Remote evidence unavailable: deny access to a worker host, then start Denise on the hub host | Useful local diagnosis; remote logs/status explicitly unknown, with worker-host commands recommended. No copied token or assumed path translation. Later operator-provided access does not silently change the run being operated on. |
 

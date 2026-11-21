@@ -30,6 +30,7 @@ from typing import Any
 
 import fake_harness
 import pytest
+from agent_hub_common import registry
 from agent_hub_common.launcher_observations import permission_diagnostic
 from fake_harness import (
     SUPERVISED_MAX_RESUMES,
@@ -624,7 +625,8 @@ stdin = sys.stdin.read() if argv and argv[-1] == "-" else None
 keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN",
         "ROBOMATE_TOKEN_FILE", "ROBOMATE_HUB_ID", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
         "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
-        "PYTEST_XDIST_AUTO_NUM_WORKERS", "HUB_TELEMETRY_LOG", "PWD", "VIRTUAL_ENV", "PATH")
+        "PYTEST_XDIST_AUTO_NUM_WORKERS", "HUB_TELEMETRY_LOG", "AGENT_NAME",
+        "PWD", "VIRTUAL_ENV", "PATH")
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
           "env": {k: os.environ.get(k) for k in keys}}
 log = os.environ["FAKE_LOG"]
@@ -2328,6 +2330,7 @@ def run(area: dict[str, Path]) -> dict[str, Path]:
     target = area["root"] / "target repo"
     target.mkdir()
     git(target, "init", "-q")
+    git(target, "remote", "add", "origin", "https://user:secret@github.com/example/custom.git")
     run_dir = area["state"] / "runs" / RUN
     run_dir.mkdir(parents=True)
     manifest = {
@@ -2350,14 +2353,24 @@ def run(area: dict[str, Path]) -> dict[str, Path]:
     return {"target": target, "run_dir": run_dir, "denise": run_dir / "denise"}
 
 
+def doctor_briefing(run: dict[str, Path]) -> Path:
+    (briefing,) = (run["denise"] / "consultations").iterdir()
+    return briefing
+
+
 def no_hub() -> Any:
     return FakeHub(lambda method: pytest.fail(f"the doctor read the hub: {method}"))
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])
 def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
-    area: dict[str, Path], run: dict[str, Path], harness: str
+    area: dict[str, Path], run: dict[str, Path], harness: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("doctor tried to discover a live hub or acquire a worker workspace")
+
+    monkeypatch.setattr(registry, "check_healthz", unexpected)
+    (area["state"] / "token").unlink()
     team_log = (area["sessions"] / "bob.jsonl").read_bytes()
     before = files(area["root"], area["harness_dir"])
 
@@ -2375,15 +2388,25 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
         ],
         programs=programs(area),
         reader=no_hub(),
+        workspace=unexpected,
     )
 
     assert code == 0
     (launch,) = launches(area)
-    prompt = f"Read {run['denise'] / 'startup.md'} and follow the instructions in it"
+    prompt = f"Read {doctor_briefing(run) / 'startup.md'} and follow the instructions in it"
     assert Path(launch["cwd"]).resolve() == (run["denise"] / "workspace").resolve()
     assert launch["argv"][-1] == prompt
-    assert not any("Join robomate" in word or "--mcp-config" in word for word in launch["argv"])
-    assert not any(word in launch["argv"] for word in ("-p", "--approve-for-me"))
+    assert not any(
+        "Join robomate" in word or "takeover=true" in word or "--mcp-config" in word
+        for word in launch["argv"]
+    )
+    assert not {
+        "-p",
+        "exec",
+        "--approve-for-me",
+        "--dangerously-skip-permissions",
+        "--resume",
+    }.intersection(launch["argv"])
     if harness == "codex":
         assert "approval_policy=on-request" in launch["argv"]
     else:
@@ -2391,7 +2414,17 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
     granted = [
         launch["argv"][i + 1] for i, word in enumerate(launch["argv"]) if word == "--add-dir"
     ]
-    assert str(run["target"].resolve()) in granted and str(run["run_dir"].resolve()) in granted
+    assert set(granted) == {
+        str(path.resolve())
+        for path in (
+            run["target"],
+            run["target"] / ".git",
+            run["run_dir"],
+            area["state"],
+            area["checkout"],
+            area["checkout"] / ".git",
+        )
+    }
     # Every grant stays a directory and the prompt stays positional: Claude
     # Code's variadic --add-dir otherwise consumes a trailing prompt (#513).
     assert prompt not in granted and "--" not in granted
@@ -2399,7 +2432,7 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
         assert launch["argv"][-2] == "--"
     # Everything the doctor wrote is under the selected run's denise/; team logs are untouched.
     after = files(area["root"], area["harness_dir"])
-    changed = {path for path in after if before.get(path) != after[path]}
+    changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
     assert changed and all(
         run["denise"].resolve() in Path(path).resolve().parents for path in changed
     )
@@ -2429,28 +2462,44 @@ def test_doctor_context_keeps_robomate_and_target_apart(
         == 0
     )
 
-    context = json.loads((run["denise"] / "context.json").read_text(encoding="utf-8"))
+    context_text = (doctor_briefing(run) / "context.json").read_text(encoding="utf-8")
+    context = json.loads(context_text)
     assert context["tooling"]["root"]["path"] == str(ROOT.resolve())
     assert context["target"]["checkout"]["path"] == str(run["target"].resolve())
-    assert context["target"]["origin"] == "https://github.com/example/target.git"
+    assert context["target"]["origin"] == "https://github.com/example/custom.git"
+    assert context["hub"]["checkout"]["path"] == str(area["checkout"].resolve())
+    assert context["hub"]["origin"] == "https://github.com/example/target.git"
     assert context["run"]["run_id"] == RUN and context["run"]["hub_id"] == HUB
     modes = {root["path"]: root["mode"] for root in context["access_inventory"]["roots"]}
     assert modes[str(ROOT.resolve())] == "read"
     assert modes[str(run["target"].resolve())] == "write"
-    assert "secret" not in (run["denise"] / "context.json").read_text(encoding="utf-8")
+    assert "secret" not in context_text
 
 
 def test_doctor_keeps_earlier_reports(area: dict[str, Path], run: dict[str, Path]) -> None:
     words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"]
     assert invoke(words, programs=programs(area), reader=no_hub()) == 0
     (first,) = (run["denise"] / "reports").iterdir()
+    briefing = doctor_briefing(run)
+    startup = (briefing / "startup.md").read_text(encoding="utf-8")
+    context = (briefing / "context.json").read_bytes()
+    assert str(first) in startup
     first.write_text("# Earlier findings\n", encoding="utf-8")
 
-    assert invoke(words, programs=programs(area), reader=no_hub()) == 0
+    assert (
+        invoke([*words, "--model", "second-model"], programs=programs(area), reader=no_hub()) == 0
+    )
 
-    reports = sorted((run["denise"] / "reports").iterdir())
-    assert len(reports) == 2 and first in reports
+    (second,) = set((run["denise"] / "reports").iterdir()) - {first}
     assert first.read_text(encoding="utf-8") == "# Earlier findings\n"
+    assert (briefing / "startup.md").read_text(encoding="utf-8") == startup
+    assert (briefing / "context.json").read_bytes() == context
+    second_briefing = briefing.parent / second.stem
+    assert str(second) in (second_briefing / "startup.md").read_text(encoding="utf-8")
+    assert json.loads((second_briefing / "context.json").read_bytes())["settings"]["model"] == (
+        "second-model"
+    )
+    assert str(second_briefing / "startup.md") in launches(area)[1]["argv"][-1]
 
 
 @pytest.mark.parametrize("selected", [None, "20990101_00000000", "../runs"])
@@ -2480,6 +2529,49 @@ def test_doctor_supports_only_its_ready_harnesses(
     assert launches(area) == []
 
 
+@pytest.mark.parametrize(
+    ("case", "remedy"),
+    [
+        ("wrong-hub", "select the owning checkout with --hub or restore the matching manifest"),
+        ("missing-target", "pass the actual checkout root"),
+        ("missing-harness", "install claude-code or put it on PATH"),
+        ("unattended", "doctor does not accept --harness-args"),
+        ("unknown-selector", "Select a local hub with --hub <checkout>"),
+    ],
+)
+def test_doctor_refuses_invalid_startup_with_an_offline_remedy(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    case: str,
+    remedy: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def no_live_listing(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("doctor consulted the live hub registry")
+
+    monkeypatch.setattr(registry, "live_entries", no_live_listing)
+    monkeypatch.setattr(registry, "hub_entries", lambda *_: [])
+    commands = programs(area)
+    selector = str(area["checkout"]) if case != "unknown-selector" else "unknown-hub"
+    words = ["doctor", "--hub", selector, "--run", RUN, "--harness", "claude"]
+    if case == "wrong-hub":
+        manifest = run["run_dir"] / "manifest.json"
+        saved = json.loads(manifest.read_bytes())
+        saved["hub"]["hub_id"] = "a-different-hub"
+        manifest.write_text(json.dumps(saved), encoding="utf-8")
+    elif case == "missing-target":
+        words += ["--target", str(area["root"] / "missing")]
+    elif case == "missing-harness":
+        commands["claude-code"] = [str(area["root"] / "missing-binary")]
+    elif case == "unattended":
+        words += ["--harness-args", "--dangerously-skip-permissions"]
+    assert invoke(words, programs=commands, reader=no_hub()) == 2
+    assert remedy in capsys.readouterr().err
+    assert launches(area) == []
+    assert not run["denise"].exists()
+
+
 @pytest.mark.parametrize("harness", ["claude", "codex"])
 @pytest.mark.parametrize("clean_login", [False, True])
 @pytest.mark.parametrize("ambient", [False, True])
@@ -2496,6 +2588,10 @@ def test_doctor_login_and_no_inherited_hub_selection(
         "ROBOMATE_HUB_URL": "http://another-hub:1",
         "ROBOMATE_TOKEN": "ambient-token",
         "ROBOMATE_TOKEN_FILE": str(area["root"] / "ambient token"),
+        "ROBOMATE_HUB_ID": "ambient-hub",
+        "AGENT_NAME": "bob",
+        "HUB_HARNESS": "codex",
+        "HUB_TELEMETRY_LOG": str(area["root"] / "team telemetry.jsonl"),
         "CODEX_HOME": str(area["root"] / "team codex home"),
         "CLAUDE_CONFIG_DIR": str(area["root"] / "team claude config"),
     }.items():
@@ -2515,10 +2611,17 @@ def test_doctor_login_and_no_inherited_hub_selection(
     assert env["PWD"] == str(Path(launch["cwd"]).resolve())
     assert env["VIRTUAL_ENV"] is None
     assert env["ROBOMATE_HUB_URL"] is None and env["ROBOMATE_TOKEN"] is None
-    assert env["ROBOMATE_TOKEN_FILE"] is None
+    for name in (
+        "ROBOMATE_TOKEN_FILE",
+        "ROBOMATE_HUB_ID",
+        "AGENT_NAME",
+        "HUB_HARNESS",
+        "HUB_TELEMETRY_LOG",
+    ):
+        assert env[name] is None
     profile = run["denise"] / "configs" / ("codex" if harness == "codex" else "claude")
     variable = "CODEX_HOME" if harness == "codex" else "CLAUDE_CONFIG_DIR"
-    context = json.loads((run["denise"] / "context.json").read_text(encoding="utf-8"))
+    context = json.loads((doctor_briefing(run) / "context.json").read_text(encoding="utf-8"))
     if clean_login:
         assert env[variable] == str(profile) and profile.is_dir()
         assert context["doctor"]["profile"] == str(profile)
@@ -2574,8 +2677,6 @@ def test_doctor_refuses_unverified_codex_mcp(
 
     monkeypatch.setattr(CLI.subprocess, "run", listing)
     words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"]
-    if failure == "exit":
-        words += ["--harness-args", "session-only-argument"]
     assert (
         invoke(
             words,
@@ -2588,9 +2689,7 @@ def test_doctor_refuses_unverified_codex_mcp(
     error = capsys.readouterr().err
     assert "--clean-login" in error and "secret transport" not in error
     if failure != "enabled":
-        assert "configuration probe failed" in error and "harness arguments" in error
-    if failure == "exit":
-        assert "session-only-argument" in calls[0]
+        assert "configuration probe failed" in error and "configuration and version" in error
 
 
 def test_doctor_codex_disables_special_names_with_same_launch_settings(

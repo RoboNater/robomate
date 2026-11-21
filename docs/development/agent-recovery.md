@@ -227,11 +227,11 @@ uv run --project <robomate checkout> python scripts/agent-launcher.py doctor \
 `doctor` is separate from `start`: it never calls `workspace` or `join`,
 starts no supervision, and makes no HTTP call, so it works with the hub
 stopped. It reads the hub's state location and `runs/<run_id>/manifest.json`
-locally; a missing run lists the hub's runs and creates nothing. In that
-run's `denise/` it refreshes `context.json` (the run, the robomate checkout
-and the target checkout as separate references, and an access inventory) and
-`startup.md`, and creates a new report under `reports/`; earlier reports are
-kept. Denise starts interactively in `denise/workspace`, using the operator's
+locally. A missing run lists the hub's runs and creates nothing. Each
+consultation writes `context.json` and `startup.md` under
+`denise/consultations/<id>/` and a matching `denise/reports/<id>.md`.
+The context lists the run, hub, target and robomate tooling separately.
+Denise starts interactively in `denise/workspace`, using the operator's
 existing home and login by default (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` pass
 through unchanged). User hooks, plugins and skills may load. Use `--clean-login`
 for her separate per-run profile in `denise/configs/claude` or
@@ -245,11 +245,13 @@ a failed check refuses startup and recommends `--clean-login`.
 `mcp_servers={}` merges existing entries on codex-cli 0.167.0 and is not used
 as a clearing flag. Codex gets `approval_policy=on-request` and
 `sandbox_mode=workspace-write`. Both clear inherited `ROBOMATE_HUB_URL` and
-`ROBOMATE_TOKEN*`, read `docs/denise/guide.md`, and receive directory grants
-on the inventory's write roots: the selected run, the target checkout and
-its git common directory, and the hub's state. M7 Step 2's
-generated wrappers for prepared runs remain until Step 11 proves this entry
-on Bash and PowerShell.
+`ROBOMATE_TOKEN*` along with worker identity and launcher variables.
+Denise reads `docs/denise/guide.md` and receives directory grants for the
+selected run, hub state, hub and target checkouts, and their git common
+directories. Any separate robomate tooling checkout is a read reference.
+Use `--model`, `--effort` and `--clean-login` to configure the consultation.
+Live Bash and native PowerShell acceptance and host-specific grant checks
+are tracked in [#254](https://github.com/RoboNater/robomate/issues/254).
 
 ### Limits
 

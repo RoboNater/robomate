@@ -5,22 +5,19 @@ This guide is for the interactive operator assistant described in
 It is deliberately outside the hub's served `guides/` directory. It grants no
 authority to joined workers and is not a role guide for `get_role_guide`.
 
-M7 Step 1 prepares settings, a context index, a startup briefing and empty local
-report/config/workspace directories. It does **not** supply a functional
-`start-denise` script, harness profile or enforced filesystem grants. Interactive
-Claude Code/Codex startup comes in Step 2; OpenCode/AntiGravity support follows
-in Step 3. The joined-run `agent-launcher.py doctor` entry supports Claude Code and
-Codex now: it uses the operator login by default, with a per-run profile only
-when `--clean-login` is requested. Devin is unsupported. Do not rerun
-preparation to retrofit a live run.
-The optional manifest object's `status: ready` means the settings/context are
-eligible; `startup_status: pending-step-2` explicitly means startup is unavailable.
-Unsupported inheritance records `status: skipped`, a reason and an override remedy.
+Use the consultation command printed by `scripts/start-run.py`, or call
+`agent-launcher.py doctor` with a local hub and run ID. It supports Claude Code
+and Codex with the operator login by default. Use `--clean-login` for a per-run
+profile. OpenCode and AntiGravity support follows in Step 3. The prepared-run
+`run.json` doctor metadata is the Step 1 artifact. Preserve it if diagnosing
+an older run.
 
 ## Establish context
 
-Read the selected run's `run.json` and `denise/context.json`. Verify the run
-directory, expected hub ID, hub checkout/state and host before any action.
+Read the selected run's `manifest.json` and the context file printed by
+`doctor`, under `denise/consultations/<id>/`. For a prepared run, use its
+`run.json` and `denise/context.json`. Verify the run directory, expected hub ID,
+hub checkout, state and host before any action.
 Robomate's recorded tooling root is separate from the target repository: read
 its instructions, code and [recovery documentation](../development/agent-recovery.md),
 and read target `AGENTS.md` in the actual affected checkout, including applicable
@@ -65,8 +62,9 @@ bridge, call orchestrator RPC or change workflow state by impersonating Alice.
 Restore a selected hub only when requested, using `robomate up` in its recorded
 checkout with the same durable state and hub ID, never a fresh workflow. Preserve
 tokens, DB, uncommitted edits, pending questions/results and harness conversations.
-For a returned-to-shell agent, use its generated `resume-<agent>` on that agent's
-host. Follow [the guarded resume procedure](../development/agent-recovery.md):
+For a returned-to-shell agent, use `agent-launcher.py resume <agent>` on that
+agent's host, or its generated `resume-<agent>` for a prepared run. Follow
+[the guarded resume procedure](../development/agent-recovery.md):
 exact saved conversation/config/identity and predecessor checks. Never use
 `start-<agent>` or replay preparation as recovery.
 
@@ -116,8 +114,8 @@ approval entries; the launch checks still apply. `start-run.py` accepts
 `--denise-clean-login` / `denise_clean_login = true` and appends `--clean-login`
 to its final consultation command. The default is false.
 
-Clear inherited `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN*` at launch; scope
-explicit discovery to each operator command.
+The launcher clears inherited hub selection, worker identity and launcher
+variables. Scope discovery to the selected run for each operator command.
 Filesystem access is not authentication. Existing CLI actions read the selected
 hub bearer token and machine-wide operator credential through supported local
 paths only as needed. Offline startup/diagnosis require neither. Do not duplicate
