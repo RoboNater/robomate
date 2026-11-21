@@ -515,11 +515,14 @@ def test_startup_watchdog_can_interrupt_blocking_database_initialization(
     root, env = repository
     shim = tmp_path / "shim"
     shim.mkdir()
+    # Allow the hub to reach the injected stall on a loaded host; this is a
+    # hang bound, not a claim about how quickly the startup thread runs.
+    watchdog_s = LIVENESS_S / 4
     (shim / "sitecustomize.py").write_text(
         "import time\n"
         "import agent_hub.app as app\n"
         "import agent_hub.main as main\n"
-        "main._START_TIMEOUT_S = 1\n"
+        f"main._START_TIMEOUT_S = {watchdog_s!r}\n"
         "original = app.initialize_database\n"
         "def delayed(*args, **kwargs):\n"
         f"    time.sleep({LIVENESS_S + 15})\n"
@@ -532,7 +535,7 @@ def test_startup_watchdog_can_interrupt_blocking_database_initialization(
     try:
         with pytest.raises(AssertionError, match="hub exited early") as caught:
             await_hub(root, process)
-        assert "hub did not start serving within 1 s" in str(caught.value)
+        assert f"hub did not start serving within {watchdog_s:g} s" in str(caught.value)
         assert "database initialization started" in str(caught.value)
     finally:
         if process.poll() is None:
