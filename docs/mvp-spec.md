@@ -851,9 +851,12 @@ Only expected run members may submit. Reject workers after release/loss, all
 writes after finalization, and conflicting retries; identical retries before
 release/finalization return the original receipt without another report/event.
 Reports are at most 32 KiB serialized UTF-8 and A2A message parts at most 16 KiB;
-the worker bridge splits larger JSON across bounded text parts. Submission,
-receipt and event commit atomically under the same write lock as finalization
-and release. Existing MCP/A2A byte accounting includes these operations.
+the worker bridge splits larger JSON across bounded text parts. Submission and
+receipt commit atomically under the same write lock as finalization and
+release; a worker report queues its `closeout_report_submitted` inbox event in
+that same transaction, while an orchestrator report returns its receipt without
+an inbox event (#610). Existing MCP/A2A byte accounting includes these
+operations.
 Known loaded hub/operator credential values are rejected without echoing them
 in errors or logs; this does not detect all secrets. Omit credentials and raw
 transcripts. Reports are untrusted data and confer no operator authority.
