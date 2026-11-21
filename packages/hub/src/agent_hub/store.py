@@ -700,6 +700,32 @@ def _closeout_context(
     ).model_dump(mode="json")
 
 
+# Offending values are truncated and capped so a free-text source cannot flood
+# the rejection (#594): the message names what to fix, not the payload.
+_CLOSEOUT_SOURCE_CHARS = 40
+_CLOSEOUT_LIST_ITEMS = 8
+
+
+def _closeout_source_text(value: str) -> str:
+    if len(value) <= _CLOSEOUT_SOURCE_CHARS:
+        return value
+    return value[:_CLOSEOUT_SOURCE_CHARS] + "..."
+
+
+def _closeout_list(values: Sequence[str]) -> str:
+    unique = sorted(dict.fromkeys(values))
+    shown = ", ".join(repr(_closeout_source_text(value)) for value in unique[:_CLOSEOUT_LIST_ITEMS])
+    if len(unique) > _CLOSEOUT_LIST_ITEMS:
+        return f"{shown}, +{len(unique) - _CLOSEOUT_LIST_ITEMS} more"
+    return shown
+
+
+def _closeout_accepted(pending: set[str]) -> str:
+    if not pending:
+        return "implementer, orchestrator, or none pending"
+    return f"implementer, orchestrator, or pending finding IDs {_closeout_list(sorted(pending))}"
+
+
 def _validate_closeout(result: CloseoutResult, context: dict[str, Any] | None) -> None:
     if context is None:
         raise ValueError("closeout task has no stored context")
@@ -707,8 +733,25 @@ def _validate_closeout(result: CloseoutResult, context: dict[str, Any] | None) -
     sources = [
         item.source for item in result.items if item.source not in ("implementer", "orchestrator")
     ]
-    if len(sources) != len(set(sources)) or set(sources) != pending:
-        raise ValueError("closeout findings must cover each pending ID exactly once")
+    counts: dict[str, int] = {}
+    for source in sources:
+        counts[source] = counts.get(source, 0) + 1
+    problems = []
+    unknown = [source for source in sources if source not in pending]
+    duplicated = [source for source, count in counts.items() if count > 1]
+    missing = sorted(pending - set(sources))
+    if unknown:
+        problems.append(f"unknown source {_closeout_list(unknown)}")
+    if duplicated:
+        problems.append(f"duplicate source {_closeout_list(duplicated)}")
+    if missing:
+        problems.append(f"missing pending ID {_closeout_list(missing)}")
+    if problems:
+        raise ValueError(
+            "closeout items rejected: "
+            + "; ".join(problems)
+            + f"; accepted: {_closeout_accepted(pending)}; see get_role_guide(\"closeout\")"
+        )
     if any(item.action == "nit" for item in result.items) and context["nits_issue"] is None:
         raise ValueError("nit requires a configured nits_issue")
     indices = [step.index for step in result.steps]

@@ -555,9 +555,74 @@ def test_unknown_id_rejected_even_when_all_pending_covered(hub_store: HubStore) 
     hub_store.check_in("bob")
     task = hub_store.assign_task("bob", "closeout", "Close", "Close")
     result = _result([_item(reason="deferred"), _item("r9-9", reason="unknown")], [])
-    with pytest.raises(ValueError, match="pending ID exactly once"):
+    with pytest.raises(ValueError) as error:
         hub_store.submit_result(task.id, "bob", result)
+    message = str(error.value)
+    assert "unknown source" in message and "r9-9" in message
     _assert_open_without_completion(hub_store, task.id)
+
+
+def test_unknown_source_names_value_accepted_values_and_guide(hub_store: HubStore) -> None:
+    """#594: a free-text source with no pending findings names the value, not just the rule."""
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert task.closeout_context is not None and task.closeout_context["pending_findings"] == []
+    source = "PR #560 / issue #558 acceptance " + "x" * 200
+    item = {
+        "source": source,
+        "summary": "payload summary that must not appear in the message",
+        "action": "none",
+        "reason": "deferred",
+    }
+    with pytest.raises(ValueError) as error:
+        hub_store.submit_result(task.id, "bob", _result([item], []))
+    message = str(error.value)
+    assert "unknown source" in message
+    assert source[:40] + "..." in message
+    assert source not in message
+    assert "implementer" in message and "orchestrator" in message
+    assert "none pending" in message
+    assert 'get_role_guide("closeout")' in message
+    assert "payload summary" not in message
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_missing_pending_id_is_named(hub_store: HubStore) -> None:
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    with pytest.raises(ValueError) as error:
+        hub_store.submit_result(task.id, "bob", _result([], []))
+    message = str(error.value)
+    assert "missing pending ID" in message and "r1-1" in message
+    assert "implementer" in message and "orchestrator" in message
+    assert 'get_role_guide("closeout")' in message
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_duplicate_source_is_named(hub_store: HubStore) -> None:
+    _seed_finding(hub_store)
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    items = [_item(reason="first"), _item(reason="second")]
+    with pytest.raises(ValueError) as error:
+        hub_store.submit_result(task.id, "bob", _result(items, []))
+    message = str(error.value)
+    assert "duplicate source" in message and "r1-1" in message
+    assert 'get_role_guide("closeout")' in message
+    _assert_open_without_completion(hub_store, task.id)
+
+
+def test_orchestrator_item_accepted_without_pending_findings(hub_store: HubStore) -> None:
+    hub_store.check_in("bob")
+    task = hub_store.assign_task("bob", "closeout", "Close", "Close")
+    assert task.closeout_context is not None and task.closeout_context["pending_findings"] == []
+    item = _item("orchestrator", action="issue", url="https://example.test/issues/4#comment")
+    completed = hub_store.submit_result(task.id, "bob", _result([item], []))
+    assert completed.state is TaskState.COMPLETED
+    stored = hub_store.get_task(task.id)
+    assert stored is not None and stored.result is not None
+    assert stored.result["items"][0]["source"] == "orchestrator"
 
 
 def test_legacy_reviewer_result_stays_readable_without_creating_obligations(
