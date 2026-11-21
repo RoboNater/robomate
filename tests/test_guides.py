@@ -975,6 +975,10 @@ def test_served_guides_state_the_refused_filing_fallback(forge: str) -> None:
         "return `blocked` naming the rejection and use no other publication route",
         "Alice then asks the operator, the operator files it, and Alice records the number",
         "no alternate connector, tool or identity",
+        (
+            "for a blocked PR creation, Alice routes it to the operator through "
+            "generic escalation instead"
+        ),
     ):
         assert fragment in worker
 

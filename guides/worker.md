@@ -339,8 +339,9 @@ On a follow-up issue-filing or change-request (PR) creation task, keep filing
 through the forge CLI with no permission change. If a harness's automatic
 approval review refuses the forge write, return `blocked` naming the rejection
 and use no other publication route — no alternate connector, tool or identity.
-Alice then asks the operator, the operator files it, and Alice records the
-number.
+For a FOLLOW-UP task, Alice then asks the operator, the operator files it, and
+Alice records the number; for a blocked PR creation, Alice routes it to the
+operator through generic escalation instead.
 
 <!-- Operator-only actions: #132, from #99. -->
 
