@@ -750,7 +750,7 @@ def _validate_closeout(result: CloseoutResult, context: dict[str, Any] | None) -
         raise ValueError(
             "closeout items rejected: "
             + "; ".join(problems)
-            + f"; accepted: {_closeout_accepted(pending)}; see get_role_guide(\"closeout\")"
+            + f'; accepted: {_closeout_accepted(pending)}; see get_role_guide("closeout")'
         )
     if any(item.action == "nit" for item in result.items) and context["nits_issue"] is None:
         raise ValueError("nit requires a configured nits_issue")
