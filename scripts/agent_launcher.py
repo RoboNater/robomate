@@ -60,7 +60,7 @@ HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
 ORCHESTRATOR_HUB_BOUNDARY = (
     "Use only the configured robomate MCP tools to reach the hub. Never read the hub's "
-    "state or token directory, including legacy .robomate/. Do not substitute robomate's "
+    "state or token directory. Do not substitute robomate's "
     "Python packages, hub HTTP or RPC, or CLI commands that require the hub token. If join "
     "or another required hub tool is unavailable, report the missing tools in your final "
     "message and end the turn. Do not search robomate's source, worktree binding, state "

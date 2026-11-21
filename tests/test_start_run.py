@@ -575,7 +575,12 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
             assert f"model_reasoning_effort={values['charlie_effort']}" in argv
         else:
             assert argv[-2] == "-p"
-            assert argv[-1] == f"Join robomate as {agent}, {START.AGENTS[agent]}."
+            join_line = f"Join robomate as {agent}, {START.AGENTS[agent]}."
+            if agent == "alice":
+                assert argv[-1].startswith(join_line)
+                assert "report the missing tools in your final message and end the turn" in argv[-1]
+            else:
+                assert argv[-1] == join_line
             assert argv[argv.index("--effort") + 1] == values[f"{agent}_effort"]
             assert argv[argv.index("--permission-prompts") + 1] == "none"
         assert not any(

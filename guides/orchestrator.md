@@ -632,7 +632,8 @@ still need an operator answer.
 When the answer arrives, call `log_decision` citing the question id and the
 answer, then `set_workflow_status(active, …)` before executing the action the
 answer selects. If the answer is unclear or picks no option, ask again with
-`ask_user` rather than guessing. Stay in the turn while waiting for an answer.
+`ask_user` rather than guessing. End the turn only when the workflow is `done`
+or a required hub tool is unavailable.
 
 The hub enforces this (#132): `set_workflow_status(escalated)` is refused,
 leaving `escalated` is refused while any operator question is open, and
