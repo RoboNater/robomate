@@ -67,7 +67,12 @@ REQUIRED = {required!r}
 def test_launcher_identity_does_not_reach_the_code_under_test() -> None:
     names = os.environ["ROBO_LAUNCHER_ENV"].split(",")
     assert set(REQUIRED) <= set(names), "the outer test did not set every required variable"
-    leaked = sorted(name for name in names if name in os.environ)
+    # Check the launcher's sentinel value, not just the name: the fixture may
+    # replace a value with its own isolated directory (XDG_CONFIG_HOME, #592),
+    # which is not a leak.
+    leaked = sorted(
+        name for name in names if os.environ.get(name) == f"launched-{{name.lower()}}"
+    )
     assert not leaked, f"launcher identity reached the test: {{leaked}}"
 
 
@@ -97,6 +102,10 @@ def test_isolated_machine_state_strips_launcher_identity(tmp_path: Path) -> None
     ``REQUIRED`` is the collected stripped set (#531), not a separate literal,
     so dropping a name from ``LAUNCHER_ENV`` fails both this test and the
     classification test rather than leaving the two lists to disagree.
+
+    The inner check compares the launcher's sentinel value rather than just the
+    name, so a variable the fixture deliberately replaces with its own isolated
+    directory (``XDG_CONFIG_HOME``, #592) does not count as a leak.
     """
     _, collected = _collected()
     required = tuple(sorted(launcher_env_stripped(collected)))

@@ -51,6 +51,11 @@ TEST_MAX_WAIT_S = 1.0
 # ``HUB_*``: hub server settings (``HUB_STATE_DIR``, ``HUB_DB_PATH``,
 # ``HUB_HOST``, ...) are not launcher identity, and the entry points that honour
 # them are configured by their tests after this fixture.
+#
+# ``XDG_CONFIG_HOME`` (#592) is antigravity's config pointer and is read under
+# ``packages/`` (discovery, config_layers), so it is stripped too; this fixture
+# then sets its own isolated value below so code under test never sees a
+# fallback into the real user config.
 LAUNCHER_ENV = (
     "AGENT_NAME",
     "AGENT_RUNTIME",
@@ -69,6 +74,7 @@ LAUNCHER_ENV = (
     "ROBOMATE_HUB_URL",
     "ROBOMATE_LAUNCH_HUB_CHECKOUT",
     "ROBOMATE_OPERATOR_TOKEN_FILE",
+    "XDG_CONFIG_HOME",
 )
 
 # #531, #592: names a launcher env-builder produces that
@@ -82,7 +88,9 @@ LAUNCHER_KEPT: dict[str, str] = {
     "PYTEST_XDIST_AUTO_NUM_WORKERS": "the run's xdist budget; the suite must honour it",
     "PWD": "working directory launch_environment writes into the child",
     "OPENCODE_CONFIG_CONTENT": "harness config, read by opencode, not by robomate's packages",
-    "ROBOMATE_PERMISSION_STATUS_DIR": "permission-observation status dir, read by the launcher",
+    "ROBOMATE_PERMISSION_STATUS_DIR": (
+        "permission-observation status dir, read by the launcher, not under packages/"
+    ),
     "ROBOMATE_PERMISSION_EVENTS": "permission-trace path read by the harness plugin",
     "ROBOMATE_PERMISSION_LAUNCH": "launch id correlating permission observations",
     "TEMP": "harness subprocess temp directory, not agent identity",
@@ -90,6 +98,11 @@ LAUNCHER_KEPT: dict[str, str] = {
     "TMPDIR": "POSIX harness subprocess temp directory, not agent identity",
     "CODEX_HOME": "isolated Codex home for the harness, not read under packages/",
     "OPENCODE_CONFIG": "OpenCode config path, read by opencode, not under packages/",
+    "HOME": "ambient home Path.home() resolves; not an agent-identity value",
+    "USERPROFILE": "Windows home Path.home() resolves; not an agent-identity value",
+    "GIT_CONFIG_GLOBAL": "git config pointer for antigravity; not read under packages/",
+    "XDG_CACHE_HOME": "cache pointer for antigravity; no literal reader under packages/",
+    "XDG_DATA_HOME": "data pointer for antigravity; no literal reader under packages/",
 }
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -275,31 +288,42 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
             assert hub_keys, "prepare-run hub_env dict literal was not found"
             produced["prepare-run.hub_env"] = hub_keys
 
-            # launch_lines writes the start script's TEMP/TMP/TMPDIR, CODEX_HOME
-            # and OPENCODE_CONFIG lines. Render both hosts and both harnesses so
-            # the POSIX and PowerShell spellings are all collected.
+            # launch_lines writes the start script's temp-directory, CODEX_HOME,
+            # OPENCODE_CONFIG, OPENCODE_CONFIG_CONTENT and antigravity home/XDG
+            # lines. Render every harness it accepts, on both hosts, for both
+            # auto-start modes and both worker/non-worker paths, so a key added
+            # to any branch is collected rather than only the two we guessed.
             launch_counter = 0
             launch_keys: set[str] = set()
-            for harness in ("codex", "opencode"):
+            for harness in sorted(set(prepare.HARNESS_NAMES.values())):
                 for host in ("posix", "nt"):
-                    # Path() must see the real host; only launch_lines renders
-                    # for the other one.
-                    launch_counter += 1
-                    workdir = Path(f"/tmp/work{launch_counter}")
-                    config = Path(f"/tmp/config{launch_counter}")
-                    prompt = Path(f"/tmp/prompt{launch_counter}.md")
-                    tmp_dir = Path(f"/tmp/tmp{launch_counter}")
-                    with mock.patch.object(os, "name", host):
-                        launch_keys |= _launch_script_env_keys(
-                            prepare.launch_lines(
-                                harness,
-                                workdir,
-                                config,
-                                prompt,
-                                None,
-                                tmp_dir=tmp_dir,
-                            )
-                        )
+                    for auto_start in (True, False):
+                        for worker in (None, "bob"):
+                            # Path() must see the real host; only launch_lines
+                            # renders for the other one.
+                            launch_counter += 1
+                            workdir = Path(f"/tmp/work{launch_counter}")
+                            config = Path(f"/tmp/config{launch_counter}")
+                            prompt = Path(f"/tmp/prompt{launch_counter}.md")
+                            tmp_dir = Path(f"/tmp/tmp{launch_counter}")
+                            # Devin has no effort flag and interactive OpenCode
+                            # rejects --variant; neither affects env names.
+                            effort = "high" if auto_start and harness != "devin" else ""
+                            with mock.patch.object(os, "name", host):
+                                lines = prepare.launch_lines(
+                                    harness,
+                                    workdir,
+                                    config,
+                                    prompt,
+                                    None,
+                                    model="m",
+                                    effort=effort,
+                                    auto_start=auto_start,
+                                    tmp_dir=tmp_dir,
+                                    worker=worker,
+                                    token_file=Path("/tmp/token"),
+                                )
+                            launch_keys |= _launch_script_env_keys(lines)
             produced["prepare-run.launch_lines"] = launch_keys
 
         place = agent_launcher_cli.Place(
@@ -404,14 +428,18 @@ def isolated_machine_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     state and each test its own directory. Tests needing explicit discovery
     overrides or a profile set them afterwards. The default operator credential
     follows the isolated registry.
+
+    Strip first, then set the isolated state/config directories: #592's
+    ``XDG_CONFIG_HOME`` is on the strip list because packages read it, and the
+    fixture must replace the launcher's value with its own rather than lose it.
     """
+    for name in list(os.environ):
+        if name in LAUNCHER_ENV or name.startswith("ROBOMATE_TOKEN"):
+            monkeypatch.delenv(name)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
-    for name in list(os.environ):
-        if name in LAUNCHER_ENV or name.startswith("ROBOMATE_TOKEN"):
-            monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)
