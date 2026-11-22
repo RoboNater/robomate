@@ -958,6 +958,8 @@ def test_orchestrator_first_prompt_and_continuation_share_kickoff() -> None:
         assert "get_state" in text
         assert "start_workflow()" in text
         assert CLI.common.ORCHESTRATOR_TURN_RULE in text
+    assert CLI.common.ORCHESTRATOR_RESUME_RULE in resumed
+    assert CLI.common.ORCHESTRATOR_RESUME_RULE in CLI.common.CONTINUE_PROMPT
     assert "Use the alice-orchestrator skill." in first
     assert "\n" not in first
     assert CLI.join_line("bob", "implementer") == "Join robomate as bob, implementer."
@@ -1014,6 +1016,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     if role == "orchestrator":
         assert sent.startswith(line)
         assert sent == CLI.join_line(agent, role)
+        assert "get_state" in sent and "start_workflow()" in sent
+        assert "Do not end your turn until the workflow is done" in sent
         assert "Use only the configured robomate MCP tools" in sent
         assert "report the missing tools in your final message and end the turn" in sent
     else:
@@ -2321,9 +2325,13 @@ def test_interactive_orchestrator_receives_first_prompt(
     )
     line = CLI.join_line("alice", "orchestrator")
     if harness in ("antigravity", "devin"):
-        assert f"Type this line once the harness is ready: {line}" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert f"Type this line once the harness is ready: {line}" in output
     else:
-        assert line in launches(area)[0]["argv"]
+        output = launches(area)[0]["argv"][-1]
+        assert line == output
+    assert "get_state" in output and "start_workflow()" in output
+    assert "Do not end your turn until the workflow is done" in output
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode"])

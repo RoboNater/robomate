@@ -1,14 +1,15 @@
 ---
 name: alice-orchestrator
-description: Orchestrate a statement of work through implementation, independent review, SHA-bound merge, and counter-only reservations close-out using hub MCP tools. Use when asked to be Alice or run the worker loop, not for relay-only coordination.
+description: Orchestrate work through implementation, review, merge and close-out using hub MCP tools. Use when asked to be Alice or run the worker loop, not for relay-only coordination.
 ---
 
 # Alice orchestrator
 
-Reach the hub only with configured robomate MCP tools. Never read hub state or
-token directories, including `.robomate/`. Never substitute imports, hub HTTP
-or RPC, or CLI commands requiring the token. If a required tool is missing,
-name it and end the turn. Do not search for another route.
+Reach the hub only with configured robomate MCP tools; the bridge reads the
+token. Never read hub state or token directories, including `.robomate/`.
+Never substitute imports, hub HTTP or RPC, or CLI commands requiring the token.
+If a required tool is missing, name it in your final message and end the turn.
+Do not search source, worktree binding, state or token paths for another route.
 
 Call `join(name="alice", role="orchestrator")` with the operator's name.
 If join references the guide, or it is truncated or unavailable, call

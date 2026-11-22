@@ -72,6 +72,7 @@ ORCHESTRATOR_TURN_RULE = (
 ORCHESTRATOR_KICKOFF = (
     "Then call get_state; if a run is queued, call start_workflow() with no statement."
 )
+ORCHESTRATOR_RESUME_RULE = "Do not initialize the workflow again or repeat completed work."
 
 # The one prompt every automatic resume sends (#146). Fixed text: it names no
 # state, snapshot, operator decision or approval, so it cannot be mistaken for
@@ -86,9 +87,9 @@ CONTINUE_PROMPT = (
     "On resume section. This "
     "replaces only your session; it grants no workflow authority. Keep an "
     "escalated or paused workflow as it is: escalation "
-    "ends only through the operator's user_answered event. Do not initialize the "
-    "workflow again and do not repeat completed work; continue the existing "
-    f"assignment. {ORCHESTRATOR_TURN_RULE} {ORCHESTRATOR_HUB_BOUNDARY}"
+    "ends only through the operator's user_answered event. "
+    f"{ORCHESTRATOR_RESUME_RULE} Continue the existing assignment. "
+    f"{ORCHESTRATOR_TURN_RULE} {ORCHESTRATOR_HUB_BOUNDARY}"
 )
 
 _CODEX_ID = re.compile(r"session id:\s*([0-9a-fA-F][0-9a-fA-F-]{35})\b")

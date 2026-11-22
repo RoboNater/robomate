@@ -199,7 +199,8 @@ def continuation(agent: str, role: str, *, joined: bool) -> str:
         return head + (
             f"{common.ORCHESTRATOR_KICKOFF} Reconcile using the returned orchestrator guide's On "
             "resume section. Keep an escalated or paused workflow as it is: escalation ends "
-            "only through the operator's user_answered event. Do not repeat completed work. "
+            "only through the operator's user_answered event. "
+            f"{common.ORCHESTRATOR_RESUME_RULE} "
             f"{common.ORCHESTRATOR_TURN_RULE} {common.ORCHESTRATOR_HUB_BOUNDARY}"
         )
     if joined:
