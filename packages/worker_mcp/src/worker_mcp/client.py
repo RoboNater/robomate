@@ -876,6 +876,11 @@ class WorkerHubClient:
                     'Guide by reference: call get_role_guide(role="orchestrator", page=1) '
                     "and read every page before acting."
                 )
+            result["guide"] += (
+                " Then call get_state; if a run is queued, call start_workflow() with no "
+                "statement. Do not end your turn until the workflow is done, unless a "
+                "required hub tool is unavailable."
+            )
             return result | {
                 "workspace_path": str(hub_path),
                 "workspace_id": result.get("workspace_id", profile.workspace_id),

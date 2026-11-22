@@ -950,6 +950,19 @@ def workspace_of(
     return workspace
 
 
+def test_orchestrator_first_prompt_and_continuation_share_kickoff() -> None:
+    first = CLI.join_line("alice", "orchestrator")
+    resumed = CLI.continuation("alice", "orchestrator", joined=True)
+    for text in (first, resumed):
+        assert CLI.common.ORCHESTRATOR_KICKOFF in text
+        assert "get_state" in text
+        assert "start_workflow()" in text
+        assert CLI.common.ORCHESTRATOR_TURN_RULE in text
+    assert "Use the alice-orchestrator skill." in first
+    assert "\n" not in first
+    assert CLI.join_line("bob", "implementer") == "Join robomate as bob, implementer."
+
+
 @pytest.mark.parametrize("harness", HARNESSES)
 @pytest.mark.parametrize("role", ["orchestrator", "implementer"])
 def test_start_sends_the_join_line_and_resumes_with_takeover(
@@ -1000,6 +1013,7 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
     sent = first["stdin"] if harness == "codex" else first["argv"][-1]
     if role == "orchestrator":
         assert sent.startswith(line)
+        assert sent == CLI.join_line(agent, role)
         assert "Use only the configured robomate MCP tools" in sent
         assert "report the missing tools in your final message and end the turn" in sent
     else:
@@ -2284,6 +2298,32 @@ def test_interactive_start_does_not_resume_but_records_the_session(
     assert [row["event"] for row in log] == ["start", "exit"]
     assert all(row["interactive"] and row["run_id"] == RUN for row in log)
     assert log[1]["exit_code"] == 3
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
+def test_interactive_orchestrator_receives_first_prompt(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_harness(harness, monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": []}))
+    assert (
+        invoke(
+            start_words(area, "alice", "orchestrator", harness, "--interactive"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    line = CLI.join_line("alice", "orchestrator")
+    if harness in ("antigravity", "devin"):
+        assert f"Type this line once the harness is ready: {line}" in capsys.readouterr().out
+    else:
+        assert line in launches(area)[0]["argv"]
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode"])

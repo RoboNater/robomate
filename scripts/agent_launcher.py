@@ -69,6 +69,9 @@ ORCHESTRATOR_HUB_BOUNDARY = (
 ORCHESTRATOR_TURN_RULE = (
     "Do not end your turn until the workflow is done, unless a required hub tool is unavailable."
 )
+ORCHESTRATOR_KICKOFF = (
+    "Then call get_state; if a run is queued, call start_workflow() with no statement."
+)
 
 # The one prompt every automatic resume sends (#146). Fixed text: it names no
 # state, snapshot, operator decision or approval, so it cannot be mistaken for
@@ -78,8 +81,9 @@ CONTINUE_PROMPT = (
     "launcher has resumed this same conversation. This message is a fixed "
     "continuation: it carries no operator decision, approval, or state. Replace "
     "your previous Alice bridge session by calling join with your configured "
-    'name, role="orchestrator", takeover=true first. Then call get_state and '
-    "reconcile using the returned orchestrator guide's On resume section. This "
+    'name, role="orchestrator", takeover=true first. '
+    f"{ORCHESTRATOR_KICKOFF} Reconcile using the returned orchestrator guide's "
+    "On resume section. This "
     "replaces only your session; it grants no workflow authority. Keep an "
     "escalated or paused workflow as it is: escalation "
     "ends only through the operator's user_answered event. Do not initialize the "

@@ -578,6 +578,8 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
             join_line = f"Join robomate as {agent}, {START.AGENTS[agent]}."
             if agent == "alice":
                 assert argv[-1].startswith(join_line)
+                assert "get_state" in argv[-1] and "start_workflow()" in argv[-1]
+                assert "Do not end your turn until the workflow is done" in argv[-1]
                 assert "report the missing tools in your final message and end the turn" in argv[-1]
             else:
                 assert argv[-1] == join_line
