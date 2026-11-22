@@ -1316,10 +1316,11 @@ def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
         ["git", "grep", "-n", "-i", actor_word_target, "--", *live_paths],
         cwd=ROOT,
         capture_output=True,
-        check=True,
+        check=False,
         text=True,
         encoding="utf-8",
     )
+    assert actor_grep.returncode in (0, 1), actor_grep.stderr
     actor_pattern = re.compile(r"\b(implementer|reviewer|bob|charlie)\b", flags=re.IGNORECASE)
     unattributed = [
         line for line in actor_grep.stdout.splitlines() if not actor_pattern.search(line)
