@@ -1679,17 +1679,19 @@ def test_an_earlier_release_and_finished_run_do_not_stop_a_new_start(
     assert log[-1]["reason"] == "released" and log[-1]["run_id"] == RUN
 
 
+@pytest.mark.parametrize("instance", [None, "old-instance"])
 def test_a_reused_hub_row_does_not_count_as_a_worker_join(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, instance: str | None
 ) -> None:
     """#546: an earlier run's released row must not resume a worker that never joined."""
 
     use_harness("claude-code", monkeypatch)
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
-    live = {
-        "workflow": workflow(),
-        "agents": [agent_row("released", context="old", name="charlie")],
-    }
+    stale = agent_row("released", context="old", name="charlie")
+    # A released row keeps its worker instance unless a clean detach or the next
+    # run's sweep clears it; the unchanged instance must not count as a join.
+    stale["activity"] = {"instance": instance}
+    live = {"workflow": workflow(), "agents": [stale]}
 
     def answer(method: str) -> dict[str, Any]:
         if method == "hub.info":
