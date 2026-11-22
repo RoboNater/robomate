@@ -38,7 +38,10 @@ line, while a recorded join sends a bounded ``join(..., takeover=true)`` for
 its own seat only (#512). ``stop`` is local process control: it stops an
 attached launcher with SIGTERM and waits for its ``stop`` row, or else stops
 the recorded harness of an interrupted launcher and writes its ``exit`` row,
-leaving hub, workflow and agent state untouched (#534). ``ask`` opens a saved
+leaving hub, workflow and agent state untouched (#534). When that launch's own
+bridge telemetry records a successful join, it writes the launch's ``joined``
+row before the ``exit`` row, so a following resume keeps the takeover
+continuation (#571). ``ask`` opens a saved
 conversation interactively with its hub tools disabled; it needs no hub.
 ``--interactive`` (#222) starts or resumes without automatic resume and still
 records the session. ``doctor`` is Denise's optional entry, separate from all
@@ -920,6 +923,59 @@ def terminate_recorded(pid: int) -> bool:
     return not process_alive(pid)
 
 
+def launch_conversation(rows: Sequence[Mapping[str, Any]], last: int) -> str | None:
+    """The conversation the launch at ``last`` recorded, from that launch's own rows (#571).
+
+    A start of a harness that prints its conversation ID records it after the
+    launch row; the launcher's own ``joined`` row then named that conversation.
+    """
+
+    for index in range(last, len(rows)):
+        if index != last and rows[index].get("event") in LAUNCH_EVENTS:
+            break
+        conversation = rows[index].get("conversation_id")
+        if isinstance(conversation, str) and conversation:
+            return conversation
+    return None
+
+
+def launch_joined(log: Path, agent: str, launch: Mapping[str, Any]) -> bool:
+    """Whether this launch's own bridge telemetry records a successful join (#571).
+
+    Launch rows record where that child's bridge telemetry starts. An older row
+    without that offset gets no ``joined`` row: its rows cannot be told apart
+    from another launch's, so they are never scanned.
+    """
+
+    offset = launch.get("telemetry_offset")
+    if not isinstance(offset, int) or offset < 0:
+        return False
+    return any(
+        row.get("event") == "tool_call"
+        and row.get("tool") == "join"
+        and row.get("phase") == "success"
+        for row in telemetry_rows(bridge_telemetry(log.parent, agent), offset)
+    )
+
+
+def record_stopped_join(
+    log: Path, agent: str, launch: Mapping[str, Any], conversation: str | None
+) -> None:
+    """Write the joined row the hard-killed launcher's own scan would have (#571)."""
+
+    common.log_session(
+        log,
+        event="joined",
+        agent=str(launch.get("agent") or agent),
+        harness=launch.get("harness"),
+        conversation_id=conversation,
+        hub_id=launch.get("hub_id"),
+        workflow_id=launch.get("workflow_id"),
+        role=launch.get("role"),
+        run_id=launch.get("run_id"),
+    )
+
+
 def record_stopped_exit(log: Path, agent: str, launch: Mapping[str, Any], pid: int) -> None:
     """Write the exit row for a harness ``stop`` terminated in the launcher's place."""
 
@@ -988,6 +1044,8 @@ def stop_orphaned(log: Path, agent: str) -> int:
             f"Could not confirm that {agent}'s harness pid {pid} exited; no exit row was "
             "written. Inspect that process.",
         )
+    if launch_joined(log, agent, launch):
+        record_stopped_join(log, agent, launch, launch_conversation(rows, last))
     record_stopped_exit(log, agent, launch, pid)
     say(
         f"stopped {agent}'s recorded harness pid {pid}; wrote an exit row marked "
@@ -1163,6 +1221,17 @@ class Joined(common.Launcher):
                 **self.args.identity.row(),
             }
         super().log(event, **extra, **fields)
+
+    def launch_fields(self, action: str, resumes: int, launch_id: str) -> dict[str, Any]:
+        """Also record where this child's bridge telemetry starts (#571).
+
+        An orphan ``stop`` reads only the rows this launch appended, so a join
+        recorded by another launch is never taken for this one's.
+        """
+
+        fields = super().launch_fields(action, resumes, launch_id)
+        fields["telemetry_offset"] = self.join_offset
+        return fields
 
     def run_child(self, launch: common.Launch, action: str, resumes: int) -> int:
         if resumes == 0 and (not self.args.recover or not (Path(self.args.cwd) / ".venv").is_dir()):

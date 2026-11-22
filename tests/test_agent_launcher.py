@@ -1616,6 +1616,45 @@ def test_telemetry_scan_ignores_partial_and_malformed_rows(tmp_path: Path) -> No
     assert CLI.telemetry_rows(tmp_path / "missing.jsonl", 0) == []
 
 
+def test_launch_joined_reads_only_the_launchs_own_telemetry(tmp_path: Path) -> None:
+    """#571: the launch row's offset bounds the join scan; an older row is never scanned."""
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    log = sessions / "bob.jsonl"
+    log.write_text("", encoding="utf-8")
+    bridge = sessions / "bob-bridge.jsonl"
+    success = {"event": "tool_call", "tool": "join", "phase": "success"}
+    bridge.write_text(json.dumps(success) + "\n", encoding="utf-8")
+    after_join = bridge.stat().st_size
+
+    assert CLI.launch_joined(log, "bob", {"event": "start", "telemetry_offset": 0})
+    # A launch that started after that join cannot claim it.
+    assert not CLI.launch_joined(log, "bob", {"event": "start", "telemetry_offset": after_join})
+    # An older launch row without an offset is not scanned at all.
+    assert not CLI.launch_joined(log, "bob", {"event": "start"})
+    # Only a successful join tool call counts; a refused takeover does not.
+    with bridge.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({"event": "tool_call", "tool": "join", "phase": "error", "error": "refused"})
+            + "\n"
+        )
+    assert not CLI.launch_joined(log, "bob", {"event": "start", "telemetry_offset": after_join})
+
+
+def test_launch_conversation_keeps_to_the_launchs_own_rows() -> None:
+    """#571: a later conversation row belongs to the launch that preceded it."""
+
+    rows: list[dict[str, Any]] = [
+        {"event": "start", "conversation_id": None},
+        {"event": "conversation", "conversation_id": "conversation-a"},
+        {"event": "resume", "conversation_id": "conversation-b"},
+        {"event": "conversation", "conversation_id": "conversation-c"},
+    ]
+    assert CLI.launch_conversation(rows, 0) == "conversation-a"
+    assert CLI.launch_conversation(rows, 2) == "conversation-b"
+
+
 def test_saved_join_matches_only_the_resumed_conversation() -> None:
     rows: list[dict[str, Any]] = [
         {"event": "start", "conversation_id": "conversation-a"},
@@ -3362,6 +3401,8 @@ def test_stop_terminates_an_orphaned_harness_and_records_its_exit(
     try:
         start = wait_for_launch(area)
         harness_pid = start["pid"]
+        # #571: the launch records where its child's bridge telemetry starts.
+        assert start["telemetry_offset"] == 0
         pid_file = area["harness_dir"] / "pid"
         wait_until_sync(pid_file.exists, "the fake harness reports its pid")
         fake_pid = wait_until_sync(lambda: pid_file.read_text() or None, "its pid is written")
@@ -3384,11 +3425,92 @@ def test_stop_terminates_an_orphaned_harness_and_records_its_exit(
             process.kill()
             process.wait(timeout=LIVENESS_S)
 
-    stopped = [row for row in rows(area) if row.get("event") == "exit"]
-    assert len(stopped) == 1
-    assert stopped[0]["pid"] == harness_pid
-    assert stopped[0]["stopped_by"] == "agent-launcher stop"
+    events = [row["event"] for row in rows(area)]
+    # No join in this launch's telemetry, so stop writes only its exit row.
+    assert events == ["start", "exit"]
+    stopped = rows(area)[-1]
+    assert stopped["pid"] == harness_pid
+    assert stopped["stopped_by"] == "agent-launcher stop"
     assert live_own_pids(fake_supervision.pids) == []
+
+
+def test_stop_records_an_orphaned_harness_join_and_resume_takes_over(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fake_supervision: Any,
+) -> None:
+    """#571: the orphan stop writes the launch's joined row before its exit row."""
+
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    process = spawn_background_launcher(area, monkeypatch)
+    harness_pid = 0
+    try:
+        start = wait_for_launch(area)
+        harness_pid = start["pid"]
+        wait_until_sync(
+            lambda: (area["sessions"] / "bob-bridge.jsonl").exists(),
+            "the fake harness writes its bridge telemetry",
+        )
+        process.kill()
+        process.wait(timeout=LIVENESS_S)
+        assert wait_until_sync(
+            lambda: RECOVERY.process_alive(harness_pid),
+            "the orphaned fake harness still runs",
+        )
+
+        assert CLI.main(stop_words(area), programs=programs(area)) == 0
+        assert wait_until_sync(
+            lambda: not RECOVERY.process_alive(harness_pid),
+            "the recorded harness is terminated",
+        )
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=LIVENESS_S)
+
+    # The launch's own successful join is written before its stopped_by exit row,
+    # with the fields the launcher's own joined row carries.
+    events = [row["event"] for row in rows(area)]
+    assert events == ["start", "joined", "exit"]
+    joined, stopped = rows(area)[1:]
+    assert joined["conversation_id"] == start["conversation_id"]
+    assert joined["agent"] == "bob"
+    assert joined["harness"] == "claude-code"
+    assert joined["role"] == "implementer"
+    assert joined["hub_id"] == HUB
+    assert joined["workflow_id"] == WORKFLOW
+    assert joined["run_id"] == RUN
+    assert stopped["stopped_by"] == "agent-launcher stop"
+    assert live_own_pids(fake_supervision.pids) == []
+
+    # The recorded join lets the next resume send the bounded takeover.
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["hang", "exit:0"]))
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+    hub = snapshotting(FakeHub(after_launches(area, active, active, released)))
+    assert (
+        invoke(
+            [
+                "resume",
+                "bob",
+                "--hub",
+                str(area["checkout"]),
+                "--read-retry-delay-s",
+                "0",
+                "--resume-delay-s",
+                "0",
+                "--resume-session",
+                start["conversation_id"],
+            ],
+            programs=programs(area),
+            reader=hub,
+        )
+        == 0
+    )
+    assert len(launches(area)) == 2
+    resumed = launches(area)[1]
+    assert resumed["argv"][-1] == CLI.continuation("bob", "implementer", joined=True)
+    assert 'join(name="bob", role="implementer", takeover=true)' in resumed["argv"][-1]
 
 
 def test_stop_leaves_a_reused_harness_pid_alone(
