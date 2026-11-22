@@ -128,7 +128,7 @@ async def run_worker_bridge(
     )
     pending: deque[CallRecord] = deque(maxlen=256)
     orchestrator_tools = frozenset(
-        (*OPERATIONS, "join", "whoami", *MCP_METHODS, "other", "unknown")
+        (*OPERATIONS, "join", "whoami", "get_role_guide", *MCP_METHODS, "other", "unknown")
     )
 
     def record_call(record: CallRecord) -> None:

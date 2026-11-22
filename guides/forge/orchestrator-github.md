@@ -43,7 +43,9 @@ gh pr view <pr_url> --json headRefName -q .headRefName
 git push origin --delete <branch>
 ```
 
-Never delete the local branch or its worktree during merge; operator-only
+Never use `gh pr merge --delete-branch` in a linked worktree: it can try to
+remove another agent’s worktree. Never delete the local branch or its worktree
+during merge; operator-only
 `robomate clean` owns that cleanup. If remote deletion fails, check the exact ref:
 
 ```sh

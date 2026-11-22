@@ -115,7 +115,9 @@ async def test_tool_list_matches_legacy_fixture() -> None:
     bridge = OrchestratorBridge()
     tools = await create_orchestrator_mcp(bridge).list_tools()
     actual = [
-        tool.model_dump(exclude_none=True, by_alias=True) for tool in tools if tool.name != "join"
+        tool.model_dump(exclude_none=True, by_alias=True)
+        for tool in tools
+        if tool.name not in {"join", "get_role_guide"}
     ]
     fixture = Path(__file__).parent / "fixtures/orchestrator-tools.json"
     assert actual == json.loads(fixture.read_text(encoding="utf-8"))
@@ -509,7 +511,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 18
+            assert len((await alice.list_tools()).tools) == 19
             assert len((await bob.list_tools()).tools) == 12
             created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
             assert created.structuredContent is not None
@@ -869,5 +871,40 @@ async def test_bridge_uses_profile_default_and_http_margin(
             request = seen[0]
             assert json.loads(request.content)["params"]["timeout_s"] == (explicit or 1800)
             assert request.extensions["timeout"]["read"] == (explicit or 1800) + 15
+        finally:
+            await bridge.close()
+
+
+async def test_prepared_bridge_pages_guide(settings: Any, tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from agent_hub.app import create_app
+
+    hub = create_app(replace(settings, guides_dir=Path(__file__).resolve().parents[1] / "guides"))
+    async with (
+        hub.router.lifespan_context(hub),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=hub),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        bridge = OrchestratorBridge(cwd=tmp_path, http_client=http)
+        try:
+            server = create_orchestrator_mcp(bridge)
+            joined = await _call(server, "join", name="alice", role="orchestrator")
+            assert len(json.dumps(joined).encode()) < 40000
+            assert "get_role_guide" in joined["guide"]
+            full = (await http.get("/guides/orchestrator.md")).text
+            parts = []
+            for page in range(1, 100):
+                result = await _call(server, "get_role_guide", role="orchestrator", page=page)
+                header, content = result["result"].split("\n", 1)
+                parts.append(content)
+                if page == int(header.split("/")[1]):
+                    break
+            assert "".join(parts) == full
+            with pytest.raises(ToolError, match="only fetch its own guide"):
+                await _call(server, "get_role_guide", role="worker", page=1)
         finally:
             await bridge.close()

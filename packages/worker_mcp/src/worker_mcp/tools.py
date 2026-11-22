@@ -148,13 +148,32 @@ def create_worker_mcp(
         )
 
     @server.tool()
-    async def get_role_guide(role: str) -> str:
-        """Fetch instructions for the assigned role (e.g. 'implementer', 'reviewer')."""
+    async def get_role_guide(role: str, page: int | None = None) -> str:
+        """Fetch a role guide. For the orchestrator, request pages starting at 1.
+
+        Each page reports the total; read every page, including the forge appendix.
+        Worker calls without a page retain the full guide response.
+        """
         resolved = await resolve()
-        require_joined(resolved, allow_preconfigured=True)
-        return await invoke(
-            resolved, "get_role_guide", resolved.get_role_guide(role), {"role": role}
+        if resolved.standing_role is StandingRole.ORCHESTRATOR:
+            if not resolved.is_joined:
+                raise RuntimeError("orchestrator has not joined")
+            if role != "orchestrator":
+                raise RuntimeError("orchestrator may only fetch its own guide")
+            if page is None:
+                raise ValueError("request orchestrator guide pages starting at 1")
+        else:
+            require_joined(resolved, allow_preconfigured=True)
+        if page is not None and page < 1:
+            raise ValueError("page must be at least 1")
+        guide = await invoke(
+            resolved, "get_role_guide", resolved.get_role_guide(role), {"role": role, "page": page}
         )
+        if page is None:
+            return guide
+        from .guide_pages import guide_page
+
+        return guide_page(guide, page)
 
     @server.tool()
     async def await_assignment(
