@@ -52,8 +52,8 @@ uv run --project <robomate checkout> python scripts/agent-launcher.py start bob 
 ```
 
 `start` creates or reuses the worktree with `robomate workspace <agent>` (the
-operator credential), starts the harness there with the join line
-(`Join robomate as bob, implementer.`) as its only prompt, and writes nothing
+operator credential), starts the harness there with a first prompt naming the
+join, next step, and turn rule, and writes nothing
 but `sessions/<agent>.jsonl` (with its `.lock`, and Devin's export) in the
 hub's state directory. The harness finds the hub through its static
 `robomate mcp` entry and the worktree's binding: there is no rendered config,

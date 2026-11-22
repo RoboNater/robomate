@@ -979,9 +979,8 @@ def test_worker_first_prompt_and_continuations_share_turn_rule(role: str) -> Non
         )
         assert "Wait for CI and other work in the foreground" in text
         assert "Do not end your turn until await_assignment returns release: true" in text
-    assert CLI.common.WORKER_TURN_RULE in (ROOT / "skills/worker/SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    skill = (ROOT / "skills/worker/SKILL.md").read_text(encoding="utf-8")
+    assert CLI.common.WORKER_TURN_RULE in " ".join(skill.split())
     assert "Use the worker skill." in first
     assert "Then await your assignment with await_assignment" in first
     assert "\n" not in first

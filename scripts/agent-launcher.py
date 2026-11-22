@@ -16,8 +16,8 @@ Run it from the hub's checkout (or name the hub with ``--hub``)::
         --run <run_id> --harness codex
 
 ``start`` finds the agent's worktree with ``robomate workspace <agent>``, starts
-the harness there with the join line (``Join robomate as bob, implementer.``)
-as its only prompt, passes the harness's sandbox grants as flags, and resumes
+the harness there with a first prompt naming the join, next step, and turn rule,
+passes the harness's sandbox grants as flags, and resumes
 the same conversation with a fixed continuation and #158 backoff until the
 workflow is done or the worker is released. Nothing is rendered: the harness
 finds the hub through its static ``robomate mcp`` entry, pinned to this hub's
