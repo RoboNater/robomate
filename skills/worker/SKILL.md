@@ -7,7 +7,8 @@ description: Run as a persistent robo-agents worker that pulls assignments from 
 
 Call `join(name, role)` once (its response includes the worker guide, any
 `reattached_task` on `takeover=true`), or on prepared runs call `check_in` once and then call
-`get_role_guide("worker")`, and follow its protocol etiquette. Keep running this
+`get_role_guide("worker")`, and follow its protocol etiquette. If join output is
+truncated, call `get_role_guide("worker")` before `await_assignment`. Keep running this
 loop until released:
 
 1. Call `await_assignment`. A timeout is normal; call it again.

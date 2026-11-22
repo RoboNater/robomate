@@ -15,6 +15,8 @@ owns orchestration; you own only the task currently assigned to you.
    unknown identity fields must never be guessed. The `join` response includes
    this worker etiquette guide (`guide` and `guide_sha256`), any
    `reattached_task` on `takeover=true`, and `next_call: "await_assignment"`.
+   If the join output is truncated, call `get_role_guide("worker")` before
+   `await_assignment` to read the complete etiquette guide.
 2. Call `await_assignment()` without timeout_s to use `join.wait_profile.default_wait_s`.
    A timeout is normal: call again. Never poll in a tight loop. Measured profiles:
    Claude Code print 1500 s; Codex/OpenCode/Antigravity 1800 s; Claude Code

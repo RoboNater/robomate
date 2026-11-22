@@ -447,7 +447,8 @@ async def test_join_guide_can_be_retrieved_separately(
                 "join", {"name": "alice" if role == "orchestrator" else "bob", "role": role}
             )
             assert isinstance(joined, tuple)
-            print(f"{role} serialized join: {len(json.dumps(joined[1]).encode())} bytes")
+            # 40 KB leaves headroom below supported harness tool-output limits (#632).
+            assert len(json.dumps(joined[1]).encode()) < 40000
             if role == "orchestrator":
                 result = await server.call_tool("get_role_guide", {"role": role, "page": 1})
                 assert isinstance(result, tuple)
@@ -458,7 +459,18 @@ async def test_join_guide_can_be_retrieved_separately(
                 assert result[1]["result"] == joined[1]["guide"]
                 role_result = await server.call_tool("get_role_guide", {"role": role})
                 assert isinstance(role_result, tuple)
-                assert role_result[1]["result"] == joined[1]["role_guide"]
+                assert "get_role_guide" in joined[1]["role_guide"]
+                assert role_result[1]["result"]
+                assert joined[1]["next_call"] == "await_assignment"
+                assert "release: true" in joined[1]["turn_instruction"]
+                assert list(joined[1]).index("turn_instruction") < list(joined[1]).index("guide")
+                again = await server.call_tool(
+                    "join", {"name": "bob", "role": role, "takeover": True}
+                )
+                assert isinstance(again, tuple)
+                assert again[1]["next_call"] == "await_assignment"
+                assert "release: true" in again[1]["turn_instruction"]
+                assert len(json.dumps(again[1]).encode()) < 40000
                 with pytest.raises(ToolError, match="not found"):
                     await server.call_tool("get_role_guide", {"role": "denise"})
         finally:
