@@ -18,6 +18,7 @@ from agent_hub.store import (
     ConflictError,
     DuplicateAgentError,
     HubStore,
+    IdempotencyConflictError,
     InvalidPolicyError,
     NotFoundError,
     Released,
@@ -600,6 +601,91 @@ def test_cancelling_frees_the_worker_and_only_works_once(store: HubStore) -> Non
     assert agent is not None and agent.status is AgentStatus.IDLE
     with pytest.raises(ConflictError):
         store.cancel_task(task_id)
+
+
+def test_a_canceled_source_event_task_is_superseded(store: HubStore) -> None:
+    """#542: a canceled task never produced a result, so its event is reusable."""
+
+    store.check_in("bob")
+    source = store.next_event()
+    assert source is not None
+    original = store.assign_task(
+        "bob",
+        "implementer",
+        "CLOSE-OUT for abc1234",
+        "Finish the run",
+        source_event_id=source.id,
+    )
+    store.set_task_state(original.id, TaskState.CANCELED, "Wrong role")
+
+    replacement = store.assign_task(
+        "bob",
+        "closeout",
+        "CLOSE-OUT for abc1234",
+        "Finish the run",
+        source_event_id=source.id,
+    )
+
+    assert replacement.id != original.id
+    assert replacement.state is TaskState.SUBMITTED
+    assert replacement.source_event_id == source.id
+    released = store.get_task(original.id)
+    assert released is not None
+    assert released.state is TaskState.CANCELED
+    assert released.source_event_id is None
+    with database(store.path) as connection:
+        decision = connection.execute(
+            "SELECT summary, rationale, actor FROM decision ORDER BY id DESC"
+        ).fetchone()
+    assert decision["actor"] == "hub"
+    assert original.id in decision["summary"]
+    assert replacement.id in decision["summary"]
+    assert original.id in decision["rationale"]
+    assert str(source.id) in decision["rationale"]
+
+
+def test_an_identical_replay_still_returns_a_canceled_source_event_task(
+    store: HubStore,
+) -> None:
+    store.check_in("bob")
+    source = store.next_event()
+    assert source is not None
+    original = store.assign_task("bob", "implementer", "Fix", "Do it", source_event_id=source.id)
+    store.set_task_state(original.id, TaskState.CANCELED, "Wrong role")
+
+    replay = store.assign_task("bob", "implementer", "Fix", "Do it", source_event_id=source.id)
+
+    assert replay.id == original.id
+    assert replay.state is TaskState.CANCELED
+    assert len(store.tasks()) == 1
+    with database(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("finish", ["live", "completed", "failed"])
+def test_a_non_canceled_source_event_task_refuses_a_different_payload(
+    store: HubStore, finish: str
+) -> None:
+    store.check_in("bob")
+    source = store.next_event()
+    assert source is not None
+    task = store.assign_task("bob", "implementer", "Fix", "Do it", source_event_id=source.id)
+    if finish == "completed":
+        store.submit_result(task.id, "bob", TaskState.COMPLETED, "Done")
+    elif finish == "failed":
+        store.submit_result(task.id, "bob", TaskState.FAILED, "Nope")
+
+    with pytest.raises(IdempotencyConflictError, match="different payload"):
+        store.assign_task(
+            "bob", "closeout", "CLOSE-OUT for abc1234", "Finish", source_event_id=source.id
+        )
+
+    assert len(store.tasks()) == 1
+    bound = store.get_task(task.id)
+    assert bound is not None
+    assert bound.source_event_id == source.id
+    with database(store.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == 0
 
 
 def test_events_are_consumed_once_and_in_order(store: HubStore) -> None:

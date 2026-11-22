@@ -2690,7 +2690,10 @@ class HubStore:
         `pr_head_sha` binds a review or rebase to the PR head it was given, so
         the verdict can be checked against what the PR holds at merge time.
         `source_event_id` makes Alice's event-driven call idempotent: an exact
-        replay returns the original task even after it has become terminal.
+        replay returns the original task even after it has become terminal. A
+        task canceled before it produced a result releases its event, so a
+        corrected assignment may reuse it; a decision entry records the
+        supersession (#542).
         """
 
         if role in (TaskRole.REVIEWER, TaskRole.REBASE) and pr_head_sha is None:
@@ -2753,6 +2756,7 @@ class HubStore:
                 assignment_metadata[MetaKeys.PR_HEAD_SHA] = head
             lease_cap_min = self._max_task_lease_min(connection, workflow_id)
             effective_lease_min = min(lease_min, lease_cap_min)
+            superseded_task_id: str | None = None
             if source_event_id is not None:
                 source = connection.execute(
                     "SELECT id FROM event WHERE id = ?", (source_event_id,)
@@ -2789,10 +2793,19 @@ class HubStore:
                     )
                     if requested == stored:
                         return task
-                    raise IdempotencyConflictError(
-                        f"source event {source_event_id} already assigned task {task.id} "
-                        "with a different payload"
+                    if task.state is not TaskState.CANCELED:
+                        raise IdempotencyConflictError(
+                            f"source event {source_event_id} already assigned task {task.id} "
+                            "with a different payload"
+                        )
+                    # A canceled task never produced a result, so it releases
+                    # its event. The unique partial index on
+                    # `task.source_event_id` requires the old row to let go of
+                    # it; the decision below records the supersession (#542).
+                    connection.execute(
+                        "UPDATE task SET source_event_id = NULL WHERE id = ?", (task.id,)
                     )
+                    superseded_task_id = task.id
             self._refuse_while_escalated(connection, workflow_id, "assign_task")
             record = self._require_agent(connection, agent)
             if not standing_role_accepts_task(record.standing_role, role):
@@ -2851,6 +2864,17 @@ class HubStore:
                 "UPDATE agent SET status = ?, current_task_id = ? WHERE name = ?",
                 (AgentStatus.BUSY.value, task_id, agent),
             )
+            if superseded_task_id is not None:
+                connection.execute(
+                    "INSERT INTO decision (ts, summary, rationale, actor) VALUES (?, ?, ?, 'hub')",
+                    (
+                        now,
+                        f"Assigned task {task_id} from source event {source_event_id},"
+                        f" superseding canceled task {superseded_task_id}",
+                        f"Task {superseded_task_id} was canceled before it produced a"
+                        f" result, so it released source event {source_event_id}.",
+                    ),
+                )
             self._add_message(
                 connection,
                 task_id=task_id,
