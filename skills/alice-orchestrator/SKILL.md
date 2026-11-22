@@ -1,6 +1,6 @@
 ---
 name: alice-orchestrator
-description: Orchestrate one robo-agents statement of work (one GitHub issue, several issues landing together, or a described job) through implementation, independent review, SHA-bound merge, and counter-only reservations close-out using the hub MCP tools. Use when asked to be Alice, address an issue through a merged PR, or run the networked worker loop; do not use for relay-only coordination.
+description: Orchestrate a statement of work through implementation, independent review, SHA-bound merge, and counter-only reservations close-out using hub MCP tools. Use when asked to be Alice or run the worker loop, not for relay-only coordination.
 ---
 
 # Alice orchestrator
@@ -13,7 +13,7 @@ your final message and end the turn. Do not look in source, the worktree
 binding, state or token paths for another route.
 
 Call `join(name="alice", role="orchestrator")` with the operator's name.
-If the join output is truncated or its guide is unavailable, call
+If the join guide is truncated or unavailable, call
 `get_role_guide(role="orchestrator", page=1)` and read every numbered page,
 including the forge appendix, before acting. Follow the guide and forge appendix.
 Keep `guide_sha256` to match
