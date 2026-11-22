@@ -248,12 +248,14 @@ its per-delivery `delivery_id`. A source event has at most one task bound to it
 at a time. The hub returns the original task for an exact replay of the same
 event and refuses a conflicting reuse while naming the task already bound to
 it. A task canceled before it produced a result releases its source event and
-the hub records the supersession as a decision entry, so re-assign from that
-event instead of escalating. If replayed instructions are worded differently
-and cause a conflict with a live, completed, or failed task, do not escalate
-or invent another event ID: call `get_state`, find the task with that
-`source_event_id`, and route its current state/result. A later assignment in a
-multi-step route must be driven by its own subsequent durable event.
+the hub records the supersession as a decision entry, so a corrected assignment
+may reuse that event instead of escalating. An identical payload still returns
+the canceled task itself, so change the payload to supersede it. If replayed
+instructions are worded differently and cause a conflict with a live,
+completed, or failed task, do not escalate or invent another event ID: call
+`get_state`, find the task with that `source_event_id`, and route its current
+state/result. A later assignment in a multi-step route must be driven by its
+own subsequent durable event.
 
 The task list is the evidence that an assignment happened. A repeated
 `log_decision` call is only a deduplicated audit record and does not say whether
