@@ -39,6 +39,10 @@ authority and never changes the stored goal, policy or operator answers. For a
 different orchestrator, require the operator's replacement request; if the
 identity or intent is unclear, stop and ask the operator. Takeover fences the
 old session and releases event leases.
+If join output is truncated or the guide is unavailable, fetch
+`get_role_guide(role="orchestrator", page=1)` and read every numbered page,
+including the forge appendix, before acting.
+
 The response supplies this guide and `guide_sha256`, the hub identity and forge,
 compact state and unacknowledged deliveries. A rejoin in the same bridge session
 returns `unchanged (<hash>)` when the served bytes are identical; retain the

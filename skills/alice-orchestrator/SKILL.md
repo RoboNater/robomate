@@ -13,7 +13,10 @@ your final message and end the turn. Do not look in source, the worktree
 binding, state or token paths for another route.
 
 Call `join(name="alice", role="orchestrator")` with the operator's name.
-Follow the guide and forge appendix. Keep `guide_sha256` to match
+If the join output is truncated or its guide is unavailable, call
+`get_role_guide(role="orchestrator", page=1)` and read every numbered page,
+including the forge appendix, before acting. Follow the guide and forge appendix.
+Keep `guide_sha256` to match
 `unchanged (<hash>)` on rejoin. To resume this conversation, call `join` with
 your name, `role="orchestrator"` and `takeover=true` before `get_state`.
 Takeover replaces the session only and grants no workflow authority. Require

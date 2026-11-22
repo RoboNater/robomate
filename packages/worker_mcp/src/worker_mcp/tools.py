@@ -148,13 +148,35 @@ def create_worker_mcp(
         )
 
     @server.tool()
-    async def get_role_guide(role: str) -> str:
-        """Fetch instructions for the assigned role (e.g. 'implementer', 'reviewer')."""
+    async def get_role_guide(role: str, page: int | None = None) -> str:
+        """Fetch a role guide. For the orchestrator, request pages starting at 1.
+
+        Each page reports the total; read every page, including the forge appendix.
+        Worker calls without a page retain the full guide response.
+        """
         resolved = await resolve()
-        require_joined(resolved, allow_preconfigured=True)
-        return await invoke(
-            resolved, "get_role_guide", resolved.get_role_guide(role), {"role": role}
+        if resolved.standing_role is StandingRole.ORCHESTRATOR:
+            if not resolved.is_joined:
+                raise RuntimeError("orchestrator has not joined")
+            if role != "orchestrator":
+                raise RuntimeError("orchestrator may only fetch its own guide")
+            if page is None:
+                raise ValueError("request orchestrator guide pages starting at 1")
+        else:
+            require_joined(resolved, allow_preconfigured=True)
+        if page is not None and page < 1:
+            raise ValueError("page must be at least 1")
+        guide = await invoke(
+            resolved, "get_role_guide", resolved.get_role_guide(role), {"role": role, "page": page}
         )
+        if page is None:
+            return guide
+        # Even JSON-escaped non-BMP characters fit within the 40 KB page budget.
+        page_size = 3000
+        total = max(1, (len(guide) + page_size - 1) // page_size)
+        if page > total:
+            raise ValueError(f"page exceeds guide page count ({total})")
+        return f"Page {page}/{total}\n" + guide[(page - 1) * page_size : page * page_size]
 
     @server.tool()
     async def await_assignment(

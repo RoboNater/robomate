@@ -786,7 +786,8 @@ def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> Non
     response = guide_response(CHECKED_IN_GUIDES, "orchestrator", forge="github")
     assert response.status_code == 200
     text = bytes(response.body).decode("utf-8")
-    assert "--delete-branch" not in text
+    assert "Never use `gh pr merge --delete-branch`" in text
+    assert "gh pr merge <pr_url> --<merge_method> --match-head-commit" in text
     assert "--match-head-commit <approved head>" in text
     assert "git push origin --delete <branch>" in text
     appendix_start = text.index("# GitHub Orchestrator Appendix")

@@ -460,7 +460,9 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   if a workflow is active.
 
 Orchestrator join returns the composed guide and `guide_sha256`; a repeat join in the
-same bridge session returns `unchanged (<hash>)` for identical bytes. With an existing
+same bridge session returns `unchanged (<hash>)` for identical bytes. If the guide
+is truncated or unavailable, the orchestrator can fetch it in numbered pages with
+`get_role_guide(role="orchestrator", page=1)` and read every page. With an existing
 non-done workflow it also returns the resume procedure: read state first, reconcile the
 forge head/state/base/merge commit against stored tasks, results and unacknowledged
 deliveries, log discrepancies, and route one safe next action without duplicating tasks.

@@ -382,3 +382,79 @@ async def test_submit_result_schema_carries_commits_pattern() -> None:
     schema = tool.inputSchema
     commits = schema["$defs"]["ImplementerResult"]["properties"]["commits"]
     assert commits["items"]["pattern"] == r"^[0-9a-fA-F]{40}$"
+
+
+@pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+async def test_orchestrator_can_refetch_complete_guide_in_pages(
+    app: FastAPI, tmp_path: Path
+) -> None:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        alice = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}), http)
+        try:
+            server = create_worker_mcp(alice, include_orchestrator=True)
+            joined = await server.call_tool("join", {"name": "alice", "role": "orchestrator"})
+            assert isinstance(joined, tuple)
+            original = joined[1]["guide"]
+            parts = []
+            for page in range(1, 100):
+                result = await server.call_tool(
+                    "get_role_guide", {"role": "orchestrator", "page": page}
+                )
+                assert isinstance(result, tuple)
+                header, content = result[1]["result"].split("\n", 1)
+                assert len(json.dumps(result[1]).encode()) < 40000
+                parts.append(content)
+                if page == int(header.split("/")[1]):
+                    break
+            assert "".join(parts) == original
+            assert "# GitHub Orchestrator Appendix" in original
+            with pytest.raises(ToolError, match="only fetch its own guide"):
+                await server.call_tool("get_role_guide", {"role": "implementer", "page": 1})
+        finally:
+            await alice.close()
+
+
+@pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+@pytest.mark.parametrize("role", ["orchestrator", "worker", "implementer", "reviewer"])
+async def test_join_guide_can_be_retrieved_separately(
+    app: FastAPI, tmp_path: Path, role: str
+) -> None:
+    """Join may exceed client limits; the guide must remain retrievable separately."""
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        client = WorkerHubClient(WorkerSettings.unjoined(cwd=tmp_path, environ={}), http)
+        try:
+            server = create_worker_mcp(client, include_orchestrator=True)
+            joined = await server.call_tool(
+                "join", {"name": "alice" if role == "orchestrator" else "bob", "role": role}
+            )
+            assert isinstance(joined, tuple)
+            print(f"{role} serialized join: {len(json.dumps(joined[1]).encode())} bytes")
+            if role == "orchestrator":
+                result = await server.call_tool("get_role_guide", {"role": role, "page": 1})
+                assert isinstance(result, tuple)
+                assert result[1]["result"].startswith("Page 1/")
+            else:
+                result = await server.call_tool("get_role_guide", {"role": "worker"})
+                assert isinstance(result, tuple)
+                assert result[1]["result"] == joined[1]["guide"]
+                role_result = await server.call_tool("get_role_guide", {"role": role})
+                assert isinstance(role_result, tuple)
+                assert role_result[1]["result"] == joined[1]["role_guide"]
+                with pytest.raises(ToolError, match="not found"):
+                    await server.call_tool("get_role_guide", {"role": "denise"})
+        finally:
+            await client.close()
