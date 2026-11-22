@@ -42,6 +42,9 @@ old session and releases event leases.
 If join references the guide, or the output is truncated or unavailable, fetch
 `get_role_guide(role="orchestrator", page=1)` and read every numbered page,
 including the forge appendix, before acting.
+Then call `get_state`; if a run is queued, call `start_workflow()` without a
+statement. Do not end your turn until the workflow is done unless a required
+hub tool is unavailable.
 
 The response supplies a reference to this guide and `guide_sha256`, the hub identity and forge,
 compact state and unacknowledged deliveries. A rejoin in the same bridge session

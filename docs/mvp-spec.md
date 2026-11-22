@@ -90,6 +90,8 @@ robomate inbox             # questions for you; answer with: robomate answer 3 "
 robomate log --timeline    # drill down when something looks wrong
 ```
 
+Alice's join response supplies the next steps for starting a queued run.
+
 - `robomate up` runs in a checkout: the main checkout or a linked worktree. The hub belongs
   to that checkout (§4). A second team working in the same repository at the same time
   starts its own hub from another worktree, e.g.

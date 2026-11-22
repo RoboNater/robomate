@@ -158,7 +158,12 @@ def command_line(words: Sequence[str]) -> str:
 
 def join_line(agent: str, role: str) -> str:
     line = f"Join robomate as {agent}, {role}."
-    return f"{line} {common.ORCHESTRATOR_HUB_BOUNDARY}" if role == "orchestrator" else line
+    if role == "orchestrator":
+        return (
+            f"{line} Use the alice-orchestrator skill. {common.ORCHESTRATOR_KICKOFF} "
+            f"{common.ORCHESTRATOR_TURN_RULE} {common.ORCHESTRATOR_HUB_BOUNDARY}"
+        )
+    return line
 
 
 def continuation(agent: str, role: str, *, joined: bool) -> str:
@@ -192,10 +197,10 @@ def continuation(agent: str, role: str, *, joined: bool) -> str:
         )
     if role == "orchestrator":
         return head + (
-            "Then call get_state and reconcile using the returned orchestrator guide's On "
+            f"{common.ORCHESTRATOR_KICKOFF} Reconcile using the returned orchestrator guide's On "
             "resume section. Keep an escalated or paused workflow as it is: escalation ends "
-            "only through the operator's user_answered event. Do not start the workflow "
-            "again and do not repeat completed work. "
+            "only through the operator's user_answered event. "
+            f"{common.ORCHESTRATOR_RESUME_RULE} "
             f"{common.ORCHESTRATOR_TURN_RULE} {common.ORCHESTRATOR_HUB_BOUNDARY}"
         )
     if joined:

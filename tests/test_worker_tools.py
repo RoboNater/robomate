@@ -403,6 +403,8 @@ async def test_orchestrator_can_refetch_complete_guide_in_pages(
             assert isinstance(joined, tuple)
             original = (await http.get("/guides/orchestrator.md")).text
             assert "get_role_guide" in joined[1]["guide"]
+            for phrase in ("get_state", "start_workflow()", "Do not end your turn"):
+                assert phrase in joined[1]["guide"]
             assert len(json.dumps(joined[1]).encode()) < 40000
             parts = []
             for page in range(1, 100):

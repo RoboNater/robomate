@@ -29,6 +29,9 @@ reattached and returned in the join response, instead of failing it as
 its event leases for redelivery; the guide's On resume section reconciles with
 the forge before acting. Takeover grants no workflow authority: an escalated
 or paused workflow stays as it is.
+After joining, the orchestrator calls `get_state` and starts a queued run with
+`start_workflow()` without a statement; she keeps the turn going until the
+workflow is done unless a required hub tool is unavailable.
 
 By hand, stop the old harness, start the same harness in the same worktree
 (`robomate workspace <agent>` prints it) on the saved conversation if you have

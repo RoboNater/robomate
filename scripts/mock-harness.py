@@ -203,7 +203,10 @@ class Agent:
     async def orchestrate(self) -> None:
         """Alice: one implementation, one review, closeout, release, done."""
 
+        state = await self.call("get_state")
         try:
+            if not state.get("queue"):
+                raise RuntimeError("no queued run")
             started = await self.call("start_workflow")
             run_id = str(started.get("run_id") or "")
             say(f"alice started run {run_id} ({started.get('status')})")
@@ -324,10 +327,23 @@ async def play(harness: str, argv: list[str], line: str) -> None:
         agent = Agent(session, name)
         joined = await agent.call("join", name=name, role=role, takeover=takeover)
         say(f"{name} joined as {joined.get('role', role)} (takeover={takeover})")
+        if role == "orchestrator" and not takeover:
+            # Exercise the first prompt and bridge pointer, without a resume.
+            for phrase in ("get_state", "start_workflow()", "Do not end your turn"):
+                if phrase not in line or phrase not in joined["guide"]:
+                    raise ValueError(f"orchestrator kickoff missing {phrase}")
+            page = 1
+            while True:
+                guide = await agent.call("get_role_guide", role="orchestrator", page=page)
+                header = guide["text"].split("\n", 1)[0]
+                if page == int(header.split("/")[1]):
+                    break
+                page += 1
         if EXIT_AFTER_JOIN:
             if role == "orchestrator":
                 # Leave a live run for the hand-resumed Alice, as an interrupted
                 # run does: recovery cannot take a workflow that is still queued.
+                await agent.call("get_state")
                 started = await agent.call("start_workflow")
                 say(f"{name} started run {started.get('run_id')} before exiting")
             barrier = Path(EXIT_AFTER_JOIN)

@@ -729,10 +729,14 @@ async def test_static_bridge_joins_as_orchestrator_and_fences_worker_tools(
                 server, "join", name="alice", role="orchestrator", model="test-model"
             )
             assert first["guide_sha256"] and first["hub"]["forge"] == "github"
+            for phrase in ("get_state", "start_workflow()", "Do not end your turn"):
+                assert phrase in first["guide"]
             assert first["resume_procedure"] is None
             assert (await _call(server, "get_state"))["workflow"] is None
             again = await _call(server, "join", name="alice", role="orchestrator")
             assert again["guide"].startswith("unchanged (")
+            for phrase in ("get_state", "start_workflow()", "Do not end your turn"):
+                assert phrase in again["guide"]
             assert (await _call(server, "whoami"))["standing_role"] == "orchestrator"
             with pytest.raises(ToolError, match="worker role"):
                 await _call(server, "await_assignment", timeout_s=0)
@@ -895,6 +899,8 @@ async def test_prepared_bridge_pages_guide(settings: Any, tmp_path: Path) -> Non
             joined = await _call(server, "join", name="alice", role="orchestrator")
             assert len(json.dumps(joined).encode()) < 40000
             assert "get_role_guide" in joined["guide"]
+            for phrase in ("get_state", "start_workflow()", "Do not end your turn"):
+                assert phrase in joined["guide"]
             full = (await http.get("/guides/orchestrator.md")).text
             parts = []
             for page in range(1, 100):

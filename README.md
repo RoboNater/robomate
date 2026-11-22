@@ -25,6 +25,8 @@ robomate status                   # who's connected, what phase, which PR, what'
 robomate report                   # merged SHA, review findings and where each one went
 ```
 
+Alice's join response supplies the next steps for starting a queued run.
+
 **Works today (M1, M5):** `robomate up`, `down`, `status`, and `ls`, the `robomate mcp`
 bridge that connects every agent to the hub, and both GitHub and GitLab workflows. A hub belongs
 to the checkout where `up` runs, so each linked worktree of a repository can run its own named
