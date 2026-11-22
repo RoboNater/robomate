@@ -943,7 +943,6 @@ class WorkerHubClient:
 
         worker_guide = await self.get_role_guide("worker")
         worker_guide_sha256 = hashlib.sha256(worker_guide.encode("utf-8")).hexdigest()
-        role_guide = await self.get_role_guide(standing_role.value)
 
         who = await self._request_with_retry("GET", "/whoami")
         who.raise_for_status()
@@ -1024,6 +1023,11 @@ class WorkerHubClient:
 
         return {
             "status": "registered",
+            "next_call": "await_assignment",
+            "turn_instruction": (
+                "Call await_assignment next. Do not end your turn until "
+                "await_assignment returns release: true; wait in the foreground."
+            ),
             "agent": clean_name,
             "role": standing_role.value,
             "standing_role": standing_role.value,
@@ -1037,11 +1041,13 @@ class WorkerHubClient:
             "setup": hub_setup,
             "profile": profile_dict,
             "wait_profile": {"default_wait_s": self.settings.default_wait_s},
-            "role_guide": role_guide,
+            "role_guide": (
+                f'Guide by reference: call get_role_guide(role="{standing_role.value}") '
+                "on assignment."
+            ),
             "guide": worker_guide,
             "guide_sha256": worker_guide_sha256,
             "reattached_task": reattached_task,
-            "next_call": "await_assignment",
         }
 
     async def whoami(self) -> dict[str, Any]:

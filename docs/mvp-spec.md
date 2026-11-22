@@ -452,12 +452,13 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   and escalates on violation. Any harness/model/effort may hold any role; guidelines on what
   works accumulate in `docs/harnesses.md`.
 
-**Join response** (worker guides are inline; orchestrator guidance is by reference):
+**Join response** (worker etiquette is inline; standing-role and orchestrator guides are by reference):
 - identity confirmed; hub (`hub_id` and name), repo, forge, default branch;
 - `workspace_path`, `workspace_id`, and whether the bridge's working directory is inside it;
 - `setup` (§6) and the applied `model`/`effort` pins from the configuration layers (§4);
 - the worker etiquette guide, or an orchestrator guide reference, with its hash;
-- for a worker: any reattached task; the next call to make (`await_assignment`);
+- for a worker: a `get_role_guide` pointer for the standing role, any reattached task,
+  and the next call to make (`await_assignment`);
 - for the orchestrator: compact `get_state` summary, `unacked_delivered`, the resume procedure
   if a workflow is active.
 
@@ -466,9 +467,11 @@ bridges receive the inline guide. A repeat join in the
 same bridge session returns `unchanged (<hash>)` for identical bytes. The orchestrator
 fetches the guide in numbered pages with
 `get_role_guide(role="orchestrator", page=1)` and reads every page. Pages have an
-18 KB JSON-escaped content budget; the orchestrator join has a 40 KB test budget.
+18 KB JSON-escaped content budget; every standing-role join has a 40 KB serialized
+test budget. A worker whose join output is truncated fetches its complete etiquette
+guide with `get_role_guide("worker")` before awaiting an assignment.
 With an existing
-non-done workflow it also returns the resume procedure: read state first, reconcile the
+non-done workflow the orchestrator join also returns the resume procedure: read state first, reconcile the
 forge head/state/base/merge commit against stored tasks, results and unacknowledged
 deliveries, log discrepancies, and route one safe next action without duplicating tasks.
 Queue and run identity enter the compact state in M2 Step 3.
