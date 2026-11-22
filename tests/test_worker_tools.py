@@ -460,7 +460,9 @@ async def test_join_guide_can_be_retrieved_separately(
                 role_result = await server.call_tool("get_role_guide", {"role": role})
                 assert isinstance(role_result, tuple)
                 assert "get_role_guide" in joined[1]["role_guide"]
-                assert role_result[1]["result"]
+                title = "Worker etiquette" if role == "worker" else role.title()
+                assert role_result[1]["result"].startswith(f"# {title}\n")
+                assert "# GitHub Forge Appendix" in role_result[1]["result"]
                 assert joined[1]["next_call"] == "await_assignment"
                 assert "release: true" in joined[1]["turn_instruction"]
                 assert list(joined[1]).index("turn_instruction") < list(joined[1]).index("guide")
