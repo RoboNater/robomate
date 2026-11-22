@@ -146,13 +146,18 @@ no launcher is attached but the newest launch has no `exit` after it and its
 recorded harness PID still runs, `stop` checks the live process name against
 the one recorded at launch, terminates that PID (SIGKILL after the usual
 grace on POSIX), and writes an `exit` row marked
-`"stopped_by": "agent-launcher stop"`. That orphan path does not reconstruct a
-missing `joined` row, so the next resume may send the plain join line instead
-of the bounded takeover (#571). When neither is running it reports
-that and changes nothing. A PID whose name changed, or an older launch row
-with no recorded process identity, may have been reused: `stop` leaves it
-alone (exit 4) and says so rather than guessing; the process name is the
-check recovery already applies, and #176 tracks a stronger creation identity.
+`"stopped_by": "agent-launcher stop"`. Each launch row records the offset
+where that child's bridge telemetry starts, so `stop` reads only the rows its
+own launch appended: when they contain a successful `join` tool call it writes
+the launch's `joined` row before the `exit` row, and a following resume keeps
+the bounded takeover continuation (#571). An older launch row without that
+offset gets no `joined` row, because its telemetry cannot be told apart from
+another launch's; the resume then sends the plain join line. When neither is
+running it reports that and changes nothing. A PID whose name changed, or an
+older launch row with no recorded process identity, may have been reused:
+`stop` leaves it alone (exit 4) and says so rather than guessing; the process
+name is the check recovery already applies, and #176 tracks a stronger
+creation identity.
 
 After `stop` or Ctrl-C, a following `resume` passes the recorded-exit guard
 without `--confirm-stopped`. Keep `--confirm-stopped` for real unknowns: a
