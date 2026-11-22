@@ -106,7 +106,7 @@ intended outcome` and before `A reviewer judges the change` (B1–B6, P1–P4):
 > can coexist with a requirement to reserve the next DB schema version at
 > pickup, before writing it into code. Reserve early, implement and review
 > with the reserved version, then mark the version shipped and the issue
-> complete after merge according to the adjudicated roadmap decision. Do not
+> complete after merge according to the implementer and reviewer's adjudicated roadmap decision. Do not
 > turn that post-merge instruction into a prohibition on all pre-merge roadmap
 > edits. If the statement explicitly prohibits all pre-merge roadmap edits,
 > clarify the conflict through the normal question path before using a schema

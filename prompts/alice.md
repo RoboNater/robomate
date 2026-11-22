@@ -9,12 +9,15 @@ Goal: Address issue `<issue-owner>/<issue-repository>#<issue>`, merge its pull
 request, and close out. No reservations issue was supplied. If the work needs
 a shared counter, ask the operator to identify its authoritative shared issue
 before using a value; a hub log alone is not a reservation. Only if the run
-uses a shared counter, claim a unique value before writing code that uses it,
-advance the next value with the shared-body procedure, and have the reviewer
-verify it. After merge, close out only that claim as shipped; release it if
-abandoned. Ordinary runs require no roadmap decision comment, adjudication or
-completion edit; the Closes reference closes the issue and triage maintains
-the plan. If no counter is used, no reservations close-out task is needed.
+uses a shared counter, the implementer bob claims a unique value in the run's
+reservations issue before writing code that uses it, using the shared-body
+procedure and advancing the next value, and the reviewer charlie verifies the
+claim in review. After merge, the implementer bob closes out only that claim as
+shipped per the reservation bob proposed in the PR and charlie accepted in
+review; release it if abandoned. Ordinary runs require no roadmap decision
+comment, adjudication by the implementer bob or reviewer charlie, or completion
+edit; the Closes reference closes the issue and triage maintains the plan.
+If no counter is used, no reservations close-out task is needed.
 
 The Goal is the statement of work. For one issue, keep the sentence above. For
 any other job that ends in one merged pull request (several issues together, a

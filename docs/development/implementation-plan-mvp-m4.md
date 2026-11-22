@@ -391,7 +391,7 @@ follow-ups through §7.3. Nothing posts from a retrospective automatically.
 | #17 | Fold into Step 2: run PR binding plus existing durable branch label settle it; no multi-PR workflow |
 | #18 | Step 7 owns reduced reconciliation and missing crash cases; keep policy in the guide, no phase/checkpoint engine |
 | #20 | Step 6 supplies `robomate log --timeline`; supersedes the old script spelling |
-| #16, #97, #215, #216, #356 | Already closed. #16's roadmap policy was superseded by #408; do not restore roadmap adjudication. #97/PR #218 was interim files, #215 collection, #216 split, #356 views |
+| #16, #97, #215, #216, #356 | Already closed. #16's roadmap policy was superseded by #408; do not restore implementer/reviewer roadmap adjudication. #97/PR #218 was interim files, #215 collection, #216 split, #356 views |
 | #357 | Step 5, after Steps 3–4 and #356; scope retained with launcher clarification above |
 | #358 | Continue ordinary-run evidence now, 3–5 runs across its harness/OS/remote/crash matrix; compare hub and file reports while both exist. After removal mark that comparison inapplicable and continue hub views. Not replaced by a scripted test |
 | #359 | Starts after Step 5, at least two ordinary hub-only runs across its matrix; Step 8 may contribute, not claim every matrix row from one run |

@@ -395,6 +395,24 @@ one temporary directory, so it can touch nothing of the run's.
 
 ## 5. Identity, roles, and join
 
+**Role principle (#88).** The orchestrator runs the process; it does not decide the work.
+Every substantive decision is proposed by the implementer and accepted or challenged by
+the reviewer. The orchestrator makes sure each decision has an owner, was made, was
+reviewed and is recorded. When the workers disagree or cannot decide, it escalates to the
+operator and does not break the tie. The implementer and reviewer roles are usually given
+frontier or near-frontier models to work out what the task needs and reach agreement,
+while the orchestrator usually runs on a smaller model because orchestration is mostly a
+rules-based routing process (superseding PoC §5 step 7's rule that Alice edited the
+roadmap for reservations and sequencing).
+
+| Decision | Proposes | Checks | Orchestrator's part |
+|---|---|---|---|
+| Roadmap update (`#2`) | Triage (outside ordinary agent runs; `#408`) | Triage / operator | None in ordinary runs (`Closes #N` closes the issue); routes explicit legacy goal steps only |
+| Shared-counter reservation (`#409`) | Implementer (claims unique value via shared-body procedure before code uses it and states the claim in the PR/MR) | Reviewer (verifies the shared claim matches the code and excludes in-flight claims) | Routes the reservations target and post-merge claim close-out; verifies the claim was recorded and reviewed before merge; records `reservation:<counter>`; escalates if the target is missing or a conflict cannot be resolved |
+| Accepting or rejecting a review finding | Implementer (fixes or disputes with concrete reasoning on the PR/MR) | Reviewer (verifies the fix or evaluates the dispute on re-review) | Routes `ADDRESS`, `NONBLOCKING`, and `RE-REVIEW` without telling the implementer which findings to accept; escalates after two rounds of disagreement or at `max_review_rounds` |
+| Out-of-scope follow-up issue | Implementer or reviewer (identifies the out-of-scope item or declines a non-blocking finding with a reason) | Reviewer (verifies deferral and files/references the follow-up issue) | Routes `FOLLOW-UP` before merge; verifies the tracking issue URL is recorded; escalates if forge filing is refused |
+| Merge readiness | Implementer (pushes the candidate head and reports test outcomes) | Reviewer (verifies diff, acceptance criteria, and tests at `reviewed_head_sha`) | Verifies the `check_merge_gate` invariant on the reviewer-approved head; merges when it holds; routes `REBASE`, `CI-REPAIR`, or `RE-REVIEW`, or escalates when it does not |
+
 **`join(name, role, model?, effort?, harness?, hub?, takeover=false)`** — the one tool an
 unjoined session can call besides `whoami`. Its description is the install-free instruction:
 *"Call when the user asks you to join robomate. Use the name and role the user gives."*
@@ -929,13 +947,14 @@ with the hub stopped. Export on abandonment, the run-report appendix and replaci
 the prepared-run file prompt remain outside this feature (#357).
 
 **Counter reservations (#408).** Ordinary runs do no roadmap decision comment,
-adjudication or completion edit. `Closes #N` closes the issue and triage maintains
-the plan. Only a counter-using run reads or edits the run's reservations issue.
-Alice claims a unique value or explicitly assigns the claim to the implementer
-before code uses it, advancing the next value with the shared-body procedure.
+adjudication by the implementer or reviewer, or completion edit. `Closes #N`
+closes the issue and triage maintains the plan. Only a counter-using run reads
+or edits the run's reservations issue. The implementer claims a unique value
+before code uses it (advancing the next value with the shared-body procedure)
+and states the reservation in the PR/MR, and the reviewer checks it (§5).
 On a stale snapshot, re-read and rebuild rather than overwrite another claim.
 The reviewer verifies the code's claimed value and in-flight uniqueness; Alice
-checks the shared claim before merge. A hub log alone is insufficient. If no
+verifies the shared claim was recorded and reviewed before merge. A hub log alone is insufficient. If no
 authoritative target is supplied or readable, ask the operator before using a
 counter. After merge, close out only the used claim as shipped; release an
 unused claim if dropped or abandoned without rewinding over other claims.

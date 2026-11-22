@@ -29,11 +29,14 @@ merge the change request, or rely on the implementer's summary as evidence.
    safeguards. For a restricted action, require an operator answer with
    a question id that `get_operator_answer` confirms; otherwise refuse the
    action and return `blocked` with the missing authorization as the blocker.
-   If the change uses a shared counter, independently read the run's reservations
-   issue: verify the code uses its claimed value, the claim belongs to this work,
-   and the next value excludes other in-flight claims. A hub log or a read of
-   the next value alone is insufficient. Ordinary runs need no roadmap decision
-   or adjudication; a supplied reservations target alone adds no review task.
+   Check the implementer's proposed shared-counter reservation decision (and any
+   roadmap decision on a legacy statement) as part of review. If the change uses
+   a shared counter, independently read the run's reservations issue: verify the
+   code uses its claimed value, the claim belongs to this work, the next value
+   excludes other in-flight claims, and the change request states the claim. A
+   hub log or a read of the next value alone is insufficient. Ordinary runs need
+   no roadmap decision or adjudication by the implementer or reviewer; a
+   supplied reservations target alone adds no review task.
 4. Run tests for the changed code, the issue's acceptance commands, relevant
    repository validation, and touched entry points. CI supplies the full suite
    on the reviewed head on Linux and Windows; run it locally with

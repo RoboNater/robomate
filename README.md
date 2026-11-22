@@ -38,11 +38,20 @@ certification (M3); close-out and `robomate report` (M4).
 
 - **Pull model.** Agents connect to the hub over MCP and ask for work. The hub holds each
   request open until there is something to do, so no agent polls or spins.
-- **Orchestrator (Alice)** plans from the statement of work, assigns tasks, and decides
-  when to re-review, rebase, merge, or ask you.
-- **Implementer (Bob)** works on a branch in their own git worktree and opens the PR/MR.
+- **Role principle.** The orchestrator runs the process; the implementer and reviewer
+  decide and agree on the work. The implementer and reviewer usually run on frontier or
+  near-frontier models to work out what the task needs and reach agreement, while the
+  orchestrator can run on a smaller model because orchestration is mostly a rules-based
+  routing process.
+- **Orchestrator (Alice)** runs the process from the statement of work: assigns tasks,
+  verifies each step happened, records decisions, and routes re-reviews, rebases, merges,
+  or operator escalations without judging the work's content.
+- **Implementer (Bob)** works on a branch in their own git worktree, opens the PR/MR, and
+  proposes substantive decisions (including shared-counter reservations and responses to
+  review findings).
 - **Reviewer (Charlie)** checks out the exact commit under review in a separate worktree,
-  tests it, and posts findings.
+  tests it, accepts or challenges the implementer's proposed decisions and counter claims,
+  and posts findings.
 - **The hub** stores durable state in SQLite, serves each role's instructions, and tracks
   liveness. It checks merge conditions against the forge. Agents use `gh` / `glab`
   themselves.

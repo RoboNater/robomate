@@ -3972,7 +3972,7 @@ class HubStore:
         emitted = []
         for row in rows:
             # The lease is cleared as it is reported, so one overdue task
-            # produces one event however often the sweeper runs. Alice decides
+            # produces one event however often the sweeper runs. Alice routes
             # whether to extend, reassign or fail it.
             connection.execute(
                 "UPDATE task SET lease_expires = NULL, updated = ? WHERE id = ?",

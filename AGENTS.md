@@ -8,8 +8,9 @@ loads into context on every operation.
 **robomate**: a local hub through which a small team of AI coding agents takes
 an issue or statement of work to a reviewed, merged PR. It is pull-model: one
 orchestrator (Alice) and the workers contact the hub, rather than a supervisor
-that spawns them. The hub is the only A2A server; workers are A2A clients over
-HTTP, so they need no inbound port.
+that spawns them. The orchestrator runs the process; the implementer and
+reviewer decide and agree on the work (mvp-spec §5). The hub is the only A2A
+server; workers are A2A clients over HTTP, so they need no inbound port.
 
 [`docs/mvp-spec.md`](docs/mvp-spec.md) is the design of record; its §-numbers
 are the shared vocabulary in issues and commits, and §13 orders the milestones.
@@ -17,12 +18,14 @@ are the shared vocabulary in issues and commits, and §13 orders the milestones.
 the MVP spec doesn't change it.
 
 - **Roadmap: #2.** Triage maintains milestone status and sequencing; ordinary
-  agent runs do no roadmap decision, adjudication or completion edit. The PR's
-  `Closes #N` reference closes the issue; triage reflects it on its next pass.
+  agent runs do no roadmap decision, adjudication by the implementer or reviewer,
+  or completion edit. The PR's `Closes #N` reference closes the issue; triage
+  reflects it on its next pass.
 - **Reservations: #409.** Shared counters (DB schema version, wire
   `hub.schema_version`) live here. Only a run using a counter reads or edits it.
-  Before writing code that uses a value, Alice claims it or explicitly assigns
-  that claim to the implementer, using the shared-body procedure: for example,
+  Before writing code that uses a value, the implementer claims it in #409 (and
+  states the reservation in the PR for the reviewer to check; Alice routes the
+  target and verifies the claim), using the shared-body procedure: for example,
   `v28 reserved for #N (in progress); next is v29`. Re-fetch immediately before
   writing; if the snapshot changed, rebuild from the fresh body and choose an
   unclaimed value. Reading the next value or logging it in the hub is not a

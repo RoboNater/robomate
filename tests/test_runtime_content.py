@@ -1193,3 +1193,134 @@ def test_testing_doc_isolates_mutation_negative_cases() -> None:
             "neutralize the shape check if it still fires first",
         ),
     )
+
+
+def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
+    """#88: the orchestrator runs the process; the implementer and reviewer decide the work."""
+    readme_how = section(read("README.md"), "## How it works", "## Guarantees")
+    assert_fragments(
+        readme_how,
+        (
+            (
+                "The orchestrator runs the process; the implementer and reviewer decide and "
+                "agree on the work."
+            ),
+            "frontier or near-frontier models",
+            "smaller model because orchestration is mostly a rules-based routing process",
+            "without judging the work's content",
+            "proposes substantive decisions",
+            "accepts or challenges the implementer's proposed decisions and counter claims",
+        ),
+    )
+    assert "decides when to re-review" not in normalize(readme_how)
+
+    spec_roles = section(read("docs/mvp-spec.md"), "## 5. Identity, roles, and join", "### 5.1")
+    assert_fragments(
+        spec_roles,
+        (
+            "The orchestrator runs the process; it does not decide the work.",
+            (
+                "Every substantive decision is proposed by the implementer and accepted or "
+                "challenged by the reviewer."
+            ),
+            (
+                "The orchestrator makes sure each decision has an owner, was made, was "
+                "reviewed and is recorded."
+            ),
+            (
+                "When the workers disagree or cannot decide, it escalates to the operator and "
+                "does not break the tie."
+            ),
+            "| Decision | Proposes | Checks | Orchestrator's part |",
+            "| Roadmap update (`#2`) | Triage (outside ordinary agent runs; `#408`) |",
+            "| Shared-counter reservation (`#409`) | Implementer",
+            "| Accepting or rejecting a review finding | Implementer",
+            "| Out-of-scope follow-up issue | Implementer or reviewer",
+            "| Merge readiness | Implementer",
+        ),
+    )
+
+    skill = read("skills/alice-orchestrator/SKILL.md")
+    assert_fragments(
+        skill,
+        (
+            "The orchestrator runs the process; it does not decide the work.",
+            "The implementer proposes substantive decisions",
+            "the reviewer accepts or challenges them",
+            "do not tell it which findings to accept",
+            "you route, verify, record and escalate",
+        ),
+    )
+
+    orchestrator = read("guides/orchestrator.md")
+    orchestrator_top = section(orchestrator, "# Orchestrator", "## Join")
+    assert_fragments(
+        orchestrator_top,
+        (
+            "The orchestrator runs the process; it does not decide the work (spec §5).",
+            '"Do not tell it which findings to accept"',
+            "proposed by the implementer and accepted or challenged by the reviewer",
+            "escalate to the operator with `ask_user` and do not break the tie",
+        ),
+    )
+    assert_fragments(
+        section(orchestrator, "## KICKOFF and PLAN", "## Choose the worker pair"),
+        (
+            "The implementer proposes whether the work needs a shared monotonic counter",
+            "Alice does not decide content questions about counters.",
+        ),
+    )
+
+    assert_fragments(
+        read("guides/implementer.md"),
+        (
+            "Propose any shared-counter reservation decision in the change request",
+            "state the claimed counter and value in the change request for the reviewer to check",
+        ),
+    )
+    assert_fragments(
+        read("guides/reviewer.md"),
+        (
+            "Check the implementer's proposed shared-counter reservation decision",
+            "and the change request states the claim",
+        ),
+    )
+    assert_fragments(
+        read("AGENTS.md"),
+        (
+            (
+                "The orchestrator runs the process; the implementer and reviewer decide and "
+                "agree on the work (mvp-spec §5)."
+            ),
+        ),
+    )
+
+    adjudicat = subprocess.run(
+        ["git", "grep", "-n", "-i", "adjudicat", "--", ":!tests/test_runtime_content.py"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    actor_pattern = re.compile(r"\b(implementer|reviewer|bob|charlie)\b", flags=re.IGNORECASE)
+    unattributed = [
+        line for line in adjudicat.stdout.splitlines() if not actor_pattern.search(line)
+    ]
+    assert not unattributed, f"adjudicat without implementer/reviewer actor: {unattributed}"
+
+    orchestrator_decides = subprocess.run(
+        [
+            "git",
+            "grep",
+            "-n",
+            "-i",
+            r"alice decides\|orchestrator decides",
+            "--",
+            ":!tests/test_runtime_content.py",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert orchestrator_decides.returncode == 1, orchestrator_decides.stdout

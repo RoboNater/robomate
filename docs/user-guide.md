@@ -185,10 +185,10 @@ Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s 
 For a Codex Alice, the generated `start-alice.sh` uses `codex exec -C . --skip-git-repo-check` because `alice-runtime/` is outside a git checkout. Interactive `--no-auto-start` launches omit that exec-only flag. `--bob-provider`, `--charlie-provider`, and capability flags override the worker profiles used by Alice's pairing policy.
 
 For work spanning several issues in **one PR**, use `--work-file /absolute/path/to/statement.md` instead of `--issue`. Name every issue with `owner/repo#number` and state the acceptance criteria. Use one run per PR. `--reservations` optionally names the shared-counter issue. Ordinary runs do no
-roadmap decision, adjudication or completion edit; the PR's `Closes` reference
-closes the issue and triage maintains the plan. Only counter-using runs claim a
+roadmap decision, adjudication by the implementer bob or reviewer charlie, or completion edit; the PR's `Closes` reference
+closes the issue and triage maintains the plan. Only counter-using runs have the implementer bob claim a
 value before code uses it, advance the next value, and close out that claim
-after merge. If no reservations issue was supplied and a counter is needed,
+after merge per the reservation bob proposed in the PR and charlie accepted in review. If no reservations issue was supplied and a counter is needed,
 Alice asks for its authoritative shared issue before using a value. `--roadmap`
 now fails with an error naming `--reservations`; rename `roadmap` to
 `reservations` in standard-run TOML too. Old `run.json` files still load and
@@ -1019,10 +1019,14 @@ $env:CODEX_HOME = "C:\my-run\configs\codex"; codex login status
   reservations issue was supplied. `--reservations N`, `#N`, or `OWNER/REPO#N`
   supplies a counter target; bare numbers resolve against the target repository,
   while other values pass through verbatim for resolution before claiming.
-  Ordinary runs require no roadmap decision comment, adjudication or completion
-  edit and no reservations close-out task. Counter-using runs claim a unique
-  value in the shared issue before code uses it, advance the next value, have
-  it independently reviewed, and close out only that claim after merge.
+  Ordinary runs require no roadmap decision comment,
+  adjudication by the implementer bob or reviewer charlie, or completion
+  edit and no reservations close-out task. Counter-using runs have the
+  implementer bob claim a unique value in the shared issue before code uses it,
+  advance the next value, and propose the reservation in the PR, have the
+  reviewer charlie check it in review, and have bob close out only that claim
+  after merge per the reservation bob proposed in the PR and charlie accepted in
+  review.
   If no target is available, Alice asks the operator before using a counter;
   logging it only in the hub never establishes a shared claim.
 - `GitHub comment identity account`: Your GitHub username (used in comments like `Implementation agent bob on behalf of <username>`).
@@ -1116,9 +1120,11 @@ Once Alice receives the kickoff prompt, she executes the autonomous orchestratio
    - Alice logs the final merge details via `log_decision`.
    - Ordinary runs do no roadmap work; triage reflects issue closure. Only when
      the run used a counter does Alice assign `CLOSE-OUT for <merged sha7>` to
-     mark that claim shipped in the run's reservations issue, preserving the
-     next value and other claims. Other explicit close-out work and follow-ups
-     still apply. Old prepared runs retain their original goal obligations.
+     Bob to mark that claim shipped in the run's reservations issue per the
+     reservation Bob proposed in the PR and Charlie accepted in review,
+     preserving the next value and other claims. Other explicit close-out work
+     and follow-ups still apply. Old prepared runs retain their original goal
+     obligations.
    - Alice releases Bob and Charlie via `release_agent()`.
    - Alice marks workflow status as `done` via `set_workflow_status()`.
    - Workers observe `release: true` on their next `await_assignment()` and exit.

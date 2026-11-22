@@ -457,12 +457,15 @@ def probe_versions(harnesses: set[str]) -> tuple[dict[str, str], dict[str, str]]
 
 
 COUNTER_CLOSE_OUT = (
-    "Only if the run uses a shared counter, claim a unique value in the run's "
-    "reservations issue before writing code that uses it; use the shared-body "
-    "procedure, advance the next value, and have the reviewer verify the claim. "
-    "After merge, close out only that claim as shipped; release it if abandoned. "
+    "Only if the run uses a shared counter, the implementer bob claims a unique value "
+    "in the run's reservations issue before writing code that uses it, using the "
+    "shared-body procedure and advancing the next value, and the reviewer charlie "
+    "verifies the claim in review. After merge, the implementer bob closes out only "
+    "that claim as shipped per the reservation bob proposed in the PR and charlie "
+    "accepted in review; release it if abandoned. "
     "If no counter is used, no reservations close-out task is needed. "
-    "Ordinary runs require no roadmap decision comment, adjudication or completion edit; "
+    "Ordinary runs require no roadmap decision comment, "
+    "adjudication by the implementer bob or reviewer charlie, or completion edit; "
     "the Closes reference closes the issue and triage maintains the plan."
 )
 
