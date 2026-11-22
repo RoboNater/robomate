@@ -870,6 +870,7 @@ def after_attempts(
     area: dict[str, Path],
     *phases: dict[str, Any],
     events: tuple[str, ...] = ("start", "resume"),
+    agent: str = "bob",
 ) -> Callable[[str], dict[str, Any]]:
     """Hub status by launcher attempts: phase N after N logged ``events`` rows.
 
@@ -882,7 +883,7 @@ def after_attempts(
         if method == "hub.info":
             return {"hub_id": HUB}
         try:
-            log = rows(area)
+            log = rows(area, agent)
         except FileNotFoundError:
             log = []
         attempts = sum(1 for row in log if row.get("event") in events)
@@ -1685,7 +1686,10 @@ def test_a_reused_hub_row_does_not_count_as_a_worker_join(
 
     use_harness("claude-code", monkeypatch)
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
-    live = {"workflow": workflow(), "agents": [agent_row("released", context="old")]}
+    live = {
+        "workflow": workflow(),
+        "agents": [agent_row("released", context="old", name="charlie")],
+    }
 
     def answer(method: str) -> dict[str, Any]:
         if method == "hub.info":
@@ -1693,15 +1697,15 @@ def test_a_reused_hub_row_does_not_count_as_a_worker_join(
         return live
 
     code = invoke(
-        start_words(area, "bob", "implementer", "claude-code"),
+        start_words(area, "charlie", "implementer", "claude-code"),
         programs=programs(area),
-        reader=FakeHub(answer),
+        reader=FakeHub(answer, "charlie"),
         workspace=workspace_of(area),
     )
 
     assert code == LAUNCHER.EXIT_NEVER_JOINED
     assert len(launches(area)) == 1
-    log = rows(area)
+    log = rows(area, "charlie")
     assert log[-1]["event"] == "stop" and log[-1]["reason"] == "never_joined"
     assert not any(row["event"] == "wait" for row in log)
 
@@ -1713,18 +1717,24 @@ def test_a_reused_hub_worker_that_joined_resumes(
 
     use_harness("claude-code", monkeypatch)
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0", "exit:0"]))
-    earlier = {"workflow": workflow(), "agents": [agent_row("released", context="old")]}
-    joined: dict[str, Any] = {"workflow": workflow(), "agents": [agent_row("busy", context="new")]}
+    earlier = {
+        "workflow": workflow(),
+        "agents": [agent_row("released", context="old", name="charlie")],
+    }
+    joined: dict[str, Any] = {
+        "workflow": workflow(),
+        "agents": [agent_row("busy", context="new", name="charlie")],
+    }
     joined["agents"][0]["activity"] = {"instance": "instance-1"}
     released: dict[str, Any] = {
         "workflow": workflow(),
-        "agents": [agent_row("released", context="new")],
+        "agents": [agent_row("released", context="new", name="charlie")],
     }
     released["agents"][0]["activity"] = {"instance": "instance-1"}
-    hub = FakeHub(after_launches(area, earlier, joined, released))
+    hub = FakeHub(after_launches(area, earlier, joined, released), "charlie")
 
     code = invoke(
-        start_words(area, "bob", "implementer", "claude-code"),
+        start_words(area, "charlie", "implementer", "claude-code"),
         programs=programs(area),
         reader=hub,
         workspace=workspace_of(area),
@@ -1733,8 +1743,8 @@ def test_a_reused_hub_worker_that_joined_resumes(
     assert code == 0
     assert len(launches(area)) == 2
     # The bridge recorded no join, so the continuation stays the plain join.
-    assert launches(area)[1]["argv"][-1] == CLI.continuation("bob", "implementer", joined=False)
-    log = rows(area)
+    assert launches(area)[1]["argv"][-1] == CLI.continuation("charlie", "implementer", joined=False)
+    log = rows(area, "charlie")
     assert log[-1]["event"] == "stop" and log[-1]["reason"] == "released"
 
 
@@ -1747,12 +1757,18 @@ def test_a_recorded_join_keeps_a_manual_worker_resume(
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0", "exit:0"]))
     conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00046"
     now = datetime.now(UTC)
-    saved_log(area, conversation, now - timedelta(minutes=10), now - timedelta(minutes=1))
-    with (area["sessions"] / "bob.jsonl").open("a", encoding="utf-8") as stream:
+    saved_log(
+        area,
+        conversation,
+        now - timedelta(minutes=10),
+        now - timedelta(minutes=1),
+        agent="charlie",
+    )
+    with (area["sessions"] / "charlie.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(
             json.dumps(
                 {
-                    "agent": "bob",
+                    "agent": "charlie",
                     "harness": "claude-code",
                     "role": "implementer",
                     "event": "joined",
@@ -1766,22 +1782,35 @@ def test_a_recorded_join_keeps_a_manual_worker_resume(
             + "\n"
         )
     live = workflow(created=(now - timedelta(minutes=5)).isoformat())
-    active = {"workflow": live, "agents": [agent_row()]}
-    joined: dict[str, Any] = {"workflow": live, "agents": [agent_row("busy", context="new")]}
+    active = {"workflow": live, "agents": [agent_row(name="charlie")]}
+    joined: dict[str, Any] = {
+        "workflow": live,
+        "agents": [agent_row("busy", context="new", name="charlie")],
+    }
     joined["agents"][0]["activity"] = {"instance": "instance-1"}
     released: dict[str, Any] = {
         "workflow": live,
-        "agents": [agent_row("released", context="new")],
+        "agents": [agent_row("released", context="new", name="charlie")],
     }
     released["agents"][0]["activity"] = {"instance": "instance-1"}
     hub = snapshotting(
-        FakeHub(after_attempts(area, active, joined, released, events=("manual_resume", "resume")))
+        FakeHub(
+            after_attempts(
+                area,
+                active,
+                joined,
+                released,
+                events=("manual_resume", "resume"),
+                agent="charlie",
+            )
+        ),
+        "charlie",
     )
 
     code = invoke(
         [
             "resume",
-            "bob",
+            "charlie",
             "--hub",
             str(area["checkout"]),
             "--read-retry-delay-s",
@@ -1795,8 +1824,8 @@ def test_a_recorded_join_keeps_a_manual_worker_resume(
 
     assert code == 0
     _, resumed = launches(area)
-    assert resumed["argv"][-1] == CLI.continuation("bob", "implementer", joined=True)
-    assert 'join(name="bob", role="implementer", takeover=true)' in resumed["argv"][-1]
+    assert resumed["argv"][-1] == CLI.continuation("charlie", "implementer", joined=True)
+    assert 'join(name="charlie", role="implementer", takeover=true)' in resumed["argv"][-1]
 
 
 @pytest.mark.parametrize("content", [None, ""])
@@ -1820,11 +1849,12 @@ def saved_log(
     conversation: str,
     started: datetime,
     exited: datetime,
+    agent: str = "bob",
     **launch: object,
 ) -> None:
     area["sessions"].mkdir(exist_ok=True)
     common = {
-        "agent": "bob",
+        "agent": agent,
         "harness": "claude-code",
         "role": "implementer",
         "conversation_id": conversation,
@@ -1846,7 +1876,7 @@ def saved_log(
         },
         common | {"event": "exit", "timestamp": exited.isoformat(), "exit_code": 1},
     ]
-    (area["sessions"] / "bob.jsonl").write_text(
+    (area["sessions"] / f"{agent}.jsonl").write_text(
         "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8"
     )
 
@@ -2467,7 +2497,7 @@ def test_interactive_codex_never_takes_a_session_it_did_not_create(
     assert len(launches(area)) == 1
 
 
-def snapshotting(hub: Any) -> Any:
+def snapshotting(hub: Any, agent: str = "bob") -> Any:
     """The same scripted hub, also answering the recovery reads."""
 
     status: Callable[[str], dict[str, Any]] = hub.answer
@@ -2485,7 +2515,7 @@ def snapshotting(hub: Any) -> Any:
             return {"questions": []}
         return status(method)
 
-    return FakeHub(answer)
+    return FakeHub(answer, agent)
 
 
 @pytest.mark.parametrize("harness", ["opencode", "antigravity", "devin"])
