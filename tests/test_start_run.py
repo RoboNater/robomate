@@ -568,6 +568,17 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
     for agent, record in by_agent.items():
         harness = "codex" if agent == "charlie" else "claude-code"
         argv = record["argv"]
+        if agent != "alice":
+            assert record["prompt"].startswith(f"Join robomate as {agent}, {START.AGENTS[agent]}.")
+            assert (
+                "Every reply must contain a tool call until await_assignment returns release: true"
+                in record["prompt"]
+            )
+            assert "Wait for CI and other work in the foreground" in record["prompt"]
+            assert (
+                "Do not end your turn until await_assignment returns release: true"
+                in record["prompt"]
+            )
         assert record["harness"] == harness
         assert argv[argv.index("--model") + 1] == values[f"{agent}_model"]
         if harness == "codex":
@@ -582,7 +593,7 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
                 assert "Do not end your turn until the workflow is done" in argv[-1]
                 assert "report the missing tools in your final message and end the turn" in argv[-1]
             else:
-                assert argv[-1] == join_line
+                assert argv[-1] == record["prompt"]
             assert argv[argv.index("--effort") + 1] == values[f"{agent}_effort"]
             assert argv[argv.index("--permission-prompts") + 1] == "none"
         assert not any(

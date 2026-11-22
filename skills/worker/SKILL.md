@@ -9,7 +9,11 @@ Call `join(name, role)` once (its response includes the worker guide, any
 `reattached_task` on `takeover=true`), or on prepared runs call `check_in` once and then call
 `get_role_guide("worker")`, and follow its protocol etiquette. If join output is
 truncated, call `get_role_guide("worker")` before `await_assignment`. Keep running this
-loop until released:
+loop until released. Every reply must contain a tool call until await_assignment
+returns release: true. Wait for CI and other work in the foreground. Do not end
+your turn until await_assignment returns release: true.
+
+The loop:
 
 1. Call `await_assignment`. A timeout is normal; call it again.
 2. On assignment, call `get_role_guide(role)` and follow that guide together

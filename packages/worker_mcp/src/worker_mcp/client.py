@@ -1025,8 +1025,10 @@ class WorkerHubClient:
             "status": "registered",
             "next_call": "await_assignment",
             "turn_instruction": (
-                "Call await_assignment next. Do not end your turn until "
-                "await_assignment returns release: true; wait in the foreground."
+                # Kept in sync with the standard-library launcher by test_worker_tools.
+                "Call await_assignment next. Every reply must contain a tool call until "
+                "await_assignment returns release: true. Wait for CI and other work in the "
+                "foreground. Do not end your turn until await_assignment returns release: true."
             ),
             "agent": clean_name,
             "role": standing_role.value,

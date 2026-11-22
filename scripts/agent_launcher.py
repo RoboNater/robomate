@@ -58,6 +58,14 @@ EXIT_INTERRUPTED = 130
 
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
+# Duplicated in worker_mcp.client because this launcher is standard-library only;
+# test_worker_tools checks the bridge copy against this constant.
+WORKER_TURN_RULE = (
+    "Every reply must contain a tool call until await_assignment returns release: true. "
+    "Wait for CI and other work in the foreground. Do not end your turn until "
+    "await_assignment returns release: true."
+)
+
 ORCHESTRATOR_HUB_BOUNDARY = (
     "Use only the configured robomate MCP tools to reach the hub. Never read the hub's "
     "state or token directory. Do not substitute robomate's "
