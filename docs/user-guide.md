@@ -1107,8 +1107,11 @@ Once Alice receives the kickoff prompt, she executes the autonomous orchestratio
 8. **Automated Merge**:
    Once the merge invariant holds, Alice executes the merge in her shell:
    ```bash
-   gh pr merge <pr_url> --<merge_method> --delete-branch --match-head-commit <approved_head_sha>
+   gh pr merge <pr_url> --<merge_method> --match-head-commit <approved_head_sha>
    ```
+   Verify the merge with `check_merge_gate`, then delete only the remote branch
+   with `git push origin --delete <branch>`. Avoid `--delete-branch` in linked
+   worktrees.
 9. **Wrap-Up**:
    - Alice logs the final merge details via `log_decision`.
    - Ordinary runs do no roadmap work; triage reflects issue closure. Only when
