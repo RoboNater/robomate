@@ -869,6 +869,13 @@ class WorkerHubClient:
                     pinned_profile[_key] = result.get(_key)
             if isinstance(result.get("workspace_id"), str):
                 pinned_profile["workspace_id"] = result.get("workspace_id")
+            # The hub still sends the inline guide for older bridges. Keep the
+            # MCP join response bounded and direct this client to numbered pages.
+            if not str(result.get("guide", "")).startswith("unchanged ("):
+                result["guide"] = (
+                    'Guide by reference: call get_role_guide(role="orchestrator", page=1) '
+                    "and read every page before acting."
+                )
             return result | {
                 "workspace_path": str(hub_path),
                 "workspace_id": result.get("workspace_id", profile.workspace_id),

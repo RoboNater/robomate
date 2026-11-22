@@ -401,7 +401,9 @@ async def test_orchestrator_can_refetch_complete_guide_in_pages(
             server = create_worker_mcp(alice, include_orchestrator=True)
             joined = await server.call_tool("join", {"name": "alice", "role": "orchestrator"})
             assert isinstance(joined, tuple)
-            original = joined[1]["guide"]
+            original = (await http.get("/guides/orchestrator.md")).text
+            assert "get_role_guide" in joined[1]["guide"]
+            assert len(json.dumps(joined[1]).encode()) < 40000
             parts = []
             for page in range(1, 100):
                 result = await server.call_tool(
@@ -414,6 +416,7 @@ async def test_orchestrator_can_refetch_complete_guide_in_pages(
                 if page == int(header.split("/")[1]):
                     break
             assert "".join(parts) == original
+            assert len(parts) <= 4
             assert "# GitHub Orchestrator Appendix" in original
             with pytest.raises(ToolError, match="only fetch its own guide"):
                 await server.call_tool("get_role_guide", {"role": "implementer", "page": 1})
@@ -458,3 +461,22 @@ async def test_join_guide_can_be_retrieved_separately(
                     await server.call_tool("get_role_guide", {"role": "denise"})
         finally:
             await client.close()
+
+
+def test_guide_pages_bound_json_escaped_unicode() -> None:
+    from worker_mcp.guide_pages import guide_page
+
+    guide = '😀"\\\n' * 6000
+    parts = []
+    for page in range(1, 100):
+        result = guide_page(guide, page)
+        assert len(json.dumps({"result": result}).encode()) < 20000
+        header, content = result.split("\n", 1)
+        parts.append(content)
+        if page == int(header.split("/")[1]):
+            break
+    assert "".join(parts) == guide
+    with pytest.raises(ValueError, match="at least 1"):
+        guide_page(guide, 0)
+    with pytest.raises(ValueError, match="exceeds"):
+        guide_page(guide, 100)

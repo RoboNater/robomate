@@ -287,6 +287,22 @@ class OrchestratorBridge:
             capabilities=capabilities,
         )
 
+    async def get_role_guide(self, role: str, page: int | None = None) -> str:
+        """Fetch the orchestrator guide in numbered pages, including the forge appendix."""
+        if not self.joined:
+            raise RuntimeError("orchestrator has not joined")
+        if role != "orchestrator":
+            raise RuntimeError("orchestrator may only fetch its own guide")
+        if page is None:
+            raise ValueError("request orchestrator guide pages starting at 1")
+        from .client import WorkerHubClient
+        from .config import WorkerSettings
+        from .guide_pages import guide_page
+
+        settings = replace(WorkerSettings.unjoined(cwd=self.cwd, environ={}), agent_name=self.name)
+        adapter = WorkerHubClient(settings, self._http())
+        return guide_page(await adapter.get_role_guide(role), page)
+
     async def _heartbeat_loop(self) -> None:
         while True:
             await asyncio.sleep(30)
@@ -310,6 +326,7 @@ def create_orchestrator_mcp(bridge: OrchestratorBridge) -> FastMCP:
         # The bound method hides `self`, just as the hub's bound methods do.
         server.add_tool(_observed(bridge, name, MethodType(forward, bridge)))
     server.add_tool(_observed(bridge, "join", bridge.join))
+    server.add_tool(_observed(bridge, "get_role_guide", bridge.get_role_guide))
     return server
 
 

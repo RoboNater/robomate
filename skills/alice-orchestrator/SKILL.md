@@ -13,7 +13,7 @@ your final message and end the turn. Do not look in source, the worktree
 binding, state or token paths for another route.
 
 Call `join(name="alice", role="orchestrator")` with the operator's name.
-If the join guide is truncated or unavailable, call
+If join references the guide, or it is truncated or unavailable, call
 `get_role_guide(role="orchestrator", page=1)` and read every numbered page,
 including the forge appendix, before acting. Follow the guide and forge appendix.
 Keep `guide_sha256` to match

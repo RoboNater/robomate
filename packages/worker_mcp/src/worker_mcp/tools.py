@@ -171,12 +171,9 @@ def create_worker_mcp(
         )
         if page is None:
             return guide
-        # Even JSON-escaped non-BMP characters fit within the 40 KB page budget.
-        page_size = 3000
-        total = max(1, (len(guide) + page_size - 1) // page_size)
-        if page > total:
-            raise ValueError(f"page exceeds guide page count ({total})")
-        return f"Page {page}/{total}\n" + guide[(page - 1) * page_size : page * page_size]
+        from .guide_pages import guide_page
+
+        return guide_page(guide, page)
 
     @server.tool()
     async def await_assignment(

@@ -388,6 +388,7 @@ async def test_codex_alice_uses_orchestrator_bridge(
         tool.name for tool in await create_orchestrator_mcp(OrchestratorBridge()).list_tools()
     }
     assert "join" in served
+    assert "get_role_guide" in server["enabled_tools"]
     assert set(server["enabled_tools"]) == served
     assert server["tools"]["join"]["approval_mode"] == "approve"
 
