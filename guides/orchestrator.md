@@ -244,13 +244,18 @@ may substitute for a source task ID only when no task caused the action;
 `EventRecord.id` is stable across redelivery, while `delivery_id` is not.
 
 Pass that source event's stable `id` as `event_id` on `assign_task`; never pass
-its per-delivery `delivery_id`. A source event creates at most one task. The
-hub returns the original task for an exact replay of the same event and refuses
-a conflicting reuse while naming the task already bound to it. If replayed
-instructions are worded differently and cause that conflict, do not escalate
-or invent another event ID: call `get_state`, find the task with that
-`source_event_id`, and route its current state/result. A later assignment in a
-multi-step route must be driven by its own subsequent durable event.
+its per-delivery `delivery_id`. A source event has at most one task bound to it
+at a time. The hub returns the original task for an exact replay of the same
+event and refuses a conflicting reuse while naming the task already bound to
+it. A task canceled before it produced a result releases its source event and
+the hub records the supersession as a decision entry, so a corrected assignment
+may reuse that event instead of escalating. An identical payload still returns
+the canceled task itself, so change the payload to supersede it. If replayed
+instructions are worded differently and cause a conflict with a live,
+completed, or failed task, do not escalate or invent another event ID: call
+`get_state`, find the task with that `source_event_id`, and route its current
+state/result. A later assignment in a multi-step route must be driven by its
+own subsequent durable event.
 
 The task list is the evidence that an assignment happened. A repeated
 `log_decision` call is only a deduplicated audit record and does not say whether
@@ -754,13 +759,17 @@ assignment. Continue from the subsequent task's completion and apply the
 table again. A moved-head blocked REVIEW's `task_failed` event is likewise
 consumed by its RE-REVIEW; use the later approving RE-REVIEW completion for
 CLOSE-OUT. A RETRY uses its own completion in place of the failed task's;
-failed/canceled tasks cannot supply a successful close-out source. Keep the
-terminal completion unused for CLOSE-OUT until merge is verified; no extra
-task is needed just to manufacture an event.
+failed/canceled tasks cannot supply a successful close-out source. A task
+canceled before it produced a result releases its source event: re-assign the
+corrected CLOSE-OUT from that event rather than escalating or sourcing an
+unrelated one. Keep the terminal completion unused for CLOSE-OUT until merge
+is verified; no extra task is needed just to manufacture an event.
 
 On resume, reconcile the task chain and retained source event with the forge
 merge as described above. Inspect all tasks before assigning CLOSE-OUT. If
-it already exists, route that task; never reuse its source for another task.
+it already exists, route that task unless it was canceled before it produced
+a result, in which case its source event is free for the corrected CLOSE-OUT;
+never reuse the source of a live, completed, or failed task for another task.
 If the chain or source cannot be established unambiguously, escalate rather
 than choosing an unrelated unused event.
 
