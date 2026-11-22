@@ -422,7 +422,7 @@ actual conversation restoration; record live checks and limitations explicitly.
 
 ## Roadmap decision
 
-On opening this PR, propose the following in an attributed PR comment for adjudication;
+On opening this PR, the implementer proposes the following in an attributed PR comment for reviewer adjudication;
 make the live #2 edit only when Alice assigns post-merge close-out:
 
 - Insert `M7 Denise: interactive doctor agent` immediately before M2 for discoverability,
@@ -455,4 +455,4 @@ At close-out, snapshot the current live body, construct the replacement in a uni
 temporary file, and stop on any failed match or command before `gh issue edit`. Anchor
 edits to their own sections, reread the live issue and diff it against the snapshot; do
 not replace a newer track summary with this plan's historical snapshot. Report the merged
-PR and full merge SHA, and any review-adjudicated changes to the proposal.
+PR and full merge SHA, and any reviewer-adjudicated changes to the implementer's proposal.

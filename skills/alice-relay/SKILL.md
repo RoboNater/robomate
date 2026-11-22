@@ -34,25 +34,25 @@ The `State` line exists so the human can resume after days away. Keep it current
 
 Use these templates nearly verbatim; they are the house style and the workers are used to them. Substitute only the bracketed parts.
 
-Before emitting **KICKOFF**, inspect the issue text supplied by the human for shared
+The orchestrator runs the process; Bob and Charlie decide the work. Before
+emitting **KICKOFF**, inspect the issue text supplied by the human for shared
 monotonic counters (database schema, migration number, wire `schema_version` or
-similar). Only if the work uses a counter, read the supplied text of the run's
-reservations issue and verify a unique claim for this work. If no target is
-supplied, ask the human to identify the authoritative shared issue before code
-uses a value. If a claim is missing, propose an anchored body edit such as
-`v28 reserved for #N (in progress); next is v29`, using the shared-body procedure;
-wait for confirmation it was written and re-read. A comment or hub log alone
-is not a claim. Reuse an existing claim unchanged and check other in-flight
-claims. Append the target and reserved value to Bob's kickoff prompt only when
-the issue text omits them. Charlie independently verifies the claim and code.
-Ordinary runs require no roadmap decision comment, adjudication or completion
-edit: `Closes` closes the issue and triage maintains the plan. Supplying a
-reservations target alone adds no close-out work.
+similar). Only if the work uses a counter, verify the human supplied the run's
+reservations issue target; if no target is supplied, ask the human to identify
+the authoritative shared issue before code uses a value. Append the reservations
+issue target (and any existing in-flight claim on resume) to Bob's kickoff
+prompt when the issue text omits it so Bob claims a unique value with the
+shared-body procedure (for example, `v28 reserved for #N (in progress); next is
+v29`) before code uses it and states the claim in the PR. A comment or hub log
+alone is not a claim. Charlie independently verifies the claim and code.
+Ordinary runs require no roadmap decision comment or completion
+edit: `Closes` closes the issue and triage maintains the
+plan. Supplying a reservations target alone adds no close-out work.
 
 **KICKOFF** — start of the issue. Awaiting Bob.
 ```
 Please address issue #[n]. Work on your own branch, commit as you go, and open a PR when you are done. Identify yourself in your PR comments as "Implementation agent Bob on behalf of [account]".
-[Only when the issue text omits it: Use the reserved [counter] [value].]
+[Only when relevant and the issue text omits it: Reservations target: #[reservations] (claim a unique value with the shared-body procedure before code uses it and state the claim in the PR for Charlie to check).]
 ```
 
 **REVIEW** — Bob reports a PR is open. Awaiting Charlie.
@@ -145,7 +145,7 @@ accepted. Phrase it so the human can approve the recommendation in one word.
 - Treat an intermediate commit as the PR head when Bob reports several; use his
   final/newest reported head SHA. If the human says it is not on origin, send
   the correction above.
-- Assign roadmap completion edits or require a roadmap decision/adjudication.
+- Assign roadmap completion edits or require a roadmap decision.
   Triage maintains the plan. Only counter-using runs close out their claims;
   verify that edit from Bob's pasted reply and send the correction above if
   missing. Release unused claims if abandoned or dropped, without rewinding the

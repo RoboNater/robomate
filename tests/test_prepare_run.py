@@ -1032,7 +1032,12 @@ def test_render_goal_reservations_combinations(
     assert "make a decision on what roadmap" not in goal
     assert "PR comment" not in goal
     assert "Only if the run uses a shared counter" in goal
+    assert "the implementer bob claims a unique value" in goal
     assert "before writing code that uses it" in goal
+    assert "the reviewer charlie verifies the claim in review" in goal
+    assert "per the reservation bob proposed in the PR and charlie accepted in review" in goal
+    assert "Ordinary runs require no roadmap decision comment or completion edit" in goal
+    assert ("adjudic" + "at") not in goal.lower()
     assert "If no counter is used, no reservations close-out task is needed" in goal
     if not has_reservations_instructions:
         assert "No reservations issue was supplied" in goal
@@ -1203,6 +1208,14 @@ def test_cli_generates_runs_with_conditional_reservations(
     expected = f"{source}#409" if reservations else None
     assert work["reservations"] == expected
     assert work["goal"] in (run_dir / "alice.prompt.md").read_text()
+    alice_prompt = (run_dir / "alice.prompt.md").read_text()
+    assert "the implementer bob claims a unique value" in alice_prompt
+    assert "the reviewer charlie verifies the claim in review" in alice_prompt
+    assert (
+        "per the reservation bob proposed in the PR and charlie accepted in review" in alice_prompt
+    )
+    assert "Ordinary runs require no roadmap decision comment or completion edit" in alice_prompt
+    assert ("adjudic" + "at") not in alice_prompt.lower()
     assert "If no counter is used, no reservations close-out task is needed" in work["goal"]
     assert "make a decision on what roadmap" not in work["goal"]
     if expected:

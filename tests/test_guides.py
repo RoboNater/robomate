@@ -1066,3 +1066,41 @@ def test_forge_appendices_state_the_body_file_rule(appendix: str) -> None:
         # glab api -F is key=value; the value starts with @ to read a file (r1-1).
         assert "`-F <field>=@<file>`" in normalized, f"{appendix} missing key=@file form"
         assert "`-F <field>@<file>`" not in normalized, f"{appendix} shows key@file without ="
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_guides_state_role_principle_and_reservation_decision_ownership(
+    forge: str,
+) -> None:
+    """#88: served orchestrator, implementer and reviewer guides assign decisions to workers."""
+    orchestrator = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        "The orchestrator runs the process; it does not decide the work (spec §5).",
+        '"Do not tell it which findings to accept"',
+        "The implementer proposes whether the work needs a shared monotonic counter",
+        "Alice does not choose counter values or decide content questions about counters.",
+        "Include the resolved reservations issue target in the assignment",
+    ):
+        assert fragment in orchestrator
+
+    implementer = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "implementer", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    assert "Propose any shared-counter reservation decision in the change request" in implementer
+    assert (
+        "state the claimed counter and value in the change request for the reviewer to check"
+        in implementer
+    )
+
+    reviewer = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "reviewer", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    assert "Check the implementer's proposed shared-counter reservation decision" in reviewer

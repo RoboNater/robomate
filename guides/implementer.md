@@ -28,12 +28,16 @@ change request, or merge it.
    branch and verify its current head from the forge (see the forge appendix).
    Never use `git stash`: its stack is shared across the clone's worktrees
    (worker guide); use a scratch worktree or a temporary WIP commit instead.
-3. Before changing any shared monotonic counter, check the claim in the run's
-   reservations issue and use that value exactly. Alice claims it or explicitly
-   assigns you the claim edit, using the shared-body procedure and advancing the
-   next value before code uses it. A hub log alone is not a claim. If a needed
-   counter or target is missing, unclaimed or conflicting, ask Alice before
-   using it. Re-read after a stale snapshot; never reuse an in-flight value.
+3. Propose any shared-counter reservation decision in the change request (and
+   any roadmap decision when a legacy statement requires one; ordinary runs need
+   no roadmap edit because triage maintains the roadmap). Before changing any
+   shared monotonic counter, claim a unique value in the run's reservations
+   issue (or check the existing claim for this work) using the shared-body
+   procedure and advancing the next value before code uses it, use that value
+   exactly, and state the claimed counter and value in the change request for
+   the reviewer to check. A hub log alone is not a claim. If a needed counter or
+   target is missing, unclaimed or conflicting, ask Alice before using it.
+   Re-read after a stale snapshot; never reuse an in-flight value.
 4. Make the smallest change that satisfies the issue. Do not add scope or mix
    unrelated cleanup into the change request. Commit coherent increments as
    you go.
@@ -89,9 +93,9 @@ change.
 
 ## Close-out
 
-Ordinary runs require no roadmap decision comment, adjudication or completion
-edit: the PR's `Closes` reference closes the issue and triage maintains the plan.
-A supplied reservations target alone creates no close-out work.
+Ordinary runs require no roadmap decision comment or completion edit: the PR's
+`Closes` reference closes the issue and triage maintains the plan. A supplied
+reservations target alone creates no close-out work.
 
 Only perform close-out when Alice assigns it after merge. If the run used a
 counter, use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) to mark only its claim shipped in the run's
