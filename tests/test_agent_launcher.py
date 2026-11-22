@@ -962,7 +962,29 @@ def test_orchestrator_first_prompt_and_continuation_share_kickoff() -> None:
     assert CLI.common.ORCHESTRATOR_RESUME_RULE in CLI.common.CONTINUE_PROMPT
     assert "Use the alice-orchestrator skill." in first
     assert "\n" not in first
-    assert CLI.join_line("bob", "implementer") == "Join robomate as bob, implementer."
+
+
+@pytest.mark.parametrize("role", ["worker", "implementer", "reviewer"])
+def test_worker_first_prompt_and_continuations_share_turn_rule(role: str) -> None:
+    first = CLI.join_line("bob", role)
+    for text in (
+        first,
+        CLI.continuation("bob", role, joined=True),
+        CLI.continuation("bob", role, joined=False),
+    ):
+        assert CLI.common.WORKER_TURN_RULE in text
+        assert (
+            "Every reply must contain a tool call until await_assignment returns release: true"
+            in text
+        )
+        assert "Wait for CI and other work in the foreground" in text
+        assert "Do not end your turn until await_assignment returns release: true" in text
+    assert CLI.common.WORKER_TURN_RULE in (ROOT / "skills/worker/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Use the worker skill." in first
+    assert "Then await your assignment with await_assignment" in first
+    assert "\n" not in first
 
 
 @pytest.mark.parametrize("harness", HARNESSES)
@@ -1021,7 +1043,8 @@ def test_start_sends_the_join_line_and_resumes_with_takeover(
         assert "Use only the configured robomate MCP tools" in sent
         assert "report the missing tools in your final message and end the turn" in sent
     else:
-        assert sent == line
+        assert sent == CLI.join_line(agent, role)
+        assert CLI.common.WORKER_TURN_RULE in sent
     for run in (first, second):
         assert Path(run["cwd"]).resolve() == area["worktree"].resolve()
         assert run["argv"][run["argv"].index("--model") : run["argv"].index("--model") + 2] == [
@@ -2333,7 +2356,7 @@ def test_interactive_start_does_not_resume_but_records_the_session(
     assert code == 3
     assert (area["worktree"] / "interactive-setup").exists()
     (launch,) = launches(area)
-    assert launch["argv"][-3:] == ["--extra", "x y", "Join robomate as bob, implementer."]
+    assert launch["argv"][-3:] == ["--extra", "x y", CLI.join_line("bob", "implementer")]
     assert ("--approve-for-me" in launch["argv"]) is not safe
     assert (launch["argv"][2:4] == ["-a", "on-request"]) is safe
     assert ("safe-mode" in capsys.readouterr().out) is safe
@@ -2371,6 +2394,33 @@ def test_interactive_orchestrator_receives_first_prompt(
         assert line == output
     assert "get_state" in output and "start_workflow()" in output
     assert "Do not end your turn until the workflow is done" in output
+
+
+@pytest.mark.parametrize("harness", HARNESSES)
+def test_interactive_worker_receives_first_prompt(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_harness(harness, monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    hub = FakeHub(after_launches(area, {"workflow": workflow(), "agents": []}))
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", harness, "--interactive"),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    line = CLI.join_line("bob", "implementer")
+    if harness in ("antigravity", "devin"):
+        assert f"Type this line once the harness is ready: {line}" in capsys.readouterr().out
+    else:
+        assert launches(area)[0]["argv"][-1] == line
+    assert CLI.common.WORKER_TURN_RULE in line
 
 
 @pytest.mark.parametrize("harness", ["claude-code", "codex", "opencode"])

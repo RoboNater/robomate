@@ -166,7 +166,10 @@ def join_line(agent: str, role: str) -> str:
             f"{line} Use the alice-orchestrator skill. {common.ORCHESTRATOR_KICKOFF} "
             f"{common.ORCHESTRATOR_TURN_RULE} {common.ORCHESTRATOR_HUB_BOUNDARY}"
         )
-    return line
+    return (
+        f"{line} Use the worker skill. Then await your assignment with await_assignment. "
+        f"{common.WORKER_TURN_RULE}"
+    )
 
 
 def continuation(agent: str, role: str, *, joined: bool) -> str:
@@ -210,15 +213,9 @@ def continuation(agent: str, role: str, *, joined: bool) -> str:
         return head + (
             "If the join response has a reattached_task, finish it and submit its result; if "
             "it has none, or the task failed or was canceled, drop it and return to "
-            "await_assignment. Every reply must contain a tool call until await_assignment "
-            "returns release: true. Wait for CI and other work in the foreground. Do not "
-            "end your turn until await_assignment returns release: true."
+            f"await_assignment. {common.WORKER_TURN_RULE}"
         )
-    return head + (
-        "Then await your assignment with await_assignment. Every reply must contain a tool "
-        "call until await_assignment returns release: true. Wait for CI and other work in "
-        "the foreground. Do not end your turn until await_assignment returns release: true."
-    )
+    return head + (f"Then await your assignment with await_assignment. {common.WORKER_TURN_RULE}")
 
 
 # -- where the hub, the log and the worktree are ------------------------------------

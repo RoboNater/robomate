@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 from collections import Counter
@@ -464,14 +465,31 @@ async def test_join_guide_can_be_retrieved_separately(
                 assert role_result[1]["result"].startswith(f"# {title}\n")
                 assert "# GitHub Forge Appendix" in role_result[1]["result"]
                 assert joined[1]["next_call"] == "await_assignment"
-                assert "release: true" in joined[1]["turn_instruction"]
+                launcher = ast.parse(
+                    (Path(__file__).resolve().parents[1] / "scripts/agent_launcher.py").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                rule = next(
+                    ast.literal_eval(node.value)
+                    for node in launcher.body
+                    if isinstance(node, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name) and target.id == "WORKER_TURN_RULE"
+                        for target in node.targets
+                    )
+                )
+                assert joined[1]["turn_instruction"] == "Call await_assignment next. " + rule
+                assert "Every reply must contain a tool call" in rule
+                assert "release: true" in rule
                 assert list(joined[1]).index("turn_instruction") < list(joined[1]).index("guide")
                 again = await server.call_tool(
                     "join", {"name": "bob", "role": role, "takeover": True}
                 )
                 assert isinstance(again, tuple)
                 assert again[1]["next_call"] == "await_assignment"
-                assert "release: true" in again[1]["turn_instruction"]
+                assert again[1]["turn_instruction"] == joined[1]["turn_instruction"]
+                assert list(again[1]).index("turn_instruction") < list(again[1]).index("guide")
                 assert len(json.dumps(again[1]).encode()) < 40000
                 with pytest.raises(ToolError, match="not found"):
                     await server.call_tool("get_role_guide", {"role": "denise"})

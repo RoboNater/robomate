@@ -379,6 +379,7 @@ def main(argv: list[str]) -> int:
     if log := os.environ.get("MOCK_HARNESS_LOG"):
         record = {
             "harness": harness,
+            "prompt": line,
             "argv": words,
             "cwd": os.getcwd(),
             "env": {key: os.environ.get(key) for key in LOGGED},
