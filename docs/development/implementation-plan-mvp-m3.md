@@ -485,7 +485,7 @@ issues for their own triaged work.
 
 | Step | Suggested lane | Operator interaction | DB migration | Wire `hub.schema_version` change |
 |---|---|---|---|---|
-| 1 | 3, large model | None | No | Yes, joined-session hold negotiation |
+| 1 | 3, large model | None | No | No (additive join metadata, §3) |
 | 2 | 4, native Windows | Isolated native installation, upgrade and cleanup | No | No |
 | 3 | 4, special host | OpenCode host upgrade between runs and live smoke | No | No |
 | 4 | 3, large model | None for scripted checks | No | No |
@@ -495,9 +495,11 @@ issues for their own triaged work.
 | 8 | 4, live hosts | Operator starts every certification harness | No | No |
 | 9 | 4, IDE and live hosts | Operator starts the IDEs and the real team | No | No |
 
-The run that needs a counter claims it on [#409](https://github.com/RoboNater/robomate/issues/409)
-before writing code and closes out its own claim after merge, following
-#408 and the [shared-body procedure](editing-shared-bodies.md).
+If a step discovers a breaking wire change or a need for additional
+database persistence, stop that part and resolve it with Alice. Claim
+the required counter on [#409](https://github.com/RoboNater/robomate/issues/409)
+before writing the code that uses it. Close out only that claim after
+merge, following #408 and the [shared-body procedure](editing-shared-bodies.md).
 The plan and all no-counter steps need no claim.
 
 ### Step 1 — Harness profiles and per-join hold caps
@@ -511,9 +513,9 @@ reconnect after restart. Compatibility for older clients means a
 conservative bound. The same value drives real waits and activity.
 
 **Dependencies and operation.** Uses #497 findings (PR #557) and #559
-(PR #566), both shipped. Lane 3, no operator interaction. Wire claim per
-the table. Keep the existing default path and both aliases through
-M2 retirement. Avoid colliding with #504's join metadata changes.
+(PR #566), both shipped. Lane 3, no operator interaction. Keep the
+existing default path and both aliases through M2 retirement. Coordinate
+the additive fields with #504's join metadata changes.
 
 **Review.** Extend explicit/omitted and low/high/old-client vectors for
 worker NEXT, worker question and orchestrator event waits. Test timeout
