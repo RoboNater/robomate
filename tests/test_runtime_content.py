@@ -1267,7 +1267,13 @@ def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
         section(orchestrator, "## KICKOFF and PLAN", "## Choose the worker pair"),
         (
             "The implementer proposes whether the work needs a shared monotonic counter",
-            "Alice does not decide content questions about counters.",
+            (
+                "claims a unique value from the run's authoritative reservations issue "
+                "before any code uses the value"
+            ),
+            "states that decision and claimed value in the PR; the reviewer checks it",
+            "Alice does not choose counter values or decide content questions about counters.",
+            "Include the resolved reservations issue target in the assignment",
         ),
     )
 
@@ -1295,32 +1301,44 @@ def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
         ),
     )
 
-    adjudicat = subprocess.run(
-        ["git", "grep", "-n", "-i", "adjudicat", "--", ":!tests/test_runtime_content.py"],
+    live_paths = (
+        "AGENTS.md",
+        "README.md",
+        "docs/mvp-spec.md",
+        "docs/user-guide.md",
+        "guides",
+        "prompts",
+        "skills",
+        "scripts",
+    )
+    actor_word_target = "adjudic" + "at"
+    actor_grep = subprocess.run(
+        ["git", "grep", "-n", "-i", actor_word_target, "--", *live_paths],
         cwd=ROOT,
         capture_output=True,
         check=True,
         text=True,
+        encoding="utf-8",
     )
     actor_pattern = re.compile(r"\b(implementer|reviewer|bob|charlie)\b", flags=re.IGNORECASE)
     unattributed = [
-        line for line in adjudicat.stdout.splitlines() if not actor_pattern.search(line)
+        line for line in actor_grep.stdout.splitlines() if not actor_pattern.search(line)
     ]
-    assert not unattributed, f"adjudicat without implementer/reviewer actor: {unattributed}"
+    assert not unattributed, f"missing implementer/reviewer actor: {unattributed}"
 
+    orchestrator_decides_pattern = "alice" + r" decides\|" + "orchestrator" + " decides"
     orchestrator_decides = subprocess.run(
         [
             "git",
             "grep",
             "-n",
             "-i",
-            r"alice decides\|orchestrator decides",
-            "--",
-            ":!tests/test_runtime_content.py",
+            orchestrator_decides_pattern,
         ],
         cwd=ROOT,
         capture_output=True,
         check=False,
         text=True,
+        encoding="utf-8",
     )
     assert orchestrator_decides.returncode == 1, orchestrator_decides.stdout

@@ -35,8 +35,8 @@ merge the change request, or rely on the implementer's summary as evidence.
    code uses its claimed value, the claim belongs to this work, the next value
    excludes other in-flight claims, and the change request states the claim. A
    hub log or a read of the next value alone is insufficient. Ordinary runs need
-   no roadmap decision or adjudication by the implementer or reviewer; a
-   supplied reservations target alone adds no review task.
+   no roadmap decision or completion edit; a supplied reservations target alone
+   adds no review task.
 4. Run tests for the changed code, the issue's acceptance commands, relevant
    repository validation, and touched entry points. CI supplies the full suite
    on the reviewed head on Linux and Windows; run it locally with

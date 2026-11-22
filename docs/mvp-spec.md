@@ -946,15 +946,15 @@ are sensitive run artifacts: review them before sharing. The exports are readabl
 with the hub stopped. Export on abandonment, the run-report appendix and replacing
 the prepared-run file prompt remain outside this feature (#357).
 
-**Counter reservations (#408).** Ordinary runs do no roadmap decision comment,
-adjudication by the implementer or reviewer, or completion edit. `Closes #N`
-closes the issue and triage maintains the plan. Only a counter-using run reads
-or edits the run's reservations issue. The implementer claims a unique value
-before code uses it (advancing the next value with the shared-body procedure)
-and states the reservation in the PR/MR, and the reviewer checks it (§5).
-On a stale snapshot, re-read and rebuild rather than overwrite another claim.
-The reviewer verifies the code's claimed value and in-flight uniqueness; Alice
-verifies the shared claim was recorded and reviewed before merge. A hub log alone is insufficient. If no
+**Counter reservations (#408).** Ordinary runs do no roadmap decision comment
+or completion edit. `Closes #N` closes the issue and triage maintains the plan.
+Only a counter-using run reads or edits the run's reservations issue. The
+implementer claims a unique value before code uses it (advancing the next value
+with the shared-body procedure) and states the reservation in the PR/MR, and
+the reviewer checks it (§5). On a stale snapshot, re-read and rebuild rather
+than overwrite another claim. The reviewer verifies the code's claimed value
+and in-flight uniqueness; Alice verifies the shared claim was recorded and
+reviewed before merge. A hub log alone is insufficient. If no
 authoritative target is supplied or readable, ask the operator before using a
 counter. After merge, close out only the used claim as shipped; release an
 unused claim if dropped or abandoned without rewinding over other claims.

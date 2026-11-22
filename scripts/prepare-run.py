@@ -464,8 +464,7 @@ COUNTER_CLOSE_OUT = (
     "that claim as shipped per the reservation bob proposed in the PR and charlie "
     "accepted in review; release it if abandoned. "
     "If no counter is used, no reservations close-out task is needed. "
-    "Ordinary runs require no roadmap decision comment, "
-    "adjudication by the implementer bob or reviewer charlie, or completion edit; "
+    "Ordinary runs require no roadmap decision comment or completion edit; "
     "the Closes reference closes the issue and triage maintains the plan."
 )
 

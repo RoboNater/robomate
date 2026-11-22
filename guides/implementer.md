@@ -93,8 +93,7 @@ change.
 
 ## Close-out
 
-Ordinary runs require no roadmap decision comment,
-adjudication by the implementer or reviewer, or completion edit: the PR's
+Ordinary runs require no roadmap decision comment or completion edit: the PR's
 `Closes` reference closes the issue and triage maintains the plan. A supplied
 reservations target alone creates no close-out work.
 

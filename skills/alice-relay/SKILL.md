@@ -45,8 +45,8 @@ wait for confirmation it was written and re-read. A comment or hub log alone
 is not a claim. Reuse an existing claim unchanged and check other in-flight
 claims. Append the target and reserved value to Bob's kickoff prompt only when
 the issue text omits them. Charlie independently verifies the claim and code.
-Ordinary runs require no roadmap decision comment, adjudication by Bob or
-Charlie, or completion edit: `Closes` closes the issue and triage maintains the
+Ordinary runs require no roadmap decision comment or completion
+edit: `Closes` closes the issue and triage maintains the
 plan. Supplying a reservations target alone adds no close-out work.
 
 **KICKOFF** — start of the issue. Awaiting Bob.
@@ -145,7 +145,7 @@ accepted. Phrase it so the human can approve the recommendation in one word.
 - Treat an intermediate commit as the PR head when Bob reports several; use his
   final/newest reported head SHA. If the human says it is not on origin, send
   the correction above.
-- Assign roadmap completion edits or require a roadmap decision/adjudication by Bob or Charlie.
+- Assign roadmap completion edits or require a roadmap decision.
   Triage maintains the plan. Only counter-using runs close out their claims;
   verify that edit from Bob's pasted reply and send the correction above if
   missing. Release unused claims if abandoned or dropped, without rewinding the

@@ -1082,7 +1082,8 @@ def test_served_guides_state_role_principle_and_reservation_decision_ownership(
         "The orchestrator runs the process; it does not decide the work (spec §5).",
         '"Do not tell it which findings to accept"',
         "The implementer proposes whether the work needs a shared monotonic counter",
-        "Alice does not decide content questions about counters.",
+        "Alice does not choose counter values or decide content questions about counters.",
+        "Include the resolved reservations issue target in the assignment",
     ):
         assert fragment in orchestrator
 

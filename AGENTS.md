@@ -18,9 +18,8 @@ are the shared vocabulary in issues and commits, and §13 orders the milestones.
 the MVP spec doesn't change it.
 
 - **Roadmap: #2.** Triage maintains milestone status and sequencing; ordinary
-  agent runs do no roadmap decision, adjudication by the implementer or reviewer,
-  or completion edit. The PR's `Closes #N` reference closes the issue; triage
-  reflects it on its next pass.
+  agent runs do no roadmap decision or completion edit. The PR's `Closes #N`
+  reference closes the issue; triage reflects it on its next pass.
 - **Reservations: #409.** Shared counters (DB schema version, wire
   `hub.schema_version`) live here. Only a run using a counter reads or edits it.
   Before writing code that uses a value, the implementer claims it in #409 (and

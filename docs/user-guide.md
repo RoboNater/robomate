@@ -185,7 +185,7 @@ Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s 
 For a Codex Alice, the generated `start-alice.sh` uses `codex exec -C . --skip-git-repo-check` because `alice-runtime/` is outside a git checkout. Interactive `--no-auto-start` launches omit that exec-only flag. `--bob-provider`, `--charlie-provider`, and capability flags override the worker profiles used by Alice's pairing policy.
 
 For work spanning several issues in **one PR**, use `--work-file /absolute/path/to/statement.md` instead of `--issue`. Name every issue with `owner/repo#number` and state the acceptance criteria. Use one run per PR. `--reservations` optionally names the shared-counter issue. Ordinary runs do no
-roadmap decision, adjudication by the implementer bob or reviewer charlie, or completion edit; the PR's `Closes` reference
+roadmap decision or completion edit; the PR's `Closes` reference
 closes the issue and triage maintains the plan. Only counter-using runs have the implementer bob claim a
 value before code uses it, advance the next value, and close out that claim
 after merge per the reservation bob proposed in the PR and charlie accepted in review. If no reservations issue was supplied and a counter is needed,
@@ -1019,8 +1019,7 @@ $env:CODEX_HOME = "C:\my-run\configs\codex"; codex login status
   reservations issue was supplied. `--reservations N`, `#N`, or `OWNER/REPO#N`
   supplies a counter target; bare numbers resolve against the target repository,
   while other values pass through verbatim for resolution before claiming.
-  Ordinary runs require no roadmap decision comment,
-  adjudication by the implementer bob or reviewer charlie, or completion
+  Ordinary runs require no roadmap decision comment or completion
   edit and no reservations close-out task. Counter-using runs have the
   implementer bob claim a unique value in the shared issue before code uses it,
   advance the next value, and propose the reservation in the PR, have the

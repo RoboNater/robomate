@@ -15,9 +15,8 @@ procedure and advancing the next value, and the reviewer charlie verifies the
 claim in review. After merge, the implementer bob closes out only that claim as
 shipped per the reservation bob proposed in the PR and charlie accepted in
 review; release it if abandoned. Ordinary runs require no roadmap decision
-comment, adjudication by the implementer bob or reviewer charlie, or completion
-edit; the Closes reference closes the issue and triage maintains the plan.
-If no counter is used, no reservations close-out task is needed.
+comment or completion edit; the Closes reference closes the issue and triage
+maintains the plan. If no counter is used, no reservations close-out task is needed.
 
 The Goal is the statement of work. For one issue, keep the sentence above. For
 any other job that ends in one merged pull request (several issues together, a
