@@ -471,7 +471,7 @@ fetches the guide in numbered pages with
 test budget. A worker whose join output is truncated fetches its complete etiquette
 guide with `get_role_guide("worker")` before awaiting an assignment.
 With an existing
-non-done workflow it also returns the resume procedure: read state first, reconcile the
+non-done workflow the orchestrator join also returns the resume procedure: read state first, reconcile the
 forge head/state/base/merge commit against stored tasks, results and unacknowledged
 deliveries, log discrepancies, and route one safe next action without duplicating tasks.
 Queue and run identity enter the compact state in M2 Step 3.
