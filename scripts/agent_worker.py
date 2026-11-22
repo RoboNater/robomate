@@ -127,6 +127,15 @@ class WorkerLauncher(common.Launcher):
             "prepare recovery automatically; follow its prerequisite recommendations."
         )
 
+    def own_join_evidence(self, agent: dict[str, Any] | None) -> bool:
+        """Whether the agent row is evidence that this launcher's child joined.
+
+        The prepared launcher reads no join records of its own, so any row is
+        its evidence. The joined launcher overrides this to reject a row left
+        by an earlier run on a reused hub (#546).
+        """
+        return agent is not None
+
     def resumable(self, exit_code: int, resumes: int) -> str:
         # A release in local telemetry remains decisive when the hub is unavailable.
         if released(self.args.telemetry, self.telemetry_offset):
@@ -142,7 +151,7 @@ class WorkerLauncher(common.Launcher):
                 "workflow paused; wait until the operator resumes it. " + self.manual_resume_hint(),
             )
         agent = workflow.get("agent") if workflow else getattr(self.reader, "current_agent", None)
-        self.ever_joined |= agent is not None
+        self.ever_joined |= self.own_join_evidence(agent)
         if not self.ever_joined:
             raise common.Stop(
                 common.EXIT_NEVER_JOINED,
@@ -202,7 +211,7 @@ class WorkerLauncher(common.Launcher):
                 if workflow
                 else (self.reader.current_agent if isinstance(self.reader, WorkerReader) else None)
             )
-            self.ever_joined |= agent is not None
+            self.ever_joined |= self.own_join_evidence(agent)
             if self.resume_deadline is not None and time.monotonic() >= self.resume_deadline:
                 raise common.Stop(
                     common.EXIT_RESUMES_SPENT,
