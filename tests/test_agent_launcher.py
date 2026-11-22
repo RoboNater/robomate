@@ -194,6 +194,7 @@ def test_opencode_start_and_resume_preserve_config_with_distinct_policies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     use_harness("opencode", monkeypatch)
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     inherited: dict[str, Any] = {
         "agent": {
             "build": {
@@ -865,6 +866,34 @@ def after_launches(
     return answer
 
 
+def after_attempts(
+    area: dict[str, Path],
+    *phases: dict[str, Any],
+    events: tuple[str, ...] = ("start", "resume"),
+    agent: str = "bob",
+) -> Callable[[str], dict[str, Any]]:
+    """Hub status by launcher attempts: phase N after N logged ``events`` rows.
+
+    Unlike ``after_launches``, this advances for a child that dies or hangs
+    before writing its harness launch marker. ``events`` excludes rows a test
+    pre-seeded in the saved log.
+    """
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.info":
+            return {"hub_id": HUB}
+        try:
+            log = rows(area, agent)
+        except FileNotFoundError:
+            log = []
+        attempts = sum(1 for row in log if row.get("event") in events)
+        phase = phases[min(attempts, len(phases) - 1)]
+        copied: dict[str, Any] = json.loads(json.dumps(phase))
+        return copied
+
+    return answer
+
+
 def files(root: Path, skip: Path) -> dict[str, float]:
     return {
         str(path): path.stat().st_mtime_ns
@@ -1031,6 +1060,7 @@ def test_start_and_resume_name_the_worktree_and_drop_the_launcher_venv(
         "PATH", os.pathsep.join([str(venv_bin), str(operator_bin), os.environ.get("PATH", "")])
     )
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     active = {"workflow": workflow(), "agents": [agent_row()]}
     released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
     hub = FakeHub(after_launches(area, active, active, released))
@@ -1416,13 +1446,20 @@ def test_keyboard_fallback_records_a_launch_lost_to_the_interrupt(tmp_path: Path
 def test_automatic_resume_without_a_recorded_join_sends_the_plain_join_line(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A conversation whose first join never completed must not be told to take over (#512)."""
+    """A conversation whose bridge join was not recorded must not be told to take over (#512)."""
 
     monkeypatch.delenv("FAKE_BRIDGE_JOIN", raising=False)
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
     active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
-    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
-    hub = FakeHub(after_launches(area, active, active, released))
+    # The hub row's new instance shows the child joined, but the bridge kept no
+    # join telemetry, so the continuation stays a plain join (#546).
+    joined: dict[str, Any] = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
+    joined["agents"][0]["activity"] = {"instance": "instance-1"}
+    released: dict[str, Any] = {
+        "workflow": workflow(),
+        "agents": [agent_row("released", context="c2")],
+    }
+    hub = FakeHub(after_launches(area, active, joined, released))
 
     code = invoke(
         start_words(area, "bob", "implementer", "claude-code"),
@@ -1642,6 +1679,157 @@ def test_an_earlier_release_and_finished_run_do_not_stop_a_new_start(
     assert log[-1]["reason"] == "released" and log[-1]["run_id"] == RUN
 
 
+@pytest.mark.parametrize("instance", [None, "old-instance"])
+def test_a_reused_hub_row_does_not_count_as_a_worker_join(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, instance: str | None
+) -> None:
+    """#546: an earlier run's released row must not resume a worker that never joined."""
+
+    use_harness("claude-code", monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    stale = agent_row("released", context="old", name="charlie")
+    # A released row keeps its worker instance unless a clean detach or the next
+    # run's sweep clears it; the unchanged instance must not count as a join.
+    stale["activity"] = {"instance": instance}
+    live = {"workflow": workflow(), "agents": [stale]}
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.info":
+            return {"hub_id": HUB}
+        return live
+
+    code = invoke(
+        start_words(area, "charlie", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=FakeHub(answer, "charlie"),
+        workspace=workspace_of(area),
+    )
+
+    assert code == LAUNCHER.EXIT_NEVER_JOINED
+    assert len(launches(area)) == 1
+    log = rows(area, "charlie")
+    assert log[-1]["event"] == "stop" and log[-1]["reason"] == "never_joined"
+    assert not any(row["event"] == "wait" for row in log)
+
+
+def test_a_reused_hub_worker_that_joined_resumes(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#546: a new instance on the reused row is this child's join; recovery continues."""
+
+    use_harness("claude-code", monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0", "exit:0"]))
+    earlier = {
+        "workflow": workflow(),
+        "agents": [agent_row("released", context="old", name="charlie")],
+    }
+    joined: dict[str, Any] = {
+        "workflow": workflow(),
+        "agents": [agent_row("busy", context="new", name="charlie")],
+    }
+    joined["agents"][0]["activity"] = {"instance": "instance-1"}
+    released: dict[str, Any] = {
+        "workflow": workflow(),
+        "agents": [agent_row("released", context="new", name="charlie")],
+    }
+    released["agents"][0]["activity"] = {"instance": "instance-1"}
+    hub = FakeHub(after_launches(area, earlier, joined, released), "charlie")
+
+    code = invoke(
+        start_words(area, "charlie", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    assert len(launches(area)) == 2
+    # The bridge recorded no join, so the continuation stays the plain join.
+    assert launches(area)[1]["argv"][-1] == CLI.continuation("charlie", "implementer", joined=False)
+    log = rows(area, "charlie")
+    assert log[-1]["event"] == "stop" and log[-1]["reason"] == "released"
+
+
+def test_a_recorded_join_keeps_a_manual_worker_resume(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#546: a resumed conversation with a recorded join still takes over its seat."""
+
+    use_harness("claude-code", monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0", "exit:0"]))
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00046"
+    now = datetime.now(UTC)
+    saved_log(
+        area,
+        conversation,
+        now - timedelta(minutes=10),
+        now - timedelta(minutes=1),
+        agent="charlie",
+    )
+    with (area["sessions"] / "charlie.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "agent": "charlie",
+                    "harness": "claude-code",
+                    "role": "implementer",
+                    "event": "joined",
+                    "timestamp": (now - timedelta(minutes=2)).isoformat(),
+                    "conversation_id": conversation,
+                    "hub_id": HUB,
+                    "workflow_id": None,
+                    "run_id": None,
+                }
+            )
+            + "\n"
+        )
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    active = {"workflow": live, "agents": [agent_row(name="charlie")]}
+    joined: dict[str, Any] = {
+        "workflow": live,
+        "agents": [agent_row("busy", context="new", name="charlie")],
+    }
+    joined["agents"][0]["activity"] = {"instance": "instance-1"}
+    released: dict[str, Any] = {
+        "workflow": live,
+        "agents": [agent_row("released", context="new", name="charlie")],
+    }
+    released["agents"][0]["activity"] = {"instance": "instance-1"}
+    hub = snapshotting(
+        FakeHub(
+            after_attempts(
+                area,
+                active,
+                joined,
+                released,
+                events=("manual_resume", "resume"),
+                agent="charlie",
+            )
+        ),
+        "charlie",
+    )
+
+    code = invoke(
+        [
+            "resume",
+            "charlie",
+            "--hub",
+            str(area["checkout"]),
+            "--read-retry-delay-s",
+            "0",
+            "--resume-session",
+            conversation,
+        ],
+        programs=programs(area),
+        reader=hub,
+    )
+
+    assert code == 0
+    _, resumed = launches(area)
+    assert resumed["argv"][-1] == CLI.continuation("charlie", "implementer", joined=True)
+    assert 'join(name="charlie", role="implementer", takeover=true)' in resumed["argv"][-1]
+
+
 @pytest.mark.parametrize("content", [None, ""])
 def test_resume_with_an_empty_log_refuses(area: dict[str, Path], content: str | None) -> None:
     if content is not None:
@@ -1663,11 +1851,12 @@ def saved_log(
     conversation: str,
     started: datetime,
     exited: datetime,
+    agent: str = "bob",
     **launch: object,
 ) -> None:
     area["sessions"].mkdir(exist_ok=True)
     common = {
-        "agent": "bob",
+        "agent": agent,
         "harness": "claude-code",
         "role": "implementer",
         "conversation_id": conversation,
@@ -1689,7 +1878,7 @@ def saved_log(
         },
         common | {"event": "exit", "timestamp": exited.isoformat(), "exit_code": 1},
     ]
-    (area["sessions"] / "bob.jsonl").write_text(
+    (area["sessions"] / f"{agent}.jsonl").write_text(
         "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8"
     )
 
@@ -1816,6 +2005,7 @@ def test_start_exports_identity_uv_cache_and_workers_to_every_launch(
     use_harness(harness, monkeypatch)
     monkeypatch.setenv("HUB_MODEL", "an-ambient-claim")
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     active = {"workflow": workflow(), "agents": [agent_row(context="c1")]}
     final = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
     hub = FakeHub(after_launches(area, active, active, final))
@@ -2159,6 +2349,7 @@ def test_a_remote_host_hands_its_hub_selection_to_the_joining_harness(
     """A clone has no hub binding: the bridge finds the hub only from the forwarded selection."""
 
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:1", "exit:0"]))
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
     monkeypatch.setenv("ROBOMATE_HUB_URL", "http://another-hub:1")
     monkeypatch.setenv("ROBOMATE_TOKEN", "ambient-token")
     monkeypatch.setenv("ROBOMATE_TOKEN_FILE", str(tmp_path / "ambient token"))
@@ -2308,7 +2499,7 @@ def test_interactive_codex_never_takes_a_session_it_did_not_create(
     assert len(launches(area)) == 1
 
 
-def snapshotting(hub: Any) -> Any:
+def snapshotting(hub: Any, agent: str = "bob") -> Any:
     """The same scripted hub, also answering the recovery reads."""
 
     status: Callable[[str], dict[str, Any]] = hub.answer
@@ -2326,7 +2517,7 @@ def snapshotting(hub: Any) -> Any:
             return {"questions": []}
         return status(method)
 
-    return FakeHub(answer)
+    return FakeHub(answer, agent)
 
 
 @pytest.mark.parametrize("harness", ["opencode", "antigravity", "devin"])
@@ -2809,10 +3000,13 @@ def test_broken_fake_child_fails_with_finite_attempts_and_diagnostics(
     child, evidence = BROKEN_FAKE_CHILDREN[case]
     area["fake"].write_text(child, encoding="utf-8")
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
-    # A single scripted phase stays active/busy however many launches happen,
-    # so only the finite resume count can end the supervision.
+    # The hub reports the join the child's bridge made before it died; a later
+    # phase stays active/busy however many attempts happen, so only the finite
+    # resume count can end the supervision.
     active = {"workflow": workflow(), "agents": [agent_row()]}
-    hub = FakeHub(after_launches(area, active))
+    joined: dict[str, Any] = {"workflow": workflow(), "agents": [agent_row()]}
+    joined["agents"][0]["activity"] = {"instance": "instance-1"}
+    hub = FakeHub(after_attempts(area, active, joined))
 
     code = invoke(
         start_words(area, "bob", "implementer", "claude-code"),
@@ -2857,7 +3051,10 @@ def test_a_resume_stop_names_the_full_runnable_ask_command(
     now = datetime.now(UTC)
     saved_log(area, conversation, now - timedelta(minutes=10), now - timedelta(minutes=1))
     live = workflow(created=(now - timedelta(minutes=5)).isoformat())
-    hub = snapshotting(FakeHub(after_launches(area, {"workflow": live, "agents": [agent_row()]})))
+    active = {"workflow": live, "agents": [agent_row()]}
+    joined: dict[str, Any] = {"workflow": live, "agents": [agent_row()]}
+    joined["agents"][0]["activity"] = {"instance": "instance-1"}
+    hub = snapshotting(FakeHub(after_attempts(area, active, joined, events=("manual_resume",))))
 
     code = invoke(
         ["resume", "bob", "--hub", str(area["checkout"]), "--resume-delay-s", "0"],
@@ -2907,8 +3104,12 @@ def test_hung_child_on_every_attempt_is_bounded_and_cleaned_up(
     fake_supervision.liveness_s = 0.3
     area["fake"].write_text(HANG_FAKE_CHILD, encoding="utf-8")
     monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0"]))
+    # The hub reports the join the child's bridge made before it hung; the
+    # later phase stays active/busy, so only the finite resume count ends it.
     active = {"workflow": workflow(), "agents": [agent_row()]}
-    hub = FakeHub(after_launches(area, active))
+    joined: dict[str, Any] = {"workflow": workflow(), "agents": [agent_row()]}
+    joined["agents"][0]["activity"] = {"instance": "instance-1"}
+    hub = FakeHub(after_attempts(area, active, joined))
 
     code = invoke(
         start_words(area, "bob", "implementer", "claude-code"),

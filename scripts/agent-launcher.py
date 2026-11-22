@@ -1233,12 +1233,27 @@ class JoinedWorker(Joined, WorkerLauncher):
         super().__init__(args, reader)
         self.setup(args)
         self.stale_release: object = _UNSEEN
+        self.start_instance: object = _UNSEEN
 
     def manual_resume_hint(self) -> str:
         return (
             f"Run {self.resume_name()}: it checks the predecessor and the hub before it "
             "resumes the saved conversation."
         )
+
+    def own_join_evidence(self, agent: dict[str, Any] | None) -> bool:
+        """This launcher's own join, not an earlier run's row on a reused hub (#546).
+
+        ``Joined.joined`` is the bridge's own record of a join. Otherwise the
+        row counts only when its instance differs from the one seen before the
+        first launch: a reused hub keeps the earlier run's row and instance in
+        place, so presence alone proves nothing.
+        """
+        instance = agent["activity"]["instance"] if agent is not None else None
+        if self.start_instance is _UNSEEN:
+            self.start_instance = instance
+            return False
+        return self.joined or (instance is not None and instance != self.start_instance)
 
     def before_launch(self, resumes: int) -> bool:
         """An automatic resume does not wait for its predecessor's bridge to be lost.
