@@ -842,11 +842,15 @@ mark only its claim shipped in the run's reservations issue.
 Include the target, claimed value, merged PR URL and final SHA. Preserve the next
 value and every other in-flight claim. If a counter was dropped or the run is
 abandoned, release its unused claim without rewinding over other claims.
+For `deliver: pr` with a counter still in use, keep the claim in progress and
+annotate only that claim with the PR URL and that it is unmerged by policy.
 Verify the shared issue directly with the forge appendix's issue-read command.
 If the shipped value, next value or claim is wrong or missing, send one
 `RESERVATION-CORRECTION for <close-out task id>` task with role `closeout`,
-then verify again. Source
-it from that CLOSE-OUT task's `task_completed` event, using its stable event
+then verify again. Give the worker the previous `CloseoutResult` and instruct
+them to copy its `items` and `steps` verbatim into the correction result.
+The reservation is the only forge edit in that task.
+Source it from that CLOSE-OUT task's `task_completed` event, using its stable event
 `id` as `event_id`; do not reuse the event that sourced CLOSE-OUT. Inspect tasks
 first so replay routes the original correction rather than duplicating it.
 
