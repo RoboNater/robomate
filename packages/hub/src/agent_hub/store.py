@@ -661,7 +661,10 @@ def _binding_after_result(
         assert result.head_sha is not None
         head = result.head_sha.lower()
         if isinstance(result, RebaseResult):
-            approved = head if approved == assigned_head and not result.conflict_files else None
+            carries_approval = (
+                approved is not None and approved == assigned_head and not result.conflict_files
+            )
+            approved = head if carries_approval else None
         elif approved != head:
             approved = None
     return DeliveryBinding(url, approved)

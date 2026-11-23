@@ -513,14 +513,17 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
             reviewed_head_sha=sha2,
         ),
     )
-    store.release_agent("bob")
-    store.release_agent("charlie")
     store.log_decision(
         "Merge invariant satisfied; executing squash merge",
         "Gate passed",
         key="event:10:merge",
         actor="alice",
         session=None,
+    )
+    # Close-out goes to the same worker, and finishes before the hub releases it.
+    closeout = store.assign_task("bob", "closeout", "CLOSE-OUT", "Record completion")
+    store.submit_result(
+        closeout.id, "bob", {"outcome": "completed", "summary": "Done", "items": [], "steps": []}
     )
     finish_run(store, "merged and wrapped up", actor="alice", session=None)
 

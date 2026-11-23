@@ -310,6 +310,34 @@ async def test_clean_rebase_carries_approval_to_delivered_head(
     assert manifest(store, run_id)["approved_sha"] == NEXT
 
 
+async def test_legacy_unbound_rebase_cannot_supply_approval(store: HubStore) -> None:
+    pr_url = "https://github.com/octo/sandbox/pull/7"
+    workflow_id = store.start_workflow("Recover an old run", {"closeout": False})
+    run_id = store.get_workflow(workflow_id)["run_id"]
+    store.check_in("bob")
+    task = store.assign_task("bob", "rebase", "Rebase", "Refresh base", pr_head_sha=HEAD)
+    store.submit_result(
+        task.id,
+        "bob",
+        {
+            "pr_url": pr_url,
+            "outcome": "completed",
+            "head_sha": NEXT,
+            "conflict_files": [],
+            "summary": "Clean rebase",
+        },
+    )
+    # Model persisted rebase data from before assignments carried a head.
+    with database(store.path) as connection:
+        connection.execute("UPDATE task SET pr_head_sha = NULL WHERE id = ?", (task.id,))
+        connection.execute("UPDATE workflow SET pr_url = NULL WHERE id = ?", (workflow_id,))
+
+    gate = FakeGate(reading(pr_url, head=NEXT))
+    with pytest.raises(ConflictError, match="approved head"):
+        await done(store, gate, run_id)
+    assert gate.calls == 0
+
+
 def test_wrong_closeout_role_and_post_merge_implementer_refused(
     store: HubStore, pr_url: str
 ) -> None:
