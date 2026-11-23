@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import signal
 import socket
 import sqlite3
@@ -20,12 +21,17 @@ import uvicorn
 from agent_hub import main
 from agent_hub.rpc_errors import OPERATOR_REQUIRED
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
+from agent_hub_common.logging_setup import clear_hub_logging
 from conftest import reserve_port_block
-from timing import LIVENESS_S
+from timing import LIVENESS_S, wait_until_sync
 
 
-def test_hub_entry_point_escapes_unencodable_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = replace(HubSettings.from_env({}), port=0)
+def test_hub_entry_point_escapes_unencodable_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A state directory of its own: the shared setup (#652) writes the hub's
+    # log file under the settings this test hands to main().
+    settings = replace(HubSettings.from_env({"XDG_STATE_HOME": str(tmp_path)}), port=0)
     monkeypatch.setattr(HubSettings, "from_env", lambda: settings)
 
     async def serve(
@@ -42,7 +48,12 @@ def test_hub_entry_point_escapes_unencodable_output(monkeypatch: pytest.MonkeyPa
         io.TextIOWrapper(buffer, encoding="cp1252", newline="\n") as stdout,
     ):
         monkeypatch.setattr(sys, "stdout", stdout)
-        main.main()
+        try:
+            main.main()
+        finally:
+            # The in-process entry point leaves its handlers on the test's
+            # root logger; remove them before the next test logs anything.
+            clear_hub_logging()
         assert stdout.encoding == "cp1252"
         assert buffer.getvalue() == b"driv\xe9r \\u2192 \\u0101\n"
 
@@ -233,6 +244,238 @@ def test_hub_entry_point_keeps_its_token_in_a_directory_of_its_own(tmp_path: Pat
         operator = {"X-Robomate-Operator": "operator-secret"}
         _request(rpc_url, token, "hub.shutdown", headers=operator)
         process.wait(timeout=LIVENESS_S)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=LIVENESS_S)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+# Hub log level and persistent log file (#652).
+
+
+def _launch_hub_entry(state: Path, extra: dict[str, str]) -> tuple[subprocess.Popen[bytes], int]:
+    """Start `python -m agent_hub.main` with isolated state and a free port.
+
+    Ambient `HUB_*` is stripped so this run's own level, file and timings are
+    the only ones the hub sees.
+    """
+
+    port = reserve_port_block(1)
+    operator_file = state.parent / "operator-token"
+    operator_file.write_text("operator-secret\n")
+    operator_file.chmod(0o600)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "agent_hub.main"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("HUB_")},
+            "HUB_STATE_DIR": str(state),
+            "HUB_DB_PATH": str(state / "hub.db"),
+            "HUB_HOST": "127.0.0.1",
+            "HUB_PORT": str(port),
+            "ROBOMATE_OPERATOR_TOKEN_FILE": str(operator_file),
+            **extra,
+        },
+    )
+    return process, port
+
+
+def _await_healthz(port: int, process: subprocess.Popen[bytes]) -> None:
+    """Wait until the hub answers; a hang bound, not a budget (#372)."""
+
+    deadline = time.monotonic() + LIVENESS_S
+    while True:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/healthz", timeout=0.2
+            ) as response:
+                assert json.load(response)["status"] == "ok"
+            return
+        except OSError:
+            assert process.poll() is None and time.monotonic() < deadline, (
+                process.stderr.read().decode()
+                if process.poll() is not None and process.stderr
+                else "timed out"
+            )
+            time.sleep(0.02)
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _stop_entry(process: subprocess.Popen[bytes]) -> str:
+    """Stop the hub and return everything it wrote to stderr."""
+
+    if process.poll() is None:
+        process.terminate()
+        process.wait(timeout=LIVENESS_S)
+    assert process.stderr is not None
+    stderr = process.stderr.read().decode("utf-8", errors="replace")
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+    return stderr
+
+
+def test_hub_entry_point_writes_the_default_log_file(tmp_path: Path) -> None:
+    """#652: the persistent log holds the same startup records as stderr, privately."""
+
+    state = tmp_path / "state"
+    process, port = _launch_hub_entry(state, {})
+    try:
+        _await_healthz(port, process)
+        log_file = state / "logs" / "hub.log"
+        database = state / "hub.db"
+        wait_until_sync(
+            lambda: f"SQLite database ready at {database}" in _read_text(log_file),
+            "the hub's log file holds its startup lines",
+        )
+        content = _read_text(log_file)
+        assert re.search(
+            rf"^\d{{4}}-\d\d-\d\d \d\d:\d\d:\d\d,\d{{3}} "
+            rf"INFO:agent_hub\.app:SQLite database ready at {re.escape(str(database))}",
+            content,
+            re.MULTILINE,
+        )
+        if sys.platform != "win32":
+            assert log_file.stat().st_mode & 0o777 == 0o600
+            assert log_file.parent.stat().st_mode & 0o777 == 0o700
+        # The same records reach stderr in the pre-#652 format.
+        stderr = _stop_entry(process)
+        assert f"INFO:agent_hub.app:SQLite database ready at {database}" in stderr
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=LIVENESS_S)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_hub_entry_point_honours_hub_log_file_and_debug_level(tmp_path: Path) -> None:
+    """#652: HUB_LOG_FILE redirects the file; DEBUG makes the sweeper's line visible."""
+
+    state = tmp_path / "state"
+    custom = tmp_path / "custom" / "operator-hub.log"
+    process, port = _launch_hub_entry(
+        state,
+        {
+            "HUB_TOKEN": "test-token",
+            "HUB_LOG_LEVEL": "DEBUG",
+            "HUB_LOG_FILE": str(custom),
+            "HUB_SWEEP_INTERVAL_S": "0.1",
+            "HUB_LOST_AFTER_S": "1",
+        },
+    )
+    try:
+        _await_healthz(port, process)
+        # Join an agent with no heartbeat behind it: within HUB_LOST_AFTER_S
+        # the sweeper declares it lost and logs the queued event at DEBUG.
+        body = {
+            "message": {
+                "messageId": "m-1",
+                "role": "user",
+                "parts": [{"kind": "text", "text": "READY"}],
+                "metadata": {
+                    MetaKeys.AGENT: "bob",
+                    MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+                    MetaKeys.OPERATION_ID: "op-1",
+                    MetaKeys.WORKER_INSTANCE_ID: "bob-1",
+                },
+            }
+        }
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/a2a",
+            data=json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": body}
+            ).encode(),
+            headers={
+                "Authorization": "Bearer test-token",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=LIVENESS_S) as response:
+            assert "result" in json.load(response)
+        wait_until_sync(
+            lambda: "Sweeper queued" in _read_text(custom),
+            "HUB_LOG_LEVEL=DEBUG writes the sweeper's per-event line to HUB_LOG_FILE",
+        )
+        # The configured file replaced the default location.
+        assert not (state / "logs" / "hub.log").exists()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=LIVENESS_S)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_hub_entry_point_log_level_warning_hides_info_and_disable_skips_the_file(
+    tmp_path: Path,
+) -> None:
+    """#652: WARNING drops the INFO startup lines; HUB_LOG_FILE=- writes no file."""
+
+    state = tmp_path / "state"
+    process, port = _launch_hub_entry(state, {"HUB_LOG_LEVEL": "WARNING", "HUB_LOG_FILE": "-"})
+    try:
+        # healthz answers only after the lifespan startup that logs the INFO
+        # lines, so by now they would exist if the level allowed them.
+        _await_healthz(port, process)
+        stderr = _stop_entry(process)
+        assert "INFO:agent_hub.app:" not in stderr
+        assert not (state / "logs" / "hub.log").exists()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=LIVENESS_S)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_hub_entry_point_formats_configuration_warnings(tmp_path: Path) -> None:
+    """#652 r1-3: a warning raised inside `from_env` is formatted, not lastResort."""
+
+    home = tmp_path / "home"
+    home.mkdir()
+    operator_file = tmp_path / "operator-token"
+    operator_file.write_text("operator-secret\n")
+    operator_file.chmod(0o600)
+    port = reserve_port_block(1)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "agent_hub.main"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("HUB_")},
+            # No HUB_STATE_DIR: the relative XDG value is refused and falls
+            # back to $HOME/.local/state/agent-hub, warning from inside
+            # from_env before any handler existed (#652 r1-3).
+            "XDG_STATE_HOME": "relative-state",
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "HUB_HOST": "127.0.0.1",
+            "HUB_PORT": str(port),
+            "ROBOMATE_OPERATOR_TOKEN_FILE": str(operator_file),
+        },
+    )
+    try:
+        _await_healthz(port, process)
+        stderr = _stop_entry(process)
+        assert "WARNING:agent_hub_common.config:Ignoring relative XDG_STATE_HOME" in stderr
+        # The state it fell back to is the isolated home, not the real one.
+        assert (home / ".local" / "state" / "agent-hub" / "logs" / "hub.log").is_file()
     finally:
         if process.poll() is None:
             process.terminate()

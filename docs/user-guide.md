@@ -135,6 +135,20 @@ checkout. If you created a checkout using `git init` and
 
 The command creates the hub's state and token under the worktree root, `<parent>/<repo>.robomate/` by default (a `worktree_root` in the repository or user configuration moves it): `<root>/<hub>/state/` holds `hub.json` and `hub.db`, and `<root>/<hub>/token/token` is the owner-only token file in a directory of its own, so a sandbox can be granted the token without the state. The root records the repository it belongs to in `robomate-root.json`; a hub of another repository refuses a root of the same name and asks for a repository-level `worktree_root`. A binding, `robomate-binding.json` in the checkout's git directory, names the hub, its state and its token file (it holds no token) and is how the checkout finds the hub from any directory inside it. `up` prints the hub's name, its state directory, its URL, and bridge environment settings. Keep this terminal open. A second `up` in the same checkout reports the running hub. The first `up` takes the first free port from 8420, skipping ports that are in use or that the host forbids this process to bind (on Windows, WinError 10013: an excluded port range or an exclusive listener). A later `up` reuses the recorded name and port, and a recorded port that another process has taken meanwhile, or that the host now forbids, fails startup rather than moving the hub, as a `--port` does. The name comes from the checkout's directory name; give another with `up --name <name>` at the first `up`. It is then fixed, and unique among the repository's hubs: `up` refuses a name a sibling hub holds, or a directory of that name under the worktree root, rather than pick another. A legacy hub (state already in the checkout's `.robomate/`) keeps running there, with the same `hub_id`, port and token, and gets an owner binding that names `.robomate/`; that directory is excluded from git by the repository's local exclude file. `robomate relocate` moves a stopped legacy hub into the worktree root when you choose (it needs the operator credential): it moves state and token together, rewrites the bindings and the registry entry, and leaves a one-line pointer file in `.robomate/`. A hub's own `config.toml` may not hold a `[forge]` table at the new location, so move it to the repository-level configuration first.
 
+The hub writes its own log as well as to the terminal. `HUB_LOG_LEVEL`
+(`DEBUG`, `INFO` the default, `WARNING`, `ERROR` or `CRITICAL`,
+case-insensitive; anything else fails startup) sets the level for both
+`robomate up` and the `hub` entry point — `up` honours it like the other
+environment settings it does not set itself — and `DEBUG` also shows the
+sweeper's per-event lines. The persistent file sits at
+`<state_dir>/logs/hub.log` (`up` always writes there; the `hub` entry point
+also honours `HUB_LOG_FILE`, and `HUB_LOG_FILE=-` disables the file): the
+same records as stderr with a UTC timestamp, UTF-8 regardless of the console
+code page, rotated at 5 MiB with 5 backups (`hub.log.1`..`hub.log.5`), and
+created owner-only (0600) like the other state artifacts. It never holds
+token values — only paths. `robomate status` prints the log path as its
+`Log:` line.
+
 In the robomate checkout, prepare agent configs and start scripts:
 
 ```sh
@@ -716,7 +730,7 @@ separate closeout files. To exercise collection in an isolated scripted run, use
 `scripts/mock-alice.py --mcp --closeout` with the usual hub and worker options;
 without `--closeout` the script retains its original task/release flow.
 
-Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository and state directory. If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
+Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository, state directory and hub log path (`Log:`, normally `<state_dir>/logs/hub.log`, which holds no token values). If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
 A stopped hub keeps its registry entry, so its name stays taken and its port stays
 reserved for its next `up`. When you no longer need a stopped hub in the list, remove

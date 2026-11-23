@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .logging_setup import default_log_file
 from .models import UNKNOWN, AgentProfile, ModelSource
 from .registry import operator_token_path
 
@@ -25,6 +26,10 @@ DEFAULT_LOST_AFTER_S = 180.0
 DEFAULT_SWEEP_INTERVAL_S = 10.0
 DEFAULT_EVENT_LEASE_S = 600.0
 
+
+# The standard logging level names `HUB_LOG_LEVEL` accepts (#652), in the
+# order they are reported back in an error message.
+LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 _FLAG_VALUES = {
     "": False,
@@ -93,6 +98,29 @@ def _declared(env: Mapping[str, str], *names: str) -> str:
         if value:
             return value
     return UNKNOWN
+
+
+def parse_log_level(value: str) -> str:
+    """The canonical name of a standard logging level, matched case-insensitively."""
+
+    name = value.strip().upper()
+    if name not in LOG_LEVEL_NAMES:
+        raise ConfigurationError(
+            f"HUB_LOG_LEVEL must be one of {', '.join(LOG_LEVEL_NAMES)} "
+            f"(case-insensitive), got {value!r}"
+        )
+    return name
+
+
+def log_level_from_env(env: Mapping[str, str]) -> str:
+    """The configured hub log level; a blank export means the default (#652).
+
+    `from_env` and the `hub` entry point's provisional stderr setup read it
+    here, so there is one parse path for the value.
+    """
+
+    raw = env.get("HUB_LOG_LEVEL", "").strip()
+    return "INFO" if not raw else parse_log_level(raw)
 
 
 def profile_from_env(environ: Mapping[str, str] | None = None) -> AgentProfile:
@@ -201,6 +229,11 @@ class HubSettings:
     # Host pause detection (#19, #205, #368): detects wall/monotonic discontinuities
     # and grants a resume grace period before expiring leases or marking agents lost.
     detect_host_pauses: bool = True
+    # Hub logging (#652): the level both entry points apply to the root and
+    # uvicorn loggers, and the persistent log file beside the other state
+    # artifacts; None disables the file (`HUB_LOG_FILE=-`).
+    log_level: str = "INFO"
+    log_file: Path | None = None
 
     def bounded_wait(self, requested: float | None) -> float:
         """Clamp a caller-requested hold to the configured ceiling."""
@@ -301,6 +334,16 @@ class HubSettings:
                         "HUB_DETECT_HOST_PAUSES must be 1/0, true/false, on/off or yes/no"
                     )
                 detect_host_pauses = _FLAG_VALUES[raw_pause]
+        # A blank HUB_LOG_LEVEL means unset (an empty export), not an error;
+        # anything else must name a standard level or startup fails (#652).
+        log_level = log_level_from_env(env)
+        raw_log_file = env.get("HUB_LOG_FILE", "").strip()
+        if raw_log_file == "-":
+            log_file = None
+        elif raw_log_file:
+            log_file = _path(raw_log_file, state_dir)
+        else:
+            log_file = default_log_file(state_dir)
         return cls(
             host=host,
             port=port,
@@ -321,4 +364,6 @@ class HubSettings:
             call_log_jsonl=call_log_jsonl,
             operator_token_file=operator_token_path(env),
             detect_host_pauses=detect_host_pauses,
+            log_level=log_level,
+            log_file=log_file,
         )

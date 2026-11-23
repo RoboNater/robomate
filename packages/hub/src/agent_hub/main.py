@@ -1,7 +1,7 @@
 """Console entry point for the hub service."""
 
 import asyncio
-import logging
+import os
 import signal
 import socket
 import threading
@@ -9,11 +9,12 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from copy import deepcopy
 from typing import Any
 
 import uvicorn
 from agent_hub_common import HubSettings
+from agent_hub_common.config import log_level_from_env
+from agent_hub_common.logging_setup import setup_hub_logging, uvicorn_log_config
 from agent_hub_common.startup import stage
 from agent_hub_common.stdio import escape_unencodable_output
 
@@ -34,9 +35,10 @@ async def serve_http(
 ) -> None:
     """Serve the HTTP-only hub."""
 
-    log_config = deepcopy(uvicorn.config.LOGGING_CONFIG)
-    for handler in log_config["handlers"].values():
-        handler["stream"] = "ext://sys.stderr"
+    # Uvicorn's records reach the root logger's stderr and file handlers
+    # (#652), so `robomate up`, which serves through this function too, cannot
+    # drift from the `hub` entry point.
+    log_config = uvicorn_log_config(settings.log_level)
     server: HubServer
     app = create_app(
         settings, hub_info=hub_info, shutdown=lambda: setattr(server, "should_exit", True)
@@ -109,8 +111,17 @@ class HubServer(uvicorn.Server):
 
 def main() -> None:
     escape_unencodable_output()
-    logging.basicConfig(level=logging.INFO)
+    # A provisional stderr-only setup before `from_env`, which itself logs (a
+    # relative XDG_STATE_HOME warning): that record must be formatted like
+    # every other instead of falling through to logging.lastResort (#652
+    # r1-3). The second call, with the resolved file, replaces these handlers.
+    # The warning still cannot reach the file — it reports which state
+    # directory to use, before any file path exists.
+    setup_hub_logging(log_level_from_env(os.environ), None)
     settings = HubSettings.from_env()
+    # One shared setup with `robomate up` (#652): the level and the persistent
+    # log file come from the settings both entry points read.
+    setup_hub_logging(settings.log_level, settings.log_file)
     with socket.socket(socket.AF_INET6 if ":" in settings.host else socket.AF_INET) as sock:
         sock.bind((settings.host, settings.port))
         sock.listen()
