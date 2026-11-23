@@ -37,7 +37,8 @@ async def run_sweeper(store: HubStore, interval_s: float, lost_after_s: float) -
         except Exception:
             logger.exception("Stall sweep failed")
         for event in events:
-            logger.info("Sweeper queued %s: %s", event.kind.value, event.payload)
+            # Per-event detail; `robomate up` shows INFO startup lines only (#377).
+            logger.debug("Sweeper queued %s: %s", event.kind.value, event.payload)
 
 
 def start_sweeper(store: HubStore, interval_s: float, lost_after_s: float) -> asyncio.Task[None]:

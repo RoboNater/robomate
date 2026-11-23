@@ -714,10 +714,82 @@ def test_up_redirected_output_escapes_unencodable_checkout(
         expected = str(root).encode("cp1252", errors="backslashreplace").decode("cp1252")
         assert f"Hub checkout: {expected}" in output
         assert "\\u2192" in output and "\\u0101" in output
+        # #377: the hub's startup logging on stderr is escaped the same way,
+        # rather than becoming a logging error on the state path's characters.
+        stderr = Path(process._stderr_log).read_bytes().decode("cp1252")  # type: ignore[attr-defined]
+        escaped_database = (
+            str(hub_state(root) / "hub.db")
+            .encode("cp1252", errors="backslashreplace")
+            .decode("cp1252")
+        )
+        assert (
+            f"INFO:agent_hub.app:SQLite database ready at {escaped_database}" in stderr.splitlines()
+        )
+        assert "Logging error" not in stderr
         with urllib.request.urlopen(f"{info['url']}/healthz", timeout=2) as response:
             assert json.load(response)["status"] == "ok"
     finally:
         stop(root, env, process)
+
+
+def test_up_shows_the_hub_startup_logging_on_stderr(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#377: `up` serves the hub in-process, so it configures logging itself."""
+
+    root, env = repository
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        database = hub_state(root) / "hub.db"
+        wait_until_sync(
+            lambda: f"SQLite database ready at {database}" in _hub_stderr(process),
+            "`robomate up` logs the hub's database path to stderr",
+        )
+        lines = _hub_stderr(process).splitlines()
+        visible = [
+            f"SQLite database ready at {database}",
+            "Operator credential loaded",
+            "Serving role guides from ",
+            "Call accounting on: ",
+            f"Bearer token ready at {hub_token(root)}",
+            "check_merge_gate reads GitHub repository ",
+        ]
+        missing = [
+            text
+            for text in visible
+            if not any(line.startswith(f"INFO:agent_hub.app:{text}") for line in lines)
+        ]
+        assert not missing, f"`robomate up` dropped INFO startup lines: {missing}"
+    finally:
+        stop(root, env, process)
+
+
+def test_up_output_never_contains_a_token_value(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#377: the newly visible logging still prints the token's path, never its value."""
+
+    root, env = repository
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        await_hub_stdout(process, "ROBOMATE_TOKEN_FILE=")
+        credentials = {
+            "bearer token": hub_token(root).read_text(encoding="utf-8").strip(),
+            "operator token": registry_path(env)
+            .with_name("operator-token")
+            .read_text(encoding="utf-8")
+            .strip(),
+        }
+        stop(root, env, process)
+        printed = _hub_stdout(process) + _hub_stderr(process)
+        leaked = [name for name, value in credentials.items() if value in printed]
+        assert not leaked, f"`robomate up` printed a {leaked} value"
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
 def test_mcp_does_not_reconfigure_protocol_stdout(monkeypatch: pytest.MonkeyPatch) -> None:

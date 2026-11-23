@@ -10,9 +10,14 @@ from typing import TextIO
 
 
 def escape_unencodable_output() -> None:
-    """Escape text a redirected console stream's encoding cannot represent."""
-    if isinstance(sys.stdout, io.TextIOWrapper):
-        sys.stdout.reconfigure(errors="backslashreplace")
+    """Escape text a redirected console stream's encoding cannot represent.
+
+    stderr matters as much as stdout now that logging writes hub startup lines
+    there: an unencodable state path must not turn a line into a logging error.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
 
 
 @contextmanager
