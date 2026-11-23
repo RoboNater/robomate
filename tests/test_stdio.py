@@ -21,6 +21,21 @@ def test_console_output_preserves_encoding_and_escapes_unencodable_text(
         assert buffer.getvalue() == b"driv\xe9r \\u2192 \\u0101\n"
 
 
+def test_console_error_output_escapes_unencodable_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#377: logging writes the hub's startup lines to stderr."""
+
+    with (
+        io.BytesIO() as buffer,
+        io.TextIOWrapper(buffer, encoding="cp1252", newline="\n") as stderr,
+    ):
+        monkeypatch.setattr(sys, "stderr", stderr)
+        escape_unencodable_output()
+        print("drivér → ā", file=stderr, flush=True)
+        assert buffer.getvalue() == b"driv\xe9r \\u2192 \\u0101\n"
+
+
 def test_console_output_allows_non_file_streams(monkeypatch: pytest.MonkeyPatch) -> None:
     with io.StringIO() as stdout:
         monkeypatch.setattr(sys, "stdout", stdout)

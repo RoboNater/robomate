@@ -1932,6 +1932,9 @@ def main() -> None:
         if args.command == "up":
             import asyncio
 
+            # `up` serves the hub in-process, so it configures logging as the
+            # `hub` entry point does; stdout keeps its operator lines (#377).
+            logging.basicConfig(level=logging.INFO, stream=sys.stderr)
             asyncio.run(_up(args))
         elif args.command == "down":
             if args.all:
