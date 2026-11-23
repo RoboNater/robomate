@@ -23,6 +23,7 @@ from agent_hub.gitlab_gate import (
     is_definite_ci_absence,
 )
 from agent_hub_common.discovery import Repository, local_hub
+from agent_hub_common.logging_setup import clear_hub_logging
 
 ORIGIN = "git@host:group/project.git"
 BASE: dict[str, Any] = {
@@ -221,18 +222,23 @@ async def test_up_integration(
         public_url=None,
         no_call_accounting=False,
     )
-    if setting:
-        with pytest.raises(RuntimeError, match="preflight refused"):
+    try:
+        if setting:
+            with pytest.raises(RuntimeError, match="preflight refused"):
+                await cli._up(args)
+            assert not served and local_hub(root) is None
+            assert setting in capsys.readouterr().out
+        else:
             await cli._up(args)
-        assert not served and local_hub(root) is None
-        assert setting in capsys.readouterr().out
-    else:
-        await cli._up(args)
-        assert served
-        hub = local_hub(root)
-        assert hub is not None and hub.info["forge"] == (override or forge)
-    if (override or forge) in ("github", "unknown"):
-        assert not runner.calls
+            assert served
+            hub = local_hub(root)
+            assert hub is not None and hub.info["forge"] == (override or forge)
+        if (override or forge) in ("github", "unknown"):
+            assert not runner.calls
+    finally:
+        # The in-process `up` configures the hub's shared logging (#652) on
+        # the test's root logger; remove it before the next test logs anything.
+        clear_hub_logging()
 
 
 @pytest.mark.parametrize("version", ["glab version 1.35.0", "garbage", "glab version 2.0.0"])

@@ -68,6 +68,7 @@ from agent_hub_common.discovery import (
     write_binding,
     write_hub_json,
 )
+from agent_hub_common.logging_setup import default_log_file, setup_hub_logging
 from agent_hub_common.registry import (
     HEALTHZ_LIVE_PID_TIMEOUT_S,
     HEALTHZ_TIMEOUT_S,
@@ -530,6 +531,9 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
             "HUB_DB_PATH": str(directory / "hub.db"),
             "HUB_TOKEN_FILE": str(placement.token_file),
             "HUB_CALL_ACCOUNTING": "0" if args.no_call_accounting else "1",
+            # `up` writes its hub log to its own state directory (#652), so
+            # like the other values it sets it ignores an exported HUB_LOG_FILE.
+            "HUB_LOG_FILE": str(default_log_file(directory)),
         }
     )
     overlay.pop("HUB_TOKEN", None)
@@ -537,6 +541,9 @@ async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlac
         overlay["HUB_PUBLIC_URL"] = args.public_url
     try:
         settings = HubSettings.from_env(overlay)
+        # One shared setup with the `hub` entry point (#652): the level comes
+        # from HUB_LOG_LEVEL, which `up` honours because it does not set it.
+        setup_hub_logging(settings.log_level, settings.log_file)
         stage("settings resolved")
         load_or_create_token(settings.token, settings.token_file)
         stage("token ready")
@@ -1255,6 +1262,8 @@ def _status(as_json: bool, selector: str | None) -> None:
     print(f"Checkout: {checkout}")
     print(f"Repository: {repository_dir(Path(common)) if common else checkout}")
     print(f"State: {location[0] if location else 'unknown (hub selected by URL)'}")
+    if location is not None:
+        print(f"Log: {default_log_file(location[0])}")
     print(f"Origin: {status['origin']}")
     print(f"Forge: {status['forge']}  Default branch: {status['default_branch']}")
     workflow = status["workflow"]
@@ -1932,9 +1941,9 @@ def main() -> None:
         if args.command == "up":
             import asyncio
 
-            # `up` serves the hub in-process, so it configures logging as the
-            # `hub` entry point does; stdout keeps its operator lines (#377).
-            logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+            # `up` serves the hub in-process and configures logging through the
+            # shared setup once its settings are resolved (#652); stdout keeps
+            # its operator lines (#377).
             asyncio.run(_up(args))
         elif args.command == "down":
             if args.all:

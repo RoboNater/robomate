@@ -1,4 +1,6 @@
+import logging
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,12 @@ from agent_hub_common import (
     ModelSource,
     config,
     profile_from_env,
+)
+from agent_hub_common.logging_setup import (
+    clear_hub_logging,
+    default_log_file,
+    setup_hub_logging,
+    uvicorn_log_config,
 )
 
 
@@ -323,3 +331,97 @@ def test_detect_host_pauses_defaults_to_true_and_respects_env(tmp_path: Path) ->
     assert HubSettings.from_env({**base, var: ""}).detect_host_pauses is True
     with pytest.raises(ConfigurationError, match=f"{var} must be"):
         HubSettings.from_env({**base, var: "invalid"})
+
+
+# Hub logging (#652): level parsing, HUB_LOG_FILE handling and the shared setup.
+
+
+def test_log_level_defaults_to_info_and_accepts_the_standard_names() -> None:
+    assert HubSettings.from_env({}).log_level == "INFO"
+    # A blank export means unset, not an invalid value.
+    assert HubSettings.from_env({"HUB_LOG_LEVEL": ""}).log_level == "INFO"
+    for value in ("DEBUG", "debug", " Warning ", "eRROR", "critical"):
+        settings = HubSettings.from_env({"HUB_LOG_LEVEL": value})
+        assert settings.log_level == value.strip().upper()
+
+
+@pytest.mark.parametrize("value", ["verbose", "INFO2", "NOTICE", "INF O", "trace"])
+def test_an_invalid_log_level_refuses_startup(value: str) -> None:
+    with pytest.raises(ConfigurationError, match="HUB_LOG_LEVEL must be one of"):
+        HubSettings.from_env({"HUB_LOG_LEVEL": value})
+
+
+def test_hub_log_file_defaults_is_disables_and_resolves(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    base = {"HUB_STATE_DIR": str(state)}
+
+    assert HubSettings.from_env(base).log_file == default_log_file(state)
+    assert HubSettings.from_env({**base, "HUB_LOG_FILE": "-"}).log_file is None
+    custom = tmp_path / "elsewhere/hub.log"
+    assert HubSettings.from_env({**base, "HUB_LOG_FILE": str(custom)}).log_file == custom
+    # Relative values resolve against the state directory like HUB_DB_PATH.
+    relative = HubSettings.from_env({**base, "HUB_LOG_FILE": "logs/custom.log"})
+    assert relative.log_file == state / "logs/custom.log"
+
+
+def test_the_shared_setup_applies_the_level_to_root_and_uvicorn(tmp_path: Path) -> None:
+    log_file = tmp_path / "logs" / "hub.log"
+
+    def ours() -> list[logging.Handler]:
+        return [
+            handler
+            for handler in logging.getLogger().handlers
+            if getattr(handler, "_robomate_hub_log_handler", False)
+        ]
+
+    try:
+        setup_hub_logging("DEBUG", log_file)
+        root = logging.getLogger()
+
+        assert root.level == logging.DEBUG
+        # The stderr handler and the file handler, both added by the setup;
+        # only this setup's own handlers are counted, so a handler another
+        # in-process entry-point test left behind cannot mask a missing one.
+        assert len(ours()) == 2
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            assert logging.getLogger(name).level == logging.DEBUG
+
+        assert log_file.is_file()
+        if sys.platform != "win32":
+            assert log_file.stat().st_mode & 0o777 == 0o600
+            assert log_file.parent.stat().st_mode & 0o777 == 0o700
+        logging.getLogger("test.logging_setup").debug("level reaches the file")
+        assert "level reaches the file" in log_file.read_text(encoding="utf-8")
+
+        # A second call replaces the handlers instead of stacking them.
+        setup_hub_logging("WARNING", None)
+        assert len(ours()) == 1
+        assert logging.getLogger().level == logging.WARNING
+    finally:
+        clear_hub_logging()
+
+
+def test_the_shared_setup_can_disable_the_file() -> None:
+    try:
+        setup_hub_logging("INFO", None)
+        logging.getLogger("test.logging_setup").info("stderr only")
+        ours = [
+            handler
+            for handler in logging.getLogger().handlers
+            if getattr(handler, "_robomate_hub_log_handler", False)
+        ]
+        assert len(ours) == 1
+        assert not isinstance(ours[0], logging.handlers.RotatingFileHandler)
+    finally:
+        clear_hub_logging()
+
+
+def test_uvicorn_log_config_carries_the_level_without_handlers_of_its_own() -> None:
+    settings = uvicorn_log_config("WARNING")
+
+    assert settings["version"] == 1
+    # The application's loggers must survive uvicorn's reconfiguration.
+    assert settings["disable_existing_loggers"] is False
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        assert settings["loggers"][name] == {"level": "WARNING", "propagate": True}
+    assert "handlers" not in settings

@@ -27,7 +27,7 @@ import pytest
 import robomate.cli as cli
 from agent_hub.database import database, initialize_database
 from agent_hub.store import HubStore
-from agent_hub_common import AgentProfile, TaskState, WorkflowStatus
+from agent_hub_common import SCHEMA_VERSION, AgentProfile, MetaKeys, TaskState, WorkflowStatus
 from agent_hub_common.discovery import (
     BINDING_FILENAME,
     Binding,
@@ -262,6 +262,15 @@ def _hub_stderr(process: subprocess.Popen[str]) -> str:
         return Path(path).read_text(encoding="utf-8", errors="replace")
     assert process.stderr is not None
     return process.stderr.read()
+
+
+def _read_log_file(path: Path) -> str:
+    """A hub's persistent log (#652), or "" while it does not exist yet."""
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _startup_diagnostics(root: Path, process: subprocess.Popen[str], elapsed: float) -> str:
@@ -726,6 +735,16 @@ def test_up_redirected_output_escapes_unencodable_checkout(
             f"INFO:agent_hub.app:SQLite database ready at {escaped_database}" in stderr.splitlines()
         )
         assert "Logging error" not in stderr
+        # #652: the persistent file is UTF-8 whatever the console code page:
+        # the unencodable path is stored, not escaped or dropped.
+        log_file = hub_state(root) / "logs" / "hub.log"
+        wait_until_sync(
+            lambda: str(hub_state(root) / "hub.db") in _read_log_file(log_file),
+            "the UTF-8 log file holds the state path",
+        )
+        file_content = _read_log_file(log_file)
+        assert "→" in file_content and "ā" in file_content
+        assert "\\u2192" not in file_content
         with urllib.request.urlopen(f"{info['url']}/healthz", timeout=2) as response:
             assert json.load(response)["status"] == "ok"
     finally:
@@ -761,6 +780,31 @@ def test_up_shows_the_hub_startup_logging_on_stderr(
             if not any(line.startswith(f"INFO:agent_hub.app:{text}") for line in lines)
         ]
         assert not missing, f"`robomate up` dropped INFO startup lines: {missing}"
+        # #652: the default level's records also reach the persistent file,
+        # with a timestamp, in the same `INFO:agent_hub.app:` format.
+        log_file = hub_state(root) / "logs" / "hub.log"
+        wait_until_sync(
+            lambda: f"SQLite database ready at {database}" in _read_log_file(log_file),
+            "`robomate up` writes the hub's database path to its log file",
+        )
+        file_lines = _read_log_file(log_file).splitlines()
+        missing_from_file = [
+            text
+            for text in visible
+            if not any(f"INFO:agent_hub.app:{text}" in line for line in file_lines)
+        ]
+        assert not missing_from_file, (
+            f"`robomate up` dropped INFO startup lines from its log file: {missing_from_file}"
+        )
+        assert re.search(
+            rf"^\d{{4}}-\d\d-\d\d \d\d:\d\d:\d\d,\d{{3}} "
+            rf"INFO:agent_hub\.app:SQLite database ready at {re.escape(str(database))}",
+            _read_log_file(log_file),
+            re.MULTILINE,
+        )
+        if sys.platform != "win32":
+            assert log_file.stat().st_mode & 0o777 == 0o600
+            assert log_file.parent.stat().st_mode & 0o777 == 0o700
     finally:
         stop(root, env, process)
 
@@ -783,13 +827,94 @@ def test_up_output_never_contains_a_token_value(
             .strip(),
         }
         stop(root, env, process)
-        printed = _hub_stdout(process) + _hub_stderr(process)
+        # #652: the persistent file is part of the output the token must
+        # never reach, alongside stdout and stderr.
+        log_file = hub_state(root) / "logs" / "hub.log"
+        assert log_file.is_file(), "`robomate up` did not write its log file"
+        printed = _hub_stdout(process) + _hub_stderr(process) + _read_log_file(log_file)
         leaked = [name for name, value in credentials.items() if value in printed]
         assert not leaked, f"`robomate up` printed a {leaked} value"
     finally:
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+
+
+def test_up_log_level_debug_shows_the_sweeper_line(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#652: HUB_LOG_LEVEL=DEBUG reaches the sweeper's per-event line on stderr."""
+
+    root, env = repository
+    env = {
+        **env,
+        "HUB_LOG_LEVEL": "DEBUG",
+        "HUB_SWEEP_INTERVAL_S": "0.1",
+        "HUB_LOST_AFTER_S": "1",
+    }
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        # Join an agent with no heartbeat behind it: within HUB_LOST_AFTER_S
+        # the sweeper declares it lost and logs the queued event at DEBUG.
+        token = hub_token(root).read_text(encoding="utf-8").strip()
+        body = {
+            "message": {
+                "messageId": "m-1",
+                "role": "user",
+                "parts": [{"kind": "text", "text": "READY"}],
+                "metadata": {
+                    MetaKeys.AGENT: "bob",
+                    MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
+                    MetaKeys.OPERATION_ID: "op-1",
+                    MetaKeys.WORKER_INSTANCE_ID: "bob-1",
+                },
+            }
+        }
+        request = urllib.request.Request(
+            f"{info['url']}/a2a",
+            data=json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": body}
+            ).encode(),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=LIVENESS_S) as response:
+            assert "result" in json.load(response)
+        wait_until_sync(
+            lambda: "Sweeper queued" in _hub_stderr(process),
+            "`HUB_LOG_LEVEL=DEBUG` shows the sweeper's per-event line on stderr",
+        )
+    finally:
+        stop(root, env, process)
+
+
+def test_up_log_level_warning_hides_the_info_startup_lines(
+    repository: tuple[Path, dict[str, str]],
+) -> None:
+    """#652: HUB_LOG_LEVEL=WARNING drops the INFO lines `up` would otherwise show."""
+
+    root, env = repository
+    env = {**env, "HUB_LOG_LEVEL": "WARNING"}
+    process = start(root, env)
+    try:
+        await_hub(root, process)
+        # The last flushed stdout line comes after the lifespan startup that
+        # logs the INFO records, so by now they would exist if allowed.
+        await_hub_stdout(process, "ROBOMATE_TOKEN_FILE=")
+        stderr = _hub_stderr(process)
+        assert "INFO:agent_hub.app:" not in stderr
+        assert "SQLite database ready" not in stderr
+        # The file is still created, but holds no INFO records either.
+        log_file = hub_state(root) / "logs" / "hub.log"
+        assert log_file.is_file()
+        assert not any(
+            "INFO:agent_hub.app:" in line for line in _read_log_file(log_file).splitlines()
+        )
+    finally:
+        stop(root, env, process)
 
 
 def test_mcp_does_not_reconfigure_protocol_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1741,6 +1866,8 @@ def test_status_from_nested_directory_and_worktree(
             assert f"Checkout: {root}" in result.stdout
             assert f"Repository: {root}" in result.stdout
             assert f"State: {hub_state(root)}" in result.stdout
+            # #652: status names the hub's persistent log file.
+            assert f"Log: {hub_state(root) / 'logs' / 'hub.log'}" in result.stdout
             assert "Workflow: none" in result.stdout
             result = _inproc_cli(monkeypatch, capsys, cwd, env, "status", "--json", *selector)
             status = json.loads(result.stdout)
