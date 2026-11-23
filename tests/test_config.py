@@ -392,6 +392,13 @@ def test_the_shared_setup_applies_the_level_to_root_and_uvicorn(tmp_path: Path) 
             assert log_file.parent.stat().st_mode & 0o777 == 0o700
         logging.getLogger("test.logging_setup").debug("level reaches the file")
         assert "level reaches the file" in log_file.read_text(encoding="utf-8")
+        # One newline translation only: without O_BINARY the CRT would turn
+        # every line ending into \r\r\n on native Windows (#652 r1-1), which
+        # the required windows CI job exercises.
+        raw = log_file.read_bytes()
+        assert b"\r\r\n" not in raw
+        if sys.platform == "win32":
+            assert b"\r\n" in raw
 
         # A second call replaces the handlers instead of stacking them.
         setup_hub_logging("WARNING", None)

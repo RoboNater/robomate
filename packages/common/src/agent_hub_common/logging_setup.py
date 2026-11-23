@@ -44,7 +44,15 @@ class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
     """
 
     def _open(self) -> Any:
-        descriptor = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        # O_BINARY where the platform has it: without it the CRT's text mode
+        # would re-translate the \r\n that TextIOWrapper already wrote, so
+        # every line on native Windows ended \r\r\n (#652 r1-1). Python's own
+        # open() takes the same route; the mode bits stay POSIX-only.
+        descriptor = os.open(
+            self.baseFilename,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
         return os.fdopen(descriptor, self.mode, encoding=self.encoding, errors=self.errors)
 
 

@@ -43,6 +43,7 @@ from agent_hub_common.discovery import (
     write_binding,
     write_hub_json,
 )
+from agent_hub_common.logging_setup import clear_hub_logging
 from agent_hub_common.registry import (
     HEALTHZ_LIVE_PID_TIMEOUT_S,
     HealthCheck,
@@ -3812,14 +3813,19 @@ def test_up_honours_legacy_forge_in_robomate_config_toml_with_warning(
     )
     buffer = io.StringIO()
     monkeypatch.setattr(sys, "stdout", buffer)
-    anyio.run(cli._run_up, args, repo, _legacy_placement(root))
-    out = buffer.getvalue()
-    assert out.count("Warning:") == 1
-    assert str(legacy_cfg) in out
-    assert str(repo.git_common_dir / "robomate" / "config.toml") in out
-    info = read_hub(root)
-    assert info is not None
-    assert info["forge"] == "gitlab"
+    try:
+        anyio.run(cli._run_up, args, repo, _legacy_placement(root))
+        out = buffer.getvalue()
+        assert out.count("Warning:") == 1
+        assert str(legacy_cfg) in out
+        assert str(repo.git_common_dir / "robomate" / "config.toml") in out
+        info = read_hub(root)
+        assert info is not None
+        assert info["forge"] == "gitlab"
+    finally:
+        # The in-process `_run_up` configures the hub's shared logging (#652)
+        # on the test's root logger; remove it before the next test logs.
+        clear_hub_logging()
 
 
 def test_submit_parses_policy_toml_values() -> None:

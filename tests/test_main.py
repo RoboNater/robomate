@@ -441,3 +441,45 @@ def test_hub_entry_point_log_level_warning_hides_info_and_disable_skips_the_file
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
+
+
+def test_hub_entry_point_formats_configuration_warnings(tmp_path: Path) -> None:
+    """#652 r1-3: a warning raised inside `from_env` is formatted, not lastResort."""
+
+    home = tmp_path / "home"
+    home.mkdir()
+    operator_file = tmp_path / "operator-token"
+    operator_file.write_text("operator-secret\n")
+    operator_file.chmod(0o600)
+    port = reserve_port_block(1)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "agent_hub.main"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **{k: v for k, v in os.environ.items() if not k.startswith("HUB_")},
+            # No HUB_STATE_DIR: the relative XDG value is refused and falls
+            # back to $HOME/.local/state/agent-hub, warning from inside
+            # from_env before any handler existed (#652 r1-3).
+            "XDG_STATE_HOME": "relative-state",
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "HUB_HOST": "127.0.0.1",
+            "HUB_PORT": str(port),
+            "ROBOMATE_OPERATOR_TOKEN_FILE": str(operator_file),
+        },
+    )
+    try:
+        _await_healthz(port, process)
+        stderr = _stop_entry(process)
+        assert "WARNING:agent_hub_common.config:Ignoring relative XDG_STATE_HOME" in stderr
+        # The state it fell back to is the isolated home, not the real one.
+        assert (home / ".local" / "state" / "agent-hub" / "logs" / "hub.log").is_file()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=LIVENESS_S)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()

@@ -1,6 +1,7 @@
 """Console entry point for the hub service."""
 
 import asyncio
+import os
 import signal
 import socket
 import threading
@@ -12,6 +13,7 @@ from typing import Any
 
 import uvicorn
 from agent_hub_common import HubSettings
+from agent_hub_common.config import log_level_from_env
 from agent_hub_common.logging_setup import setup_hub_logging, uvicorn_log_config
 from agent_hub_common.startup import stage
 from agent_hub_common.stdio import escape_unencodable_output
@@ -109,6 +111,13 @@ class HubServer(uvicorn.Server):
 
 def main() -> None:
     escape_unencodable_output()
+    # A provisional stderr-only setup before `from_env`, which itself logs (a
+    # relative XDG_STATE_HOME warning): that record must be formatted like
+    # every other instead of falling through to logging.lastResort (#652
+    # r1-3). The second call, with the resolved file, replaces these handlers.
+    # The warning still cannot reach the file — it reports which state
+    # directory to use, before any file path exists.
+    setup_hub_logging(log_level_from_env(os.environ), None)
     settings = HubSettings.from_env()
     # One shared setup with `robomate up` (#652): the level and the persistent
     # log file come from the settings both entry points read.

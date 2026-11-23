@@ -112,6 +112,17 @@ def parse_log_level(value: str) -> str:
     return name
 
 
+def log_level_from_env(env: Mapping[str, str]) -> str:
+    """The configured hub log level; a blank export means the default (#652).
+
+    `from_env` and the `hub` entry point's provisional stderr setup read it
+    here, so there is one parse path for the value.
+    """
+
+    raw = env.get("HUB_LOG_LEVEL", "").strip()
+    return "INFO" if not raw else parse_log_level(raw)
+
+
 def profile_from_env(environ: Mapping[str, str] | None = None) -> AgentProfile:
     """Read the worker identity profile its launcher configured (spec §4.3).
 
@@ -325,8 +336,7 @@ class HubSettings:
                 detect_host_pauses = _FLAG_VALUES[raw_pause]
         # A blank HUB_LOG_LEVEL means unset (an empty export), not an error;
         # anything else must name a standard level or startup fails (#652).
-        raw_log_level = env.get("HUB_LOG_LEVEL", "").strip()
-        log_level = "INFO" if not raw_log_level else parse_log_level(raw_log_level)
+        log_level = log_level_from_env(env)
         raw_log_file = env.get("HUB_LOG_FILE", "").strip()
         if raw_log_file == "-":
             log_file = None
