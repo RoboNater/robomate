@@ -696,6 +696,68 @@ When the workflow is finished, Alice releases the workers. In that run's
 uv run --project /absolute/path/to/robomate robomate down
 ```
 
+### The run headline
+
+`robomate status` opens with a headline block between rules, then the hub and
+agent detail described below:
+
+```text
+── RUN 20261123_14b361f1 ─────────────────────────────────────────────
+State:     ACTIVE
+Questions: 0 open operator questions
+Step:      REVIEW r1 (charlie)   approved: no
+PR:        #649 @ e04bed6   for #377   started 2026-11-23 05:21:12 (42 m ago)
+Gate:      14:02:11 (4 m ago)  CI pending (test, windows)  head matches: yes  base behind: no  mergeable: clean (CLEAN)
+Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
+──────────────────────────────────────────────────────────────────────
+```
+
+- `State` is upper-case on its own line, so a `watch` or `grep` catches
+  `ESCALATED` (or any other state needing you) at a glance.
+- `Questions` is the open operator-question count with
+  `(see robomate inbox)` when it is not zero. `--inbox` prints the same content
+  as `robomate inbox` directly below the headline; without the flag, question
+  text never appears in `status`.
+- `Step` names the current open task's role and assignee (with its review round
+  `r1`, `r2`, … where the task is a review), the PR or MR and the short head,
+  and whether a typed reviewer approval is bound to that head. With no open task
+  it names the last terminal step instead.
+- `PR` names the run's PR or MR number and short head, the issue it addresses
+  (or the statement's source and short SHA-256 when the statement names no
+  issue), and the start time with its age. The date appears when the run did not
+  start today and ages roll over to hours and days. Before a PR exists the line
+  reads `none yet` and still shows the issue and start.
+- `Gate` is the latest stored merge-gate reading for the run: time and age, the
+  CI summary with pending or failed check names, `head matches`,
+  `base behind` and `mergeable` with the forge's merge-state status. With no
+  reading it says `no gate reading yet`. **`--live`** runs one read-only forge
+  query, prints it labelled `live`, and writes no reading; a forge failure
+  prints `live failed: …` and falls back to the stored reading without failing
+  `status`. Both use only your existing `gh`/`glab` login.
+- `Agents` counts alive, stalled, lost and released agents and the queue length.
+  **`--activity`** adds one line per agent, the orchestrator included: the last
+  hub call or action, its UTC time and age, and the task it concerns or
+  `holding`.
+
+`--brief` prints only the headline block (including `--activity` lines when
+asked), for `watch -n 2 robomate status --brief`. `status` makes no forge call
+unless `--live`, so it stays cheap.
+
+Below the headline, every agent line also shows its current task role, last
+call, last progress as `HH:MM:SS (N m ago)`, and the path of its harness
+session log where the hub's session directory has one. The latest progress
+note is escaped and truncated to one inert line; `--notes` prints the full
+escaped note. Notes are untrusted agent text, are never interpreted, and never
+appear under `--brief`.
+
+`--json` carries the same facts additively: a `run` object (status, created,
+age, PR/MR URL, head and approved SHAs, issue or statement source and SHA,
+review rounds used, current and last task), a `gate` object (or `null`), and
+per agent `last_call_at`, `last_progress_at`, `last_progress_age_s`,
+`current_task_role`, `latest_note`, `latest_note_escaped` and `session_log`.
+Existing keys and their meaning are unchanged. A hub older than these fields
+still prints, with `not reported by this hub` where they are missing.
+
 `robomate status` marks an agent `STALLED` when its bridge still heartbeats but it has made no hub call, task progress or event consumption for `stall_after_min`, and names the evidence; it is a warning, not a lifecycle change (see [agent recovery](development/agent-recovery.md#an-agent-that-stops-working-but-keeps-running)). `robomate status --snapshot [--stopped-at UTC_TIME]` prints the before-snapshot a manual `resume-alice` prompt asks for, from read-only calls that never take over Alice's session.
 
 `robomate status` also shows closeout collection for the current or most recent

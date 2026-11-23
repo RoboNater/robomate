@@ -55,7 +55,7 @@ from agent_hub_common.startup import PREFIX as STAGE_PREFIX
 from conftest import reserve_port_block
 from delivery_support import finish_run
 from robomate.cli import _bind
-from timing import LIVENESS_S, wait_until_sync
+from timing import LIVENESS_S, FrozenClock, wait_until_sync
 
 CLI = str(Path(sys.executable).with_name("robomate.exe" if sys.platform == "win32" else "robomate"))
 
@@ -4970,3 +4970,414 @@ def test_status_renders_only_current_local_permission_observation(
     monkeypatch.setattr(cli, "_hub_location", lambda *a: None)
     cli._status(False, None)
     assert "permission ask pending" not in capsys.readouterr().out
+
+
+def _status_gate_report(pr_url: str, head: str) -> Any:
+    from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
+
+    return GateReport(
+        pr_url=pr_url,
+        pr_state=PrState.OPEN,
+        expected_head_sha=head,
+        current_head_sha=head,
+        head_matches=True,
+        ci=CiStatus.PENDING,
+        checks=[Check("test", "pending", ""), Check("windows", "pending", "")],
+        base_ref="main",
+        base_sha="b" * 40,
+        main_sha="c" * 40,
+        base_behind_main=False,
+        mergeable=Mergeable.CLEAN,
+        merge_state_status="CLEAN",
+    )
+
+
+def _status_hub(
+    tmp_path: Path, frozen_clock: FrozenClock, statement: str | None = None
+) -> HubStore:
+    database_path = tmp_path / "hub.db"
+    initialize_database(database_path)
+    hub_store = HubStore(database_path)
+    frozen_clock.install(hub_store)
+    if statement is None:
+        hub_store.initialize_workflow("Build issue #653")
+    else:
+        hub_store.start_workflow(statement, source="submit:stdin")
+    return hub_store
+
+
+def _patch_status_hub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hub_store: HubStore,
+    *,
+    questions: list[dict[str, Any]] | None = None,
+    token: str = "status-token",
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "repo_root": str(tmp_path),
+        "url": "http://hub.test",
+        "origin": "git@github.com:RoboNater/robomate.git",
+        "forge": "github",
+        "default_branch": "main",
+        "hub_id": "hub",
+        "orchestrator": None,
+    }
+
+    def rpc(_url: str, _token: str, method: str) -> dict[str, Any]:
+        if method == "hub.questions":
+            return {"questions": questions or []}
+        assert method == "hub.status"
+        # Re-project on every read so frozen-clock advances show in the output.
+        return hub_store.status_summary() | identity
+
+    monkeypatch.setattr(
+        cli, "find_hub", lambda *args, **kwargs: HubEndpoint("http://hub.test", token)
+    )
+    monkeypatch.setattr(cli, "_rpc", rpc)
+    monkeypatch.setattr(cli, "_hub_location", lambda *args: (tmp_path, tmp_path / "token"))
+    return identity
+
+
+def test_status_headline_is_first_and_brief_prints_only_it(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: the headline is the first block; --brief keeps only it."""
+
+    hub_store = _status_hub(
+        tmp_path,
+        frozen_clock,
+        statement="Address issue `RoboNater/robomate#653` and deliver it.",
+    )
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.assign_task("bob", "implementer", "IMPLEMENT", "secret instructions")
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    assert out.startswith("── RUN ")
+    lines = out.splitlines()
+    assert lines[1] == "State:     ACTIVE"
+    assert lines[2] == "Questions: 0 open operator questions"
+    assert lines[3].startswith("Step:      IMPLEMENTER (bob)")
+    assert "PR:        none yet   for #653   started " in out
+    assert "Gate:      no gate reading yet" in out
+    assert out.index("State:     ACTIVE") < out.index("Hub: ")
+    assert "secret instructions" not in out
+
+    cli._status(False, None, brief=True)
+    brief = capsys.readouterr().out
+    assert brief.startswith("── RUN ")
+    assert brief.rstrip().endswith("─" * cli._STATUS_RULE_WIDTH)
+    assert "Hub: " not in brief and "Open tasks:" not in brief and "Run ID:" not in brief
+
+
+def test_status_state_and_questions_are_their_own_lines_and_inbox_is_opt_in(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: ESCALATED is scannable alone, and question text needs --inbox."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    question = hub_store.ask_user(
+        "Merge or wait?\x1b[2J", ["merge", "wait"], actor="alice", session=None
+    )
+    questions = hub_store.open_operator_questions()
+    assert question is not None
+    _patch_status_hub(tmp_path, monkeypatch, hub_store, questions=questions)
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[1] == "State:     ESCALATED"
+    assert lines[2].startswith("Questions: 1 open operator question")
+    assert "(see robomate inbox)" in lines[2]
+    assert "Merge or wait?" not in out and "\x1b" not in out
+
+    cli._status(False, None, inbox=True)
+    inbox = capsys.readouterr().out
+    assert "Merge or wait?" in inbox
+    assert "\\x1b[2J" in inbox
+    assert "\x1b" not in inbox
+    assert "--option 1: merge" in inbox
+    # The inbox sits below the headline, before the detail.
+    assert inbox.index("Questions:") < inbox.index("Merge or wait?") < inbox.index("Hub: ")
+
+    # --brief still prints the inbox it was asked for.
+    cli._status(False, None, brief=True, inbox=True)
+    assert "Merge or wait?" in capsys.readouterr().out
+
+
+def test_status_step_pr_and_stored_gate_describe_the_run(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: PR number, short head, issue, start and age, plus the stored gate."""
+
+    # A run that started yesterday shows its date; ages roll to hours and days.
+    clock = FrozenClock(datetime.now(UTC) - timedelta(days=2))
+    hub_store = _status_hub(
+        tmp_path,
+        clock,
+        statement="Address issue `RoboNater/robomate#653` and deliver it.",
+    )
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/653"
+    report = _status_gate_report(pr, head)
+    hub_store.record_gate_reading(pr, head, report=report, elapsed_s=0)
+    clock.advance(2520)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    assert "Step:      IMPLEMENTER (bob)   approved: no" in out
+    assert f"PR:        #653 @ {head[:7]}   for #653   started " in out
+    assert re.search(r"started \d\d:\d\d:\d\d \(42 m ago\)", out), out
+    assert "Gate:      " in out and "CI pending (test, windows)" in out
+    assert "(42 m ago)" in out and "head matches: yes" in out and "base behind: no" in out
+    assert "mergeable: clean (CLEAN)" in out
+
+    clock.advance(4000)
+    cli._status(False, None, brief=True)
+    assert "(1 h ago)" in capsys.readouterr().out
+    clock.advance(3 * 86400)
+    cli._status(False, None, brief=True)
+    later = capsys.readouterr().out
+    assert re.search(r"started \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \(3 d ago\)", later), later
+
+
+def test_status_shows_live_gate_ci_names_and_falls_back_without_writing(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: --live labels one forge read, writes nothing, and never fails status."""
+
+    from types import SimpleNamespace
+
+    from agent_hub.merge_gate import Check, CiStatus, Mergeable, PrState
+
+    hub_store = _status_hub(
+        tmp_path,
+        frozen_clock,
+        statement="Address issue `RoboNater/robomate#653` and deliver it.",
+    )
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/653"
+    hub_store.record_gate_reading(pr, head, error_code=-32004, elapsed_s=0)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    def reading_count() -> int:
+        with database(hub_store.path) as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM gate_reading").fetchone()[0])
+
+    calls: list[tuple[str, str]] = []
+
+    async def live_gate(status: dict[str, Any], url: str, expected: str) -> Any:
+        calls.append((url, expected))
+        return SimpleNamespace(
+            pr_state=PrState.OPEN,
+            ci=CiStatus.PASS,
+            checks=[Check("test", "pass", ""), Check("windows", "pass", "")],
+            head_matches=True,
+            base_behind_main=False,
+            mergeable=Mergeable.CLEAN,
+            merge_state_status="CLEAN",
+            expected_head_sha=expected,
+            current_head_sha=expected,
+        )
+
+    monkeypatch.setattr(cli, "_live_gate", live_gate)
+    before = reading_count()
+    cli._status(False, None, live=True)
+    out = capsys.readouterr().out
+    assert calls == [(pr, head)]
+    assert "Gate:      live " in out and "CI pass" in out
+    assert "head matches: yes" in out and "mergeable: clean (CLEAN)" in out
+    assert reading_count() == before
+
+    async def failing_gate(status: dict[str, Any], url: str, expected: str) -> Any:
+        raise RuntimeError("forge unavailable")
+
+    monkeypatch.setattr(cli, "_live_gate", failing_gate)
+    cli._status(False, None, live=True)
+    fallback = capsys.readouterr().out
+    assert "Gate:      live failed: forge unavailable" in fallback
+    assert "error (code -32004)" in fallback
+    assert reading_count() == before
+
+
+def test_status_notes_escape_truncate_and_expand_only_in_the_detail(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: agent text is inert, one escaped line by default, full under --notes."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    note = "\x1b[2J line one\nline two " + "z" * 400
+    hub_store.record_progress(task.id, "bob", note)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    assert "\\u001b[2J" in out and "\\u000a" in out
+    assert "\x1b" not in out
+    assert "z" * 400 not in out
+    assert "..." in out
+    assert "last progress " in out and "log -" in out
+
+    cli._status(False, None, notes=True)
+    full = capsys.readouterr().out
+    assert "z" * 400 in full
+    assert "line two" in full and "\\u001b" in full and "\x1b" not in full
+
+    cli._status(False, None, brief=True)
+    brief = capsys.readouterr().out
+    assert "line one" not in brief and "z" * 20 not in brief
+
+
+def test_status_activity_is_one_line_per_agent_without_payload_text(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: --activity condenses the agents, orchestrator included, into the headline."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    bob = hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    hub_store.record_progress(task.id, "bob", "payload text stays out")
+    hub_store.note_worker_call("bob", bob.worker_instance_id, "await_assignment")
+    hub_store.note_orchestrator_session("alice", "s-1")
+    with hub_store.orchestrator_call("s-1", "log_decision", 5):
+        pass
+    frozen_clock.advance(60)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(False, None, activity=True)
+    out = capsys.readouterr().out
+    headline = out.split("\n" + "─" * cli._STATUS_RULE_WIDTH + "\n")[0]
+    agent_lines = [
+        line
+        for line in headline.splitlines()
+        if line.startswith("  alice") or line.startswith("  bob")
+    ]
+    assert len(agent_lines) == 2, headline
+    alice_line = next(line for line in agent_lines if line.startswith("  alice"))
+    bob_line = next(line for line in agent_lines if line.startswith("  bob"))
+    assert "log_decision" in alice_line and "(1 m ago)" in alice_line
+    assert "await_assignment" in bob_line and "(1 m ago)" in bob_line
+    assert f"task {task.id[:7]}" in bob_line
+    assert "payload text" not in headline
+    assert "Hub: " in out  # detail still follows without --brief
+
+    cli._status(False, None, brief=True, activity=True)
+    brief = capsys.readouterr().out
+    assert "  alice" in brief and "  bob" in brief and "Hub: " not in brief
+
+
+def test_status_json_is_an_additive_superset(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: --json adds the headline facts without renaming existing keys."""
+
+    hub_store = _status_hub(
+        tmp_path,
+        frozen_clock,
+        statement="Address issue `RoboNater/robomate#653` and deliver it.",
+    )
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    hub_store.record_progress(task.id, "bob", "a note")
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/653"
+    hub_store.record_gate_reading(pr, head, error_code=-32004, elapsed_s=0)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(True, None)
+    payload = json.loads(capsys.readouterr().out)
+    current = hub_store.status_summary()
+    assert set(current) <= set(payload)
+    assert payload["run"]["issue"] == "653"
+    assert payload["run"]["current_task"]["id"] == task.id
+    assert payload["gate"]["error_code"] == -32004
+    bob = next(agent for agent in payload["agents"] if agent["name"] == "bob")
+    assert bob["latest_note"] == "a note"
+    assert bob["latest_note_escaped"] == "a note"
+    assert payload["state_dir"] == str(tmp_path) and payload["token_file"].endswith("token")
+
+
+def test_status_prints_an_older_hub_response_and_never_the_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#653: fields absent from an older hub read "not reported", and no mode leaks the token."""
+
+    token = "super-secret-token"
+    legacy: dict[str, Any] = {
+        "repo_root": str(tmp_path),
+        "url": "http://hub.test",
+        "origin": "git@github.com:RoboNater/robomate.git",
+        "forge": "github",
+        "default_branch": "main",
+        "workflow": {"status": "active", "headline": "Legacy run", "run_id": "r-1"},
+        "orchestrator": None,
+        "agents": [],
+        "tasks": [],
+        "pending_questions": 0,
+        "operator_questions": 0,
+    }
+    monkeypatch.setattr(
+        cli, "find_hub", lambda *args, **kwargs: HubEndpoint("http://hub.test", token)
+    )
+    monkeypatch.setattr(cli, "_rpc", lambda *args, **kwargs: legacy)
+    monkeypatch.setattr(cli, "_hub_location", lambda *args: None)
+
+    for kwargs in ({}, {"brief": True}, {"activity": True}, {"inbox": True}, {"notes": True}):
+        cli._status(False, None, **kwargs)
+        out = capsys.readouterr().out
+        assert "State:     ACTIVE" in out
+        assert "Step:      not reported by this hub" in out
+        assert "PR:        not reported by this hub" in out
+        assert "Gate:      not reported by this hub" in out
+        assert "Hub: " in out or kwargs.get("brief")
+        assert token not in out
+
+    cli._status(True, None)
+    payload = capsys.readouterr().out
+    assert token not in payload
+    assert json.loads(payload)["workflow"]["run_id"] == "r-1"
+
+    # A current hub with no workflow reports the projection as empty, not missing.
+    monkeypatch.setattr(
+        cli,
+        "_rpc",
+        lambda *args, **kwargs: legacy | {"run": None, "gate": None, "workflow": None},
+    )
+    cli._status(False, None, brief=True)
+    empty = capsys.readouterr().out
+    assert "State:     NONE" in empty
+    assert "Step:      none" in empty
+    assert "PR:        none yet" in empty
+    assert "Gate:      no gate reading yet" in empty

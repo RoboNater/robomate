@@ -582,6 +582,14 @@ and the durable episode link prevents duplicate actions across sweeps/restarts.
 Each line names the ages, the bridge heartbeat's age, and the task or event
 IDs. `robomate status --json` carries the same under each agent's `activity`
 and `orchestrator_activity`; `scripts/hub-report.py` lists every stall episode.
+
+`status` also shows an agent's last hub call, last progress
+(`HH:MM:SS (N m ago)`) and the path of its harness session log
+(`sessions/<agent>.jsonl` in the hub's state directory) below its line while
+the agent is still healthy, and the headline's `--activity` view condenses one
+line per agent for `watch`. Use the log path to read the harness's own log
+before acting; a long non-hub command still explains a silence without being a
+provider fault, and the stall evidence keeps its own wording.
 A held `await_assignment`, `ask_alice` or `wait_for_event` is never a stall,
 however long the waiting goes on; an open operator question is not by itself
 an exemption, because Alice should be holding `wait_for_event` for its answer.

@@ -38,7 +38,7 @@ from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, Hu
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from delivery_support import DeliveredForge, seed_delivery
 from fastapi import FastAPI
-from timing import LIVENESS_S, wait_until
+from timing import LIVENESS_S, FrozenClock, wait_until
 
 
 def prepare_rpc_delivery(app: FastAPI, store: HubStore) -> str:
@@ -163,6 +163,46 @@ async def test_hub_status_is_compact_and_reports_open_work(
         INVALID_PARAMS,
         "hub.status takes no params",
     )
+
+
+async def test_hub_status_projection_keeps_an_adversarial_note_and_gate_reading(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    """#653: raw notes travel in JSON, escaped views are additive, and gate reads show."""
+
+    dispatcher = cast(RpcDispatcher, app.state.rpc)
+    dispatcher.hub_info = {
+        "repo_root": "/repo",
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": "http://hub.test",
+        "default_branch": "main",
+    }
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
+    note = "ANSI \x1b[2J, CR \r, NUL \x00\nnext line " + "y" * 2000
+    hub_store.record_progress(task.id, "bob", note)
+    hub_store.record_gate_reading(PR, HEAD, error_code=-32004, elapsed_s=0.5)
+    frozen_clock.advance(75)
+
+    result = (await call(client, "hub.status"))["result"]
+
+    bob = next(agent for agent in result["agents"] if agent["name"] == "bob")
+    assert bob["latest_note"] == note
+    assert bob["current_task_role"] == "implementer"
+    assert bob["last_progress_age_s"] == pytest.approx(75, abs=1)
+    assert bob["last_progress_at"] is not None
+    assert "\x1b" not in bob["latest_note_escaped"]
+    assert "\x00" not in bob["latest_note_escaped"]
+    assert "\\u001b" in bob["latest_note_escaped"]
+    run = result["run"]
+    assert run["current_task"]["id"] == task.id
+    assert run["current_task"]["role"] == "implementer"
+    assert run["age_s"] == pytest.approx(75, abs=1)
+    assert result["gate"]["error_code"] == -32004
+    assert result["gate"]["pr_url"] == PR
+    assert result["gate"]["age_s"] == pytest.approx(75, abs=1)
+    assert "secret instructions" not in str(result)
 
 
 async def test_a_bridge_heartbeating_after_done_reads_as_finished_not_active(

@@ -1615,38 +1615,64 @@ class HubStore:
         `activity` beside each agent, and `orchestrator_activity`, are the
         stall assessment (#144): read from the same transaction, additive to
         the fields older consumers know.
+
+        `run` and `gate` are the operator headline (#653): the current step,
+        the run's PR facts, the latest stored merge-gate reading and, per agent,
+        the latest progress note, its timestamps and the harness session log
+        path. All additive, so wire `hub.schema_version` stays 1 and no
+        migration is needed.
         """
         now = self._now()
         with database(self.path) as connection:
             connection.execute("BEGIN")
             workflow = self._require_live_or_recent(connection)
-            from .closeout_export import status_projection
+            from .closeout_export import single_line, status_projection
 
             closeout = status_projection(self, connection, workflow, now)
             queue = self._queued_summaries(connection)
             assessment = self._assess(connection, now)
-            agents = [
-                {
-                    "name": row["name"],
-                    "standing_role": row["standing_role"],
-                    "harness": row["harness"],
-                    "harness_source": row["harness_source"],
-                    "model": row["model"],
-                    "effort": row["effort"],
-                    "effort_source": row["effort_source"],
-                    "status": row["status"],
-                    "alive": row["status"] != AgentStatus.LOST.value,
-                    "current_task": row["current_task_id"],
-                    "stalled": assessment["agents"].get(row["name"], assessment["orchestrator"])[
-                        "stalled"
-                    ],
-                    "activity": assessment["agents"].get(row["name"], assessment["orchestrator"]),
-                }
-                for row in connection.execute(
-                    "SELECT name, standing_role, harness, harness_source, model, effort,"
-                    " effort_source, status, current_task_id FROM agent ORDER BY name"
+            agents = []
+            for row in connection.execute(
+                "SELECT name, standing_role, harness, harness_source, model, effort,"
+                " effort_source, status, current_task_id FROM agent ORDER BY name"
+            ):
+                assessed = assessment["agents"].get(row["name"], assessment["orchestrator"]) or {}
+                task_row = (
+                    connection.execute(
+                        "SELECT role FROM task WHERE id = ?", (row["current_task_id"],)
+                    ).fetchone()
+                    if row["current_task_id"]
+                    else None
                 )
-            ]
+                note_at, note = self._latest_progress_note(connection, row["current_task_id"])
+                agents.append(
+                    {
+                        "name": row["name"],
+                        "standing_role": row["standing_role"],
+                        "harness": row["harness"],
+                        "harness_source": row["harness_source"],
+                        "model": row["model"],
+                        "effort": row["effort"],
+                        "effort_source": row["effort_source"],
+                        "status": row["status"],
+                        "alive": row["status"] != AgentStatus.LOST.value,
+                        "current_task": row["current_task_id"],
+                        "stalled": bool(assessed.get("stalled", False)),
+                        "activity": assessed or None,
+                        # Additive for #653: the operator activity view.
+                        "current_task_role": None if task_row is None else task_row["role"],
+                        "last_call_at": assessed.get("last_call_at"),
+                        "last_progress_at": note_at,
+                        "last_progress_age_s": None
+                        if note_at is None
+                        else _age_seconds(note_at, now),
+                        # Untrusted agent text: the raw note for tools and an
+                        # escaped single line for terminal display.
+                        "latest_note": note,
+                        "latest_note_escaped": None if note is None else single_line(note),
+                        "session_log": self._session_log_path(row["name"]),
+                    }
+                )
             tasks = [
                 {
                     "id": row["id"],
@@ -1698,6 +1724,63 @@ class HubStore:
                     " WHERE answered IS NULL AND withdrawn IS NULL"
                 ).fetchone()["n"]
             )
+            run = None
+            gate = None
+            if workflow is not None:
+                binding = self._workflow_pr_summary(connection, workflow["id"])
+                gate = self._latest_gate_reading(connection, workflow["id"], binding["pr_url"], now)
+                statement_source, issue = self._statement_reference(
+                    connection, workflow["statement_sha256"]
+                )
+                rounds = self._review_rounds_used(connection, workflow["id"])
+                run_tasks = [task for task in tasks if task["workflow_id"] == workflow["id"]]
+                last_task = connection.execute(
+                    "SELECT id, role, assignee, state FROM task WHERE workflow_id = ?"
+                    " AND state NOT IN ('submitted', 'working', 'input-required')"
+                    " ORDER BY rowid DESC LIMIT 1",
+                    (workflow["id"],),
+                ).fetchone()
+                current = run_tasks[0] if run_tasks else None
+                gate_pr_url = None if gate is None else gate.get("pr_url")
+                try:
+                    run_age = _age_seconds(workflow["created"], now)
+                except ValueError:
+                    # Legacy fixtures can hold a non-ISO sentinel; show no age.
+                    run_age = None
+                run = {
+                    "status": workflow["status"],
+                    "created": str(workflow["created"]),
+                    "age_s": run_age,
+                    # The bound PR, or the one the latest stored gate read.
+                    "pr_url": binding["pr_url"] or gate_pr_url,
+                    "head_sha": self._latest_run_head(connection, workflow["id"], gate, binding),
+                    "approved_sha": binding["approved_sha"],
+                    "merged_sha": binding["merged_sha"],
+                    # The issue reference the run records, or else the
+                    # statement's source and SHA-256 for the operator.
+                    "issue": issue,
+                    "statement_source": statement_source,
+                    "statement_sha256": workflow["statement_sha256"],
+                    "review_rounds_used": rounds,
+                    "current_task": None
+                    if current is None
+                    else {
+                        "id": current["id"],
+                        "role": current["role"],
+                        "assignee": current["assignee"],
+                        "state": current["state"],
+                        "head_sha": current["head_sha"],
+                        "review_round": rounds + 1 if current["role"] == "reviewer" else None,
+                    },
+                    "last_task": None
+                    if last_task is None
+                    else {
+                        "id": last_task["id"],
+                        "role": last_task["role"],
+                        "assignee": last_task["assignee"],
+                        "state": last_task["state"],
+                    },
+                }
         return {
             "workflow": None
             if workflow is None
@@ -1716,6 +1799,10 @@ class HubStore:
                 "statement_sha256": workflow["statement_sha256"],
             },
             "run_id": None if workflow is None else workflow["run_id"],
+            # Additive for the operator headline (#653): no existing key changes
+            # meaning, and wire `hub.schema_version` stays 1.
+            "run": run,
+            "gate": gate,
             "closeout": closeout,
             "closeout_export_errors": [
                 {"run_id": run_id, "error": error}
@@ -1733,6 +1820,184 @@ class HubStore:
             "orchestrator_activity": assessment["orchestrator"],
             "assessed_at": to_iso(now),
         }
+
+    def _statement_reference(
+        self, connection: Connection, statement_sha256: str | None
+    ) -> tuple[str | None, str | None]:
+        """The statement's source, and the issue number it addresses when it names one.
+
+        The statement text stays server-side: only a bare issue number derived
+        from it (the same `#N` form the branch label uses) reaches `hub.status`.
+        """
+
+        if statement_sha256 is None:
+            return None, None
+        row = connection.execute(
+            "SELECT source, bytes FROM statement WHERE sha256 = ?", (str(statement_sha256),)
+        ).fetchone()
+        if row is None:
+            return None, None
+        text = bytes(row["bytes"]).decode("utf-8", errors="replace")
+        match = re.search(r"#(\d+)", text)
+        return str(row["source"]), None if match is None else match.group(1)
+
+    def _review_rounds_used(self, connection: Connection, workflow_id: str) -> int:
+        """Review rounds spent: changes-requested reviews that named findings."""
+
+        rounds = 0
+        for row in connection.execute(
+            "SELECT result_json FROM task WHERE workflow_id = ? AND role = 'reviewer'"
+            " AND result_json IS NOT NULL ORDER BY rowid",
+            (workflow_id,),
+        ):
+            result = _json_object(row["result_json"]) or {}
+            findings = result.get("blocking_findings")
+            if (
+                result.get("verdict") == "changes_requested"
+                and isinstance(findings, list)
+                and findings
+            ):
+                rounds += 1
+        return rounds
+
+    def _latest_run_head(
+        self,
+        connection: Connection,
+        workflow_id: str,
+        gate: dict[str, Any] | None,
+        binding: Mapping[str, Any],
+    ) -> str | None:
+        """The most recent head the hub knows: gate truth, then task results, then approval."""
+
+        if gate is not None:
+            # An error reading has no current head but still names the head the
+            # gate was asked about, which is the best head the hub knows.
+            for key in ("current_head_sha", "expected_head_sha"):
+                recorded = gate.get(key)
+                if isinstance(recorded, str) and SHA_HEX_40_RE.fullmatch(recorded):
+                    return recorded
+        latest: str | None = None
+        for row in connection.execute(
+            "SELECT pr_head_sha, result_json FROM task WHERE workflow_id = ? ORDER BY rowid",
+            (workflow_id,),
+        ):
+            head = row["pr_head_sha"]
+            if isinstance(head, str) and SHA_HEX_40_RE.fullmatch(head):
+                latest = head
+            result = _json_object(row["result_json"])
+            if result:
+                for key in ("head_sha", "reviewed_head_sha"):
+                    value = result.get(key)
+                    if isinstance(value, str) and SHA_HEX_40_RE.fullmatch(value):
+                        latest = value
+        approved = binding.get("approved_sha")
+        if isinstance(approved, str) and SHA_HEX_40_RE.fullmatch(approved):
+            latest = latest or approved
+        return latest
+
+    def _latest_gate_reading(
+        self, connection: Connection, workflow_id: str, pr_url: str | None, now: datetime
+    ) -> dict[str, Any] | None:
+        """The latest stored merge-gate reading for this run, if one exists.
+
+        A reading stored before the workflow existed has a NULL workflow ID;
+        the run's PR URL then matches it, so the operator still sees it.
+        """
+
+        row = connection.execute(
+            "SELECT * FROM gate_reading WHERE workflow_id = ? ORDER BY id DESC LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
+        if row is None and pr_url:
+            row = connection.execute(
+                "SELECT * FROM gate_reading WHERE pr_url = ? ORDER BY id DESC LIMIT 1",
+                (pr_url,),
+            ).fetchone()
+        if row is None:
+            return None
+        checks: list[dict[str, str]] = []
+        try:
+            stored = json.loads(row["checks_json"])
+        except (TypeError, json.JSONDecodeError):
+            stored = None
+        if isinstance(stored, list):
+            checks = [
+                {"name": str(item.get("name", "")), "bucket": str(item.get("bucket", ""))}
+                for item in stored
+                if isinstance(item, dict)
+            ]
+        return {
+            "at": row["ts"],
+            "age_s": _age_seconds(row["ts"], now),
+            "pr_url": row["pr_url"],
+            "ci": row["ci"],
+            "checks": checks,
+            "pr_state": row["pr_state"],
+            "head_matches": None if row["head_matches"] is None else bool(row["head_matches"]),
+            "expected_head_sha": row["expected_head_sha"],
+            "current_head_sha": row["current_head_sha"],
+            "base_behind_main": None
+            if row["base_behind_main"] is None
+            else bool(row["base_behind_main"]),
+            "mergeable": row["mergeable"],
+            "merge_state_status": row["merge_state_status"],
+            "error_code": row["error_code"],
+        }
+
+    def _latest_progress_note(
+        self, connection: Connection, task_id: str | None
+    ) -> tuple[str | None, str | None]:
+        """The newest `report_progress` note on the current task, still unescaped.
+
+        Only progress parts count: a question, reply or result is not a note,
+        and its text stays out of `status` (poc-spec §5 rails).
+        """
+
+        if not task_id:
+            return None, None
+        for row in connection.execute(
+            "SELECT ts, parts_json FROM message WHERE task_id = ? AND direction = 'to_alice'"
+            " ORDER BY id DESC",
+            (task_id,),
+        ):
+            try:
+                parts = json.loads(row["parts_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                metadata = _normalize_part(part).get("metadata") or {}
+                if metadata.get(MetaKeys.KIND) == "progress":
+                    return str(row["ts"]), part["text"]
+        return None, None
+
+    def _session_log_path(self, name: str) -> str | None:
+        """The agent's harness session log in the hub's session directory, if any.
+
+        The launcher writes `sessions/<agent>.jsonl`, keeping an earlier
+        harness's log beside it as `sessions/<agent>.<n>.jsonl`; the current
+        log wins and the newest numbered one is the fallback.
+        """
+
+        directory = self._state_dir() / "sessions"
+        try:
+            current = directory / f"{name}.jsonl"
+            if current.is_file():
+                return str(current)
+            numbered = [
+                path
+                for path in directory.glob(f"{name}.*.jsonl")
+                if re.fullmatch(r"[0-9]+", path.name[len(name) + 1 : -len(".jsonl")])
+            ]
+            if not numbered:
+                return None
+            newest = max(numbered, key=lambda path: path.stat().st_mtime_ns)
+            return str(newest)
+        except OSError:
+            return None
 
     def snapshot(self) -> dict[str, Any]:
         """The operator's before-snapshot for a manual resume (#146); a pure read.
@@ -4588,6 +4853,8 @@ class HubStore:
             "threshold_s": threshold.total_seconds(),
             "silence_s": round(silence.total_seconds(), 1),
             "last_call": None if record is None else record.last_call_kind,
+            # Additive for the operator activity line (#653).
+            "last_call_at": None if last_call is None else to_iso(last_call),
             "last_call_age_s": None if last_call is None else _age_seconds(to_iso(last_call), now),
             "holding": None if hold is None else hold.kind,
             "hold_age_s": None
