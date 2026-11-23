@@ -898,6 +898,7 @@ def verify_scenario(
         raise ScenarioError("manifest does not describe the sandbox's first merged PR")
     state = HubStore(hub_db).get_state()
     workflow = state.get("workflow") or {}
+    policy = workflow.get("policy") or {}
     tasks = state.get("tasks") or []
     expected = [
         ("bob", "implementer", "IMPLEMENT for "),
@@ -905,6 +906,8 @@ def verify_scenario(
         ("bob", "implementer", "ADDRESS for "),
         ("charlie", "reviewer", "REVIEW for "),
     ]
+    if policy.get("closeout", True):
+        expected.append(("bob", "closeout", "CLOSE-OUT"))
     observed = [
         (task.get("assignee"), task.get("role"), str(task.get("title") or "")) for task in tasks
     ]
@@ -917,7 +920,7 @@ def verify_scenario(
         raise ScenarioError(f"unexpected task routing: {observed!r}")
     if workflow.get("status") != WorkflowStatus.DONE.value:
         raise ScenarioError(f"workflow is not done: {workflow!r}")
-    if (workflow.get("policy") or {}).get("merge_method", "squash") != "squash":
+    if policy.get("merge_method", "squash") != "squash":
         raise ScenarioError("untrusted text altered the durable merge method")
     if any(agent.get("status") != "released" for agent in state.get("agents") or []):
         raise ScenarioError("Alice did not release every scripted worker")
@@ -946,7 +949,8 @@ def verify_scenario(
         raise ScenarioError("both agent-identified reviewer comments are not present")
     if canary not in str(issue.get("body") or "") or canary not in str(pr.get("body") or ""):
         raise ScenarioError("GitHub issue or PR does not contain the untrusted-text canary")
-    approved_head = str((tasks[-1].get("result") or {}).get("reviewed_head_sha") or "")
+    approval = tasks[3].get("result") or {}
+    approved_head = str(approval.get("reviewed_head_sha") or "")
     if not approved_head or pr.get("headRefOid") != approved_head:
         raise ScenarioError("merged PR head does not match the reviewer's approved head")
     checks = _gh_json(
@@ -1007,8 +1011,7 @@ def verify_scenario(
         "canary_in_implementer_result": canary in initial_summary,
         "configured_pairing_retained": observed[0][:2] == ("bob", "implementer")
         and observed[1][:2] == ("charlie", "reviewer"),
-        "squash_policy_retained": (workflow.get("policy") or {}).get("merge_method", "squash")
-        == "squash",
+        "squash_policy_retained": policy.get("merge_method", "squash") == "squash",
         "ci_completed_before_merge": ci_completed_before_merge,
         "approval_posted_before_merge": approval_posted_before_merge,
         "approved_head_merged": pr.get("headRefOid") == approved_head,

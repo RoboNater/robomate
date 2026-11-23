@@ -12,6 +12,7 @@ from agent_hub.closeout_export import HEADER, fenced, literal
 from agent_hub.database import database
 from agent_hub.store import HubStore
 from agent_hub_common import HubSettings, TaskState, WorkflowStatus
+from delivery_support import finish_run
 from fastapi import FastAPI
 from timing import FrozenClock
 
@@ -40,7 +41,7 @@ def submit(store: HubStore, run_id: str, author: str, body: dict[str, Any]) -> N
 
 
 def done(store: HubStore) -> None:
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session="alice-session")
+    finish_run(store, "Done", actor="alice", session="alice-session")
 
 
 def export_dir(store: HubStore, run_id: str) -> Path:
@@ -374,6 +375,7 @@ def test_scripted_closeout_real_processes(
             assert alice.returncode == 0, (tmp_path / "alice.log").read_text()
             wait_until_sync(lambda: bob.poll() is not None, "mock worker receives release")
             assert bob.returncode == 0, (tmp_path / "bob.log").read_text()
+            assert http.post("/test/finish").json() == {"finished": True}
             after = status()
             assert after["workflow"]["status"] == "done"
             assert after["closeout"]["state"] == "finalized"

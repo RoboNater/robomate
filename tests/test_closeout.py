@@ -26,6 +26,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 from conftest import BASE_URL, TOKEN
+from delivery_support import DeliveredForge, finish_run, seed_delivery
 from fastapi import FastAPI
 from pydantic import ValidationError
 from timing import LIVENESS_S, FrozenClock, wait_until
@@ -174,7 +175,11 @@ async def test_isolated_collection_scenario(
             else:
                 assert collected["missing"] == []
             # No report gate: done and release proceed even with the missing report.
-            await call(alice, "set_workflow_status", status="done", summary="Completed")
+            app.state.rpc.ops.gate = DeliveredForge()
+            seed_delivery(hub_store, closeout=False)
+            await call(
+                alice, "set_workflow_status", status="done", summary="Completed", run_id=run_id
+            )
             if not crash:
                 assert (await call(servers[0], "await_assignment", timeout_s=0))["release"]
             with pytest.raises(Exception, match="finalized|released|lost"):
@@ -305,7 +310,7 @@ def test_release_and_done_follow_final_report_without_a_wait(store: HubStore) ->
     assert store.pending_events() == 0
     assert store.lease_next_event() is None
     store.release_agent("bob")
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     state = store.get_state()
     assert state["workflow"]["status"] == "done"
     assert state["unacked_delivered"] == []
@@ -357,7 +362,7 @@ def test_submission_serializes_against_finalization(store: HubStore) -> None:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         future = pool.submit(submit)
-        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+        finish_run(store, "Done", actor="alice", session=None)
         outcome = future.result()
     result = store.get_closeout_reports(run_id)
     assert result["finalized"]
@@ -406,7 +411,7 @@ def test_unassigned_lost_participant_and_sequential_runs(store: HubStore) -> Non
         "charlie",
     }
     store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     before = store.get_closeout_reports(run_id)
     store.start_workflow("Next")
     next_run = prepare(store)
@@ -680,7 +685,7 @@ def test_early_release_records_missing_without_waiting(store: HubStore) -> None:
     )
     with pytest.raises(ConflictError, match="released"):
         store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", report())
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     assert store.get_closeout_reports(run_id)["finalized"]
 
 

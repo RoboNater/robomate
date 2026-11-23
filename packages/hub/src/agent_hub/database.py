@@ -23,6 +23,7 @@ from agent_hub_common import (
 )
 from agent_hub_common.startup import stage
 
+# v31 is #451's durable workflow PR, head and delivery evidence.
 # v30 is #450's stored closeout task context.
 # v29 is #423's durable workflow export completion marker.
 # v28 is #272's stall operator-question linkage and stall_action event kind.
@@ -53,7 +54,7 @@ from agent_hub_common.startup import stage
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 
 class DatabaseVersionError(RuntimeError):
@@ -140,6 +141,10 @@ CREATE TABLE IF NOT EXISTS workflow (
     branch TEXT,
     created TEXT NOT NULL,
     exported_at TEXT,
+    pr_url TEXT,
+    approved_sha TEXT,
+    delivery_merged_sha TEXT,
+    delivery_verified_at TEXT,
     FOREIGN KEY (statement_sha256) REFERENCES statement(sha256)
 );
 
@@ -468,6 +473,10 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
         for table in ("closeout_collection", "closeout_expected", "agent_closeout_report"):
             connection.execute(_canonical_tables()[table])
         _migrate_export_completion(connection, state_dir if state_dir is not None else path.parent)
+        workflow_columns = _columns(connection, "workflow")
+        for column in ("pr_url", "approved_sha", "delivery_merged_sha", "delivery_verified_at"):
+            if column not in workflow_columns:
+                connection.execute(f"ALTER TABLE workflow ADD COLUMN {column} TEXT")
 
     # v8 (#59). Outside the transaction above: the rebuild needs its own
     # connection, because `PRAGMA foreign_keys` is a no-op inside one. The

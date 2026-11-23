@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import re
 import subprocess
 import tempfile
 from collections import deque
@@ -78,7 +79,7 @@ from .activity import (
     ActivityTracker,
 )
 from .database import database
-from .merge_gate import GateReport, PrState
+from .merge_gate import CiStatus, GateReport, Mergeable, PrState
 from .signals import EVENT_KEY, Signals, context_key, task_key
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ CLOCK_JUMP_TOLERANCE_S = 5.0
 
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED)
 _TERMINAL_REPLY = object()
+_CURRENT_WORKFLOW = object()
 OPEN_STATES = (TaskState.SUBMITTED, TaskState.WORKING, TaskState.INPUT_REQUIRED)
 # A hub runs one live workflow at a time; `queued` waits behind it (M2 Step 3).
 LIVE_STATUSES = (WorkflowStatus.ACTIVE, WorkflowStatus.PAUSED, WorkflowStatus.ESCALATED)
@@ -596,6 +598,121 @@ def _result_transcript_part(summary: str, status: TaskState) -> dict[str, Any]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class DeliveryBinding:
+    pr_url: str | None = None
+    approved_sha: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DoneTarget:
+    workflow_id: str
+    run_id: str
+    pr_url: str
+    approved_sha: str
+    policy: WorkflowPolicy
+
+
+def _pr_key(url: str) -> str:
+    # Both forge gates accept an explicit default HTTPS port and normalize
+    # project spelling. The gate itself still validates the URL against origin.
+    scheme, separator, rest = url.strip().rstrip("/").partition("://")
+    authority, slash, path = rest.partition("/")
+    return (scheme + separator + authority.removesuffix(":443") + slash + path).casefold()
+
+
+def _binding_after_result(
+    binding: DeliveryBinding,
+    role: str,
+    body: dict[str, Any],
+    state: str,
+    assigned_head: str | None,
+) -> DeliveryBinding:
+    result: ImplementerResult | ReviewerResult | RebaseResult
+    try:
+        if role == TaskRole.IMPLEMENTER:
+            result = ImplementerResult.model_validate(body)
+        elif role == TaskRole.REVIEWER:
+            result = ReviewerResult.model_validate(body)
+        elif role == TaskRole.REBASE:
+            result = RebaseResult.model_validate(body)
+        else:
+            return binding
+    except ValidationError:
+        # Raw status results and malformed historical results carry no binding.
+        return binding
+    url = _pr_key(result.pr_url) if result.pr_url else None
+    if binding.pr_url and url and _pr_key(binding.pr_url) != url:
+        raise ConflictError(
+            f"workflow is already bound to {binding.pr_url}; "
+            f"result reports a different PR/MR ({url}). Use one PR/MR per run."
+        )
+    if state != TaskState.COMPLETED:
+        return binding
+    url = binding.pr_url or url
+    approved = binding.approved_sha
+    if isinstance(result, ReviewerResult):
+        reviewed = (result.reviewed_head_sha or "").lower()
+        if result.verdict == ReviewerVerdict.APPROVED and reviewed == assigned_head:
+            approved = reviewed
+        elif result.verdict == ReviewerVerdict.CHANGES_REQUESTED and approved == assigned_head:
+            approved = None
+    else:
+        assert result.head_sha is not None
+        head = result.head_sha.lower()
+        if isinstance(result, RebaseResult):
+            carries_approval = (
+                approved is not None and approved == assigned_head and not result.conflict_files
+            )
+            approved = head if carries_approval else None
+        elif approved != head:
+            approved = None
+    return DeliveryBinding(url, approved)
+
+
+def _delivery_binding(connection: Connection, workflow: Row) -> DeliveryBinding:
+    binding = DeliveryBinding(workflow["pr_url"], workflow["approved_sha"])
+    if binding.pr_url is not None:
+        return binding
+    # A live run can span a schema upgrade. Replay typed evidence in completion
+    # order and fail closed if historical results identify different PRs.
+    rows = connection.execute(
+        "SELECT task.role, task.state, task.pr_head_sha, task.result_json FROM task "
+        "LEFT JOIN event ON event.kind IN ('task_completed', 'task_failed') "
+        "AND json_extract(event.payload_json, '$.task_id') = task.id "
+        "WHERE task.workflow_id = ? AND task.result_json IS NOT NULL "
+        "ORDER BY event.id, task.rowid",
+        (workflow["id"],),
+    )
+    for row in rows:
+        binding = _binding_after_result(
+            binding,
+            row["role"],
+            _json_object(row["result_json"]) or {},
+            row["state"],
+            row["pr_head_sha"],
+        )
+    return binding
+
+
+def _recorded_merge(connection: Connection, workflow_id: str, pr_url: str | None) -> str | None:
+    key = _pr_key(pr_url) if pr_url else None
+    readings = connection.execute(
+        "SELECT pr_url, merged_sha FROM gate_reading WHERE workflow_id = ?"
+        " AND pr_state = 'merged' AND merged_sha IS NOT NULL AND error_code IS NULL"
+        " ORDER BY id DESC",
+        (workflow_id,),
+    )
+    return next(
+        (
+            str(row["merged_sha"])
+            for row in readings
+            if key is None or _pr_key(row["pr_url"]) == key
+        ),
+        None,
+    )
+
+
 def _closeout_context(
     store: HubStore, connection: Connection, workflow_id: str, instructions: str
 ) -> dict[str, Any]:
@@ -680,21 +797,15 @@ def _closeout_context(
         except ValidationError:
             # Legacy raw results are readable, but cannot establish typed coverage.
             continue
-    gate = connection.execute(
-        "SELECT pr_url FROM gate_reading WHERE workflow_id = ? AND error_code IS NULL "
-        "AND pr_state IS NOT NULL "
-        "ORDER BY id DESC LIMIT 1",
-        (workflow_id,),
-    ).fetchone()
-    if gate is not None:
-        pr_url = gate["pr_url"]
+    workflow = connection.execute("SELECT * FROM workflow WHERE id = ?", (workflow_id,)).fetchone()
+    binding = _delivery_binding(connection, workflow)
     return CloseoutContext.model_validate(
         {
             "pending_findings": list(pending.values()),
             "steps": [{"index": i, "text": step} for i, step in enumerate(config.closeout_steps)],
             "nits_issue": config.nits_issue,
             "followup_label": config.followup_label,
-            "pr_url": pr_url,
+            "pr_url": binding.pr_url or pr_url,
             "original_instructions": instructions,
         }
     ).model_dump(mode="json")
@@ -1218,46 +1329,38 @@ class HubStore:
     ) -> dict[str, Any | None]:
         """PR/MR facts from typed task results and forge-backed gate evidence."""
 
-        pr_url: str | None = None
-        approved_sha: str | None = None
+        workflow = connection.execute(
+            "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
+        ).fetchone()
+        pr_url: str | None = workflow["pr_url"]
+        approved_sha: str | None = workflow["approved_sha"]
+        if workflow["delivery_verified_at"] is not None:
+            return {
+                "pr_url": pr_url,
+                "approved_sha": approved_sha,
+                "merged_sha": workflow["delivery_merged_sha"],
+            }
         # Durable insertion order (#209): wall-clock `created` can step backwards.
-        for row in connection.execute(
-            "SELECT result_json FROM task WHERE workflow_id = ?"
-            " AND result_json IS NOT NULL ORDER BY rowid",
-            (workflow_id,),
-        ).fetchall():
-            result = _json_object(row["result_json"]) or {}
-            if isinstance(result.get("pr_url"), str) and result["pr_url"]:
-                pr_url = result["pr_url"]
-            # Reviewer approval binds the approved head.
-            if result.get("verdict") == "approved" and isinstance(
-                result.get("reviewed_head_sha"), str
+        if pr_url is None:
+            for row in connection.execute(
+                "SELECT result_json FROM task WHERE workflow_id = ?"
+                " AND result_json IS NOT NULL ORDER BY rowid",
+                (workflow_id,),
             ):
-                approved_sha = result["reviewed_head_sha"]
+                result = _json_object(row["result_json"]) or {}
+                if isinstance(result.get("pr_url"), str) and result["pr_url"]:
+                    pr_url = result["pr_url"]
+                if result.get("verdict") == "approved" and isinstance(
+                    result.get("reviewed_head_sha"), str
+                ):
+                    approved_sha = result["reviewed_head_sha"]
         # Bind evidence to this run AND its reported PR, never another PR's
         # reading or a task's head SHA. Errors/open readings do not erase a
         # successful post-merge observation (#281).
-        reported_url = pr_url.strip().rstrip("/").casefold() if pr_url else None
-        merged = next(
-            (
-                row
-                for row in connection.execute(
-                    "SELECT pr_url, merged_sha FROM gate_reading WHERE workflow_id = ?"
-                    " AND pr_state = 'merged' AND merged_sha IS NOT NULL AND error_code IS NULL"
-                    " ORDER BY id DESC",
-                    (workflow_id,),
-                )
-                # Task results retain the supplied URL; gates trim whitespace
-                # and, on GitHub, a trailing slash. Both forges route project
-                # names case-insensitively. Compare equivalent spellings.
-                if row["pr_url"].strip().rstrip("/").casefold() == reported_url
-            ),
-            None,
-        )
         return {
             "pr_url": pr_url,
             "approved_sha": approved_sha,
-            "merged_sha": str(merged["merged_sha"]) if merged else None,
+            "merged_sha": _recorded_merge(connection, workflow_id, pr_url) if pr_url else None,
         }
 
     def _previous_run_summary(
@@ -1373,6 +1476,7 @@ class HubStore:
             "statement_source": statement_source,
             "statement_size": statement_size,
             "policy": policy,
+            "deliver": policy.get("deliver", "merge"),
             "hub": {
                 "hub_id": hub_info.get("hub_id"),
                 "name": hub_info.get("name"),
@@ -1563,8 +1667,8 @@ class HubStore:
                     " ORDER BY rowid"
                 )
             ]
-            # Bind a review or rebase to the PR whose reported head matches
-            # its assigned head. A workflow may have reported several PRs.
+            # Show the workflow's PR for a review or rebase at a known head.
+            # Legacy runs can have several PR URLs in their result history.
             # Durable insertion order (#209): `created` can step backwards.
             if tasks and workflow is not None:
                 results = connection.execute(
@@ -1579,7 +1683,9 @@ class HubStore:
                         for key in ("head_sha", "reviewed_head_sha"):
                             head = result.get(key)
                             if isinstance(head, str):
-                                pr_by_head.setdefault(head.lower(), result["pr_url"])
+                                pr_by_head.setdefault(
+                                    head.lower(), workflow["pr_url"] or result["pr_url"]
+                                )
                 for task in tasks:
                     if task["role"] in ("reviewer", "rebase") and task["head_sha"]:
                         task["pr_url"] = pr_by_head.get(task["head_sha"].lower())
@@ -1692,8 +1798,109 @@ class HubStore:
             "queued_events": queued,
         }
 
+    def _done_target(self, connection: Connection, run_id: str) -> DoneTarget | None:
+        row = connection.execute("SELECT * FROM workflow WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFoundError(f"unknown run {run_id}")
+        if row["status"] == WorkflowStatus.DONE:
+            return None
+        if row["status"] not in LIVE_STATUS_VALUES:
+            raise ConflictError(f"cannot finish run {run_id} while it is {row['status']}")
+        workflow_id = str(row["id"])
+        if row["status"] == WorkflowStatus.ESCALATED and self._open_question_ids(
+            connection, workflow_id
+        ):
+            self._refuse_while_escalated(connection, workflow_id, "done")
+        binding = _delivery_binding(connection, row)
+        if not binding.pr_url or not binding.approved_sha:
+            raise ConflictError(
+                f"cannot finish run {run_id} without a bound PR/MR and an approved head; "
+                "record the typed work and review results first"
+            )
+        policy = WorkflowPolicy.model_validate_json(row["policy_json"])
+        if policy.closeout:
+            results = connection.execute(
+                "SELECT result_json FROM task WHERE workflow_id = ? AND role = ? AND state = ?",
+                (workflow_id, TaskRole.CLOSEOUT, TaskState.COMPLETED),
+            )
+            for result in results:
+                try:
+                    if (
+                        CloseoutResult.model_validate_json(result["result_json"]).outcome
+                        == "completed"
+                    ):
+                        break
+                except ValidationError:
+                    continue
+            else:
+                raise ConflictError(
+                    f"run {run_id} requires a completed typed CloseoutResult; "
+                    'assign role="closeout" and wait for its result'
+                )
+        return DoneTarget(workflow_id, run_id, binding.pr_url, binding.approved_sha, policy)
+
+    def prepare_done(self, run_id: str) -> DoneTarget | None:
+        """Snapshot the run's delivery requirements before awaiting the forge."""
+        with database(self.path) as connection:
+            connection.execute("BEGIN")
+            return self._done_target(connection, run_id)
+
+    def _verify_delivery(
+        self, connection: Connection, target: DoneTarget, report: GateReport
+    ) -> None:
+        if (
+            _pr_key(report.pr_url) != _pr_key(target.pr_url)
+            or not report.head_matches
+            or report.expected_head_sha.lower() != target.approved_sha
+            or report.current_head_sha.lower() != target.approved_sha
+        ):
+            raise ConflictError(
+                "forge reading does not match the run's bound PR/MR and approved head"
+            )
+        merged_sha = None
+        if target.policy.deliver == "merge":
+            if report.pr_state != PrState.MERGED:
+                raise ConflictError(
+                    f"deliver=merge requires a merged PR/MR; found {report.pr_state}"
+                )
+            if not report.merged_sha or not SHA_HEX_40_RE.fullmatch(report.merged_sha):
+                raise ConflictError("forge reported a merged PR/MR without its merge commit SHA")
+            merged_sha = report.merged_sha.lower()
+        else:
+            if report.pr_state != PrState.OPEN:
+                raise ConflictError(f"deliver=pr requires an open PR/MR; found {report.pr_state}")
+            if report.ci != CiStatus.PASS and not (
+                report.ci == CiStatus.NO_WORKFLOWS and target.policy.allow_no_ci is True
+            ):
+                raise ConflictError(f"deliver=pr requires passing CI; found {report.ci}")
+            if report.base_behind_main or report.mergeable != Mergeable.CLEAN:
+                raise ConflictError(
+                    "deliver=pr requires an up-to-date base and a clean merge gate; "
+                    "refresh the PR/MR and its approval"
+                )
+        connection.execute(
+            "UPDATE workflow SET pr_url = ?, approved_sha = ?, delivery_merged_sha = ?, "
+            "delivery_verified_at = ? WHERE id = ?",
+            (report.pr_url, target.approved_sha, merged_sha, self._now_iso(), target.workflow_id),
+        )
+        self._insert_gate_reading(
+            connection,
+            target.workflow_id,
+            target.pr_url,
+            target.approved_sha,
+            report=report,
+            elapsed_s=report.elapsed_s,
+        )
+
     def set_workflow_status(
-        self, status: WorkflowStatus, summary: str, *, actor: str, session: str | None
+        self,
+        status: WorkflowStatus,
+        summary: str,
+        *,
+        actor: str,
+        session: str | None,
+        done: DoneTarget | None = None,
+        report: GateReport | None = None,
     ) -> None:
         """Persist status and its explanation atomically in the audit log.
 
@@ -1717,18 +1924,26 @@ class HubStore:
         activated_row: Row | None = None
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            try:
-                workflow_id = self._require_workflow(connection, "set_workflow_status")
-            except ConflictError:
-                # No live run: either a replayed `done` (no-op when the most
-                # recent run already has that status) or a reopen of the most
-                # recent run (e.g. DONE -> ACTIVE in activity tests).
-                recent = self._most_recent_row(connection)
-                if recent is None:
-                    raise
-                if recent["status"] == status.value:
+            if status == WorkflowStatus.DONE:
+                if done is None or report is None:
+                    raise ConflictError("done requires a run ID and a fresh forge gate reading")
+                current = self._done_target(connection, done.run_id)
+                if current is None:
                     return
-                workflow_id = str(recent["id"])
+                if current != done:
+                    raise ConflictError(
+                        "run delivery binding changed during the forge read; retry done"
+                    )
+                workflow_id = done.workflow_id
+                self._verify_delivery(connection, done, report)
+            else:
+                row = self._require_live_or_recent(connection)
+                if row is None:
+                    raise ConflictError(
+                        "workflow is not initialized; call initialize_workflow or start_workflow "
+                        "before set_workflow_status"
+                    )
+                workflow_id = str(row["id"])
             row = connection.execute(
                 "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
             ).fetchone()
@@ -1870,13 +2085,16 @@ class HubStore:
                 if agent_row.status == AgentStatus.RELEASED:
                     self.signals.notify(context_key(agent_row.context_id))
 
-    def refuse_while_escalated(self, operation: str) -> None:
-        """Refuse an operation that must wait for the operator (#132)."""
+    def refuse_while_escalated(self, operation: str) -> str | None:
+        """Check operator questions and return the run for gate attribution."""
 
         with database(self.path) as connection:
-            row = self._live_row(connection)
+            row = self._require_live_or_recent(connection)
             if row is not None:
-                self._refuse_while_escalated(connection, str(row["id"]), operation)
+                workflow_id = str(row["id"])
+                self._refuse_while_escalated(connection, workflow_id, operation)
+                return workflow_id
+            return None
 
     def _refuse_while_escalated(
         self, connection: Connection, workflow_id: str, operation: str
@@ -2183,6 +2401,7 @@ class HubStore:
         report: GateReport | None = None,
         error_code: int | None = None,
         elapsed_s: float,
+        workflow_id: str | None | object = _CURRENT_WORKFLOW,
     ) -> int:
         """Append one gate result, including failures, without external error text.
 
@@ -2190,6 +2409,32 @@ class HubStore:
         then NULL. Check names are external labels, capped here and sanitized by
         display consumers. Links are not needed to reconstruct the CI reading.
         """
+        with database(self.path) as connection:
+            if workflow_id is _CURRENT_WORKFLOW:
+                workflow = self._require_live_or_recent(connection)
+                workflow_id = workflow["id"] if workflow else None
+            assert workflow_id is None or isinstance(workflow_id, str)
+            return self._insert_gate_reading(
+                connection,
+                workflow_id,
+                pr_url,
+                expected_head_sha,
+                report=report,
+                error_code=error_code,
+                elapsed_s=elapsed_s,
+            )
+
+    def _insert_gate_reading(
+        self,
+        connection: Connection,
+        workflow_id: str | None,
+        pr_url: str,
+        expected_head_sha: str,
+        *,
+        report: GateReport | None = None,
+        error_code: int | None = None,
+        elapsed_s: float,
+    ) -> int:
         checks = (
             []
             if report is None
@@ -2198,36 +2443,34 @@ class HubStore:
                 for check in report.checks
             ]
         )
-        with database(self.path) as connection:
-            workflow = self._require_live_or_recent(connection)
-            cursor = connection.execute(
-                "INSERT INTO gate_reading (ts, workflow_id, pr_url, expected_head_sha,"
-                " current_head_sha, pr_state, head_matches, ci, mergeable, merge_state_status,"
-                " base_ref, base_sha, main_sha, base_behind_main, elapsed_s, checks_json,"
-                " error_code, merged_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                " ?, ?)",
-                (
-                    self._now_iso(),
-                    workflow["id"] if workflow else None,
-                    report.pr_url if report else pr_url,
-                    report.expected_head_sha if report else expected_head_sha,
-                    report.current_head_sha if report else None,
-                    report.pr_state.value if report else None,
-                    report.head_matches if report else None,
-                    report.ci.value if report else None,
-                    report.mergeable.value if report else None,
-                    report.merge_state_status if report else None,
-                    report.base_ref if report else None,
-                    report.base_sha if report else None,
-                    report.main_sha if report else None,
-                    report.base_behind_main if report else None,
-                    elapsed_s,
-                    json.dumps(checks),
-                    error_code,
-                    report.merged_sha if report and report.pr_state is PrState.MERGED else None,
-                ),
-            )
-            return int(cursor.lastrowid or 0)
+        cursor = connection.execute(
+            "INSERT INTO gate_reading (ts, workflow_id, pr_url, expected_head_sha,"
+            " current_head_sha, pr_state, head_matches, ci, mergeable, merge_state_status,"
+            " base_ref, base_sha, main_sha, base_behind_main, elapsed_s, checks_json,"
+            " error_code, merged_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+            " ?, ?)",
+            (
+                self._now_iso(),
+                workflow_id,
+                report.pr_url if report else pr_url,
+                report.expected_head_sha if report else expected_head_sha,
+                report.current_head_sha if report else None,
+                report.pr_state.value if report else None,
+                report.head_matches if report else None,
+                report.ci.value if report else None,
+                report.mergeable.value if report else None,
+                report.merge_state_status if report else None,
+                report.base_ref if report else None,
+                report.base_sha if report else None,
+                report.main_sha if report else None,
+                report.base_behind_main if report else None,
+                elapsed_s,
+                json.dumps(checks),
+                error_code,
+                report.merged_sha if report and report.pr_state is PrState.MERGED else None,
+            ),
+        )
+        return int(cursor.lastrowid or 0)
 
     def set_task_state(self, task_id: str, state: TaskState, note: str) -> TaskRecord:
         """Cancel or fail open work; terminal work requires a new assignment."""
@@ -2807,6 +3050,20 @@ class HubStore:
                     )
                     superseded_task_id = task.id
             self._refuse_while_escalated(connection, workflow_id, "assign_task")
+            if role != TaskRole.CLOSEOUT and re.match(
+                r"CLOSE-OUT\b", title.lstrip(), re.IGNORECASE
+            ):
+                raise ConflictError('a CLOSE-OUT task requires role="closeout"')
+            if role == TaskRole.IMPLEMENTER:
+                workflow = connection.execute(
+                    "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
+                ).fetchone()
+                binding = _delivery_binding(connection, workflow)
+                merged = _recorded_merge(connection, workflow_id, binding.pr_url)
+                if merged:
+                    raise ConflictError(
+                        f'run PR/MR already merged as {merged}; use role="closeout" for close-out'
+                    )
             record = self._require_agent(connection, agent)
             if not standing_role_accepts_task(record.standing_role, role):
                 raise ValueError(
@@ -3283,6 +3540,21 @@ class HubStore:
                 parsed_closeout = CloseoutResult.model_validate(payload)
                 if parsed_closeout.outcome == "completed":
                     _validate_closeout(parsed_closeout, task.closeout_context)
+            if not isinstance(actual_result, TaskState) and task.workflow_id is not None:
+                workflow = connection.execute(
+                    "SELECT * FROM workflow WHERE id = ?", (task.workflow_id,)
+                ).fetchone()
+                binding = _delivery_binding(connection, workflow)
+                updated = _binding_after_result(
+                    binding, task.role, payload, terminal_status, task.pr_head_sha
+                )
+                if updated != DeliveryBinding(workflow["pr_url"], workflow["approved_sha"]):
+                    if workflow["delivery_verified_at"] is not None:
+                        raise ConflictError("a delivered run's PR/MR and approved head are fixed")
+                    connection.execute(
+                        "UPDATE workflow SET pr_url = ?, approved_sha = ? WHERE id = ?",
+                        (updated.pr_url, updated.approved_sha, task.workflow_id),
+                    )
             record = self._require_agent(connection, agent)
             self._add_message(
                 connection,

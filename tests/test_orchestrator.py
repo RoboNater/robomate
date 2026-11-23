@@ -23,10 +23,10 @@ from agent_hub_common import (
     AgentProfile,
     EventKind,
     TaskState,
-    WorkflowStatus,
 )
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from conftest import SESSION, rpc
+from delivery_support import finish_run
 from fastapi import FastAPI
 from mcp import ClientSession
 from mcp.shared.memory import create_connected_server_and_client_session
@@ -466,7 +466,7 @@ def test_done_settles_an_unacknowledged_delivery(store: HubStore) -> None:
     assert leased.delivery_id is not None
     assert [entry["id"] for entry in store.get_state()["unacked_delivered"]] == [queued.id]
 
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
 
     assert store.get_state()["unacked_delivered"] == []
     assert store.lease_next_event() is None

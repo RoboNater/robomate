@@ -351,7 +351,8 @@ def test_an_issue_statement_carries_the_counter_rules_and_the_account(tmp_path: 
     text = START.compose_statement(values, origin="git@github.com:octo/repo.git", forge="github")
 
     assert text.startswith(
-        "Address issue `octo/repo#42`, merge its pull request, and close out. "
+        "Address issue `octo/repo#42` and deliver its pull request according to the run policy "
+        "(merge by default). Then close out. "
         "The run's reservations issue is (octo/repo#409); read it only if a counter is needed. "
     )
     assert START.COUNTER_CLOSE_OUT in text
@@ -364,7 +365,9 @@ def test_a_work_file_statement_keeps_the_work_and_names_no_reservations(tmp_path
 
     text = START.compose_statement(values, origin="https://gitlab.example/g/p.git", forge="gitlab")
 
-    assert text.startswith("Rewrite the guide.\n\nKeep it short.\n\nWhen done, close out. ")
+    assert text.startswith(
+        "Rewrite the guide.\n\nKeep it short.\n\nWhen the work is ready, deliver its merge request"
+    )
     assert START.NO_RESERVATIONS in text
     assert "`the-bot`" in text
 
@@ -459,20 +462,31 @@ def smoke(tmp_path: Path) -> dict[str, Any]:
         "MOCK_HARNESS_DEADLINE_S": str(4 * LIVENESS_S),
         "PYTHONIOENCODING": "utf-8",
     }
-    # Child launchers are real processes, but sandbox availability is not under
-    # test here and CI may itself run inside a sandbox. Stub only that probe.
+    # Child launchers are real processes, with a local origin. Stub forge delivery
+    # for that origin and sandbox availability on the CI host.
     hooks = tmp_path / "hooks"
     hooks.mkdir()
     write(
         hooks / "sitecustomize.py",
-        "import subprocess\n"
+        "import os, subprocess, sys\n"
         "_run = subprocess.run\n"
         "def run(args, *a, **kw):\n"
         "    if isinstance(args, list) and args and str(args[0]).endswith("
         "'verify-sandboxes.sh'):\n"
         "        return subprocess.CompletedProcess(args, 0, '', '')\n"
         "    return _run(args, *a, **kw)\n"
-        "subprocess.run = run\n",
+        "subprocess.run = run\n"
+        "if sys.argv[1:2] == ['up']:\n"
+        "    from agent_hub import app\n"
+        "    from agent_hub.merge_gate import CiStatus, GateReport, Mergeable, PrState\n"
+        "    class ScriptedForge:\n"
+        "        async def check(self, url, head):\n"
+        "            pr_only = os.environ.get('MOCK_DELIVER_PR')\n"
+        "            state = PrState.OPEN if pr_only else PrState.MERGED\n"
+        "            merged = None if state == PrState.OPEN else 'a' * 40\n"
+        "            return GateReport(url, state, head, head, True, CiStatus.PASS, []"
+        ", 'main', head, head, False, Mergeable.CLEAN, 'clean', merged_sha=merged)\n"
+        "    app.select_gate = lambda _: ScriptedForge()\n",
     )
     env["PYTHONPATH"] = str(hooks) + os.pathsep + env.get("PYTHONPATH", "")
     codex_home = tmp_path / "codex-home"
@@ -504,13 +518,17 @@ def agent_rows(database: Path) -> dict[str, dict[str, Any]]:
         connection.close()
 
 
-@pytest.mark.parametrize("selection", ["issue", "work_file"])
+@pytest.mark.parametrize("selection", ["issue", "work_file", "pr"])
 def test_one_start_runs_the_team_headless_to_a_done_run(
     smoke: dict[str, Any], selection: str
 ) -> None:
     root: Path = smoke["root"]
     work = write(root / "statement.md", "Scripted work: change nothing.\n")
-    select = ["--issue", "7"] if selection == "issue" else ["--work-file", str(work)]
+    select = ["--work-file", str(work)] if selection == "work_file" else ["--issue", "7"]
+    environment = smoke["env"].copy()
+    if selection == "pr":
+        select += ["--policy", "deliver=pr"]
+        environment["MOCK_DELIVER_PR"] = "1"
     if selection == "work_file":
         # A clone that already exists is reused. Its repository layer lowers
         # stall_after_min, which makes this run's stall_action_after_min valid (r1-1).
@@ -525,7 +543,7 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
         [sys.executable, str(ROOT / "scripts/start-run.py"), "--config", str(smoke["config"]),
          *select],
         cwd=root,
-        env=smoke["env"],
+        env=environment,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -642,14 +660,16 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
         connection.close()
     assert status_value == "done"
     expected_start = (
-        "Address issue `#7`, merge its pull request, and close out."
-        if selection == "issue"
-        else "Scripted work: change nothing.\n\nWhen done, close out."
+        "Address issue `#7` and deliver its pull request according to the run policy "
+        "(merge by default)."
+        if selection != "work_file"
+        else "Scripted work: change nothing.\n\nWhen the work is ready, deliver its pull request"
     )
     assert goal.startswith(expected_start)
     assert goal.endswith("Forge comment identity account: `example-bot`.")
     stored = json.loads(policy)
     assert stored["max_review_rounds"] == 2
+    assert stored["deliver"] == ("pr" if selection == "pr" else "merge")
     if selection == "work_file":
         assert "reusing checkout" in done.stdout
         assert (stored["stall_after_min"], stored["stall_action_after_min"]) == (5, 10)

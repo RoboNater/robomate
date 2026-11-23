@@ -130,6 +130,7 @@ POLICY_COMMENT = """\
 # Workflow policy for this run, over the hub, repository and user
 # configuration layers (robomate submit --policy k=v). For example:
 # merge_method = "squash"
+# deliver = "merge"  # "pr" leaves the approved change request open
 # max_review_rounds = 3
 # allow_no_ci = "auto"
 # reviewer_harness_differs = true
@@ -558,7 +559,11 @@ def compose_statement(values: Mapping[str, Any], *, origin: str, forge: str) -> 
     if values["issue"]:
         body = f"{_render_issue_statement(int(values['issue']), origin, forge)} {rules}"
     else:
-        body = f"{read_work(Path(values['work_file']))}\n\nWhen done, close out. {rules}"
+        change_term = "merge request" if forge == "gitlab" else "pull request"
+        body = (
+            f"{read_work(Path(values['work_file']))}\n\nWhen the work is ready, deliver its "
+            f"{change_term} according to the run policy (merge by default). Then close out. {rules}"
+        )
     return f"{body}\n\nForge comment identity account: `{values['account']}`."
 
 

@@ -36,8 +36,15 @@ from agent_hub.signals import EVENT_KEY
 from agent_hub.store import DuplicateAgentError, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
+from delivery_support import DeliveredForge, seed_delivery
 from fastapi import FastAPI
 from timing import LIVENESS_S, wait_until
+
+
+def prepare_rpc_delivery(app: FastAPI, store: HubStore) -> str:
+    cast(RpcDispatcher, app.state.rpc).ops.gate = DeliveredForge()
+    return seed_delivery(store)
+
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -174,7 +181,13 @@ async def test_a_bridge_heartbeating_after_done_reads_as_finished_not_active(
         "default_branch": "main",
     }
     await call(client, "initialize_workflow", goal="Ship it")
-    await call(client, "set_workflow_status", status="done", summary="Merged")
+    await call(
+        client,
+        "set_workflow_status",
+        status="done",
+        summary="Merged",
+        run_id=prepare_rpc_delivery(app, hub_store),
+    )
     for _ in range(3):
         assert (await call(client, "hub.heartbeat"))["result"] == {"ok": True}
     result = (await call(client, "hub.status"))["result"]
@@ -215,16 +228,15 @@ async def test_hub_status_shows_known_review_pr_and_head(
             "head_sha": HEAD,
         },
     )
-    other_pr = "https://github.com/octo/sandbox/pull/8"
     other_head = "b" * 40
-    second = hub_store.assign_task("dave", "implementer", "Build other", "build")
+    second = hub_store.assign_task("dave", "implementer", "Update PR", "build")
     hub_store.submit_result(
         second.id,
         "dave",
         {
             "outcome": "completed",
             "summary": "done",
-            "pr_url": other_pr,
+            "pr_url": PR,
             "head_sha": other_head,
         },
     )
@@ -237,7 +249,7 @@ async def test_hub_status_shows_known_review_pr_and_head(
         {
             "verdict": "changes_requested",
             "summary": "needs changes",
-            "pr_url": other_pr,
+            "pr_url": PR,
             "reviewed_head_sha": other_head,
         },
     )
@@ -1198,11 +1210,16 @@ async def test_escalation_is_left_only_once_the_operator_has_answered(
     await call(client, "ask_user", question="Merge?")
     await call(client, "ask_user", question="And then?")
     for status in ("active", "done"):
-        body = await call(client, "set_workflow_status", status=status, summary="Go on")
+        params = {"run_id": hub_store.get_state()["run_id"]} if status == "done" else {}
+        body = await call(client, "set_workflow_status", status=status, summary="Go on", **params)
         assert error_of(body) == (
             CONFLICT,
-            "workflow is escalated with open operator questions 1, 2; "
-            "wait for their user_answered events before changing its status",
+            (
+                "done is refused while the workflow is escalated: operator questions 1, 2 are open"
+                if status == "done"
+                else "workflow is escalated with open operator questions 1, 2; "
+                "wait for their user_answered events before changing its status"
+            ),
         )
     for method, params in (("assign_task", assign), ("check_merge_gate", gate)):
         assert error_of(await call(client, method, **params)) == (
@@ -1440,7 +1457,7 @@ async def test_orchestrator_join_on_an_unknown_forge_hub_names_the_appendix_and_
 
 
 async def test_start_workflow_queues_and_second_starts_after_done(
-    client: httpx.AsyncClient, hub_store: HubStore
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     # The fixture already holds one live run; that is the first.
     first = (await call(client, "get_state"))["result"]["workflow"]
@@ -1453,7 +1470,13 @@ async def test_start_workflow_queues_and_second_starts_after_done(
     assert state["workflow"]["run_id"] == first["run_id"]
     assert len(state["queue"]) == 1 and state["queue"][0]["run_id"] == second["run_id"]
     assert state["run_id"] == first["run_id"]
-    await call(client, "set_workflow_status", status="done", summary="Done")
+    await call(
+        client,
+        "set_workflow_status",
+        status="done",
+        summary="Done",
+        run_id=prepare_rpc_delivery(app, hub_store),
+    )
     after = (await call(client, "get_state"))["result"]
     assert after["workflow"]["run_id"] == second["run_id"]
     assert after["queue"] == []
@@ -1461,14 +1484,20 @@ async def test_start_workflow_queues_and_second_starts_after_done(
 
 
 async def test_initialize_workflow_confirms_active_and_starts_new_after_done(
-    client: httpx.AsyncClient, hub_store: HubStore
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     current = (await call(client, "get_state"))["result"]["workflow"]
     first = (await call(client, "initialize_workflow", goal=current["goal"]))["result"]
     assert first["id"] == current["id"]
     again = (await call(client, "initialize_workflow", goal=current["goal"]))["result"]
     assert again["id"] == first["id"] and again["run_id"] == first["run_id"]
-    await call(client, "set_workflow_status", status="done", summary="Done")
+    await call(
+        client,
+        "set_workflow_status",
+        status="done",
+        summary="Done",
+        run_id=prepare_rpc_delivery(app, hub_store),
+    )
     second = (await call(client, "initialize_workflow", goal="New goal"))["result"]
     assert second["id"] != first["id"] and second["run_id"] != first["run_id"]
 
@@ -1883,10 +1912,16 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
 
 @pytest.mark.parametrize("entry", ["initialize_workflow", "start_workflow"])
 async def test_new_run_refuses_stale_released_worker_until_check_in(
-    client: httpx.AsyncClient, hub_store: HubStore, entry: str
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, entry: str
 ) -> None:
     await check_in(client, "bob")
-    await call(client, "set_workflow_status", status="done", summary="Done")
+    await call(
+        client,
+        "set_workflow_status",
+        status="done",
+        summary="Done",
+        run_id=prepare_rpc_delivery(app, hub_store),
+    )
     params: dict[str, Any] = (
         {"goal": "Next"} if entry == "initialize_workflow" else {"statement": "Next"}
     )

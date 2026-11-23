@@ -396,7 +396,7 @@ async def test_mock_alice_drives_worker_through_full_task(
             alice_res, _ = await asyncio.gather(alice_task, worker_task)
 
         assert alice_res["task_id"] is not None
-        assert store.get_state()["workflow"]["status"] == WorkflowStatus.DONE.value
+        assert store.get_state()["workflow"]["status"] == WorkflowStatus.ACTIVE.value
         assert store.get_state()["workflow"]["policy"] == {"max_task_lease_min": 45}
         with database(store.path) as connection:
             decisions = connection.execute("SELECT * FROM decision ORDER BY id").fetchall()
@@ -940,7 +940,7 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
 
     assert result.get("summary") == "Recovered and finished"
     assert len(store.tasks()) == 1
-    assert store.get_state()["workflow"]["status"] == WorkflowStatus.DONE.value
+    assert store.get_state()["workflow"]["status"] == WorkflowStatus.ACTIVE.value
     with database(store.path) as connection:
         assert connection.execute("SELECT MAX(delivery_attempts) FROM event").fetchone()[0] >= 2
 

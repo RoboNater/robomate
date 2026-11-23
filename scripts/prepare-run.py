@@ -511,6 +511,7 @@ def render_goal(
     work: str | None,
     reservations: str | None = None,
     forge: str = "github",
+    deliver: str = "merge",
 ) -> str:
     """The durable goal: the statement of work, or the one-issue sentence (#34)."""
     change_term = "merge request" if forge == "gitlab" else "pull request"
@@ -526,13 +527,18 @@ def render_goal(
             f"The run's reservations issue is ({rendered}); read it only if a counter is needed."
         )
     instructions = f"{target} {COUNTER_CLOSE_OUT}"
+    delivery = (
+        f"leave its approved, CI-cleared {change_term} open"
+        if deliver == "pr"
+        else f"merge its {change_term} once the merge gate passes"
+    )
     if work is not None:
-        return f"{work}\n\nWhen done, close out. {instructions}"
+        return f"{work}\n\nWhen the work is ready, {delivery}, then close out. {instructions}"
     if issue is not None:
         issue_target = f"{slug or repository}#{issue}"
     else:
         issue_target = "<issue-owner>/<issue-repository>#<issue>"
-    return f"Address issue `{issue_target}`, merge its {change_term}, and close out. {instructions}"
+    return f"Address issue `{issue_target}`, {delivery}, and close out. {instructions}"
 
 
 def goal_sha256(goal: str) -> str:
@@ -2839,6 +2845,7 @@ def prepare(
     denise_effort: str = "",
     source_config: Path | None = None,
     pytest_workers: int = 0,
+    deliver: str = "merge",
 ) -> dict[str, Any]:
     if pytest_workers < 0:
         raise ValueError("--pytest-workers must not be negative (0 means CPU count)")
@@ -2905,6 +2912,8 @@ def prepare(
         model_flags(h, m, e, auto_start=auto_start)
     if merge_method not in ("squash", "merge", "rebase"):
         raise ValueError("--merge-method must be one of squash, merge, rebase")
+    if deliver not in ("merge", "pr"):
+        raise ValueError("--deliver must be merge or pr")
     if allow_no_ci not in ("auto", "true", "false"):
         raise ValueError("--allow-no-ci must be one of auto, true, false")
     if remote_worker is not None and remote_worker not in WORKERS:
@@ -3003,7 +3012,9 @@ def prepare(
         slug = parse_github_slug(repository, forge=forge)
         clone_from = clone_source(repository, slug)
 
-    goal = render_goal(slug, repository, issue, work_text, reservations, forge=forge)
+    goal = render_goal(
+        slug, repository, issue, work_text, reservations, forge=forge, deliver=deliver
+    )
     check_goal_size(goal)
     check_hub_workflow(hub_repo, hub_state, run_dir, goal)
 
@@ -3130,6 +3141,7 @@ def prepare(
 
     policy = {
         "max_review_rounds": 3,
+        "deliver": deliver,
         "merge_method": merge_method,
         "allow_no_ci": policy_allow_no_ci,
         "role_policy": {
@@ -4002,6 +4014,7 @@ def main() -> None:
         f"(#158; default {DEFAULT_RESUME_SERIES_RESET_S:g})",
     )
     parser.add_argument("--merge-method", default="squash")
+    parser.add_argument("--deliver", choices=("merge", "pr"), default="merge")
     parser.add_argument("--allow-no-ci", default="auto")
     parser.add_argument("--skip-github-checks", action="store_true")
     parser.add_argument(
@@ -4146,6 +4159,7 @@ def main() -> None:
             stall_after_min=args.stall_after_min,
             stall_action_after_min=args.stall_action_after_min,
             pytest_workers=args.pytest_workers,
+            deliver=args.deliver,
             max_resumes=args.max_resumes,
             resume_delay_s=args.resume_delay_s,
             resume_max_delay_s=args.resume_max_delay_s,

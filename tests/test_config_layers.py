@@ -461,3 +461,17 @@ def test_unknown_key_and_invalid_values_name_file_and_key(tmp_path: Path) -> Non
         load_config_layers(repository_config=repo_cfg)
     assert str(repo_cfg) in str(exc_info.value)
     assert "agents.bob.model" in str(exc_info.value)
+
+
+def test_delivery_policy_follows_config_layer_precedence(tmp_path: Path) -> None:
+    user = tmp_path / "user.toml"
+    repo = tmp_path / "repo.toml"
+    hub = tmp_path / "hub.toml"
+    assert load_config_layers(hub, repo, user).policy.deliver == "merge"
+
+    _write_toml(user, 'deliver = "pr"\n')
+    assert load_config_layers(hub, repo, user).policy.deliver == "pr"
+    _write_toml(repo, 'deliver = "merge"\n')
+    assert load_config_layers(hub, repo, user).policy.deliver == "merge"
+    _write_toml(hub, '[policy]\ndeliver = "pr"\n')
+    assert load_config_layers(hub, repo, user).policy.deliver == "pr"

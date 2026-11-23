@@ -19,6 +19,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 from conftest import SESSION, check_in, message, rpc
+from delivery_support import finish_run
 from timing import FrozenClock, wait_until
 
 SESSION_2 = "0b9d2f4e-1c3a-4e5f-8a7b-6c5d4e3f2a1b"
@@ -325,7 +326,7 @@ def test_a_superseded_session_does_not_refresh_alice(hub: HubStore, clock: FakeC
 def test_done_workflows_report_no_stalls(hub: HubStore, clock: FakeClock) -> None:
     worker(hub)
     hub.append_event(EventKind.TASK_COMPLETED, {"task_id": "t"})
-    hub.set_workflow_status(WorkflowStatus.DONE, "Merged", actor="alice", session=SESSION)
+    finish_run(hub, "Merged", actor="alice", session=SESSION)
     clock.advance(hours=3)
     report = hub.assess_activity()
     assert report["orchestrator"]["suppressed"] == "workflow_done"
@@ -366,7 +367,7 @@ def test_heartbeats_after_done_move_the_bridge_but_not_her_activity(
     hub: HubStore, clock: FakeClock
 ) -> None:
     orchestrate(hub, "set_workflow_status")
-    hub.set_workflow_status(WorkflowStatus.DONE, "Merged", actor="alice", session=SESSION)
+    finish_run(hub, "Merged", actor="alice", session=SESSION)
     for _ in range(44):
         clock.advance(seconds=30)
         hub.note_orchestrator_heartbeat(SESSION)
@@ -424,7 +425,7 @@ def test_her_last_call_survives_a_hub_restart_without_moving_silence(
     path = tmp_path / "hub.db"
     first = make_store(path, clock)
     orchestrate(first, "set_workflow_status")
-    first.set_workflow_status(WorkflowStatus.DONE, "Merged", actor="alice", session=SESSION)
+    finish_run(first, "Merged", actor="alice", session=SESSION)
     clock.advance(minutes=22)
 
     restarted = HubStore(path, clock=clock)
@@ -556,7 +557,7 @@ def test_episodes_close_when_a_worker_is_released_or_the_workflow_ends(
     hub.sweep_stalls()
     reasons = {e["actor"]: e["cleared_reason"] for e in hub.stall_episodes()}
     assert reasons == {"orchestrator": None, "bob": "released", "charlie": None}
-    hub.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=SESSION)
+    finish_run(hub, "Done", actor="alice", session=SESSION)
     hub.sweep_stalls()
     reasons = {e["actor"]: e["cleared_reason"] for e in hub.stall_episodes()}
     assert reasons == {

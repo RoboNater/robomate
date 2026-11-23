@@ -445,7 +445,7 @@ async def test_mock_worker_executes_closeout(app: Any, hub_store: HubStore) -> N
         assert result["result"]["items"][0]["source"] == "r1-1"
 
 
-def test_pr_url_from_rebase_and_verified_gate(hub_store: HubStore) -> None:
+def test_closeout_keeps_bound_pr_when_another_pr_was_read(hub_store: HubStore) -> None:
     from agent_hub.merge_gate import CiStatus, GateReport, Mergeable, PrState
     from agent_hub_common import ImplementerOutcome, RebaseResult
 
@@ -483,7 +483,7 @@ def test_pr_url_from_rebase_and_verified_gate(hub_store: HubStore) -> None:
     hub_store.record_gate_reading(gate.pr_url, gate.expected_head_sha, report=gate, elapsed_s=0)
     close = hub_store.assign_task("bob", "closeout", "Close", "Close")
     assert close.closeout_context is not None
-    assert close.closeout_context["pr_url"] == gate.pr_url
+    assert close.closeout_context["pr_url"] == "https://example.test/pull/1"
 
 
 def test_finding_reintroduced_after_resolution_keeps_prior_provenance(hub_store: HubStore) -> None:

@@ -783,7 +783,10 @@ permissions, which certification catches per harness.
   `initialize_workflow` stays as an alias until M2 Step 11, scoped to the current run: with
   the same goal it confirms the live run, and after `done` it starts a new run with a new
   `run_id`. That alone removes the fresh-checkout-per-run rule (#53) for prepared runs.
-- **One run = one PR/MR** (locked). Sequential runs come from the queue: the second starts
+- **One run = one PR/MR** (locked). Completed typed work and review results
+  establish the run's durable PR/MR binding. Results reporting a different
+  change request are rejected. Later implementer tasks reuse the stored branch.
+  Sequential runs come from the queue: the second starts
   only after the first is `done`, via `start_workflow` with no statement or automatically
   when `done` finds a queued run.
 - **The queue and history are per hub.** `robomate submit` queues on the selected hub
@@ -803,7 +806,10 @@ permissions, which certification catches per harness.
 - **Carried context between runs** is explicit and small: the previous run's summary
   (run ID, PR/MR, approved and merged SHAs) is available in `get_state`; nothing else carries over.
 - Policy additions (to PoC `WorkflowPolicy`):
-  - `deliver: merge | pr` (default `merge`) — #14.
+  - `deliver: merge | pr` (default `merge`) — #14. Set `deliver=pr` explicitly
+    in configuration or with `robomate submit --policy deliver=pr` to leave an
+    approved PR/MR open. The hub stores the policy at creation and ignores
+    statement wording when enforcing it.
   - `closeout: true | false` (default `true`) — run the close-out task (§7.3).
   - `closeout_wait_s` (positive number up to 1800, default 300) — bounded
     pre-release closeout collection window (§7.3); `robomate submit --policy
@@ -1002,13 +1008,18 @@ task stays open):
 
 Follow-up issues carry `followup_label` and reference the PR/MR and the finding ID.
 
-**The `done` check.** `set_workflow_status(done)` is refused, naming what is missing, unless:
-1. `check_merge_gate` reports the PR/MR `merged` (`deliver: merge`) or `open` (`deliver: pr`); and
+**The `done` check.** Pass the run's `run_id` to `set_workflow_status(done)`.
+The hub refuses completion, naming what is missing, unless:
+1. A fresh forge gate read matches the run's bound PR/MR and approved head.
+   For `deliver: merge`, the forge must report `merged` and its actual merge
+   commit SHA, recorded separately from the approved head. For `deliver: pr`,
+   it must report `open` with the normal CI, base and mergeability checks passing.
 2. a `closeout` task for this workflow has a completed typed `CloseoutResult` (unless
    `closeout: false`); a legacy raw task result does not satisfy this check.
 
-No other close-out rule is enforced in code for the MVP. Steps reported `done: false` do not
-block; they are highlighted in the report.
+The completion transaction rechecks the run and binding before applying the
+result. Retrying for the same finished run leaves its successor untouched.
+Steps reported `done: false` appear in the report and allow completion.
 
 **The run report.** At `done` or `abandoned` the hub renders `runs/<id>/report.md` in its
 state directory (§4) from typed data only: statement of work (link and SHA), agents and harnesses, rounds, approved and merged SHAs, each finding with its disposition and
@@ -1089,7 +1100,7 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub snapshots and appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
-| `set_workflow_status` | orchestrator | `done` refused unless merged/open per `deliver` and close-out completed; `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
+| `set_workflow_status` | orchestrator | `done` requires `run_id`, fresh delivery evidence and typed close-out (§7.3); `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
 | `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `ask_user(question, options?, waiting_on_task_id?)` | orchestrator | Holds the question, sets `escalated` with an attributed decision row, returns `question_id`; optional task-wait binding allows withdrawal on later completion (#171) |
 | `withdraw_question(question_id, reason, event_id)` | orchestrator | Closes the asking session's bound task-wait question on a later matching completion event, preserving withdrawal provenance without operator authority; resume remains explicit (#171) |
@@ -1554,7 +1565,7 @@ milestone shown, linking the robo-agents original for history.
 | #114 `done` with PR unmerged | Carry → M4 (`done` check) |
 | #91 Close-out drops unaddressed findings | Carry → M4 (close-out task) |
 | #117 Roadmap obligations | Carry → M4 (`closeout_steps`) |
-| #107 One PR per run / work label | Carry → decide in M4; the `done` check already binds a run to one PR/MR |
+| #107 One PR per run / work label | M4 enforces one PR/MR through the durable binding and reuses the stored branch label |
 | #31 Resume reconciliation | Carry → M4, reduced per §7.5 |
 | #131 Standby/resume | Carry → M4 |
 | #121 Timeline | Carry → M4 as `robomate log --timeline` |

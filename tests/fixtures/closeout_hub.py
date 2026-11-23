@@ -11,6 +11,7 @@ from agent_hub_common import HubSettings
 
 # tests/ is not installed; this fixture intentionally shares pytest's clock.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from delivery_support import finish_run  # noqa: E402
 from timing import FrozenClock  # noqa: E402
 
 state, port, start = sys.argv[1:]
@@ -54,6 +55,12 @@ def advance(body: dict[str, float]) -> dict[str, bool]:
         store.heartbeat("bob", bob.worker_instance_id, bob.current_task_id)
     store.sweep(settings.lost_after_s)
     return {"advanced": True}
+
+
+@app.post("/test/finish")
+def finish() -> dict[str, bool]:
+    finish_run(store, "Scripted delivery and close-out", actor="alice", session=None)
+    return {"finished": True}
 
 
 if __name__ == "__main__":

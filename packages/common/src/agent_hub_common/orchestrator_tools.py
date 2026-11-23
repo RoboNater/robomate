@@ -178,11 +178,18 @@ class OrchestratorTools:
         """Release a worker; its next NEXT returns the release marker."""
         raise NotImplementedError
 
-    async def set_workflow_status(self, status: WorkflowStatus, summary: str) -> dict[str, bool]:
+    async def set_workflow_status(
+        self, status: WorkflowStatus, summary: str, run_id: str | None = None
+    ) -> dict[str, bool]:
         """Set active/paused/done and save the summary in the audit log.
 
         Escalate with ask_user. Leaving escalated is refused while any
         operator question is open.
+
+        For done, pass the run_id from get_state for the run you are finishing.
+        Requires fresh forge evidence for the approved PR/MR and delivery
+        policy, and a completed typed closeout unless disabled. Retrying done
+        with the same run_id is safe after the queue advances.
         """
         raise NotImplementedError
 

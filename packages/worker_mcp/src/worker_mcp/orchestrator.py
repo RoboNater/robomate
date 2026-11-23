@@ -192,12 +192,20 @@ class OrchestratorBridge:
             except httpx.TransportError as exc:
                 # A read/write failure before response headers can follow dispatch;
                 # only connection establishment failures prove an unkeyed write safe.
-                retryable = method in RETRYABLE or (
-                    method == "log_decision"
-                    and (
-                        params.get("key") is not None
-                        or isinstance(
-                            exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+                retryable = (
+                    method in RETRYABLE
+                    or (
+                        method == "set_workflow_status"
+                        and params.get("status") == "done"
+                        and bool(params.get("run_id"))
+                    )
+                    or (
+                        method == "log_decision"
+                        and (
+                            params.get("key") is not None
+                            or isinstance(
+                                exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+                            )
                         )
                     )
                 )

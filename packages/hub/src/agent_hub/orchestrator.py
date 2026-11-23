@@ -23,7 +23,7 @@ from agent_hub_common.orchestrator_tools import (
 
 from .merge_gate import ForgeGate, MergeGate
 from .rpc_errors import error_code
-from .store import HubStore
+from .store import ConflictError, HubStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +190,7 @@ class OrchestratorOps(OrchestratorTools):
         )
 
     async def check_merge_gate(self, pr_url: str, expected_head_sha: Sha) -> dict[str, Any]:
-        self.store.refuse_while_escalated("check_merge_gate")
+        workflow_id = self.store.refuse_while_escalated("check_merge_gate")
         started = monotonic()
         try:
             report = await self.gate.check(pr_url, expected_head_sha)
@@ -200,6 +200,7 @@ class OrchestratorOps(OrchestratorTools):
                 expected_head_sha,
                 error_code=error_code(exc),
                 elapsed_s=round(monotonic() - started, 3),
+                workflow_id=workflow_id,
             )
             raise
         self.store.record_gate_reading(
@@ -207,6 +208,7 @@ class OrchestratorOps(OrchestratorTools):
             expected_head_sha,
             report=report,
             elapsed_s=report.elapsed_s,
+            workflow_id=workflow_id,
         )
         return asdict(report)
 
@@ -222,9 +224,37 @@ class OrchestratorOps(OrchestratorTools):
     async def release_agent(self, agent: str) -> dict[str, Any]:
         return asdict(self.store.release_agent(agent))
 
-    async def set_workflow_status(self, status: WorkflowStatus, summary: str) -> dict[str, bool]:
+    async def set_workflow_status(
+        self, status: WorkflowStatus, summary: str, run_id: str | None = None
+    ) -> dict[str, bool]:
         caller = self._caller()
-        self.store.set_workflow_status(status, summary, actor=caller.actor, session=caller.session)
+        if status == WorkflowStatus.DONE:
+            if not run_id:
+                raise ValueError(
+                    "done requires the run_id from get_state for the run being finished"
+                )
+            target = self.store.prepare_done(run_id)
+            if target is not None:
+                report = await self.gate.check(target.pr_url, target.approved_sha)
+                if (
+                    CALLER.get() is not None
+                    and caller.session != self.store.activity.orchestrator_session
+                ):
+                    raise ConflictError("superseded by a newer orchestrator session")
+                self.store.set_workflow_status(
+                    status,
+                    summary,
+                    actor=caller.actor,
+                    session=caller.session,
+                    done=target,
+                    report=report,
+                )
+        else:
+            if run_id is not None:
+                raise ValueError("run_id is only used for done")
+            self.store.set_workflow_status(
+                status, summary, actor=caller.actor, session=caller.session
+            )
         return {"ok": True}
 
     async def log_decision(
