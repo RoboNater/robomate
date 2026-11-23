@@ -195,7 +195,12 @@ class Agent:
                     "outcome": "completed",
                     "summary": "Scripted close-out.",
                     "items": [
-                        {"id": finding["id"], "action": "none", "reason": "Scripted run"}
+                        {
+                            "id": finding["id"],
+                            "summary": finding["summary"],
+                            "action": "none",
+                            "reason": "Scripted run",
+                        }
                         for finding in context["pending_findings"]
                     ],
                     "steps": [{"index": step["index"], "done": True} for step in context["steps"]],
