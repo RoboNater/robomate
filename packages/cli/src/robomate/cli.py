@@ -18,11 +18,11 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from agent_hub_common import (
     MAX_STATEMENT_BYTES,
@@ -1169,7 +1169,411 @@ def _hub_location(
     return None
 
 
-def _status(as_json: bool, selector: str | None) -> None:
+_STATUS_RULE_WIDTH = 70
+_STATUS_NOTE_WIDTH = 160
+_STATUS_FIELD_WIDTH = 11
+
+
+def _status_field(label: str, text: str) -> str:
+    return f"{label + ':':<{_STATUS_FIELD_WIDTH}}{text}"
+
+
+def _short_sha(value: object) -> str:
+    return value[:7] if isinstance(value, str) and value.strip() else "-"
+
+
+def _headline_age(seconds: object) -> str:
+    """An age for the headline: seconds, then whole minutes, hours and days (#653)."""
+
+    if not isinstance(seconds, int | float) or isinstance(seconds, bool):
+        return "-"
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total} s"
+    if total < 3600:
+        return f"{total // 60} m"
+    if total < 86400:
+        return f"{total // 3600} h"
+    return f"{total // 86400} d"
+
+
+def _utc_clock(value: object) -> str:
+    """A hub timestamp as UTC `HH:MM:SS`, or `-` when it is absent or malformed."""
+
+    if not isinstance(value, str):
+        return "-"
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return "-"
+    return moment.astimezone(UTC).strftime("%H:%M:%S")
+
+
+def _run_started(created: object, now: object, age: object) -> str:
+    """The run's start, with its date when it did not start today, and its age."""
+
+    if not isinstance(created, str):
+        return "started -"
+    try:
+        moment = datetime.fromisoformat(created)
+    except ValueError:
+        return f"started {_printable(created)}"
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    current = datetime.now(UTC)
+    if isinstance(now, str):
+        with suppress(ValueError):
+            current = datetime.fromisoformat(now)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    stamp = moment.astimezone(UTC)
+    shown = (
+        stamp.strftime("%Y-%m-%d %H:%M:%S")
+        if stamp.date() != current.astimezone(UTC).date()
+        else stamp.strftime("%H:%M:%S")
+    )
+    return f"started {shown} ({_headline_age(age)} ago)"
+
+
+def _pr_number(url: object) -> str:
+    if not isinstance(url, str):
+        return "?"
+    match = re.search(r"/(?:pull|merge_requests)/(\d+)/?$", url)
+    return "?" if match is None else match.group(1)
+
+
+def _run_target(run: dict[str, Any]) -> str:
+    """The issue the run addresses, or else its statement source and short SHA."""
+
+    issue = run.get("issue")
+    if isinstance(issue, str) and issue:
+        return f"for #{_printable(issue)}"
+    source = run.get("statement_source")
+    sha = run.get("statement_sha256")
+    short = _short_sha(sha)
+    if isinstance(source, str) and source:
+        return f"for statement {_printable(source)}" + ("" if short == "-" else f" @{short}")
+    if short != "-":
+        return f"for statement @{short}"
+    return "for -"
+
+
+def _wanted_check(bucket: str, ci: object) -> bool:
+    if ci == "pending":
+        return bucket not in ("pass", "skipping")
+    if ci == "fail":
+        return bucket == "fail"
+    if ci == "cancelled":
+        return bucket == "cancel"
+    return False
+
+
+def _check_names(checks: object, ci: object) -> str:
+    """The pending or failed check names for a gate line, from stored checks."""
+
+    if not isinstance(checks, list):
+        return ""
+    names = [
+        _printable(str(check.get("name") or "-"))
+        for check in checks
+        if isinstance(check, dict) and _wanted_check(str(check.get("bucket") or ""), ci)
+    ]
+    if not names:
+        return ""
+    shown = ", ".join(names[:5]) + (", ..." if len(names) > 5 else "")
+    return f" ({shown})"
+
+
+def _gate_line(reading: object, *, live: bool = False) -> str:
+    """One Gate line from a stored or live reading; `live` adds the label."""
+
+    if not isinstance(reading, dict):
+        return _status_field("Gate", "no gate reading yet")
+    stamp = _utc_clock(reading.get("at"))
+    head = f"live {stamp}" if live else f"{stamp} ({_headline_age(reading.get('age_s'))} ago)"
+    parts = [head]
+    ci = reading.get("ci")
+    error = reading.get("error_code")
+    if isinstance(ci, str) and ci:
+        parts.append(f"CI {ci}{_check_names(reading.get('checks'), ci)}")
+    elif isinstance(error, int) and not isinstance(error, bool):
+        parts.append(f"error (code {error})")
+    else:
+        parts.append("no CI reported")
+    head_matches = reading.get("head_matches")
+    if isinstance(head_matches, bool):
+        parts.append(f"head matches: {'yes' if head_matches else 'no'}")
+    behind = reading.get("base_behind_main")
+    if isinstance(behind, bool):
+        parts.append(f"base behind: {'yes' if behind else 'no'}")
+    mergeable = reading.get("mergeable")
+    if isinstance(mergeable, str) and mergeable:
+        state = reading.get("merge_state_status")
+        shown = f"mergeable: {mergeable}"
+        if isinstance(state, str) and state:
+            shown += f" ({_printable(state)})"
+        parts.append(shown)
+    return _status_field("Gate", "  ".join(parts))
+
+
+def _last_call_text(activity: dict[str, Any]) -> str:
+    """`<kind> HH:MM:SS (age ago)`, or that no hub call was seen."""
+
+    kind = activity.get("last_call")
+    if not isinstance(kind, str) or not kind:
+        return "no hub call seen"
+    clock = _utc_clock(activity.get("last_call_at"))
+    age = _headline_age(activity.get("last_call_age_s"))
+    when = clock if age == "-" else f"{clock} ({age} ago)"
+    return f"{_printable(kind)} {when}"
+
+
+def _activity_lines(status: dict[str, Any]) -> list[str]:
+    """One headline line per agent, orchestrator included (#653).
+
+    Only closed-set call kinds and validated IDs appear; no payload text.
+    """
+
+    rows: list[tuple[str, dict[str, Any], str]] = []
+    orchestrator = status.get("orchestrator") or {}
+    alice = status.get("orchestrator_activity")
+    if isinstance(alice, dict) and alice.get("state") not in (None, "not_seen"):
+        name = (
+            orchestrator.get("name")
+            or alice.get("last_call_actor")
+            or alice.get("actor")
+            or "alice"
+        )
+        holding = alice.get("holding")
+        extra = f"holding {_printable(str(holding))}" if holding else "-"
+        rows.append((str(name), alice, extra))
+    for agent in status.get("agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        activity = agent.get("activity")
+        if not isinstance(activity, dict):
+            activity = {}
+        holding = activity.get("holding")
+        task = agent.get("current_task")
+        if holding:
+            extra = f"holding {_printable(str(holding))}"
+        elif task:
+            extra = f"task {_short_sha(str(task))}"
+        elif agent.get("status") == "released":
+            extra = "released"
+        elif agent.get("status") is not None and not agent.get("alive", True):
+            extra = "lost"
+        else:
+            extra = "-"
+        rows.append((str(agent.get("name") or "-"), activity, extra))
+    return [
+        f"  {_printable(name):<8} {_last_call_text(activity):<30} {extra}".rstrip()
+        for name, activity, extra in rows
+    ]
+
+
+def _live_gate(status: dict[str, Any], pr_url: str, expected_head: str) -> Any:
+    """One read-only forge query for the run's PR; imported here like #378."""
+
+    from agent_hub.gitlab_gate import GitLabGate, GitLabProject
+    from agent_hub.merge_gate import GitHubGate, GitHubProject
+
+    origin = str(status.get("origin") or "")
+    if status.get("forge") == "gitlab":
+        gate: Any = GitLabGate(project=GitLabProject.from_origin(origin), poll_timeout_s=0)
+    else:
+        gate = GitHubGate(project=GitHubProject.from_origin(origin), poll_timeout_s=0)
+    return gate.check(pr_url, expected_head)
+
+
+def _live_gate_reading(status: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Run `--live`'s read-only query without writing or failing `status` (#653)."""
+
+    from agent_hub_common import SHA_HEX_40_RE
+
+    if "run" not in status:
+        return None, "unavailable: not reported by this hub"
+    run = status.get("run")
+    if not isinstance(run, dict):
+        return None, "unavailable: no PR yet"
+    pr_url = run.get("pr_url")
+    if not isinstance(pr_url, str) or not pr_url:
+        return None, "unavailable: no PR yet"
+    head = run.get("head_sha") or run.get("approved_sha")
+    if not isinstance(head, str) or not SHA_HEX_40_RE.fullmatch(head):
+        return None, "unavailable: no head recorded yet"
+    try:
+        import anyio
+
+        report = anyio.run(_live_gate, status, pr_url, head)
+    except Exception as exc:  # --live never fails status; the caller falls back
+        detail = _printable(str(exc))[:500] or type(exc).__name__
+        return None, f"failed: {detail}"
+    return (
+        {
+            "at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "age_s": 0.0,
+            "ci": getattr(report.ci, "value", report.ci),
+            "checks": [{"name": check.name, "bucket": check.bucket} for check in report.checks],
+            "pr_state": getattr(report.pr_state, "value", report.pr_state),
+            "head_matches": report.head_matches,
+            "expected_head_sha": report.expected_head_sha,
+            "current_head_sha": report.current_head_sha,
+            "base_behind_main": report.base_behind_main,
+            "mergeable": getattr(report.mergeable, "value", report.mergeable),
+            "merge_state_status": report.merge_state_status,
+            "error_code": None,
+        },
+        None,
+    )
+
+
+def _headline_lines(
+    status: dict[str, Any],
+    *,
+    activity: bool,
+    live: dict[str, Any] | None = None,
+    live_error: str | None = None,
+) -> list[str]:
+    """The operator headline block: state, questions, step, PR, gate, agents (#653)."""
+
+    workflow = status.get("workflow") or {}
+    reported_run = status.get("run")
+    project_run = "run" in status
+    run: dict[str, Any] | None = (
+        cast(dict[str, Any], reported_run) if isinstance(reported_run, dict) else None
+    )
+    run_id = workflow.get("run_id") or status.get("run_id") or "-"
+    title = f"RUN {_printable(str(run_id))}" if workflow else "RUN none"
+    heading = f"── {title} "
+    lines = [heading + "─" * max(0, _STATUS_RULE_WIDTH - len(heading))]
+    run_status = workflow.get("status")
+    # Legacy rows can carry unexpected text: escape every hub-supplied field.
+    lines.append(
+        _status_field("State", _printable(str(run_status).upper()) if run_status else "NONE")
+    )
+    questions = status.get("operator_questions")
+    if isinstance(questions, int) and not isinstance(questions, bool):
+        plural = "" if questions == 1 else "s"
+        hint = "  (see robomate inbox)" if questions else ""
+        lines.append(
+            _status_field("Questions", f"{questions} open operator question{plural}{hint}")
+        )
+    else:
+        # Absent from a hub older than #130, which may still be running.
+        lines.append(_status_field("Questions", "not reported by this hub"))
+    if not project_run:
+        # An older hub that predates the #653 projection.
+        lines.append(_status_field("Step", "not reported by this hub"))
+        lines.append(_status_field("PR", "not reported by this hub"))
+    elif run is None:
+        lines.append(_status_field("Step", "none"))
+        lines.append(_status_field("PR", "none yet"))
+    else:
+        reported_current = run.get("current_task")
+        current: dict[str, Any] = (
+            cast(dict[str, Any], reported_current) if isinstance(reported_current, dict) else {}
+        )
+        head = current.get("head_sha") or run.get("head_sha")
+        approved_sha = run.get("approved_sha")
+        approved = (
+            isinstance(head, str)
+            and isinstance(approved_sha, str)
+            and head.lower() == approved_sha.lower()
+        )
+        verdict = f"approved: {'yes' if approved else 'no'}"
+        if current:
+            role = _printable(str(current.get("role") or "-").upper())
+            round_no = current.get("review_round")
+            kind = f"{role} r{round_no}" if isinstance(round_no, int) else role
+            who = _printable(str(current.get("assignee") or "-"))
+            step = f"{kind} ({who})   {verdict}"
+        elif isinstance(run.get("last_task"), dict):
+            last = run["last_task"]
+            role = _printable(str(last.get("role") or "-").upper())
+            who = _printable(str(last.get("assignee") or "-"))
+            state = _printable(str(last.get("state") or "-"))
+            step = f"none — last {role} ({who}) {state}   {verdict}"
+        else:
+            step = f"none   {verdict}"
+        lines.append(_status_field("Step", step))
+        pr_url = run.get("pr_url")
+        target = _run_target(run)
+        started = _run_started(run.get("created"), status.get("assessed_at"), run.get("age_s"))
+        if isinstance(pr_url, str) and pr_url:
+            lines.append(
+                _status_field(
+                    "PR",
+                    f"#{_pr_number(pr_url)} @ {_short_sha(head)}   {target}   {started}",
+                )
+            )
+        else:
+            lines.append(_status_field("PR", f"none yet   {target}   {started}"))
+    if live is not None:
+        lines.append(_gate_line(live, live=True))
+    elif live_error is not None:
+        lines.append(_status_field("Gate", f"live {live_error}"))
+        lines.append(_gate_line(status.get("gate")))
+    elif "gate" not in status:
+        lines.append(_status_field("Gate", "not reported by this hub"))
+    else:
+        lines.append(_gate_line(status.get("gate")))
+    agents = [agent for agent in status.get("agents") or [] if isinstance(agent, dict)]
+    alive = sum(
+        1
+        for agent in agents
+        if agent.get("alive") and agent.get("status") != "released" and not agent.get("stalled")
+    )
+    stalled = sum(1 for agent in agents if agent.get("stalled"))
+    released = sum(1 for agent in agents if agent.get("status") == "released")
+    lost = sum(
+        1 for agent in agents if agent.get("status") != "released" and not agent.get("alive")
+    )
+    queue = status.get("queue_length")
+    if not isinstance(queue, int) or isinstance(queue, bool):
+        queue = len(status.get("queue") or [])
+    summary = f"{alive} alive · {stalled} stalled · {lost} lost"
+    if released:
+        summary += f" · {released} released"
+    lines.append(_status_field("Agents", f"{summary}    Queue: {queue}"))
+    if activity:
+        lines.extend(_activity_lines(status))
+    lines.append("─" * _STATUS_RULE_WIDTH)
+    return lines
+
+
+def _truncate_note(text: str) -> str:
+    if len(text) <= _STATUS_NOTE_WIDTH:
+        return text
+    return text[: _STATUS_NOTE_WIDTH - 3] + "..."
+
+
+def _agent_progress_lines(agent: dict[str, Any], *, notes: bool) -> list[str]:
+    """The escaped latest progress note for one agent, untrusted and inert."""
+
+    note = agent.get("latest_note")
+    if not isinstance(note, str):
+        return []
+    from agent_hub.closeout_export import literal, single_line
+
+    if notes:
+        lines = literal(note).split("\n")
+        rendered = [f"    note: {lines[0]}"]
+        rendered.extend(f"          {line}" for line in lines[1:])
+        return rendered
+    return [f"    note: {_truncate_note(single_line(note))}"]
+
+
+def _status(
+    as_json: bool,
+    selector: str | None,
+    *,
+    brief: bool = False,
+    activity: bool = False,
+    inbox: bool = False,
+    notes: bool = False,
+    live: bool = False,
+) -> None:
     """Show the selected or discovered hub, retaining local metadata for stopped hubs."""
 
     escape_unencodable_output()
@@ -1241,18 +1645,34 @@ def _status(as_json: bool, selector: str | None) -> None:
         stopped(url, port)
     reported = status.get("checkout") or status.get("repo_root")
     location = _hub_location(local, Path(reported) if reported else None, status.get("hub_id"))
+    live_reading: dict[str, Any] | None = None
+    live_error: str | None = None
+    if live:
+        live_reading, live_error = _live_gate_reading(status)
     if as_json:
         # Operator tools take the hub's state from here (spec §4): prepare-run
         # reads hub.db and hub-report reads its state directory through it.
-        print(
-            json.dumps(
-                status
-                | {
-                    "state_dir": str(location[0]) if location else None,
-                    "token_file": str(location[1]) if location else None,
-                }
-            )
-        )
+        report = status | {
+            "state_dir": str(location[0]) if location else None,
+            "token_file": str(location[1]) if location else None,
+        }
+        if live:
+            # Additive and only on request: the stored reading stays in `gate`.
+            report |= {"live_gate": live_reading, "live_gate_error": live_error}
+        print(json.dumps(report))
+        return
+    questions = status.get("operator_questions")
+    if not isinstance(questions, int) or isinstance(questions, bool):
+        questions = None
+    for line in _headline_lines(
+        status, activity=activity, live=live_reading, live_error=live_error
+    ):
+        print(line)
+    if inbox and questions:
+        endpoint_questions = _open_questions(url, endpoint.token)
+        for line in _inbox_lines(endpoint_questions):
+            print(line)
+    if brief:
         return
     # name, checkout and git_common_dir are absent from a hub older than #147.
     name = status.get("name") or (local.name if local else None)
@@ -1335,16 +1755,36 @@ def _status(as_json: bool, selector: str | None) -> None:
             f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
             f"  task {agent['current_task'] or '-'}"
         )
+        if "last_call_at" in agent:
+            # Additive for #653: an older hub omits these and keeps today's line.
+            details: list[str] = []
+            role = agent.get("current_task_role")
+            if isinstance(role, str) and role:
+                details.append(f"role {_printable(role)}")
+            call_activity = agent.get("activity") or {}
+            details.append(f"last call {_last_call_text(call_activity)}")
+            progress_at = agent.get("last_progress_at")
+            progress_age = agent.get("last_progress_age_s")
+            if isinstance(progress_age, int | float) and not isinstance(progress_age, bool):
+                progress = f"{_utc_clock(progress_at)} ({_headline_age(progress_age)} ago)"
+            else:
+                progress = "-"
+            details.append(f"last progress {progress}")
+            log = agent.get("session_log")
+            details.append(f"log {_printable(log) if isinstance(log, str) else '-'}")
+            print("    " + "  ".join(details))
+        for note_line in _agent_progress_lines(agent, notes=notes):
+            print(note_line)
         if agent.get("stalled"):
             print(f"    {_stall_evidence(agent['activity'])}")
             if agent["harness"] == "opencode":
                 permission_line(agent["name"])
-        activity = agent.get("activity") or {}
-        if activity.get("redelivery_count", 0) >= 2:
+        agent_activity = agent.get("activity") or {}
+        if agent_activity.get("redelivery_count", 0) >= 2:
             print(
                 f"    repeated assignment: task {agent['current_task']} "
-                f"redelivered {activity['redelivery_count']} times "
-                f"(last {activity['last_redelivery_age_s']}s ago)"
+                f"redelivered {agent_activity['redelivery_count']} times "
+                f"(last {agent_activity['last_redelivery_age_s']}s ago)"
             )
     print(f"Open tasks: {len(status['tasks'])}")
     for task in status["tasks"]:
@@ -1384,6 +1824,27 @@ def _open_questions(url: str, token: str) -> list[dict[str, Any]]:
     return questions
 
 
+def _inbox_lines(questions: list[dict[str, Any]]) -> list[str]:
+    """Render open questions exactly as `robomate inbox` does."""
+
+    if not questions:
+        return ["No open questions."]
+    now = datetime.now(UTC)
+    lines: list[str] = []
+    for question in questions:
+        asked = datetime.fromisoformat(question["asked"])
+        lines.append(
+            f"[{question['question_id']}] asked {question['asked']}"
+            f" ({_age(now - asked)} ago) by {_printable(question['actor'])}"
+        )
+        for line in _printable(question["question"]).splitlines() or [""]:
+            lines.append(f"    {line}")
+        for number, option in enumerate(question["options"] or [], start=1):
+            lines.append(f"    --option {number}: {_printable(option)}")
+    lines.append('Answer with: robomate answer <id> "<text>"  or  robomate answer <id> --option N')
+    return lines
+
+
 def _inbox(as_json: bool, selector: str | None) -> None:
     """List the questions the orchestrator is waiting on the operator to answer."""
 
@@ -1393,21 +1854,8 @@ def _inbox(as_json: bool, selector: str | None) -> None:
     if as_json:
         print(json.dumps(questions))
         return
-    if not questions:
-        print("No open questions.")
-        return
-    now = datetime.now(UTC)
-    for question in questions:
-        asked = datetime.fromisoformat(question["asked"])
-        print(
-            f"[{question['question_id']}] asked {question['asked']}"
-            f" ({_age(now - asked)} ago) by {_printable(question['actor'])}"
-        )
-        for line in _printable(question["question"]).splitlines() or [""]:
-            print(f"    {line}")
-        for number, option in enumerate(question["options"] or [], start=1):
-            print(f"    --option {number}: {_printable(option)}")
-    print('Answer with: robomate answer <id> "<text>"  or  robomate answer <id> --option N')
+    for line in _inbox_lines(questions):
+        print(line)
 
 
 def _answer(question_id: int, text: str | None, option: int | None, selector: str | None) -> None:
@@ -1846,6 +2294,23 @@ def main() -> None:
     status = commands.add_parser("status", help="show this checkout's hub, or the one --hub names")
     status.add_argument("--json", action="store_true")
     status.add_argument(
+        "--brief", action="store_true", help="print only the run headline, for watch"
+    )
+    status.add_argument(
+        "--activity", action="store_true", help="with the headline: one line per agent"
+    )
+    status.add_argument(
+        "--inbox", action="store_true", help="print open operator questions below the headline"
+    )
+    status.add_argument(
+        "--notes", action="store_true", help="print each agent's latest progress note in full"
+    )
+    status.add_argument(
+        "--live",
+        action="store_true",
+        help="read the merge gate from the forge once, labelled live; never writes",
+    )
+    status.add_argument(
         "--snapshot",
         action="store_true",
         help="print the operator before-snapshot a manual resume prompt asks for",
@@ -1958,9 +2423,21 @@ def main() -> None:
             if args.stopped_at is not None and not args.snapshot:
                 raise ValueError("--stopped-at goes with --snapshot")
             if args.snapshot:
+                if args.brief or args.activity or args.inbox or args.notes or args.live:
+                    raise ValueError(
+                        "--brief/--activity/--inbox/--notes/--live go with a plain status"
+                    )
                 _snapshot(args.json, args.stopped_at, args.hub)
             else:
-                _status(args.json, args.hub)
+                _status(
+                    args.json,
+                    args.hub,
+                    brief=args.brief,
+                    activity=args.activity,
+                    inbox=args.inbox,
+                    notes=args.notes,
+                    live=args.live,
+                )
         elif args.command == "inbox":
             _inbox(args.json, args.hub)
         elif args.command == "answer":

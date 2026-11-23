@@ -11,6 +11,7 @@ from sqlite3 import Connection
 import pytest
 from agent_hub import store as store_module
 from agent_hub.database import database, initialize_database
+from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
 from agent_hub.signals import EVENT_KEY, context_key, task_key
 from agent_hub.store import (
     TAKEOVER_REFUSED_REMEDY,
@@ -2745,3 +2746,164 @@ async def test_takeover_fences_already_held_reply_wait(store: HubStore) -> None:
             await pending
     finally:
         pending.cancel()
+
+
+def _gate_report(pr_url: str, head: str) -> GateReport:
+    return GateReport(
+        pr_url=pr_url,
+        pr_state=PrState.OPEN,
+        expected_head_sha=head,
+        current_head_sha=head,
+        head_matches=True,
+        ci=CiStatus.PENDING,
+        checks=[Check("test", "pending", ""), Check("windows", "pending", "")],
+        base_ref="main",
+        base_sha="b" * 40,
+        main_sha="c" * 40,
+        base_behind_main=False,
+        mergeable=Mergeable.CLEAN,
+        merge_state_status="CLEAN",
+    )
+
+
+def test_status_summary_projects_run_activity_notes_and_latest_gate_reading(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """#653: the operator headline's facts are additive; no migration is needed."""
+
+    path = tmp_path / "hub.db"
+    initialize_database(path)
+    store = HubStore(path)
+    frozen_clock.install(store)
+    store.start_workflow(
+        "Address issue `RoboNater/robomate#653` and deliver it.", source="submit:stdin"
+    )
+    store.check_in("bob", CLAUDE)
+    task = store.assign_task("bob", "implementer", "IMPLEMENT", "secret instructions")
+    note = "ansi \x1b[2J, CR \r, NUL \x00, then a long tail " + "x" * 400
+    store.record_progress(task.id, "bob", note)
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "bob.jsonl").write_text("{}\n", encoding="utf-8")
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/653"
+    store.record_gate_reading(pr, head, report=_gate_report(pr, head), elapsed_s=0)
+    frozen_clock.advance(90)
+
+    summary = store.status_summary()
+
+    run = summary["run"]
+    assert run["issue"] == "653"
+    assert run["statement_source"] == "submit:stdin"
+    assert run["pr_url"] == pr
+    assert run["head_sha"] == head
+    assert run["age_s"] == pytest.approx(90, abs=1)
+    assert run["current_task"] == {
+        "id": task.id,
+        "role": "implementer",
+        "assignee": "bob",
+        "state": "submitted",
+        "head_sha": None,
+        "review_round": None,
+    }
+    assert run["last_task"] is None
+    assert run["review_rounds_used"] == 0
+    gate = summary["gate"]
+    assert gate is not None
+    assert gate["ci"] == "pending"
+    assert [check["name"] for check in gate["checks"]] == ["test", "windows"]
+    assert gate["pr_url"] == pr
+    assert gate["head_matches"] is True and gate["base_behind_main"] is False
+    assert gate["mergeable"] == "clean" and gate["merge_state_status"] == "CLEAN"
+    assert gate["age_s"] == pytest.approx(90, abs=1)
+    bob = next(agent for agent in summary["agents"] if agent["name"] == "bob")
+    assert bob["current_task_role"] == "implementer"
+    assert bob["latest_note"] == note
+    assert bob["last_progress_at"] is not None
+    assert bob["last_progress_age_s"] == pytest.approx(90, abs=1)
+    # Terminal display gets escapes, never the raw control bytes.
+    assert "\x1b" not in bob["latest_note_escaped"]
+    assert "\x00" not in bob["latest_note_escaped"]
+    assert "\\u001b" in bob["latest_note_escaped"]
+    assert bob["session_log"] == str(sessions / "bob.jsonl")
+
+
+def test_status_summary_reports_no_gate_reading_and_only_progress_notes(store: HubStore) -> None:
+    """#653: a question is never the note, and a run with no gate reading says so."""
+
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Fix", "Do it")
+    store.record_progress(task.id, "bob", "the progress note")
+    store.open_question(task.id, "bob", "secret question", "q653")
+
+    summary = store.status_summary()
+
+    assert summary["gate"] is None
+    bob = next(agent for agent in summary["agents"] if agent["name"] == "bob")
+    assert bob["latest_note"] == "the progress note"
+    assert "secret question" not in str(summary)
+
+
+def test_status_summary_names_the_current_review_round_and_last_terminal_task(
+    store: HubStore,
+) -> None:
+    """#653: the step is the open task's role and round, else the last terminal task."""
+
+    from agent_hub_common import (
+        Finding,
+        ImplementerOutcome,
+        ImplementerResult,
+        ReviewerResult,
+        ReviewerVerdict,
+    )
+
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/653"
+    store.check_in("bob")
+    store.check_in("charlie", AgentProfile(harness="codex"))
+    implement = store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    store.submit_result(
+        implement.id,
+        "bob",
+        ImplementerResult(
+            outcome=ImplementerOutcome.COMPLETED, pr_url=pr, head_sha=head, summary="PR open"
+        ),
+    )
+    first = store.assign_task("charlie", "reviewer", "REVIEW", "Review it", pr_head_sha=head)
+    store.submit_result(
+        first.id,
+        "charlie",
+        ReviewerResult(
+            verdict=ReviewerVerdict.CHANGES_REQUESTED,
+            pr_url=pr,
+            reviewed_head_sha=head,
+            blocking_findings=[Finding(id="r1-1", text="Fix it")],
+            summary="Changes requested",
+        ),
+    )
+    current = store.assign_task("charlie", "reviewer", "REVIEW", "Review again", pr_head_sha=head)
+
+    summary = store.status_summary()
+    assert summary["run"]["review_rounds_used"] == 1
+    assert summary["run"]["current_task"]["id"] == current.id
+    assert summary["run"]["current_task"]["role"] == "reviewer"
+    assert summary["run"]["current_task"]["review_round"] == 2
+    # The delivery binding stores the PR key case-folded, as it always has.
+    assert summary["run"]["pr_url"] == pr.lower()
+    assert summary["run"]["head_sha"] == head
+
+    store.submit_result(
+        current.id,
+        "charlie",
+        ReviewerResult(
+            verdict=ReviewerVerdict.APPROVED,
+            pr_url=pr,
+            reviewed_head_sha=head,
+            summary="Approved",
+        ),
+    )
+    summary = store.status_summary()
+    assert summary["run"]["current_task"] is None
+    assert summary["run"]["last_task"]["role"] == "reviewer"
+    assert summary["run"]["last_task"]["state"] == "completed"
+    assert summary["run"]["approved_sha"] == head

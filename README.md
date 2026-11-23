@@ -21,11 +21,21 @@ robomate up                       # in a checkout of your repo: starts that chec
 #   "Join robomate as bob, implementer."
 #   "Join robomate as charlie, reviewer."
 robomate submit sow.md            # or: robomate submit --issue 42
-robomate status                   # who's connected, what phase, which PR, what's blocked
+robomate status                   # run headline: state, step, PR, gate; then agents and detail
 robomate report                   # merged SHA, review findings and where each one went
 ```
 
 Alice's join response supplies the next steps for starting a queued run.
+
+`robomate status` opens with a headline block naming the run's state and open
+questions on their own lines, the current step (or last terminal one), the PR or
+MR with its short head and start age, the latest stored merge-gate reading, and
+agent liveness counts. `--brief` prints only that block for `watch`;
+`--activity` adds one line per agent, `--notes` shows each latest progress note
+in full, `--inbox` shows the questions `robomate inbox` would, and `--live`
+adds one read-only forge reading labelled `live` (status otherwise makes no
+forge call). The full hub, workflow and agent detail follows the headline, and
+`--json` carries the same facts additively for tools.
 
 **Works today (M1, M5):** `robomate up`, `down`, `status`, and `ls`, the `robomate mcp`
 bridge that connects every agent to the hub, and both GitHub and GitLab workflows. A hub belongs
