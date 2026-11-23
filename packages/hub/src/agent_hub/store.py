@@ -1837,8 +1837,11 @@ class HubStore:
         ).fetchone()
         if row is None:
             return None, None
+        # The branch label uses the same `#N` rule; keep one pattern (#653 r1-2).
+        from .branches import _ISSUE_NUMBER_RE
+
         text = bytes(row["bytes"]).decode("utf-8", errors="replace")
-        match = re.search(r"#(\d+)", text)
+        match = _ISSUE_NUMBER_RE.search(text)
         return str(row["source"]), None if match is None else match.group(1)
 
     def _review_rounds_used(self, connection: Connection, workflow_id: str) -> int:

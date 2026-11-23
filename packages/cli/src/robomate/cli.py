@@ -1345,7 +1345,8 @@ def _activity_lines(status: dict[str, Any]) -> list[str]:
             or "alice"
         )
         holding = alice.get("holding")
-        rows.append((str(name), alice, f"holding {holding}" if holding else "-"))
+        extra = f"holding {_printable(str(holding))}" if holding else "-"
+        rows.append((str(name), alice, extra))
     for agent in status.get("agents") or []:
         if not isinstance(agent, dict):
             continue
@@ -1366,7 +1367,7 @@ def _activity_lines(status: dict[str, Any]) -> list[str]:
             extra = "-"
         rows.append((str(agent.get("name") or "-"), activity, extra))
     return [
-        f"  {name:<8} {_last_call_text(activity):<30} {extra}".rstrip()
+        f"  {_printable(name):<8} {_last_call_text(activity):<30} {extra}".rstrip()
         for name, activity, extra in rows
     ]
 
@@ -1443,11 +1444,14 @@ def _headline_lines(
         cast(dict[str, Any], reported_run) if isinstance(reported_run, dict) else None
     )
     run_id = workflow.get("run_id") or status.get("run_id") or "-"
-    title = f"RUN {run_id}" if workflow else "RUN none"
+    title = f"RUN {_printable(str(run_id))}" if workflow else "RUN none"
     heading = f"── {title} "
     lines = [heading + "─" * max(0, _STATUS_RULE_WIDTH - len(heading))]
     run_status = workflow.get("status")
-    lines.append(_status_field("State", str(run_status).upper() if run_status else "NONE"))
+    # Legacy rows can carry unexpected text: escape every hub-supplied field.
+    lines.append(
+        _status_field("State", _printable(str(run_status).upper()) if run_status else "NONE")
+    )
     questions = status.get("operator_questions")
     if isinstance(questions, int) and not isinstance(questions, bool):
         plural = "" if questions == 1 else "s"
@@ -1479,15 +1483,17 @@ def _headline_lines(
         )
         verdict = f"approved: {'yes' if approved else 'no'}"
         if current:
-            role = str(current.get("role") or "-").upper()
+            role = _printable(str(current.get("role") or "-").upper())
             round_no = current.get("review_round")
             kind = f"{role} r{round_no}" if isinstance(round_no, int) else role
-            step = f"{kind} ({current.get('assignee') or '-'})   {verdict}"
+            who = _printable(str(current.get("assignee") or "-"))
+            step = f"{kind} ({who})   {verdict}"
         elif isinstance(run.get("last_task"), dict):
             last = run["last_task"]
-            role = str(last.get("role") or "-").upper()
-            state = last.get("state") or "-"
-            step = f"none — last {role} ({last.get('assignee') or '-'}) {state}   {verdict}"
+            role = _printable(str(last.get("role") or "-").upper())
+            who = _printable(str(last.get("assignee") or "-"))
+            state = _printable(str(last.get("state") or "-"))
+            step = f"none — last {role} ({who}) {state}   {verdict}"
         else:
             step = f"none   {verdict}"
         lines.append(_status_field("Step", step))

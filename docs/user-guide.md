@@ -719,9 +719,10 @@ Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
   as `robomate inbox` directly below the headline; without the flag, question
   text never appears in `status`.
 - `Step` names the current open task's role and assignee (with its review round
-  `r1`, `r2`, … where the task is a review), the PR or MR and the short head,
-  and whether a typed reviewer approval is bound to that head. With no open task
-  it names the last terminal step instead.
+  `r1`, `r2`, … where the task is a review) and whether a typed reviewer
+  approval is bound to the head under review. The `PR` line carries the PR or
+  MR number and short head. With no open task, `Step` names the last terminal
+  step instead.
 - `PR` names the run's PR or MR number and short head, the issue it addresses
   (or the statement's source and short SHA-256 when the statement names no
   issue), and the start time with its age. The date appears when the run did not

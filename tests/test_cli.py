@@ -5381,3 +5381,45 @@ def test_status_prints_an_older_hub_response_and_never_the_token(
     assert "Step:      none" in empty
     assert "PR:        none yet" in empty
     assert "Gate:      no gate reading yet" in empty
+
+
+def test_status_headline_escapes_legacy_names_ids_and_state() -> None:
+    """#653 r1-1: legacy rows cannot write escape sequences into the headline."""
+
+    status: dict[str, Any] = {
+        "workflow": {"status": "active\x1b[2J", "run_id": "r\x1b[31m"},
+        "run": {
+            "created": "2026-11-23T00:00:00Z",
+            "age_s": 0,
+            "pr_url": None,
+            "head_sha": None,
+            "approved_sha": None,
+            "current_task": {
+                "role": "reviewer",
+                "assignee": "eve\x1b[2J",
+                "head_sha": None,
+                "review_round": 1,
+            },
+            "last_task": None,
+        },
+        "gate": None,
+        "agents": [
+            {
+                "name": "bo\x1bb",
+                "alive": True,
+                "status": "busy",
+                "stalled": False,
+                "current_task": None,
+                "activity": {"last_call": "await_assignment", "last_call_age_s": None},
+            }
+        ],
+        "operator_questions": 0,
+        "queue_length": 0,
+    }
+
+    text = "\n".join(cli._headline_lines(status, activity=True))
+
+    assert "\x1b" not in text
+    assert "\\x1b" in text
+    assert "State:     ACTIVE" in text
+    assert "Step:      REVIEWER r1 (eve" in text
