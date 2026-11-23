@@ -200,6 +200,48 @@ startup stages `robomate up` marks on stderr and the hub's output, may keep
 its own polling loop instead of `wait_until_sync`. The rule still applies to
 its bound: `LIVENESS_S`, never a fixed budget (#372).
 
+### Clock techniques for fixtures and edge cases
+
+- **Capture the real `monotonic` at import when other tests fake the clock
+  (#475).** A real-time watchdog or hang guard in a shared test helper must
+  bind `from time import monotonic as _monotonic` at module import time rather
+  than calling `time.monotonic()` through the `time` module attribute, as
+  `Supervision._sweep` in [`tests/fake_harness.py`](../../tests/fake_harness.py)
+  and `test_watchdog_ignores_patched_monotonic` in
+  [`tests/test_agent_launcher.py`](../../tests/test_agent_launcher.py) do.
+  Otherwise a test that patches `monkeypatch.setattr(time, "monotonic", lambda:
+  1000.0)` shifts the clock under the already-running watchdog thread; on a CI
+  runner with less than ~940 s of uptime (`started < 940`), `_monotonic() -
+  started >= LIVENESS_S` fires immediately and kills healthy children (PR #472,
+  PR #476).
+- **Give each future-dated record its own "now".** When a test checks several
+  cases with timestamps a few seconds in the future against wall-clock
+  `datetime.now(UTC)`, compute `datetime.now(UTC)` fresh inside each iteration
+  rather than reusing one timestamp captured at the top of the test, as
+  `test_recorded_exit_allows_small_future_but_operator_stopped_at_stays_strict`
+  in [`tests/test_agent_recovery.py`](../../tests/test_agent_recovery.py) does.
+  On a loaded runner a 1 s future offset computed once before several calls can
+  already be in the past by the time the assertion runs (#209 / PR #306).
+- **Pin a known bad float base to reproduce a rounding flake.** When a float
+  subtraction such as `(start + elapsed) - start` can round one ULP short for
+  certain `time.monotonic()` bases, pin `frozen_clock.monotonic_start` to a base
+  known to round short and assert the rounding property right next to the pin,
+  as `test_mock_alice_drives_scaled_endurance_scenario` in
+  [`tests/test_mock_alice.py`](../../tests/test_mock_alice.py) does:
+
+  ```python
+  frozen_clock.monotonic_start = 1.9817403483677638
+  assert (
+      frozen_clock.monotonic_start + ENDURANCE_LONG_WORK_S - frozen_clock.monotonic_start
+      < ENDURANCE_LONG_WORK_S
+  )
+  ```
+
+  This turns a ~2-in-100,000 float flake into a deterministic every-run
+  reproduction without a soak loop, and the companion `assert` fails loudly if a
+  constant change ever makes the pinned base stop exercising the rounding edge
+  (#397 / PR #405).
+
 ## In CI and review
 
 CI runs the full suite under the probe twice on Linux: `probe` at 50 ms and `probe-100` at
