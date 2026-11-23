@@ -48,6 +48,14 @@ change request, or merge it.
    when the bug can depend on the environment. Name in the change request what
    was reverted and the failure it produced (see the repair-checklist step 5 in
    [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
+   When a test you add or change launches a subprocess, checks a process ID or
+   whether a process is alive, asserts what a child process receives
+   (environment, profile, config directory, a stubbed preflight), runs pytest
+   inside a test, or reads subprocess output or prints console text, follow the
+   matching recipe in
+   [testing-patterns](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-patterns.md).
+   These recipes apply on every platform, because the test also runs in the
+   required `windows` job.
    Before submitting, run the full `uv run --locked pytest -n auto` suite once,
    the issue's named acceptance commands, other repository validation, and every
    touched entry point. Re-read each edited function in final form. Record the

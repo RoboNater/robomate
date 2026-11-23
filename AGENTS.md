@@ -158,7 +158,11 @@ deadline the hub enforces on the `frozen_clock` fixture and pass it with
 literal. A reviewer runs each added or changed test file once at `ROBOMATE_TEST_DB_LATENCY_MS=250` without `-q` so the probe header shows. A failure there in a touched test blocks the PR as a timing defect (see [policy](docs/development/testing-time-and-waits.md)). A timing flake is fixed only once it has been reproduced (with
 `ROBOMATE_TEST_DB_LATENCY_MS` for an in-process hub; the doc gives the route
 for a subprocess hub) and passes under the same conditions.
-For Windows process identity and liveness, child environments, nested pytest, and Windows text decoding, see [`docs/development/testing-patterns.md`](docs/development/testing-patterns.md).
+
+Test patterns ([`docs/development/testing-patterns.md`](docs/development/testing-patterns.md)): read the matching recipe before writing or reviewing a test
+that launches a subprocess, checks a process ID or liveness, asserts what a child process receives (environment, profile, config directory, a
+stubbed preflight), runs pytest inside a test, or reads subprocess output or console text. The recipes apply on every platform, not only Windows:
+a test that passes on Linux also runs in the required `windows` job. Clocks and waits stay in the timing policy above.
 
 ## Invariants
 
