@@ -52,6 +52,7 @@ from agent_hub_common.registry import (
 )
 from agent_hub_common.startup import PREFIX as STAGE_PREFIX
 from conftest import reserve_port_block
+from delivery_support import finish_run
 from robomate.cli import _bind
 from timing import LIVENESS_S, wait_until_sync
 
@@ -1809,8 +1810,8 @@ def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_cal
     with previous.orchestrator_call(
         "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a", "set_workflow_status", 75
     ):
-        previous.set_workflow_status(
-            WorkflowStatus.DONE,
+        finish_run(
+            previous,
             "Merged",
             actor="alice",
             session="5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a",
@@ -4480,9 +4481,7 @@ def test_status_closeout_collection(
         },
     )
     if finalized:
-        seed.set_workflow_status(
-            WorkflowStatus.DONE, "Done", actor="alice", session="alice-session"
-        )
+        finish_run(seed, "Done", actor="alice", session="alice-session")
     process = start(root, env)
     try:
         await_hub(root, process)
@@ -4521,7 +4520,7 @@ def test_status_retains_export_failure_from_previous_queued_run(
     seed.start_workflow("Queued run")
     # Persist an obstruction so the startup retry also fails in the test hub.
     (directory / "runs" / failed_run / "closeout").write_text("blocked", encoding="utf-8")
-    seed.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session="alice-session")
+    finish_run(seed, "Done", actor="alice", session="alice-session")
     process = start(root, env)
     try:
         await_hub(root, process)

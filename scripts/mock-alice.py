@@ -49,7 +49,6 @@ from agent_hub_common import (
     HubSettings,
     TaskRole,
     TaskState,
-    WorkflowStatus,
 )
 from agent_hub_common.discovery import select_hub, verify_local_hub
 from mcp import ClientSession, StdioServerParameters
@@ -474,12 +473,6 @@ async def drive_endurance(
 
     elapsed_s = monotonic() - started
     store.release_agent(expected_agent)
-    store.set_workflow_status(
-        WorkflowStatus.DONE,
-        f"Endurance scenario completed {cycles} cycles in {elapsed_s:.1f}s",
-        actor="mock-alice",
-        session=None,
-    )
     row_counts = _verify_endurance_rows(store, expected_agent, task_ids, prior_task_ids)
     logger.info("Endurance scenario complete; database duplicate checks passed: %s", row_counts)
     return {
@@ -519,8 +512,6 @@ class AliceBackend(Protocol):
     async def reply(self, task_id: str, text: str, message_id: int) -> dict[str, Any]: ...
 
     async def release_agent(self, agent: str) -> dict[str, Any]: ...
-
-    async def set_workflow_status(self, status: str, summary: str) -> dict[str, Any]: ...
 
     async def request_closeout_reports(self, run_id: str) -> dict[str, Any]: ...
 
@@ -586,12 +577,6 @@ class DirectStoreBackend:
         released = asdict(self.store.release_agent(agent))
         await asyncio.sleep(0)
         return released
-
-    async def set_workflow_status(self, status: str, summary: str) -> dict[str, Any]:
-        self.store.set_workflow_status(
-            WorkflowStatus(status), summary, actor="mock-alice", session=None
-        )
-        return {"ok": True}
 
     async def request_closeout_reports(self, run_id: str) -> dict[str, Any]:
         return self.store.request_closeout_reports(run_id, "mock-alice", "mock-session", 100)
@@ -663,13 +648,6 @@ class McpBackend:
 
     async def release_agent(self, agent: str) -> dict[str, Any]:
         return await _call_dict(self.session, "release_agent", {"agent": agent})
-
-    async def set_workflow_status(self, status: str, summary: str) -> dict[str, Any]:
-        return await _call_dict(
-            self.session,
-            "set_workflow_status",
-            {"status": status, "summary": summary},
-        )
 
     async def request_closeout_reports(self, run_id: str) -> dict[str, Any]:
         return await _call_dict(
@@ -977,11 +955,13 @@ async def drive_one_task_with_backend(
             },
         )
         result_data["closeout"] = await backend.get_closeout_reports(run_id)
+        for agent in (await backend.get_state())["agents"]:
+            if agent["name"] in worker_names and agent["status"] in ("idle", "busy"):
+                await backend.release_agent(agent["name"])
     else:
         logger.info("Releasing worker %r...", agent_name)
         await backend.release_agent(agent_name)
-    await backend.set_workflow_status("done", f"Task {task_id} finished successfully")
-    logger.info("Workflow marked DONE. Mock Alice session complete.")
+    logger.info("Mock Alice session complete.")
     return result_data
 
 

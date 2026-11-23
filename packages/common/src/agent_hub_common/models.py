@@ -45,6 +45,7 @@ class WorkflowPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     max_review_rounds: int = Field(default=3, gt=0)
+    deliver: Literal["merge", "pr"] = "merge"
     merge_method: Literal["merge", "squash", "rebase"] = "squash"
     # `auto` probes CI presence at submit (M2 Step 4, #241); explicit bool skips
     # the probe. Stored workflow policy holds the resolved bool; `auto` lives

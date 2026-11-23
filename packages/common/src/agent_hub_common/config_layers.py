@@ -40,6 +40,7 @@ _ALL_LAYERS: tuple[LayerName, ...] = ("hub", "repository", "user")
 _POLICY_SCALAR_KEYS: frozenset[str] = frozenset(
     {
         "max_review_rounds",
+        "deliver",
         "merge_method",
         "allow_no_ci",
         "pairing_wait_s",

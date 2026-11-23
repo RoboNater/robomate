@@ -21,9 +21,9 @@ from agent_hub_common import (
     MetaKeys,
     ModelSource,
     TaskState,
-    WorkflowStatus,
 )
 from conftest import BASE_URL, TOKEN
+from delivery_support import finish_run
 
 
 def test_initialization_creates_complete_schema_and_is_idempotent(tmp_path: Path) -> None:
@@ -1193,12 +1193,12 @@ def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> 
     assert store.start_workflow() != "wf-done-1"
     # After the queued run is done with an empty queue, a fresh statement or
     # goal starts a brand-new run (not just a promoted hand-inserted row).
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     assert store.get_state()["queue"] == []
     new_id = store.start_workflow("Fresh after migration")
     assert new_id not in ("wf-done-1", hex_id, "wf-queued")
     assert store.get_state()["workflow"]["id"] == new_id
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     assert store.initialize_workflow("Another fresh goal") not in (
         "wf-done-1",
         hex_id,

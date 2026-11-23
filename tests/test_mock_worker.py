@@ -19,9 +19,9 @@ from agent_hub_common import (
     ReviewerResult,
     ReviewerVerdict,
     TaskState,
-    WorkflowStatus,
 )
 from conftest import BASE_URL, TOKEN, reserve_port_block
+from delivery_support import finish_run
 from timing import LIVENESS_S, wait_until
 from worker_mcp.config import WorkerSettings
 
@@ -522,9 +522,7 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
         actor="alice",
         session=None,
     )
-    store.set_workflow_status(
-        WorkflowStatus.DONE, "merged and wrapped up", actor="alice", session=None
-    )
+    finish_run(store, "merged and wrapped up", actor="alice", session=None)
 
     manifest_path = tmp_path / "run.json"
     manifest_path.write_text(

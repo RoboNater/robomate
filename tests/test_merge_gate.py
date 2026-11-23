@@ -27,6 +27,7 @@ from agent_hub.merge_gate import (
 from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import HubStore
 from conftest import MonotonicClock
+from delivery_support import finish_run
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -763,9 +764,17 @@ async def test_open_github_pr_does_not_report_merge_commit() -> None:
 @pytest.mark.parametrize("merged", [True, False])
 @pytest.mark.parametrize("reported_pr_url", [PR, f"  {PR}/\n", PR.upper()])
 async def test_post_merge_gate_populates_completed_run_and_manifest(
-    store: HubStore, merged: bool, reported_pr_url: str
+    tmp_path: Path, merged: bool, reported_pr_url: str
 ) -> None:
+    from agent_hub.database import initialize_database
+    from agent_hub.orchestrator import Caller
     from agent_hub_common import WorkflowStatus
+
+    store = HubStore(tmp_path / "hub.db")
+    initialize_database(store.path)
+    store.initialize_workflow(
+        "Deliver", {"closeout": False, "deliver": "merge" if merged else "pr"}
+    )
 
     # Anchor to the first run, then advance explicitly between runs. Real
     # wall time can step backwards on WSL2 (#209); this tests merge evidence,
@@ -802,7 +811,7 @@ async def test_post_merge_gate_populates_completed_run_and_manifest(
     body = json.loads(view(pr_state="MERGED" if merged else "OPEN").stdout)
     body["mergeCommit"] = {"oid": PUSHED} if merged else None
     merge_gate, _ = gate(FakeGh(view=GhResult(0, json.dumps(body), "")))
-    ops = OrchestratorOps(store, merge_gate)
+    ops = OrchestratorOps(store, merge_gate, caller=Caller("alice", None))
     reading = await ops.check_merge_gate(PR.replace("octo", "OcTo") + "/", HEAD)
     assert reading["merged_sha"] == (PUSHED if merged else None)
     # Later failed readings and unrelated merged PRs must not erase or leak
@@ -811,11 +820,15 @@ async def test_post_merge_gate_populates_completed_run_and_manifest(
     other_body = dict(body, state="MERGED", mergeCommit={"oid": MAIN})
     other_gate, _ = gate(FakeGh(view=GhResult(0, json.dumps(other_body), "")))
     await OrchestratorOps(store, other_gate).check_merge_gate(PR.replace("/7", "/8"), HEAD)
-    store.set_workflow_status(WorkflowStatus.DONE, "Closed out", actor="alice", session=None)
+    # Read through the gate's canonical URL at finalization as well.
+    final_gate, _ = gate(FakeGh(view=GhResult(0, json.dumps(body), "")))
+    await OrchestratorOps(store, final_gate, caller=Caller("alice", None)).set_workflow_status(
+        WorkflowStatus.DONE, "Closed out", run_id
+    )
     # Restart, then advance to the next run: both durable summaries retain it.
     store = HubStore(store.path, clock=clock)
     clock.advance(1)
-    store.start_workflow("Next run")
+    store.start_workflow("Next run", {"deliver": "pr"})
     previous = store.get_state()["previous_run"]
     assert previous["run_id"] == run_id and previous["approved_sha"] == HEAD
     assert previous["merged_sha"] == (PUSHED if merged else None)
@@ -823,7 +836,7 @@ async def test_post_merge_gate_populates_completed_run_and_manifest(
     assert manifest["merged_sha"] == previous["merged_sha"]
     assert manifest["approved_sha"] == HEAD
     # A subsequent run without a merge cannot inherit the previous commit.
-    store.set_workflow_status(WorkflowStatus.DONE, "No merge", actor="alice", session=None)
+    finish_run(store, "No merge", actor="alice", session=None)
     clock.advance(1)
     store.start_workflow("Third run")
     assert store.get_state()["previous_run"]["merged_sha"] is None

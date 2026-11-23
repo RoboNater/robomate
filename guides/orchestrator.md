@@ -187,6 +187,7 @@ Read `get_state.workflow.policy` and apply these defaults for omitted values:
 ```json
 {
   "max_review_rounds": 3,
+  "deliver": "merge",
   "merge_method": "squash",
   "allow_no_ci": false,
   "role_policy": {
@@ -295,7 +296,7 @@ until the wall-time rail expires.
 
 Once nothing remains for which a further event could arrive — close-out done,
 your own `submit_closeout_report` submitted, no open task and no open question —
-do not wait for another event: release the workers and set the workflow `done`.
+request `done` with the run ID before waiting for another event.
 Any unacknowledged final event is acknowledged with
 `wait_for_event(ack=<delivery_id>, timeout_s=0)` or not at all: `done` settles
 outstanding deliveries, so the final acknowledgement never costs a hold.
@@ -613,6 +614,10 @@ escalate before WRAP-UP (also on the already-merged recovery path).
 Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every
 check name/bucket. Never merge from a stale or unreadable gate.
 
+For an explicit `deliver: pr` run, leave the PR open once the same review,
+head, CI, base and mergeability checks pass. Proceed to WRAP-UP at that head
+and record that the PR remains unmerged by policy.
+
 ## Escalation
 
 <!-- Off-rails behavior: spec §5 Rails; recommendation style inherited from #42/#43. -->
@@ -749,7 +754,8 @@ Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/
 <!-- Ownership and closure: spec §5 WRAP-UP, #42; counter-only target: #408. -->
 
 The post-merge gate records `merged_sha` for the completed manifest and previous
-run summary; it creates no hub event. Source `CLOSE-OUT for <merged sha7>`
+run summary; it creates no hub event. For PR-only delivery use the approved SHA
+in the title and the same task completion as the source. Source `CLOSE-OUT for <merged sha7>`
 from the `task_completed` event at the end of the task chain that reached
 MERGE for the verified approved PR head. Retain its stable `EventRecord.id`
 while checking CI and merging; do not substitute a gate reading, decision,
@@ -818,13 +824,12 @@ Identical retries return the same receipt; different reports are rejected.
 Your report may arrive after the worker deadline, until run finalization.
 Missing reports are recorded explicitly, not reconstructed for another author.
 Your report's receipt is the record: the hub queues no inbox event for an
-orchestrator's own report. The next steps are `release_agent` for each worker,
-then `set_workflow_status(done)`, with no wait in between and no wait after
-your report.
+orchestrator's own report. Proceed directly to `set_workflow_status` with
+`status="done"` and the `run_id` you just reported on.
 
 Ordinary runs require no roadmap decision, post-merge completion edit or
 roadmap update. The PR's `Closes` reference closes the issue; triage maintains
-the plan. After verified merge, assign the implementer agent a typed `closeout`
+the plan. After verified delivery, assign the implementer agent a typed `closeout`
 task (`role="closeout"`, never `implementer`) even when no findings or steps
 are pending, unless this run's policy explicitly sets `closeout: false`.
 The hub snapshots pending findings,
@@ -832,14 +837,15 @@ indexed steps and effective repository settings into the assignment. The worker
 returns `CloseoutResult`; inspect failed or blocked outcomes and route correction.
 Retrospective reports are observations and do not replace this task.
 
-Only when the run used a counter, include in the CLOSE-OUT task the instruction to
+When the run used a counter and its PR merged, include in the CLOSE-OUT task the instruction to
 mark only its claim shipped in the run's reservations issue.
 Include the target, claimed value, merged PR URL and final SHA. Preserve the next
 value and every other in-flight claim. If a counter was dropped or the run is
 abandoned, release its unused claim without rewinding over other claims.
 Verify the shared issue directly with the forge appendix's issue-read command.
 If the shipped value, next value or claim is wrong or missing, send one
-`RESERVATION-CORRECTION for <close-out task id>` task, then verify again. Source
+`RESERVATION-CORRECTION for <close-out task id>` task with role `closeout`,
+then verify again. Source
 it from that CLOSE-OUT task's `task_completed` event, using its stable event
 `id` as `event_id`; do not reuse the event that sourced CLOSE-OUT. Inspect tasks
 first so replay routes the original correction rather than duplicating it.
@@ -848,13 +854,15 @@ Legacy prepared runs keep their durable goals, including an explicit roadmap
 obligation: follow that statement under the precedence rule instead of silently
 replacing it with these new defaults.
 
-When no task remains active, release both selected workers, set workflow status
-to `done`, and report a compact summary listing every issue the statement
+When no task remains active, request `done` using the current run's `run_id`.
+The hub reads the bound PR/MR afresh, checks the approved head and delivery
+policy, and requires a completed typed `CloseoutResult` unless close-out is
+disabled. It applies `on_done` and activates any queued run. Keep the workers
+available until this succeeds. Report a compact summary listing every issue the statement
 names and every PR the run opened or merged, approved and merged SHAs, review
 URL, tests/checks, pairing and each role-policy rule, each worker's
 recorded harness/provider/model/model source, and the workflow
 `statement_sha256` (#296) for the operator to compare with the hash
 `robomate submit` printed and `robomate status` shows. Do not wait for
 another event before concluding: once close-out is done, your own report is
-submitted and no task or question is open, release the workers and set `done`
-with no wait.
+submitted and no task or question is open, request `done` with no wait.

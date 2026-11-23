@@ -421,7 +421,7 @@
   },
   {
     "name": "set_workflow_status",
-    "description": "Set active/paused/done and save the summary in the audit log.\n\n        Escalate with ask_user. Leaving escalated is refused while any\n        operator question is open.\n        ",
+    "description": "Set active/paused/done and save the summary in the audit log.\n\n        Escalate with ask_user. Leaving escalated is refused while any\n        operator question is open.\n\n        For done, pass the run_id from get_state for the run you are finishing.\n        Requires fresh forge evidence for the approved PR/MR and delivery\n        policy, and a completed typed closeout unless disabled. Retrying done\n        with the same run_id is safe after the queue advances.\n        ",
     "inputSchema": {
       "$defs": {
         "WorkflowStatus": {
@@ -443,6 +443,18 @@
         "summary": {
           "title": "Summary",
           "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
         }
       },
       "required": [

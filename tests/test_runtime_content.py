@@ -430,7 +430,7 @@ def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
             "CI is red on the original run and that repair",
             "no policy-valid worker",
             "worker question not answered by trusted inputs",
-            "release both selected workers",
+            "Keep the workers available until this succeeds",
             "mark only its claim shipped",
             "neither `lost` nor `released`",
             "Closes <issue owner>/<issue repository>#<issue>",
@@ -546,8 +546,8 @@ def test_alice_never_holds_for_a_final_ack() -> None:
             "close-out done",
             "your own `submit_closeout_report` submitted",
             "no open task and no open question",
-            "do not wait for another event",
-            "release the workers and set the workflow `done`",
+            "before waiting for another event",
+            "request `done` with the run ID",
             "`wait_for_event(ack=<delivery_id>, timeout_s=0)`",
             "`done` settles",
         ),
@@ -557,10 +557,10 @@ def test_alice_never_holds_for_a_final_ack() -> None:
         wrap_up,
         (
             "the hub queues no inbox event for an orchestrator's own report",
-            "The next steps are `release_agent` for each worker,",
-            "then `set_workflow_status(done)`, with no wait in between",
+            "Proceed directly to `set_workflow_status`",
+            '`status="done"` and the `run_id` you just reported on',
             "Do not wait for another event before concluding",
-            "release the workers and set `done` with no wait",
+            "request `done` with no wait",
         ),
     )
 

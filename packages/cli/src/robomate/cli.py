@@ -1501,7 +1501,10 @@ def _render_issue_statement(issue: int, origin: str, forge: str) -> str:
         slug = parse_github_slug(origin)
     target = f"{slug}#{issue}" if slug else f"#{issue}"
     change_term = "merge request" if forge == "gitlab" else "pull request"
-    return f"Address issue `{target}`, merge its {change_term}, and close out."
+    return (
+        f"Address issue `{target}` and deliver its {change_term} according to the run policy "
+        "(merge by default). Then close out."
+    )
 
 
 def _submit(
@@ -1844,7 +1847,7 @@ def main() -> None:
         metavar="k=v",
         help=(
             "override a policy default for this run (repeatable; TOML values,"
-            " e.g. max_review_rounds=5, allow_no_ci=auto)"
+            " e.g. max_review_rounds=5, allow_no_ci=auto, deliver=pr)"
         ),
     )
     relocate = commands.add_parser(

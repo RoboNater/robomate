@@ -27,6 +27,7 @@ import pytest
 from agent_hub.database import initialize_database
 from agent_hub.store import HubStore
 from agent_hub_common.discovery import legacy_state_dir
+from delivery_support import finish_run
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("prepare_run", ROOT / "scripts/prepare-run.py")
@@ -563,8 +564,6 @@ def test_hub_with_all_done_workflows_accepts_a_new_run(
 ) -> None:
     """M2 Step 3: `check_hub_workflow` accepts a hub whose workflows are all done."""
 
-    from agent_hub_common import WorkflowStatus
-
     source = origin(tmp_path)
     target = running_hub(tmp_path, monkeypatch)
     database_path = target / ".robomate/hub.db"
@@ -573,7 +572,7 @@ def test_hub_with_all_done_workflows_accepts_a_new_run(
     first = PREPARE_RUN.prepare(str(source), run_dir, issue=42, hub_repo=target)
     store = HubStore(database_path)
     store.initialize_workflow(first["work"]["goal"], first["policy"])
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     # A new issue on the same hub with all workflows done prepares cleanly.
     second = PREPARE_RUN.prepare(str(source), tmp_path / "run2", issue=43, hub_repo=target)
     assert second["work"]["goal"] != first["work"]["goal"]
@@ -1148,7 +1147,8 @@ def test_issue_goal_defaults_to_no_reservations_target(
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     goal = manifest["work"]["goal"]
     assert goal.startswith(
-        f"Address issue `{tmp_path / 'origin'}#42`, merge its pull request, and close out."
+        f"Address issue `{tmp_path / 'origin'}#42`, "
+        "merge its pull request once the merge gate passes, and close out."
     )
     assert "No reservations issue was supplied" in goal
     assert "no roadmap edit" not in goal
@@ -4947,8 +4947,6 @@ def test_same_work_after_completion_queues_a_new_run(
 ) -> None:
     """r1-1: a done workflow is never reused; same work after done queues anew."""
 
-    from agent_hub_common import WorkflowStatus
-
     run_dir, manifest = prepare(tmp_path, monkeypatch)
     goal = manifest["work"]["goal"]
     policy = manifest["policy"]
@@ -4959,7 +4957,7 @@ def test_same_work_after_completion_queues_a_new_run(
     # Start and finish the run, as Alice would.
     store = HubStore(db_path)
     store.start_workflow()
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     assert HubStore(db_path).get_state()["queue"] == []
     # Preparing the same work again must queue a new run, not reuse the done one.
     second = PREPARE_RUN.queue_goal_in_hub(state_dir(tmp_path / "target"), goal, policy)

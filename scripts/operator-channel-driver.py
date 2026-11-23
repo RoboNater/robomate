@@ -666,7 +666,11 @@ async def scenario(
         workflow = await alice.call(
             "initialize_workflow",
             goal=f"Scripted operator-channel validation {run_id}: address {issue_url}",
-            policy={"merge_method": "squash", "role_policy": {"reviewer_harness_differs": False}},
+            policy={
+                "merge_method": "squash",
+                "closeout": False,
+                "role_policy": {"reviewer_harness_differs": False},
+            },
         )
         await bob.check_in()
         await charlie.check_in()
@@ -979,7 +983,12 @@ async def scenario(
             rationale=f"Gate passed; squash merge commit {merge_sha}",
             key=f"merged-{head}",
         )
-        await alice.call("set_workflow_status", status="done", summary=f"Merged {pr_url}")
+        await alice.call(
+            "set_workflow_status",
+            status="done",
+            summary=f"Merged {pr_url}",
+            run_id=workflow["run_id"],
+        )
         for name, client in ((IMPLEMENTER, bob), (REVIEWER, charlie)):
             await alice.call("release_agent", agent=name)
             if (await client.await_assignment(timeout_s=10)).get("release") is not True:

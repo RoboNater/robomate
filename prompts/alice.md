@@ -41,6 +41,7 @@ Policy:
 ```json
 {
   "max_review_rounds": 3,
+  "deliver": "merge",
   "merge_method": "squash",
   "allow_no_ci": false,
   "role_policy": {

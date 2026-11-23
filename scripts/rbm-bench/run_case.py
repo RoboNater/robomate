@@ -414,12 +414,6 @@ async def review_driver(
             await call(session, "wait_for_event", {"timeout_s": 1, "ack": ack})
         with contextlib.suppress(RuntimeError):
             await call(session, "release_agent", {"agent": "charlie"})
-        with contextlib.suppress(RuntimeError):
-            await call(
-                session,
-                "set_workflow_status",
-                {"status": "done", "summary": f"eval review {outcome['status']}"},
-            )
     journal.close()
     return outcome
 

@@ -22,6 +22,7 @@ from agent_hub_common import (
     WorkflowStatus,
 )
 from conftest import BASE_URL, TOKEN
+from delivery_support import finish_run
 from timing import LIVENESS_S, FrozenClock
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
@@ -519,7 +520,7 @@ async def test_alice_crashes_and_a_second_session_finishes_the_task(
     await worker_task
 
     assert result is not None
-    assert hub_store.get_state()["workflow"]["status"] == WorkflowStatus.DONE.value
+    assert hub_store.get_state()["workflow"]["status"] == WorkflowStatus.ACTIVE.value
 
     with database(hub_store.path) as conn:
         tasks = conn.execute("SELECT * FROM task").fetchall()
@@ -610,9 +611,7 @@ def _alice_acts(store: HubStore, event: EventRecord) -> None:
         store.reply(payload["task_id"], "Approved.", message_id=payload["message_id"])
     elif event.kind in (EventKind.TASK_COMPLETED, EventKind.TASK_FAILED):
         store.release_agent(payload["agent"])
-        store.set_workflow_status(
-            WorkflowStatus.DONE, f"Task {payload['task_id']} finished", actor="alice", session=None
-        )
+        finish_run(store, f"Task {payload['task_id']} finished", actor="alice", session=None)
     elif event.kind is EventKind.TASK_PROGRESS:
         pass  # Alice reads progress; she writes nothing on it.
     else:

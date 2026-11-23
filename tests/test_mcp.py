@@ -9,6 +9,7 @@ from agent_hub.database import database, initialize_database
 from agent_hub.mcp import create_mcp
 from agent_hub.store import HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile
+from delivery_support import DeliveredForge, seed_delivery
 
 TOOLS = {
     "request_closeout_reports",
@@ -35,7 +36,7 @@ async def test_tools_and_durable_actions(tmp_path: Path) -> None:
     path = tmp_path / "hub.db"
     initialize_database(path)
     store = HubStore(path)
-    server = create_mcp(store)
+    server = create_mcp(store, DeliveredForge())
 
     async def call(name: str, **args: Any) -> Any:
         result = await server.call_tool(name, args)
@@ -44,7 +45,7 @@ async def test_tools_and_durable_actions(tmp_path: Path) -> None:
 
     assert {t.name for t in await server.list_tools()} == TOOLS
     assert (await call("get_state"))["workflow"] is None
-    with pytest.raises(Exception, match="initialize_workflow.*set_workflow_status"):
+    with pytest.raises(Exception, match="done requires the run_id"):
         await call("set_workflow_status", status="done", summary="Too early")
     with pytest.raises(Exception, match="invalid workflow policy.*max_review_round"):
         await call(
@@ -102,7 +103,9 @@ async def test_tools_and_durable_actions(tmp_path: Path) -> None:
     await call("set_task_state", task_id=task["id"], state="failed", note="Stop")
     assert store.agent_by_name("bob").current_task_id is None  # type: ignore[union-attr]
     await call("release_agent", agent="bob")
-    await call("set_workflow_status", status="done", summary="Finished")
+    await call(
+        "set_workflow_status", status="done", summary="Finished", run_id=seed_delivery(store)
+    )
     await call("log_decision", summary="Decision", rationale="Because")
     state = HubStore(path).get_state()
     assert state["workflow"]["status"] == "done"

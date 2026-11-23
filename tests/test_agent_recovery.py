@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from agent_hub.store import HubStore
+from delivery_support import finish_run
 from test_alice_launcher import CODEX_ID, LAUNCHER
 
 RECOVERY = importlib.import_module("agent_recovery")
@@ -735,9 +736,7 @@ def test_done_live_and_queued_workflows_pick_live_one(
 ) -> None:
     """#299 item 3: an earlier done workflow, a live one and a queued one picks the live one."""
 
-    from agent_hub_common import WorkflowStatus
-
-    hub_store.set_workflow_status(WorkflowStatus.DONE, "done", actor="alice", session="s-1")
+    finish_run(hub_store, "done", actor="alice", session="s-1")
     live_id = hub_store.initialize_workflow("Live workflow goal", {})
     queued_id = hub_store.start_workflow(
         "Queued workflow goal", {}, source="cli", force_queued=True
@@ -1062,11 +1061,9 @@ def test_stale_task_from_earlier_workflow_is_not_evidence(
 ) -> None:
     """#299 r1-1: an open task left on a done workflow never vouches for the live one."""
 
-    from agent_hub_common import WorkflowStatus
-
     hub_store.check_in("bob")
     stale = hub_store.assign_task("bob", "implementer", "Old", "old work")
-    hub_store.set_workflow_status(WorkflowStatus.DONE, "done", actor="alice", session="s-1")
+    finish_run(hub_store, "done", actor="alice", session="s-1")
     live_id = hub_store.initialize_workflow("Live workflow goal", {})
     assert stale.workflow_id != live_id
     status = _detached(hub_store.status_summary(), "bob")

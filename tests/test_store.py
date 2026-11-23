@@ -39,6 +39,9 @@ from agent_hub_common import (
     to_iso,
     utcnow,
 )
+from delivery_support import HEAD as DELIVERY_HEAD
+from delivery_support import MERGED as DELIVERY_MERGED
+from delivery_support import finish_run
 from timing import LIVENESS_S, FrozenClock, wait_until
 
 CLAUDE = AgentProfile(
@@ -612,7 +615,7 @@ def test_a_canceled_source_event_task_is_superseded(store: HubStore) -> None:
     original = store.assign_task(
         "bob",
         "implementer",
-        "CLOSE-OUT for abc1234",
+        "Follow up for abc1234",
         "Finish the run",
         source_event_id=source.id,
     )
@@ -1086,7 +1089,7 @@ def test_assignment_and_status_require_explicit_workflow_initialization(
     with pytest.raises(ConflictError, match="initialize_workflow.*assign_task"):
         store.assign_task("bob", "implementer", "Task", "Work")
     with pytest.raises(ConflictError, match="initialize_workflow.*set_workflow_status"):
-        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+        store.set_workflow_status(WorkflowStatus.PAUSED, "Pause", actor="alice", session=None)
 
     assert store.get_state()["workflow"] is None
     store.initialize_workflow("Address issue #5", {"max_task_lease_min": 10})
@@ -1928,7 +1931,7 @@ def test_run_identity_has_unique_run_ids_and_statement(tmp_path: Path) -> None:
         ).fetchone()
         assert srow is not None and srow["sha256"] == row["statement_sha256"]
     # Second run after done gets a new run_id.
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     second = store.start_workflow("Second run")
     assert second != first
     second_state = store.get_state()
@@ -1956,7 +1959,7 @@ def test_sequential_queue_second_starts_after_first_done(tmp_path: Path) -> None
     with pytest.raises(ConflictError):
         store.start_workflow("Third statement")
     # Completing the first activates the second.
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     after = store.get_state()
     assert after["workflow"] is not None and after["workflow"]["id"] == second
     assert after["workflow"]["status"] == "active"
@@ -1979,13 +1982,13 @@ def test_backward_clock_previous_run_uses_insertion_order(tmp_path: Path) -> Non
     store = HubStore(path, clock=clock)
     store.start_workflow("First")
     first_run_id = store.get_state()["run_id"]
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     # Backward step: Second is created with an earlier wall-clock time.
     clock.now -= timedelta(seconds=1)
     store.start_workflow("Second")
     second_run_id = store.get_state()["run_id"]
     assert second_run_id != first_run_id
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     # The most recent done run is Second by insertion, not First by timestamp.
     state = store.get_state()
     assert state["workflow"] is not None and state["workflow"]["run_id"] == second_run_id
@@ -2043,7 +2046,7 @@ def test_backward_clock_live_queued_order_uses_insertion_order(tmp_path: Path) -
     assert state["workflow"] is not None and state["workflow"]["id"] == first
     assert len(state["queue"]) == 1 and state["queue"][0]["workflow_id"] == second
     # Completing the live run activates the queued one by insertion order.
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     after = store.get_state()
     assert after["workflow"] is not None and after["workflow"]["id"] == second
     assert after["previous_run"] is not None
@@ -2061,7 +2064,7 @@ def test_initialize_workflow_confirms_active_and_starts_new_after_done(
     first = store.initialize_workflow("Same goal")
     assert store.initialize_workflow("Same goal") == first
     first_run_id = store.get_state()["workflow"]["run_id"]
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     second = store.initialize_workflow("New goal")
     assert second != first
     assert store.get_state()["workflow"]["run_id"] != first_run_id
@@ -2120,14 +2123,13 @@ def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None
             "head_sha": "a" * 40,
         },
     )
-    restarted.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(restarted, "Done", actor="alice", session=None)
     completed = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert completed["status"] == "done" and completed["run_id"] == run_id
     assert completed["completed"] is not None
     assert completed["pr_url"] == "https://github.com/octo/sandbox/pull/7"
-    assert completed["approved_sha"] is None
-    # no post-merge gate reading, so null; a PR head is never used.
-    assert completed["merged_sha"] is None
+    assert completed["approved_sha"] == DELIVERY_HEAD
+    assert completed["merged_sha"] == DELIVERY_MERGED
     assert any(agent["name"] == "bob" for agent in completed["agents"])
 
 
@@ -2143,7 +2145,7 @@ def test_on_done_release_vs_standby(tmp_path: Path) -> None:
         bob = store.agent_by_name("bob")
         assert bob is not None
         assert bob.status is AgentStatus.IDLE
-        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+        finish_run(store, "Done", actor="alice", session=None)
         bob = store.agent_by_name("bob")
         assert bob is not None
         if expect_released:
@@ -2157,7 +2159,7 @@ def test_on_done_release_vs_standby(tmp_path: Path) -> None:
     store.initialize_workflow("First", {"on_done": "release"})
     store.check_in("bob")
     store.start_workflow("Second")
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     bob = store.agent_by_name("bob")
     assert bob is not None
     assert bob.status is AgentStatus.IDLE
@@ -2187,7 +2189,7 @@ def test_new_run_clears_stale_releases(tmp_path: Path) -> None:
     store.initialize_workflow("Run one")
     store.check_in("bob", worker_instance_id="bob-1")
     # Default on_done=release with an empty queue releases bob at done.
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     bob = store.agent_by_name("bob")
     assert bob is not None
     assert bob.status is AgentStatus.RELEASED
@@ -2284,7 +2286,7 @@ def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, e
     initialize_database(store.path)
     store.initialize_workflow("First", {"on_done": "release"})
     store.check_in("bob", worker_instance_id="old")
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     if entry == "initialize":
         store.initialize_workflow("Second")
     elif entry == "start":
@@ -2297,7 +2299,7 @@ def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, e
         store.release_agent("bob")
         store.check_in("charlie")
         store.start_workflow("Second")
-        store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+        finish_run(store, "Done", actor="alice", session=None)
         charlie = store.agent_by_name("charlie")
         assert charlie is not None and charlie.status is AgentStatus.IDLE
         store.assign_task("charlie", "implementer", "Build", "Do work")
@@ -2340,7 +2342,7 @@ def test_joined_workers_remain_assignable_between_runs(tmp_path: Path, queued: b
     store.check_in("bob", worker_instance_id="same")
     if queued:
         store.start_workflow("Second")
-    store.set_workflow_status(WorkflowStatus.DONE, "Done", actor="alice", session=None)
+    finish_run(store, "Done", actor="alice", session=None)
     if not queued:
         store.start_workflow("Second")
     bob = store.agent_by_name("bob")

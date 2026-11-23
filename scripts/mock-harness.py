@@ -53,6 +53,7 @@ SELECTION = ("ROBOMATE_HUB_ID", "ROBOMATE_HUB_URL", "ROBOMATE_TOKEN_FILE")
 LOGGED = (*IDENTITY, "UV_CACHE_DIR", "PYTEST_XDIST_AUTO_NUM_WORKERS", "PWD", "VIRTUAL_ENV", "PATH")
 BRIDGE_LOGGED = (*IDENTITY, *SELECTION)
 SHA = "0123456789abcdef0123456789abcdef01234567"
+PR = "https://github.com/example/scripted/pull/1"
 HOLD_S = 5.0
 DEADLINE_S = float(os.environ.get("MOCK_HARNESS_DEADLINE_S", "300"))
 EXIT_AFTER_JOIN = os.environ.get("MOCK_HARNESS_EXIT_AFTER_JOIN", "")
@@ -186,13 +187,24 @@ class Agent:
                     "verdict": "approved",
                     "summary": "Scripted approval.",
                     "reviewed_head_sha": assignment.get("pr_head_sha") or SHA,
-                    "pr_url": "https://example.invalid/pull/1",
+                    "pr_url": PR,
+                }
+            elif role == "closeout":
+                context = assignment["closeout_context"]
+                result = {
+                    "outcome": "completed",
+                    "summary": "Scripted close-out.",
+                    "items": [
+                        {"id": finding["id"], "action": "none", "reason": "Scripted run"}
+                        for finding in context["pending_findings"]
+                    ],
+                    "steps": [{"index": step["index"], "done": True} for step in context["steps"]],
                 }
             else:
                 result = {
                     "outcome": "completed",
                     "summary": "Scripted implementation.",
-                    "pr_url": "https://example.invalid/pull/1",
+                    "pr_url": PR,
                     "head_sha": SHA,
                     "commits": [SHA],
                     "tests": [{"command": "scripted", "status": "passed"}],
@@ -220,6 +232,7 @@ class Agent:
         implementation = review = ""
         implemented: tuple[int, str] | None = None
         reviewed = False
+        review_event = 0
         ack: str | None = None
         while not reviewed:
             self.check_time("the review")
@@ -246,6 +259,7 @@ class Agent:
                         implemented = (int(event["id"]), str(result.get("head_sha") or SHA))
                     elif payload.get("task_id") == review:
                         reviewed = True
+                        review_event = int(event["id"])
             if not implementation and "bob" in joined:
                 task = await self.call(
                     "assign_task",
@@ -270,9 +284,33 @@ class Agent:
         if ack:
             await self.call("wait_for_event", timeout_s=0, ack=ack)
         await self.closeout(run_id)
-        for worker in ("bob", "charlie"):
-            await self.call("release_agent", agent=worker)
-        await self.call("set_workflow_status", status="done", summary="Scripted run complete.")
+        workflow = (await self.call("get_state"))["workflow"]
+        if workflow["policy"].get("closeout", True):
+            task = await self.call(
+                "assign_task",
+                agent="bob",
+                role="closeout",
+                title="CLOSE-OUT",
+                instructions="Record scripted close-out.",
+                event_id=review_event,
+            )
+            ack = None
+            while True:
+                self.check_time("typed closeout")
+                delivery = await self.call("wait_for_event", timeout_s=HOLD_S, ack=ack)
+                event = delivery.get("event") or {}
+                ack = event.get("delivery_id")
+                if (event.get("payload") or {}).get("task_id") == task["id"]:
+                    if event["kind"] == "task_completed":
+                        break
+                    if event["kind"] == "task_failed":
+                        raise RuntimeError("scripted close-out failed")
+        await self.call(
+            "set_workflow_status",
+            status="done",
+            summary="Scripted run complete.",
+            run_id=run_id,
+        )
         say(f"alice marked run {run_id} done")
 
     async def closeout(self, run_id: str) -> None:
