@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import errno
 import hashlib
 import json
@@ -18,16 +17,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
-import anyio
-from agent_hub.forge_preflight import gitlab_preflight, parse_github_slug
-from agent_hub.main import serve_http
 from agent_hub_common import (
     MAX_STATEMENT_BYTES,
     HubSettings,
@@ -94,10 +90,9 @@ from agent_hub_common.startup import stage
 from agent_hub_common.startup import stages as startup_stages
 from agent_hub_common.stdio import escape_unencodable_output
 from agent_hub_common.workspace import create_clone
-from worker_mcp.main import run_worker_bridge, serve_mcp
-from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
-from robomate.clean import clean_worktrees, cleanup_target
+if TYPE_CHECKING:
+    from agent_hub.forge_preflight import PreflightCheck
 
 VERSION = "0.1.0"
 
@@ -262,6 +257,27 @@ def _hub_lock(state: Path) -> Iterator[None]:
                     fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+
+async def gitlab_preflight(origin: str) -> list[PreflightCheck]:
+    """Run the GitLab startup preflight, importing the forge stack only here (#378)."""
+
+    from agent_hub.forge_preflight import gitlab_preflight as run_gitlab_preflight
+
+    return await run_gitlab_preflight(origin)
+
+
+async def serve_http(
+    settings: HubSettings,
+    sockets: list[socket.socket],
+    hub_info: dict[str, Any],
+    on_started: Callable[[], None],
+) -> None:
+    """Serve the hub, importing the FastAPI/uvicorn stack only when `up` serves (#378)."""
+
+    from agent_hub.main import serve_http as run_serve_http
+
+    await run_serve_http(settings, sockets, hub_info, on_started)
 
 
 async def _up(args: argparse.Namespace) -> None:
@@ -1498,6 +1514,8 @@ def _render_issue_statement(issue: int, origin: str, forge: str) -> str:
         except Exception:
             slug = None
     else:
+        from agent_hub.forge_preflight import parse_github_slug
+
         slug = parse_github_slug(origin)
     target = f"{slug}#{issue}" if slug else f"#{issue}"
     change_term = "merge request" if forge == "gitlab" else "pull request"
@@ -1617,6 +1635,8 @@ def _relocate(selector: str | None) -> None:
 
 def _clean(selector: str | None) -> None:
     """Operator-only cleanup; serialize with startup and require a stopped hub."""
+
+    from robomate.clean import clean_worktrees, cleanup_target
 
     escape_unencodable_output()
     read_token_file(operator_token_path(), "operator token")
@@ -1768,6 +1788,9 @@ def _ls(as_json: bool) -> None:
 
 
 async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
+    from worker_mcp.main import run_worker_bridge, serve_mcp
+    from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
+
     if args.role in (None, "worker"):
         await run_worker_bridge(stdout, name=args.name, harness=args.harness)
     else:
@@ -1907,6 +1930,8 @@ def main() -> None:
     args = parser.parse_args()
     try:
         if args.command == "up":
+            import asyncio
+
             asyncio.run(_up(args))
         elif args.command == "down":
             if args.all:
@@ -1948,6 +1973,8 @@ def main() -> None:
         elif args.command == "forget":
             _forget(args.hubs, args.all, args.json)
         else:
+            import anyio
+
             logging.basicConfig(level=logging.INFO, stream=sys.stderr)
             with reserve_stdout() as protocol_stdout:
                 anyio.run(_mcp, args, protocol_stdout)
