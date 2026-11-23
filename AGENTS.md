@@ -74,6 +74,14 @@ select(.name=="windows") | .steps[] | select(.name=="Run changed test files")
 `tests/fake_harness.py` run only in the full suite, and pushes to `main` skip
 the step. It adds to, and doesn't replace, local runs of the affected tests.
 
+Windows step logs ([`docs/development/ci-windows-step-logs.md`](docs/development/ci-windows-step-logs.md)):
+the step `conclusion` above reads `success` even when the changed tests
+skipped, and the job log becomes available only after the whole job completes.
+To confirm the changed tests actually ran — the summary shows the expected
+count with `0 skipped`, or every skip explained — extract the step's pytest
+summary from the log with the recipe in the doc (PowerShell equivalent
+included).
+
 ```sh
 uv sync --locked --all-packages --dev
 uv run --locked ruff check .

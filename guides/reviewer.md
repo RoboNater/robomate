@@ -194,7 +194,11 @@ still the assigned head. When a material path requires native Windows, approve
 only after the relevant checks have passed on native Windows at the reviewed
 head. Cite the CI result or the native validation command and outcome; a job
 that ran and failed before reaching those tests, or passed while they skipped,
-is not a pass. Use `changes_requested` when blocking findings remain.
+is not a pass. To confirm the changed tests actually ran when only a green job
+is available, extract their pytest summary from the Windows job log with
+[ci-windows-step-logs](https://github.com/RoboNater/robomate/blob/main/docs/development/ci-windows-step-logs.md):
+the summary shows the expected test count with `0 skipped`, or explains every
+skip. Use `changes_requested` when blocking findings remain.
 Use `blocked` when review needs another party's action or the head moved, and
 `failed` when review execution itself failed. Keep the result under 32 KiB and
 put detailed evidence in the change-request comment.
