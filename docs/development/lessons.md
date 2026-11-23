@@ -70,7 +70,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Show a regression test fails without the fix, in a checkout like CI's | [PR 266][c266] item 3, [PR 306/2][c306] | [PR 379/1][c379], [PR 466/1][c466] (no remedy until #467); [PR 457/2][c457] *related* | applied: [#467][i467] / PR #484 (`guides/reviewer.md`, `guides/implementer.md`) |
 | A condition wait that is already true makes the test vacuous; run a test with its feature off | [PR 379/2][c379], [PR 432/7][c432] | — | applied: [#381][i381] (`testing-time-and-waits.md`) |
 | Give each negative case input that breaks only the rule under test; with overlapping safeguards, neutralize the fallback to isolate the layer a test claims to cover | [PR 494/2][c494], [PR 521/4][c521] | — (both found by the #467 check working in review) | applied: [#588][i588] (`guides/reviewer.md` step 4; repair checklist in `testing-time-and-waits.md`) |
-| Prove a nested pytest inherited the warning policy by injecting a warning | [PR 466/4][c466] | — | reference (testing doc: [#589][i589]) |
+| Prove a nested pytest inherited the warning policy by injecting a warning | [PR 466/4][c466] | — | reference ([`testing-patterns.md` §3](testing-patterns.md#3-nested-pytest), [#589][i589]) |
 | A test message that avoids the old wording proves type-based detection | [PR 274][c274] item 2 | — | reference |
 | A test that checks a document for required or forbidden text must search only the section that carries the requirement, anchored so it fails if the section moves. Prove it by mutation: required text placed only outside the section must fail; forbidden text inside the section must fail, and outside it must pass | [PR 586/1][c586] | — | untriaged |
 
@@ -87,12 +87,12 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Lesson | Sources | Recurred | Disposition |
 |---|---|---|---|
 | Generated and byte-compared files need `eol=lf`, and checks should normalize line endings on every input | [PR 584][c584] | earlier: `guides/**`, two [#4][i4] items; [PR 86/1][c86], [PR 86/3][c86], [PR 89/7][c89] *related* | applied: [#587][i587] (`sync-worker-prompt.py` normalizes both inputs; CI runs `--check` on Linux and Windows); tracked: [#590][i590] (evaluate a repo-wide LF default) |
-| On Windows, a venv `python.exe` starts the real interpreter as a child, so the recorded PID isn't `Popen.pid` | [PR 86/2][c86] (second, after #40 / PR #57) | [PR 476/1][c476] (remedy available: lesson only) | reference (testing doc: [#589][i589]) |
-| `os.kill(pid, 0)` sends Ctrl-C on Windows; use `process_alive` | [PR 472/3][c472] | — | applied: native probe in `agent_hub_common.registry` and `tests/fake_harness.py`; launcher tests assert the Windows path never sends signal 0 |
+| On Windows, a venv `python.exe` starts the real interpreter as a child, so the recorded PID isn't `Popen.pid` | [PR 86/2][c86] (second, after #40 / PR #57) | [PR 476/1][c476] (remedy available: lesson only) | reference ([`testing-patterns.md` §1](testing-patterns.md#1-windows-process-identity-and-liveness), [#589][i589]) |
+| `os.kill(pid, 0)` sends Ctrl-C on Windows; use `process_alive` | [PR 472/3][c472] | — | applied ([`testing-patterns.md` §1](testing-patterns.md#1-windows-process-identity-and-liveness), [#589][i589]): native probe in `agent_hub_common.registry` and `tests/fake_harness.py`; launcher tests assert the Windows path never sends signal 0 |
 | Isolate both user config directories in tests; run platform-branched paths on both platforms | [PR 284/1][c284] | — | applied: conftest `isolated_machine_state` |
 | Name the platform a local test count comes from; local counts can't speak for skipped platform cases | [PR 284/1][c284] | [PR 344/6][c344] (lesson only) | tracked: [#286 pilot][e286] records platform |
 | Approve Windows-only code only after Windows CI or native evidence on that head | [PR 476/5][c476] | — | applied: [#588][i588] (`guides/reviewer.md` approval decision, scoped to material native-Windows paths) |
-| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][c3body] | — | reference (testing doc candidate) |
+| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][c3body] | [#589 comment (PR 641)][e589] | reference ([`testing-patterns.md` §4](testing-patterns.md#4-windows-text-decoding-cp1252), [#589][i589]) |
 | `mypy --platform` reproduces a platform-only failure | [PR 86/6][c86] | [PR 89/3][c89] *same day, related* | reference (testing doc candidate) |
 | Don't monkeypatch `os.name` on Windows Python 3.12 | [PR 86/4][c86] | — | reference (testing doc candidate) |
 | Git for Windows `bin/bash.exe` is a forwarding launcher; log argv at every hop; PowerShell treats typographic quotes as quotes | [PR 344/1–2, 4][c344] | — | reference |
@@ -167,23 +167,24 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 
 ## Test techniques
 
-Candidates for a short testing reference. Clock and wait techniques belong in
-[`testing-time-and-waits.md`](testing-time-and-waits.md).
+See [`testing-patterns.md`](testing-patterns.md) for Windows processes, child
+environments, nested pytest and Windows text decoding, and
+[`testing-time-and-waits.md`](testing-time-and-waits.md) for clocks and waits.
 
 | Lesson | Sources | Disposition |
 |---|---|---|
-| Test the actual child environment and harness profile, not only argv; resume through the real guards | [PR 463/1–3][c463] | reference (testing doc: [#589][i589]) |
-| Nested pytest: fresh session, real config via `-c`, own `--basetemp`, `LIVENESS_S` bound | [PR 466/3–4][c466], [PR 459/5][c459] | reference (testing doc: [#589][i589]) |
+| Test the actual child environment and harness profile, not only argv; resume through the real guards | [PR 463/1–3][c463] | reference ([`testing-patterns.md` §2](testing-patterns.md#2-testing-the-real-child-environment), [#589][i589]) |
+| Nested pytest: fresh session, real config via `-c`, own `--basetemp`, `LIVENESS_S` bound | [PR 466/3–4][c466], [PR 459/5][c459] | reference ([`testing-patterns.md` §3](testing-patterns.md#3-nested-pytest), [#589][i589]) |
 | A behaviour that reads the working directory makes results depend on where the suite runs | [PR 459/1][c459] | applied: [#461][i461] |
-| A new launcher preflight needs a stub in every subprocess test | [PR 550/2][c550] | reference (testing doc: [#589][i589]) |
-| A check of a harness's config must resolve its relocation variable; a Codex TOML key isn't a server entry | [PR 535][c535] | reference (testing doc: [#589][i589]) |
+| A new launcher preflight needs a stub in every subprocess test | [PR 550/2][c550] | reference ([`testing-patterns.md` §2](testing-patterns.md#2-testing-the-real-child-environment), [#589][i589]) |
+| A check of a harness's config must resolve its relocation variable; a Codex TOML key isn't a server entry | [PR 535][c535] | reference ([`testing-patterns.md` §2](testing-patterns.md#2-testing-the-real-child-environment), [#589][i589]) |
 | Ask the real OpenCode CLI for effective permissions | [PR 521/3][c521] | reference |
 | Drive transport code once against a real misbehaving local server | [PR 419][c419] | reference (testing doc candidate) |
 | Carry a total deadline through every transport phase; a concurrency cap can starve healthy peers | [PR 266][c266] items 1–2 | reference |
 | Set `dispatcher.operator_token` after the app's lifespan starts | [PR 345][c345] | reference (testing doc candidate) |
 | Hold caps: `max_wait_s` and `TEST_WAIT_S` in test hubs; run the probe at 100 ms | [PR 379/3–4][c379] | applied in part: `probe-100` CI job |
-| Give each future-dated record its own "now"; pin a bad float base to reproduce a rounding flake | [PR 306/4][c306], [PR 405][c405] item 1 | reference (timing doc: [#589][i589]) |
-| Capture the real `monotonic` at import; a one-shot watchdog doesn't bound a resume loop | [PR 472/2, 4][c472], [PR 476/3][c476] *same incident* | applied: [#475][i475]; reference (timing doc: [#589][i589]) |
+| Give each future-dated record its own "now"; pin a bad float base to reproduce a rounding flake | [PR 306/4][c306], [PR 405][c405] item 1 | reference ([`testing-time-and-waits.md`](testing-time-and-waits.md#clock-techniques-for-fixtures-and-edge-cases), [#589][i589]) |
+| Capture the real `monotonic` at import; a one-shot watchdog doesn't bound a resume loop | [PR 472/2, 4][c472], [PR 476/3][c476] *same incident* | applied: [#475][i475]; reference ([`testing-time-and-waits.md`](testing-time-and-waits.md#clock-techniques-for-fixtures-and-edge-cases), [#589][i589]) |
 | A fake harness must not inherit production retry budgets | [PR 463/4][c463] | applied: [#464][i464] |
 | Normalize Markdown whitespace in content tests | [PR 410/4][c410] | reference |
 | A SQLite CHECK constraint is permanent; rowid order must survive table rebuilds; generated names pass the full validator; fail closed | [PR 259/4][c259], [PR 306/3][c306], [PR 348/2–3][c348] | reference |
@@ -219,6 +220,7 @@ Candidates for a short testing reference. Clock and wait techniques belong in
 [i590]: https://github.com/RoboNater/robomate/issues/590
 [e286]: https://github.com/RoboNater/robomate/issues/286#issuecomment-7012046991
 [e564]: https://github.com/RoboNater/robomate/issues/564#issuecomment-7012047562
+[e589]: https://github.com/RoboNater/robomate/issues/589#issuecomment-7089078777
 [i592]: https://github.com/RoboNater/robomate/issues/592
 [c3body]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015867200
 [c586]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015950995
