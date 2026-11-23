@@ -92,7 +92,7 @@ what prevention costs. Recurrence counts are a rough signal, not a score.
 | Isolate both user config directories in tests; run platform-branched paths on both platforms | [PR 284/1][c284] | — | applied: conftest `isolated_machine_state` |
 | Name the platform a local test count comes from; local counts can't speak for skipped platform cases | [PR 284/1][c284] | [PR 344/6][c344] (lesson only) | tracked: [#286 pilot][e286] records platform |
 | Approve Windows-only code only after Windows CI or native evidence on that head | [PR 476/5][c476] | — | applied: [#588][i588] (`guides/reviewer.md` approval decision, scoped to material native-Windows paths) |
-| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][c3body] | [PR 641][c641] | reference ([`testing-patterns.md` §4](testing-patterns.md#4-windows-text-decoding-cp1252), [#589][i589]) |
+| Text printed from served guides needs console-encoding coverage (cp1252) | [#3 body/6][c3body] | [#589 comment (PR 641)][e589] | reference ([`testing-patterns.md` §4](testing-patterns.md#4-windows-text-decoding-cp1252), [#589][i589]) |
 | `mypy --platform` reproduces a platform-only failure | [PR 86/6][c86] | [PR 89/3][c89] *same day, related* | reference (testing doc candidate) |
 | Don't monkeypatch `os.name` on Windows Python 3.12 | [PR 86/4][c86] | — | reference (testing doc candidate) |
 | Git for Windows `bin/bash.exe` is a forwarding launcher; log argv at every hop; PowerShell treats typographic quotes as quotes | [PR 344/1–2, 4][c344] | — | reference |
@@ -220,6 +220,7 @@ environments, nested pytest and Windows text decoding, and
 [i590]: https://github.com/RoboNater/robomate/issues/590
 [e286]: https://github.com/RoboNater/robomate/issues/286#issuecomment-7012046991
 [e564]: https://github.com/RoboNater/robomate/issues/564#issuecomment-7012047562
+[e589]: https://github.com/RoboNater/robomate/issues/589#issuecomment-7089078777
 [i592]: https://github.com/RoboNater/robomate/issues/592
 [c3body]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015867200
 [c586]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7015950995
@@ -263,4 +264,3 @@ environments, nested pytest and Windows text decoding, and
 [c560]: https://github.com/RoboNater/robomate/issues/3#issuecomment-6947022875
 [c570]: https://github.com/RoboNater/robomate/issues/3#issuecomment-6979018263
 [c584]: https://github.com/RoboNater/robomate/issues/3#issuecomment-7007607349
-[c641]: https://github.com/RoboNater/robomate/issues/589#issuecomment-7089078777

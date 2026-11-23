@@ -286,8 +286,8 @@ current test on `main`, and the **failure it catches**.
   a child writes UTF-8 bytes outside `cp1252` (such as `0x9d` in a UTF-8 right
   double quotation mark), `subprocess`'s background reader thread raises
   `UnicodeDecodeError: 'charmap' codec can't decode byte ...`. pytest surfaces
-  the thread failure only as `PytestUnhandledThreadExceptionWarning`, sets
-  `result.stdout` to `None`, and fails the test with a misleading
+  the thread failure only as `PytestUnhandledThreadExceptionWarning`;
+  `result.stdout` is left `None`, and the test fails with a misleading
   `AttributeError: 'NoneType' object has no attribute 'splitlines'` — and only
   on the `windows` CI job (#88 / PR #641, #164, #166).
 
