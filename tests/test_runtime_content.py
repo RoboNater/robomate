@@ -1195,6 +1195,80 @@ def test_testing_doc_isolates_mutation_negative_cases() -> None:
     )
 
 
+def test_testing_patterns_pointer_reaches_test_write_and_review_steps() -> None:
+    """#651: the recipes are linked where a test is written and where it is checked."""
+
+    patterns_link = (
+        "https://github.com/RoboNater/robomate/blob/main/docs/development/testing-patterns.md"
+    )
+    implementer_step = section(
+        read("guides/implementer.md"),
+        "5. During iteration, run the affected test files.",
+        "\n6. Push with",
+    )
+    reviewer_step = section(
+        read("guides/reviewer.md"),
+        "4. Run tests for the changed code",
+        "<!-- Progress visibility: #170. -->",
+    )
+    for step in (implementer_step, reviewer_step):
+        assert patterns_link in step, "testing-patterns is not linked in the test step"
+        assert step.index("testing-time-and-waits") < step.index(patterns_link)
+    # The triggers say what the test does, so they stay concrete and platform-neutral.
+    assert_fragments(
+        implementer_step,
+        (
+            "launches a subprocess",
+            "checks a process ID or whether a process is alive",
+            "asserts what a child process receives",
+            "environment",
+            "profile",
+            "config directory",
+            "a stubbed preflight",
+            "runs pytest inside a test",
+            "reads subprocess output",
+            "prints console text",
+            "These recipes apply on every platform",
+            "required `windows` job",
+        ),
+    )
+    assert_fragments(
+        reviewer_step,
+        (
+            "Check added or changed tests of the kinds listed",
+            "against the matching recipe",
+            '`text=True` without `encoding="utf-8"`',
+            "`os.kill(pid, 0)` as a liveness check",
+            "asserting `Popen.pid` equals the child's own PID",
+            "is a finding, even when Linux passes",
+        ),
+    )
+
+    after_timing = section(read("AGENTS.md"), "Time in tests", "## Invariants")
+    timing_paragraph, patterns_paragraph = after_timing.split("\n\n")[:2]
+    assert "testing-patterns" not in timing_paragraph
+    assert_fragments(
+        patterns_paragraph,
+        (
+            "Test patterns",
+            "[`docs/development/testing-patterns.md`](docs/development/testing-patterns.md)",
+            "launches a subprocess",
+            "checks a process ID or liveness",
+            "asserts what a child process receives",
+            "environment",
+            "profile",
+            "config directory",
+            "a stubbed preflight",
+            "runs pytest inside a test",
+            "reads subprocess output",
+            "console text",
+            "The recipes apply on every platform, not only Windows",
+            "required `windows` job",
+            "Clocks and waits stay in the timing policy above",
+        ),
+    )
+
+
 def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
     """#88: the orchestrator runs the process; the implementer and reviewer decide the work."""
     readme_how = section(read("README.md"), "## How it works", "## Guarantees")

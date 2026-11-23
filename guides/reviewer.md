@@ -54,6 +54,12 @@ merge the change request, or rely on the implementer's summary as evidence.
    without the fix is a blocking finding against the issue's regression-test
    acceptance item (see the repair-checklist step 5 in
    [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
+   Check added or changed tests of the kinds listed in
+   [testing-patterns](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-patterns.md)
+   against the matching recipe. A departure that would fail or hang on the
+   `windows` job (for example `text=True` without `encoding="utf-8"`,
+   `os.kill(pid, 0)` as a liveness check, or asserting `Popen.pid` equals the
+   child's own PID) is a finding, even when Linux passes.
    Give each negative case input that is valid except for the rule under test.
    When safeguards overlap, neutralize the fallback to show the layer the test
    claims to cover.
