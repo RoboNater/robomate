@@ -837,7 +837,7 @@ indexed steps and effective repository settings into the assignment. The worker
 returns `CloseoutResult`; inspect failed or blocked outcomes and route correction.
 Retrospective reports are observations and do not replace this task.
 
-When the run used a counter and its PR merged, include in the CLOSE-OUT task the instruction to
+Only when the run used a counter and its PR merged, include in the CLOSE-OUT task the instruction to
 mark only its claim shipped in the run's reservations issue.
 Include the target, claimed value, merged PR URL and final SHA. Preserve the next
 value and every other in-flight claim. If a counter was dropped or the run is
