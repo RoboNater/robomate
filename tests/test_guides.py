@@ -910,6 +910,28 @@ def test_served_reviewer_guide_carries_comment_items_deferrals_and_mutations(for
 
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_reviewer_guide_mutation_recipe_is_sandbox_safe(forge: str) -> None:
+    """#665: archive-copy default, absolute scratch path and pwd guard before edits."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, "reviewer", forge=forge).body)
+        .decode("utf-8")
+        .split()
+    )
+    for fragment in (
+        "`M=$(mktemp -d)` (an absolute path)",
+        '`git archive <sha> | tar -x -C "$M"`',
+        "<workspace>/.venv/bin/python -m pytest",
+        "editable installs still point at the workspace",
+        "fall back to `git worktree add` outside the sandbox",
+        'run `set -e`, `cd "$M" || exit 1` and `[ "$(pwd)" = "$M" ] || exit 1`',
+        'never `cd "$TMPDIR/…"`',
+        "confirm `git status` in the review worktree is clean at the reviewed head",
+    ):
+        assert fragment in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
 def test_served_reviewer_guide_requires_native_windows_evidence(forge: str) -> None:
     """#588: native-Windows paths are approved only on passing evidence at the head."""
 
