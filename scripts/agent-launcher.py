@@ -376,7 +376,7 @@ class Identity:
     telemetry_log: Path | None = None
     """The bridge's own JSONL (#512): the launcher reads its join rows, and the
     bridge writes no other run data there."""
-    workspace_setup: str = ""
+    workspace_setup: str = common.WORKSPACE_SETUP_AUTO
 
     def environment(self) -> dict[str, str]:
         provider = resolve_provider(self.harness, self.model)
@@ -446,6 +446,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
     workers = saved.get("pytest_workers")
     version = saved.get("harness_version")
     lane_tmp = saved.get("lane_tmp_dir")
+    setup = saved.get("workspace_setup")
     return Identity(
         harness,
         model,
@@ -454,7 +455,7 @@ def saved_identity(saved: Mapping[str, Any], harness: str, model: str, effort: s
         Path(cache) if isinstance(cache, str) and cache else None,
         workers if type(workers) is int and workers >= 0 else None,
         Path(lane_tmp) if isinstance(lane_tmp, str) and lane_tmp else None,
-        workspace_setup=str(saved.get("workspace_setup") or ""),
+        workspace_setup=setup if isinstance(setup, str) else common.WORKSPACE_SETUP_AUTO,
     )
 
 
@@ -1647,8 +1648,22 @@ def warn_windows_sandbox(agent: str, harness: str) -> None:
         )
 
 
-def setup_workspace(command: str, workdir: Path, env: Mapping[str, str]) -> None:
+def workspace_setup_command(setting: str, workdir: Path) -> str:
+    """The setup command for this worktree; ``auto`` means the default for a uv project.
+
+    The detection rule is a ``uv.lock`` at the worktree root, so a target that
+    is not a uv project starts untouched. Any other string is the command as
+    given, and an explicit empty string turns the default off (#603).
+    """
+
+    if setting.strip() != common.WORKSPACE_SETUP_AUTO:
+        return setting
+    return common.DEFAULT_WORKSPACE_SETUP if (workdir / "uv.lock").is_file() else ""
+
+
+def setup_workspace(setting: str, workdir: Path, env: Mapping[str, str]) -> None:
     """Run the operator's setup in the worktree before starting the harness."""
+    command = workspace_setup_command(setting, workdir)
     if not command.strip():
         return
     done = subprocess.run(
@@ -2320,7 +2335,10 @@ def parser() -> argparse.ArgumentParser:
         "--uv-cache-dir", help="the agent's own isolated UV_CACHE_DIR, created owner-only (#285)"
     )
     begin.add_argument(
-        "--workspace-setup", default="", help="shell command to prepare the worktree before launch"
+        "--workspace-setup",
+        default=common.WORKSPACE_SETUP_AUTO,
+        help="shell command to prepare the worktree before launch; 'auto' syncs a uv "
+        "project, and '' disables setup",
     )
     begin.add_argument("--lane-tmp-dir", help="the agent's explicitly assigned temporary root")
     begin.add_argument(

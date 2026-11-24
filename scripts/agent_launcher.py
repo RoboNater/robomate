@@ -38,6 +38,10 @@ DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
 DEFAULT_RESUME_TOTAL_S = 12 * 60 * 60.0
 DEFAULT_RESUME_SERIES_RESET_S = 5 * 60.0
 DEFAULT_READ_RETRIES = 5
+#: ``workspace_setup``'s sentinel: prepare a uv project, do nothing elsewhere (#603).
+WORKSPACE_SETUP_AUTO = "auto"
+#: What that sentinel runs, one definition shared with ``start-run.py``.
+DEFAULT_WORKSPACE_SETUP = "uv sync --locked --all-packages --dev"
 # Workers tolerate a hub restart without exhausting the short Alice read window (#165 r1-1).
 DEFAULT_WORKER_READ_RETRIES = 60
 DEFAULT_READ_RETRY_DELAY_S = 2.0
