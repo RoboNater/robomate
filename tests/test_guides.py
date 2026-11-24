@@ -950,9 +950,11 @@ def test_served_mutation_recipe_runs_the_copy_sources(role: str, forge: str) -> 
         "valid unless the change alters dependencies, entry points or the set of "
         "workspace packages",
         "removes `PYTHONPATH` from a child process",
-        "`tests/test_conftest.py:130` and `tests/test_workspace.py:863`",
+        "`test_isolated_machine_state_strips_launcher_identity` in `tests/test_conftest.py`",
+        "`test_no_cwd_bridge_ignores_lane_clone_identity` in `tests/test_workspace.py`",
         "relative to its own file",
-        "`git grep` with `cwd=ROOT` at `tests/test_runtime_content.py:1473`",
+        "`test_role_principle_and_decision_ownership_across_docs_and_guides`, "
+        "which runs `git grep` with `cwd=ROOT`",
         "control run in the same copy with the fix restored",
         "the failure without the fix must come from the test's own assertion",
         "about 60 s per test, about 2 minutes for the `bb72365` pair",

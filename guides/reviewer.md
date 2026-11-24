@@ -73,8 +73,10 @@ merge the change request, or rely on the implementer's summary as evidence.
    is valid unless the change alters dependencies, entry points or the set of
    workspace packages (the venv would need rebuilding), or the test under
    check removes `PYTHONPATH` from a child process (for example the
-   nested-pytest tests at `tests/test_conftest.py:130` and
-   `tests/test_workspace.py:863`). Those cases fall back to `git worktree add`
+   nested-pytest tests `test_isolated_machine_state_strips_launcher_identity`
+   in `tests/test_conftest.py` and
+   `test_no_cwd_bridge_ignores_lane_clone_identity` in
+   `tests/test_workspace.py`). Those cases fall back to `git worktree add`
    outside the sandbox; everything run in that worktree then also runs outside
    the sandbox.
 
@@ -82,9 +84,10 @@ merge the change request, or rely on the implementer's summary as evidence.
    `CHECKED_IN_GUIDES` does) or to the imported package; both then resolve into
    `$M`. A test that reads a fixed workspace path is not checked by the copy. A
    `git archive` copy has no `.git`, so a test that runs git against the
-   checkout (for example the `git grep` with `cwd=ROOT` at
-   `tests/test_runtime_content.py:1473`) finds no repository, or a different
-   one above `$M`; such tests also use the `git worktree add` fallback. A
+   checkout (for example
+   `test_role_principle_and_decision_ownership_across_docs_and_guides`, which
+   runs `git grep` with `cwd=ROOT`) finds no repository, or a different one
+   above `$M`; such tests also use the `git worktree add` fallback. A
    subprocess-hub mutation run is slow: with the fix removed, a test such as
    `tests/test_main.py`'s may fail only by waiting out its bound (about 60 s
    per test, about 2 minutes for the `bb72365` pair). That is the expected
