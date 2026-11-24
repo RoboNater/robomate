@@ -86,7 +86,7 @@ overrides never bypass identity/attachment guards.
 ## Recover an OpenCode 1.x conversation after a rejected tool call
 
 Check the affected agent's launcher log and OpenCode history. In the recorded
-incident, OpenCode rejected a `write` call missing `content` but kept it in
+incident, OpenCode rejected a `write` call missing `content` and kept it in
 history. Every later request failed immediately with provider HTTP 400
 `invalid_request_error` and `isRetryable: false`, even though the history fit
 within the model's context limit. Each resume added another failed turn.
@@ -106,30 +106,35 @@ database, and resuming agents. The operator performs the raw database edits.
 
 1. Have the operator stop the verified launcher and confirm its harness has
    exited. On the agent's host, identify the original `ses_…` conversation and
-   the database actually used by that agent's profile, checking any
+   the database actually used by that agent's profile. The usual filename is
+   `opencode.db`. Some install channels use `opencode-<channel>.db`. Check any
    `XDG_DATA_HOME` or `OPENCODE_DB` override. Denise's isolated OpenCode
-   profile has its own data directory.
+   profile has its own data directory. Use the verified path as `<database>`.
 2. Before any edit, have the operator create a backup in a fresh, private
    location and check that the backup passes `PRAGMA quick_check;` with
    result `ok`. SQLite's online backup gives a consistent snapshot while
    other OpenCode processes are writing. [SQLite Online Backup API](https://www.sqlite.org/backup.html).
 
    ```sh
-   sqlite3 "<opencode data dir>/opencode.db" ".backup '<file>'"
+   sqlite3 "<database>" ".backup '<file>'"
    sqlite3 -readonly "<file>" "PRAGMA quick_check;"
    ```
 
    Review the restore plan before proceeding. Restoring replaces the whole
    database, so other sessions' writes after the backup would be lost. Before
    restoring, close every OpenCode process or other client using that database.
-   Move `opencode.db` and its `opencode.db-wal` and `opencode.db-shm` files,
-   if present, aside together. Then copy the checked backup into the original
+   Move `<database>` and its `<database>-wal` and `<database>-shm` files, if
+   present, aside together. Then copy the checked backup into the original
    database path and verify it before reopening OpenCode.
 
 3. Reproduce on a fork. Use a working copy of the backup and set `OPENCODE_DB`
-   to that copy's absolute path for both probes. In the agent's worktree, with
-   hub tools disabled as for `ask`, substitute the original session ID and
-   provider/model in the probe.
+   to that copy's absolute path for both probes. Disable hub tools as `ask`
+   does by setting `OPENCODE_CONFIG_CONTENT` to
+   `{"mcp":{"robomate":{"enabled":false}}}`. If the variable already contains
+   JSON, set `mcp.robomate.enabled` to `false` there and preserve other
+   settings. Keep both overrides in the probe terminal and close it after
+   the second probe. In the agent's worktree, substitute the original session
+   ID and provider/model below.
 
    ```sh
    opencode run --session "<id>" --fork --model "<provider/model>" --format json "Reply with OK without using tools"
@@ -176,7 +181,7 @@ database, and resuming agents. The operator performs the raw database edits.
 7. Have the operator resume affected agents using their guarded resume commands
    or generated resume scripts. In the incident the operator had to pass
    `--confirm-stopped` after Ctrl-C. Use it if an exit is missing from the log
-   and only after verifying that both predecessor processes are stopped.
+   and only after verifying that the old harness and launcher are stopped.
    Confirm the original conversation resumes and hand control back to Alice.
 
 ## Authentication, evidence and reports
