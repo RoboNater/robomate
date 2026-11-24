@@ -2365,7 +2365,9 @@ def parser() -> argparse.ArgumentParser:
         help="separate Claude Code or Codex login; OpenCode and AntiGravity always use one",
     )
     check.add_argument("--model", default="")
-    check.add_argument("--effort", default="", help="reasoning effort; OpenCode uses its default")
+    check.add_argument(
+        "--effort", default="", help="reasoning effort override. Omit this option for OpenCode."
+    )
     check.add_argument(
         "--remote-worker",
         metavar="AGENT=HOST",

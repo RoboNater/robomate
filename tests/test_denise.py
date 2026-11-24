@@ -77,7 +77,7 @@ def test_effort_adapter_capability_is_separate_from_harness_support(
     joined = DENISE.resolve_settings(agents, joined=True)
     assert joined["status"] == ("ready" if harness == "opencode" else "skipped")
     assert joined["effort"] == ""
-    with pytest.raises(ValueError, match="--denise-effort is unsupported"):
+    with pytest.raises(ValueError, match="explicit effort is unsupported"):
         DENISE.resolve_settings(agents, effort="another-new-value", joined=True)
 
 

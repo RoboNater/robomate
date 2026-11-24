@@ -72,7 +72,9 @@ def resolve_settings(
     notes = {}
     if resolved_effort and effective not in EFFORT_SUPPORTED:
         if effort:
-            raise ValueError(f"--denise-effort is unsupported for interactive {effective}; omit it")
+            raise ValueError(
+                f"explicit effort is unsupported for interactive {effective}. Omit it."
+            )
         notes["effort_note"] = (
             f"Denise uses the {effective} default effort; "
             f"the consultation omits inherited effort {resolved_effort!r}"

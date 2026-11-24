@@ -118,10 +118,11 @@ COMMENTS = {
     "reservations": "Optional shared-counter reservations issue (N, #N or OWNER/REPO#N).",
     "forge": "github or gitlab; empty lets robomate up detect it from the origin.",
     "alice_harness": "claude, codex, opencode, antigravity or devin; model and effort optional.",
-    "denise_settings_from": "Denise inherits from alice, bob or charlie (default), or none.",
+    "denise_settings_from": "Denise inherits from alice, bob (default) or charlie, or none.",
     "denise_harness": "Doctor harness override: claude, codex, opencode or antigravity.",
     "denise_model": "Doctor model override. Inherits from the source when the harness matches.",
-    "denise_effort": "Doctor effort override. OpenCode consultations use the default effort.",
+    "denise_effort": "Doctor effort override. OpenCode consultations use the default effort. "
+    "Omit this option for OpenCode.",
     "denise_clean_login": "Use a separate per-run login for Claude Code or Codex. "
     "OpenCode and AntiGravity always use separate profiles.",
     "auto_start": "false prints each agent's interactive start command instead.",

@@ -335,7 +335,8 @@ separate checkout.
 | Claude Code and Codex | Use the operator's login by default. Choose `--clean-login` for a separate per-run profile. The launcher passes selected directories, disables MCP and requests interactive permissions. Actual Claude Code shell containment on Windows depends on the installation. |
 | OpenCode 1.x | Uses a separate per-run profile. Use `/connect` if the provider needs login. The launcher checks `opencode debug config` for enabled MCP, approves the selected external directories at the tool layer and asks for other external access. Shell commands retain OS access. Use on a trusted host. |
 | AntiGravity (`agy`) | Uses a separate per-run home; follow the sign-in prompt there. The launcher configures an empty MCP profile, review prompts and scoped workspace directories. Terminal containment depends on the installed CLI and host. Treat it as trusted-only where the terminal sandbox is unavailable. |
-| Devin, OpenCode 2.x and a doctor terminal on a worker-only host | Deferred. Run the doctor on the hub host with a supported harness. |
+| OpenCode 2.x | Compatibility is unverified. OpenCode 2.x migration is tracked in [#518](https://github.com/RoboNater/robomate/issues/518). |
+| Devin and a doctor terminal on a worker-only host | Deferred. Run the doctor on the hub host with a supported harness. |
 
 With OpenCode, a team effort setting is printed in a note and omitted from the
 doctor command. The consultation uses the harness default. If the effective MCP

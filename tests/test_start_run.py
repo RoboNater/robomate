@@ -236,6 +236,9 @@ def test_generated_default_config_reads_back_as_the_defaults(tmp_path: Path) -> 
     }
     text = path.read_text(encoding="utf-8")
     assert "[policy]" in text and "# merge_method" in text
+    inherits = "Denise inherits from alice, bob (default) or charlie, or none."
+    assert inherits in text
+    assert inherits in " ".join(START.parser().format_help().split())
     assert "Doctor harness override: claude, codex, opencode or antigravity." in text
     assert "OpenCode consultations use the default effort." in text
     # Generation never overwrites.
