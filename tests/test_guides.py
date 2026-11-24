@@ -926,7 +926,7 @@ def test_served_reviewer_guide_mutation_recipe_is_sandbox_safe(forge: str) -> No
         "fall back to `git worktree add` outside the sandbox",
         'run `set -e`, `cd "$M" || exit 1` and `[ "$(pwd)" = "$M" ] || exit 1`',
         'never `cd "$TMPDIR/…"`',
-        "confirm `git status` in the review worktree is clean at the reviewed head",
+        ("confirm `git status --porcelain --untracked-files=no` in the review worktree is empty"),
     ):
         assert fragment in text
 

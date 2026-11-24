@@ -60,8 +60,9 @@ merge the change request, or rely on the implementer's summary as evidence.
      `[ "$(pwd)" = "$M" ] || exit 1`;
    - never `cd "$TMPDIR/…"` in a command whose sandbox mode differs from the
      one that created the directory;
-   - after the check, confirm `git status` in the review worktree is clean at
-     the reviewed head.
+   - after the check, confirm `git status --porcelain --untracked-files=no` in
+     the review worktree is empty, so no tracked change remains at the reviewed
+     head.
 
    Temporary edits in such a scratch copy are allowed and are not "altering
    production files" as long as nothing is committed or pushed; when a
