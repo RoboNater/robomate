@@ -419,6 +419,33 @@ def test_each_agent_starts_headless_with_its_harness_model_effort_and_bounds(
         assert interactive[-1] == "--interactive" and "--max-resumes" not in interactive
 
 
+def test_workspace_setup_defaults_to_auto_and_an_explicit_empty_disables(tmp_path: Path) -> None:
+    """#603: unset and "auto" behave alike, and "" stays distinguishable through TOML and CLI."""
+
+    assert settings()[0]["workspace_setup"] == "auto"
+    assert settings("--workspace-setup", "")[0]["workspace_setup"] == ""
+    disabled = write(tmp_path / "disabled.toml", 'workspace_setup = ""\n')
+    assert settings("--config", str(disabled))[0]["workspace_setup"] == ""
+    plain = write(tmp_path / "plain.toml", 'account = "bot"\n')
+    assert settings("--config", str(plain))[0]["workspace_setup"] == "auto"
+
+
+@pytest.mark.parametrize(("setting", "expected"), [("auto", "auto"), ("", "")])
+def test_launch_words_always_name_the_workspace_setup(
+    tmp_path: Path, setting: str, expected: str
+) -> None:
+    """The launcher's own default is auto, so "" must reach it rather than be omitted."""
+
+    values, policy = settings("--run-dir", str(tmp_path / "run"), "--workspace-setup", setting)
+    run_dir = Path(values["run_dir"])
+    run = START.Run(values, policy, run_dir, run_dir / "run", "run")
+    run.versions = {"claude-code": "2.1.999", "codex": "0.999.0"}
+
+    words = START.launch_words(run, "bob", interactive=False)
+
+    assert words[words.index("--workspace-setup") + 1] == expected
+
+
 # -- end to end ----------------------------------------------------------------------
 
 

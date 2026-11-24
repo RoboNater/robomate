@@ -263,8 +263,8 @@ bob_model = "claude-opus-5-5"
 bob_effort = "high"
 charlie_harness = "codex"
 pytest_workers = 4
-# For robomate worktrees:
-workspace_setup = "uv sync --locked --all-packages --dev"
+# The default: uv sync in a worktree with uv.lock at its root; "" disables it.
+workspace_setup = "auto"
 
 [policy]
 merge_method = "squash"
@@ -416,7 +416,7 @@ The standard helper's keys, and what replaces each:
 | `denise_settings_from`, `denise_*` | Defaults to Bob's settings. Choose Alice, Bob, Charlie or `none`; `none` requires an explicit `denise_harness`. Model and effort inherit only when the harness matches. Empty overrides select the harness defaults when changing harnesses. The report prints the resolved doctor command. `denise_clean_login = true` (`--denise-clean-login`) requests a separate login for Claude Code or Codex; OpenCode and AntiGravity already use one. See [Consulting Denise](#consulting-denise-about-a-run). |
 | `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done, its agents are released, or Ctrl-C. |
 | `pytest_workers` | Same key, the agents' `PYTEST_XDIST_AUTO_NUM_WORKERS`; 0 clears an inherited value. |
-| `workspace_setup` | Optional shell command run in each agent worktree before launch, with its isolated cache and temporary directory. Empty by default. On manual resume it runs again if `.venv` is missing. A failure stops that agent’s launcher and prints the output; during `start-run` startup, a launcher failure aborts the team and stops the hub, as with other preflight failures. Setup time counts against `join_window_s` (120 seconds by default); increase it for slow downloads. Setup output appears on failure. |
+| `workspace_setup` | Shell command run in each agent worktree before launch, with its isolated cache and temporary directory. `"auto"` (the default, also used when the key is absent) runs `uv sync --locked --all-packages --dev` when the worktree has a `uv.lock` at its root and does nothing otherwise, so targets that are not uv projects start untouched. `""` disables setup; any other string is run as given. On manual resume it runs again if `.venv` is missing, keeping the setting the start recorded (an explicit `""` stays off). A failure stops that agent’s launcher and prints the output; during `start-run` startup, a launcher failure aborts the team and stops the hub, as with other preflight failures. Setup time counts against `join_window_s` (120 seconds by default); a cold sync on a slow link is best given a larger window. Setup output appears on failure. |
 | `stall_after_min`, `stall_action_after_min` | Read as `[policy]` keys. |
 | `--yes` (the hub is already running) | Not needed: the command starts or reuses the hub itself and never prompts. |
 | `--generate-default-config`, `--generate-config` | Same options. A merged config also saves `[policy]`. |
@@ -585,7 +585,7 @@ for the full selection order.
 
 ## Linux sandbox grants
 
-For robomate runs, set `workspace_setup = "uv sync --locked --all-packages --dev"` in the start-run config. The launcher prepares each worktree and its uv cache before the sandbox starts, so first validation does not need PyPI network grants.
+For robomate runs, `workspace_setup` defaults to `"auto"`, so the launcher syncs each worktree whose root has a `uv.lock` (with `uv sync --locked --all-packages --dev`) and its uv cache before the sandbox starts; first validation then needs no PyPI network grants. Set `workspace_setup = ""` to disable it, or give another shell command to replace it.
 
 ### Ubuntu 24.04 host setup
 

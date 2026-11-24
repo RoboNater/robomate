@@ -95,7 +95,7 @@ DEFAULTS: dict[str, str | int | float | bool] = {
     "denise_clean_login": False,
     "auto_start": True,
     "pytest_workers": 0,
-    "workspace_setup": "",
+    "workspace_setup": launcher_defaults.WORKSPACE_SETUP_AUTO,
     "max_resumes": -1,
     "resume_delay_s": launcher_defaults.DEFAULT_RESUME_DELAY_S,
     "resume_max_delay_s": launcher_defaults.DEFAULT_RESUME_MAX_DELAY_S,
@@ -127,7 +127,8 @@ COMMENTS = {
     "OpenCode and AntiGravity always use separate profiles.",
     "auto_start": "false prints each agent's interactive start command instead.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
-    "workspace_setup": "Optional shell command to prepare each agent worktree before launch.",
+    "workspace_setup": "Shell command to prepare each agent worktree before launch: auto "
+    "syncs a uv project, empty disables setup.",
     "max_resumes": "Launcher resume bounds; max_resumes = -1 is unlimited.",
     "join_window_s": "Maximum seconds for the team to join before startup fails.",
 }
@@ -817,8 +818,9 @@ def launch_words(run: Run, agent: str, *, interactive: bool) -> list[str]:
         "--pytest-workers",
         str(values["pytest_workers"]),
     ]
-    if values["workspace_setup"]:
-        words += ["--workspace-setup", str(values["workspace_setup"])]
+    # Always named: the launcher's own default is "auto", so an explicit empty
+    # string must reach it rather than be omitted (#603).
+    words += ["--workspace-setup", str(values["workspace_setup"])]
     for key in ("model", "effort"):
         if values[f"{agent}_{key}"]:
             words += [f"--{key}", str(values[f"{agent}_{key}"])]

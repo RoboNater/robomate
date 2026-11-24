@@ -2180,6 +2180,158 @@ def setup_command(code: str) -> str:
     return subprocess.list2cmdline(words) if os.name == "nt" else shlex.join(words)
 
 
+FAKE_UV = """\
+import json, os, sys
+from pathlib import Path
+row = {"argv": sys.argv[1:], "cwd": os.getcwd(), "cache": os.environ.get("UV_CACHE_DIR")}
+with Path(os.environ["UV_TEST_LOG"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(row) + "\\n")
+"""
+
+
+def fake_uv(bin_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A stand-in ``uv`` first on PATH, recording each call; returns its JSONL log."""
+
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "fake_uv.py"
+    script.write_text(FAKE_UV, encoding="utf-8")
+    if os.name == "nt":
+        (bin_dir / "uv.cmd").write_text(f'@"{sys.executable}" "{script}" %*\n', encoding="utf-8")
+    else:
+        (bin_dir / "uv").write_text(f"#!{sys.executable}\n{FAKE_UV}", encoding="utf-8")
+        (bin_dir / "uv").chmod(0o755)
+    log = bin_dir / "uv-calls.jsonl"
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("UV_TEST_LOG", str(log))
+    return log
+
+
+def uv_calls(log: Path) -> list[dict[str, Any]]:
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def start_agent(area: dict[str, Path], *options: str, agent: str = "bob") -> int:
+    """Start one agent whose hub releases it after the harness has launched once."""
+
+    active = {"workflow": workflow(), "agents": []}
+    released = {"workflow": workflow(), "agents": [agent_row("released", name=agent)]}
+    previous = len(launches(area))
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.info":
+            return {"hub_id": HUB}
+        return active if len(launches(area)) == previous else released
+
+    return invoke(
+        start_words(area, agent, "implementer", "claude-code", *options),
+        programs=programs(area),
+        reader=FakeHub(answer, agent),
+        workspace=workspace_of(area),
+    )
+
+
+@pytest.mark.parametrize("setting", [[], ["--workspace-setup", "auto"]], ids=["unset", "auto"])
+def test_workspace_setup_auto_syncs_a_uv_project(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, setting: list[str]
+) -> None:
+    """#603: the default prepares a worktree whose root has uv.lock, once, in that worktree."""
+
+    (area["worktree"] / "uv.lock").write_text("", encoding="utf-8")
+    log = fake_uv(area["root"] / "fake bin", monkeypatch)
+    cache = area["root"] / "tmp" / "bob" / "uv-cache"
+
+    assert start_agent(area, *setting, "--uv-cache-dir", str(cache)) == 0
+
+    assert uv_calls(log) == [
+        {
+            "argv": ["sync", "--locked", "--all-packages", "--dev"],
+            "cwd": str(area["worktree"]),
+            "cache": str(cache),
+        }
+    ]
+    assert len(launches(area)) == 1
+
+
+@pytest.mark.parametrize("setting", [[], ["--workspace-setup", "auto"]], ids=["unset", "auto"])
+def test_workspace_setup_auto_leaves_a_non_uv_worktree_alone(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, setting: list[str]
+) -> None:
+    log = fake_uv(area["root"] / "fake bin", monkeypatch)
+
+    assert start_agent(area, *setting) == 0
+
+    assert uv_calls(log) == []
+    assert len(launches(area)) == 1
+
+
+def test_workspace_setup_empty_disables_auto_even_with_uv_lock(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (area["worktree"] / "uv.lock").write_text("", encoding="utf-8")
+    log = fake_uv(area["root"] / "fake bin", monkeypatch)
+
+    assert start_agent(area, "--workspace-setup", "") == 0
+
+    assert uv_calls(log) == []
+    assert len(launches(area)) == 1
+
+
+@pytest.mark.parametrize(
+    ("saved", "expected"),
+    [("", 0), ("auto", 1), (None, 1)],
+    ids=["explicit-empty", "auto", "unrecorded"],
+)
+def test_resume_keeps_the_recorded_workspace_setup(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    saved: str | None,
+    expected: int,
+) -> None:
+    """#603: an explicit "" stays off across resume; auto (or an old row) still syncs."""
+
+    (area["worktree"] / "uv.lock").write_text("", encoding="utf-8")
+    log = fake_uv(area["root"] / "fake bin", monkeypatch)
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00003"
+    now = datetime.now(UTC)
+    if saved is None:
+        saved_log(area, conversation, now - timedelta(minutes=10), now - timedelta(minutes=1))
+    else:
+        saved_log(
+            area,
+            conversation,
+            now - timedelta(minutes=10),
+            now - timedelta(minutes=1),
+            workspace_setup=saved,
+        )
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    status = after_launches(
+        area,
+        {"workflow": live, "agents": [agent_row()]},
+        {"workflow": live, "agents": [agent_row("released", context="c2")]},
+    )
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.snapshot":
+            return {"hub_id": HUB, "workflow": live, "tasks": [], "taken_at": now.isoformat()}
+        if method == "hub.questions":
+            return {"questions": []}
+        return status(method)
+
+    code = invoke(
+        ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"],
+        programs=programs(area),
+        reader=FakeHub(answer),
+    )
+
+    assert code == 0
+    assert len(uv_calls(log)) == expected
+    assert [call["argv"] for call in uv_calls(log)] == [
+        ["sync", "--locked", "--all-packages", "--dev"]
+    ] * expected
+
+
 def test_workspace_setup_runs_per_start_and_failure_is_isolated(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
