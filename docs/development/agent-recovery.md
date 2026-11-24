@@ -15,6 +15,12 @@ There are two kinds of run until M2 Step 11 removes the second:
 [An agent that stops working but keeps running](#an-agent-that-stops-working-but-keeps-running)
 applies to both.
 
+For interactive diagnosis on the hub host, use [Consulting Denise about a
+run](../user-guide.md#consulting-denise-about-a-run) and the
+[local Denise guide](../denise/guide.md). Denise can open the saved run while
+the hub is down. Recovery uses the guarded commands below after the operator
+requests it.
+
 ## Joined agents
 
 <!-- Join takeover: §5, §7.5. Launcher: M2 Step 10, #247. -->
@@ -208,6 +214,12 @@ and pass it to `resume <agent> --resume-session ID`, which records it with
 
 ### Remote hosts
 
+For Denise, run `agent-launcher.py doctor` on the hub host and add
+`--remote-worker AGENT=HOST` for each known worker host. The consultation marks
+remote session and process evidence unavailable there. Use the worker-side
+credentials and session directory below to perform guarded resume on the
+verified worker host.
+
 On a host without the hub, create the clone with
 `robomate workspace <agent> --clone <path> --hub-url <url> --token-file <file>`
 (§6), then pass the same hub details, a local sessions directory and the clone:
@@ -228,42 +240,19 @@ take precedence over the file.
 ### Denise's doctor entry
 
 ```sh
-uv run --project <robomate checkout> python scripts/agent-launcher.py doctor \
-    --hub <hub> --run <run_id> --harness claude|codex [--target <checkout>]
+uv run --locked python scripts/agent-launcher.py doctor \
+    --hub /path/to/hub-checkout --run RUN_ID --harness codex
 ```
 
-`doctor` is separate from `start`: it never calls `workspace` or `join`,
-starts no supervision, and makes no HTTP call, so it works with the hub
-stopped. It reads the hub's state location and `runs/<run_id>/manifest.json`
-locally. A missing run lists the hub's runs and creates nothing. Each
-consultation writes `context.json` and `startup.md` under
+The doctor reads the hub's state location and `runs/<run_id>/manifest.json`
+locally and opens an interactive consultation in `denise/workspace`. A
+missing run lists the saved runs. Each consultation writes `context.json`
+and `startup.md` under
 `denise/consultations/<id>/` and a matching `denise/reports/<id>.md`.
-The context lists the run, hub, target and robomate tooling separately.
-Denise starts interactively in `denise/workspace`, using the operator's
-existing home and login by default (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` pass
-through unchanged). User hooks, plugins and skills may load. Use `--clean-login`
-for her separate per-run profile in `denise/configs/claude` or
-`denise/configs/codex`; log in with `/login` or
-`CODEX_HOME=<profile> codex login` as printed at launch.
-
-Claude Code gets `--strict-mcp-config` without `--mcp-config` and
-`--permission-mode default`. Codex lists configured MCP servers, disables
-each by name, and verifies with the same launch overrides that none is enabled;
-a failed check refuses startup and recommends `--clean-login`.
-`mcp_servers={}` merges existing entries on codex-cli 0.167.0 and is not used
-as a clearing flag. Codex gets `approval_policy=on-request` and
-`sandbox_mode=workspace-write`. Both clear inherited `ROBOMATE_HUB_URL` and
-`ROBOMATE_TOKEN*` along with worker identity and launcher variables.
-Denise reads `docs/denise/guide.md` and receives directory grants for the
-selected run, hub state, hub and target checkouts, and their git common
-directories. Both harnesses reserve `--add-dir` for these repair roots.
-The context names a separate robomate tooling checkout for reading the guide
-and recovery docs under the harness's normal interactive permissions.
-Use `--model`, `--effort` and `--clean-login` to configure the consultation.
-Live Bash and native PowerShell acceptance checks include whether each harness
-can read the separate tooling checkout and which permissions it requests.
-These checks and host-specific grant checks are tracked in
-[#254](https://github.com/RoboNater/robomate/issues/254).
+Use `--target` for a separate affected checkout. See the
+[doctor harness table](../user-guide.md#consulting-denise-about-a-run) for
+login and directory access and the [local guide](../denise/guide.md) for
+MCP isolation and decisions during recovery.
 
 ### Limits
 

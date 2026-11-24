@@ -12,6 +12,9 @@ and `assign_task(role="rebase")` points workers at it.
 The orchestrator receives `orchestrator.md` and its hash at `join`; the skill
 is a pointer to that tool. Prepared-run prompts stay supported until M2 Step 11.
 
+Denise's [operator consultation guide](../docs/denise/guide.md) lives in the
+local documentation, outside the hub's served role guides.
+
 File names are standing or task role names: lowercase
 slugs matching `[a-z][a-z0-9-]*`, with a `.md` suffix. Anything else directly here —
 this README included — is not a role and is not served directly.
