@@ -43,16 +43,34 @@ merge the change request, or rely on the implementer's summary as evidence.
    `uv run --locked pytest -n auto` only when CI is absent on that head or the
    change risks the test harness itself. When the change adds or the issue names
    a regression test, independently confirm that at least one regression test
-   fails with the fix removed: copy the reviewed head to a scratch checkout
-   outside your workspace (a detached `git worktree` in the harness temporary
-   directory), revert or remove the fix there, and run the test. Temporary edits
-   in such a scratch copy are allowed and are not "altering production files" as
-   long as nothing is committed or pushed; when a production file must stay
-   untouched, use a test-only `sitecustomize.py` shim in a scratch directory on
-   `PYTHONPATH`, gated by an environment variable, that patches the fix out at
-   interpreter start instead (see #4). A regression test that passes with and
-   without the fix is a blocking finding against the issue's regression-test
-   acceptance item (see the repair-checklist step 5 in
+   fails with the fix removed. The default recipe is a sandbox-friendly copy:
+   `M=$(mktemp -d)` (an absolute path), `git archive <sha> | tar -x -C "$M"`,
+   restore the pre-fix changed files there (for example
+   `git archive <base> <path> | tar -x -C "$M"`), and run the test from `$M`
+   with the workspace venv, `<workspace>/.venv/bin/python -m pytest …`. That is
+   valid only when the tests under check do not import changed package code,
+   because the workspace venv's editable installs still point at the workspace;
+   a fresh scratch copy cannot `uv sync` in the sandbox, since PyPI is blocked.
+   When the tests do import changed package code, fall back to
+   `git worktree add` outside the sandbox; everything run in that worktree then
+   also runs outside the sandbox. For every recipe:
+
+   - use an absolute scratch path;
+   - before any edit, run `set -e`, `cd "$M" || exit 1` and
+     `[ "$(pwd)" = "$M" ] || exit 1`;
+   - never `cd "$TMPDIR/…"` in a command whose sandbox mode differs from the
+     one that created the directory;
+   - after the check, confirm `git status --porcelain --untracked-files=no` in
+     the review worktree is empty, so no tracked change remains at the reviewed
+     head.
+
+   Temporary edits in such a scratch copy are allowed and are not "altering
+   production files" as long as nothing is committed or pushed; when a
+   production file must stay untouched, use a test-only `sitecustomize.py` shim
+   in a scratch directory on `PYTHONPATH`, gated by an environment variable,
+   that patches the fix out at interpreter start instead (see #4). A regression
+   test that passes with and without the fix is a blocking finding against the
+   issue's regression-test acceptance item (see the repair-checklist step 5 in
    [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
    Check added or changed tests of the kinds listed in
    [testing-patterns](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-patterns.md)
