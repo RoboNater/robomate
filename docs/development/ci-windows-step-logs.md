@@ -62,15 +62,31 @@ follows the `##[endgroup]` that closes that group, stopping at the next
 
 The step runs `uv run --locked pytest -n auto -rs` on the changed test files
 ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)), so the
-extracted lines are the pytest summary and — thanks to `-rs` — one
-`SKIPPED [1] <file>:<line>: <reason>` line per skipped test. The step passed
-for real when:
+extracted lines are the pytest summary and, with `-rs`, skip-reason lines.
+Pytest groups skips in that summary: one
+`SKIPPED [N] <file>:<line>: <reason>` line per group of skips that share a
+location and a reason, with `N` counting the group. `SKIPPED [2]` therefore
+names a location and a reason but not which parametrized cases skipped, so a
+folded group can hide the material test — the one that needs native Windows to
+be meaningful — among its skips. Logs from before `-rs` (run 45109110210
+reported `1709 passed, 31 skipped` with no reason lines) carry no skip details
+at all.
+
+The step passed for real when:
 
 - the summary shows the number of tests the changed files contain — count
   them locally with `uv run --locked pytest --collect-only -q <files>` — and
   `0 skipped`; or
-- every `SKIPPED [N]` line is explained, and none of the skipped tests is a
-  material one, one that needs native Windows to be meaningful.
+- the `SKIPPED [N]` lines account for the summary's whole skipped count (the
+  bracketed counts add up to it), every line's reason is understood, and no
+  skipped group is at the material test's location.
+
+When a folded group leaves the material test's outcome unclear — the summary
+cannot say which parametrized case skipped, or the log has no reason lines —
+the step's summary alone is not evidence. Get positive native Windows evidence
+before approving: run the material test on native Windows with verbose
+per-test outcomes, for example `uv run --locked pytest <files> -vv`, which
+prints `PASSED` or `SKIPPED (reason)` for every node ID, and cite that run.
 
 `No changed test files to run.` means the PR changed no `tests/test_*.py`
 file, so the step ran nothing; changed helpers such as `tests/conftest.py` and

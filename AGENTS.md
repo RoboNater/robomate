@@ -78,7 +78,8 @@ Windows step logs ([`docs/development/ci-windows-step-logs.md`](docs/development
 the step `conclusion` above reads `success` even when the changed tests
 skipped, and the job log becomes available only after the whole job completes.
 To confirm the changed tests actually ran — the summary shows the expected
-count with `0 skipped`, or every skip explained — extract the step's pytest
+count with `0 skipped`, or the reported skips are all accounted for and the
+material test's Windows outcome is established — extract the step's pytest
 summary from the log with the recipe in the doc (PowerShell equivalent
 included).
 

@@ -1288,7 +1288,8 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
             "confirm the changed tests actually ran",
             "extract their pytest summary from the Windows job log",
             "expected test count with `0 skipped`",
-            "explains every skip",
+            "accounts for every reported skip",
+            "establishes the material test's Windows outcome",
         ),
     )
 
@@ -1311,6 +1312,7 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
             "only after the whole job completes",
             "confirm the changed tests actually ran",
             "expected count with `0 skipped`",
+            "the material test's Windows outcome is established",
             "PowerShell equivalent",
         ),
     )
@@ -1324,8 +1326,16 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
             "productionresultssa",
             "##[group]Run changed_tests_file=",
             "##[endgroup]",
-            "SKIPPED [1]",
+            "SKIPPED [N]",
             "`0 skipped`",
+            # r1-1: pytest folds same-location skips, which can hide the
+            # material test; the pass rule accounts for every reported skip
+            # and demands positive native Windows evidence for ambiguity.
+            "not which parametrized cases skipped",
+            "account for the summary's whole skipped count",
+            "run the material test on native Windows with verbose per-test outcomes",
+            "for every node ID",
+            "the log has no reason lines",
             "New-Guid",
         ),
     )
