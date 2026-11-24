@@ -1460,6 +1460,8 @@ class HubStore:
                         "effort_source": agent.effort_source.value,
                         "capabilities": list(agent.capabilities),
                         "workspace_id": agent.workspace_id,
+                        "workspace_kind": agent.workspace_kind,
+                        "workspace_path": agent.workspace_path,
                     }
                 )
         hub_info = _read_hub_json_for_manifest(state_dir)

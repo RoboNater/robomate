@@ -96,32 +96,22 @@ def policy(
     return {"agent": {name: build}}
 
 
-def prepare(
-    argv: list[str],
-    environment: Mapping[str, str],
-    worktree: Path,
-    sessions: Path,
-    *,
-    agent: str | None = None,
-    lane_tmp: Path | None = None,
-    token_file: Path | None = None,
-) -> tuple[list[str], dict[str, str]]:
-    """Read effective configuration without changing user files, then pin our agent."""
-    env = dict(environment)
-    # Preserve wrappers used by operators (and fake harnesses in tests).
-    run_index = argv.index("run")
+def read_config(
+    program: list[str], environment: Mapping[str, str], worktree: Path
+) -> dict[str, Any]:
+    """Read effective OpenCode config without reporting the raw output."""
     with tempfile.TemporaryFile() as output:
         try:
             probe = subprocess.run(
-                [*argv[:run_index], "debug", "config"],
+                [*program, "debug", "config"],
                 cwd=worktree,
-                env=env,
+                env=environment,
                 stdout=output,
                 stderr=subprocess.PIPE,
                 check=False,
                 timeout=30,
             )
-        except subprocess.SubprocessError as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             raise OpenCodeConfigError(
                 "OpenCode effective configuration probe failed or timed out"
             ) from exc
@@ -137,6 +127,26 @@ def prepare(
         raise OpenCodeConfigError(
             f"OpenCode `debug config` returned invalid JSON ({len(data)} bytes)"
         ) from exc
+    if not isinstance(config, dict):
+        raise OpenCodeConfigError("OpenCode `debug config` did not return a configuration object")
+    return config
+
+
+def prepare(
+    argv: list[str],
+    environment: Mapping[str, str],
+    worktree: Path,
+    sessions: Path,
+    *,
+    agent: str | None = None,
+    lane_tmp: Path | None = None,
+    token_file: Path | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """Read effective configuration without changing user files, then pin our agent."""
+    env = dict(environment)
+    # Preserve wrappers used by operators (and fake harnesses in tests).
+    run_index = argv.index("run")
+    config = read_config(argv[:run_index], env, worktree)
     hub = env.get("ROBOMATE_LAUNCH_HUB_CHECKOUT")
     # Only explicit launcher/run metadata establishes a temporary root. An
     # ambient UV_CACHE_DIR=/tmp/uv-cache must never grant all of /tmp.

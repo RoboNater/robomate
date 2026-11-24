@@ -2112,7 +2112,13 @@ def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None
     assert restarted.get_state()["workflow"]["run_id"] == run_id
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["run_id"] == run_id
     # Give the run a task, an agent and a PR result so the end fields populate.
-    restarted.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    worker_path = r"D:\worker checkout\bob"
+    restarted.check_in(
+        "bob",
+        AgentProfile(harness="codex", model="gpt-6-sol"),
+        workspace_kind="clone",
+        workspace_path=worker_path,
+    )
     task = restarted.assign_task("bob", "implementer", "Build", "Do work")
     restarted.submit_result(
         task.id,
@@ -2131,7 +2137,9 @@ def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None
     assert completed["pr_url"] == "https://github.com/octo/sandbox/pull/7"
     assert completed["approved_sha"] == DELIVERY_HEAD
     assert completed["merged_sha"] == DELIVERY_MERGED
-    assert any(agent["name"] == "bob" for agent in completed["agents"])
+    (worker,) = completed["agents"]
+    assert worker["name"] == "bob"
+    assert worker["workspace_kind"] == "clone" and worker["workspace_path"] == worker_path
 
 
 def test_on_done_release_vs_standby(tmp_path: Path) -> None:

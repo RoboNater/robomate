@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from agent_hub_common.discovery import validate_agent_name
+
 HARNESS_NAMES = {
     "claude": "claude-code",
     "claude-code": "claude-code",
@@ -24,7 +26,9 @@ HARNESS_NAMES = {
     "agy": "antigravity",
     "devin": "devin",
 }
-SUPPORTED = {"claude-code", "codex"}
+LEGACY_HARNESSES = ("claude-code", "codex")
+ISOLATED_HARNESSES = ("opencode", "antigravity")
+DOCTOR_HARNESSES = (*LEGACY_HARNESSES, *ISOLATED_HARNESSES)
 # Adapter capabilities, not an allowlist of effort/model values. OpenCode's
 # interactive CLI has no --variant; Devin has no effort flag at all.
 EFFORT_SUPPORTED = {"claude-code", "codex", "antigravity"}
@@ -37,6 +41,7 @@ def resolve_settings(
     harness: str = "",
     model: str = "",
     effort: str = "",
+    joined: bool = False,
 ) -> dict[str, str]:
     """Resolve final team settings without I/O; unsupported inheritance is a skip."""
     for key, value in {
@@ -49,30 +54,31 @@ def resolve_settings(
             raise ValueError(f"denise_{key} must be a str")
     if settings_from not in ("alice", "bob", "charlie", "none"):
         raise ValueError("denise_settings_from must be alice, bob, charlie or none")
+    supported = DOCTOR_HARNESSES if joined else LEGACY_HARNESSES
+    remedy = "use --denise-harness claude or --denise-harness codex"
+    if joined:
+        remedy += " or --denise-harness opencode or --denise-harness antigravity"
     if settings_from == "none" and not harness:
-        raise ValueError("denise_settings_from=none requires --denise-harness claude or codex")
+        raise ValueError(f"denise_settings_from=none requires a harness; {remedy}")
     source = agents[settings_from] if settings_from != "none" else {}
     selected = harness or source.get("harness", "")
     effective = HARNESS_NAMES.get(selected.strip().lower())
     if effective is None:
-        raise ValueError(
-            f"invalid denise_harness {selected!r}; use --denise-harness claude or codex"
-        )
+        raise ValueError(f"invalid denise_harness {selected!r}; {remedy}")
     same_harness = effective == HARNESS_NAMES.get(source.get("harness", "").strip().lower())
     resolved_model = model or (source.get("model", "") if same_harness else "")
     resolved_effort = effort or (source.get("effort", "") if same_harness else "")
     reason = ""
     notes = {}
-    remedy = "use --denise-harness claude or --denise-harness codex"
     if resolved_effort and effective not in EFFORT_SUPPORTED:
         if effort:
             raise ValueError(f"--denise-effort is unsupported for interactive {effective}; omit it")
         notes["effort_note"] = (
             f"Denise uses the {effective} default effort; "
-            f"inherited effort {resolved_effort!r} has no interactive representation"
+            f"the consultation omits inherited effort {resolved_effort!r}"
         )
         resolved_effort = ""
-    if effective not in SUPPORTED:
+    if effective not in supported:
         if harness:
             raise ValueError(f"explicit --denise-harness {harness!r} is not supported; {remedy}")
         reason = f"inherited harness {effective} is not yet supported for Denise; {remedy}"
@@ -331,6 +337,7 @@ def build_joined_context(
     target_common: str | None,
     tooling_root: Path,
     settings: Mapping[str, str],
+    remote_workers: Mapping[str, str],
 ) -> dict[str, Any]:
     """Index a joined run from its locally readable ``runs/<run_id>/manifest.json``.
 
@@ -367,17 +374,44 @@ def build_joined_context(
     state = add(state_dir, "selected hub durable state")
     sessions = reference(sessions_dir, host)
     add(tooling_root, "robomate code and documentation", "read")
-    agents = [
-        {
-            "name": agent.get("name"),
+    saved_agents = {
+        agent["name"]: agent
+        for agent in manifest.get("agents", [])
+        if isinstance(agent, Mapping) and isinstance(agent.get("name"), str)
+    }
+    agents = []
+    for name in dict.fromkeys((*saved_agents, *remote_workers)):
+        try:
+            validate_agent_name(name)
+        except ValueError:
+            continue
+        agent = saved_agents.get(name, {})
+        entry = {
+            "name": name,
             "standing_role": agent.get("standing_role"),
             "harness": agent.get("harness"),
             "workspace_id": agent.get("workspace_id"),
-            "sessions": reference(sessions_dir / f"{agent.get('name')}.jsonl", host),
         }
-        for agent in manifest.get("agents", [])
-        if isinstance(agent, Mapping) and isinstance(agent.get("name"), str)
-    ]
+        clone = agent.get("workspace_kind") == "clone"
+        if name in remote_workers or clone:
+            worker_host = remote_workers.get(name, "unknown worker host")
+            entry.update(
+                location="remote" if name in remote_workers else "unverified clone host",
+                workspace=reference(agent.get("workspace_path"), worker_host, local=False),
+                sessions=reference(None, worker_host, local=False),
+                resume_advice=(
+                    "On the verified worker host, from its robomate installation, run "
+                    f"uv run --locked python scripts/agent-launcher.py resume {name} "
+                    "--hub-url <original-worker-hub-url> --token-file <existing-local-token-file> "
+                    "--sessions-dir <original-worker-sessions-dir> after checking the "
+                    "saved run and that the predecessor has exited."
+                ),
+            )
+        else:
+            if agent.get("workspace_kind") == "worktree":
+                entry["workspace"] = reference(agent.get("workspace_path"), host)
+            entry["sessions"] = reference(sessions_dir / f"{name}.jsonl", host)
+        agents.append(entry)
     return {
         "schema_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),

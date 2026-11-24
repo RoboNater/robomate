@@ -79,6 +79,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import uuid
@@ -93,7 +94,8 @@ SCRIPTS = Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import agent_launcher as common  # noqa: E402
-from agent_hub_common.discovery import HUB_ID_ENV  # noqa: E402
+import denise  # noqa: E402
+from agent_hub_common.discovery import HUB_ID_ENV, validate_agent_name  # noqa: E402
 from agent_interactive import split_arguments  # noqa: E402
 from agent_recovery import (  # noqa: E402
     agent_lock,
@@ -107,7 +109,7 @@ from agent_sessions import conversation as saved_conversation  # noqa: E402
 from agent_sessions import exact_id  # noqa: E402
 from agent_worker import WorkerLauncher, WorkerReader, telemetry_size  # noqa: E402
 from mcp_preflight import check as check_mcp_entry  # noqa: E402
-from run_common import bridge_identity_env, resolve_provider  # noqa: E402
+from run_common import agy_mcp_path, bridge_identity_env, resolve_provider  # noqa: E402
 
 ROLES = ("orchestrator", "implementer", "reviewer", "worker")
 LAUNCH_EVENTS = ("start", "resume", "manual_resume")
@@ -130,7 +132,6 @@ RUN_PERMISSIONS = {
 SAFE_PERMISSIONS = {"codex": ["-a", "on-request"]}
 #: Harnesses whose hub tools a flag or variable can switch off for ``ask``.
 ASK_HARNESSES = ("claude-code", "codex", "opencode")
-DOCTOR_HARNESSES = ("claude-code", "codex")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 #: The xdist budget a scripted run gives each agent (prepare-run's ``pytest_workers``).
 PYTEST_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
@@ -2012,10 +2013,82 @@ def doctor_codex_mcp_flags(argv: list[str], *, environment: dict[str, str], cwd:
     return flags
 
 
+def doctor_opencode_environment(
+    environment: dict[str, str], profile: Path, write_roots: list[str]
+) -> dict[str, str]:
+    environment = {
+        key: value for key, value in environment.items() if not key.startswith("OPENCODE_")
+    }
+    # Config and data are distinct in OpenCode. Isolate both to keep user,
+    # project and account-level config away from this consultation.
+    for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+        environment[f"XDG_{name}_HOME"] = str(profile / name.lower())
+    environment["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+    environment["OPENCODE_DISABLE_CLAUDE_CODE"] = "1"
+    external = {"*": "ask"}
+    for root in write_roots:
+        pattern = Path(root).as_posix().rstrip("/")
+        if "*" in pattern or "?" in pattern:
+            raise Usage("OpenCode consultation directory grants cannot contain wildcards")
+        external[pattern] = external[f"{pattern}/*"] = "allow"
+    environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+        {"mcp": {}, "permission": {"*": "ask", "external_directory": external}}
+    )
+    return environment
+
+
+def verify_doctor_opencode_mcp(
+    program: list[str], environment: dict[str, str], workdir: Path
+) -> None:
+    from opencode_headless import OpenCodeConfigError, read_config
+
+    try:
+        servers = read_config(program, environment, workdir).get("mcp", {})
+    except OpenCodeConfigError:
+        raise Usage(
+            "could not verify OpenCode's MCP config; check `opencode debug config` support"
+        ) from None
+    if not isinstance(servers, dict) or any(
+        not isinstance(server, dict) or server.get("enabled") is not False
+        for server in servers.values()
+    ):
+        raise Usage(
+            "OpenCode's effective config has enabled or unknown MCP entries; check managed "
+            "or doctor profile config, or choose another doctor harness"
+        )
+
+
+def write_doctor_json(path: Path, contents: dict[str, Any]) -> None:
+    """Replace a generated doctor profile file without exposing partial JSON."""
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as f:
+        temporary = Path(f.name)
+        json.dump(contents, f)
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def doctor_remote_workers(values: list[str]) -> dict[str, str]:
+    workers = {}
+    for value in values:
+        name, _, host = value.partition("=")
+        try:
+            validate_agent_name(name)
+        except ValueError as exc:
+            raise Usage(f"--remote-worker {exc}") from None
+        if not host.strip() or name in workers:
+            raise Usage("--remote-worker expects AGENT=HOST, once per remote worker")
+        workers[name] = host.strip()
+    return workers
+
+
 def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     """Denise's optional entry: local reads only, no join, no MCP, no supervision."""
 
-    import denise
     from agent_hub_common.discovery import DiscoveryError, LocalHub, find_hub
 
     if extra:
@@ -2060,12 +2133,17 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         )
     try:
         settings = denise.resolve_settings(
-            {}, settings_from="none", harness=args.harness, model=args.model, effort=args.effort
+            {},
+            settings_from="none",
+            harness=args.harness,
+            model=args.model,
+            effort=args.effort,
+            joined=True,
         )
     except ValueError as exc:
         raise Usage(str(exc)) from None
     harness = settings["harness"]
-    profile_name = "codex" if harness == "codex" else "claude"
+    profile_name = "claude" if harness == "claude-code" else harness
     target = Path(args.target).expanduser().resolve() if args.target else hub.checkout.resolve()
     target_common = denise.git_common_dir(target) if target.is_dir() else None
     if args.target and not target_common:
@@ -2083,6 +2161,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         target_common=target_common,
         tooling_root=ROOT,
         settings=settings,
+        remote_workers=doctor_remote_workers(args.remote_worker),
     )
     doctor_dir = context["doctor"]
     environment = common.launch_environment(
@@ -2094,9 +2173,12 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         },
     )
     environment |= {key: doctor_dir["tmp"] for key in ("TMPDIR", "TEMP", "TMP")}
+    write_roots = [
+        root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
+    ]
     login = ""
-    if args.clean_login:
-        # An opt-in per-run home keeps authentication separate across runs.
+    if args.clean_login or harness in denise.ISOLATED_HARNESSES:
+        # Separate homes keep authentication and MCP configuration scoped to this run.
         profile = Path(doctor_dir["configs"]) / profile_name
         doctor_dir["profile"] = str(profile)
         profile.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -2108,30 +2190,60 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             environment["CODEX_HOME"] = str(profile)
             if not (profile / "auth.json").is_file():
                 login = f"Log in to Denise's clean profile: CODEX_HOME={profile} codex login"
-        else:
+        elif harness == "claude-code":
             environment["CLAUDE_CONFIG_DIR"] = str(profile)
             login = f"Denise's clean Claude Code profile is {profile}: use /login to log in."
+        elif harness == "opencode":
+            environment = doctor_opencode_environment(environment, profile, write_roots)
+            login = (
+                f"Denise's OpenCode profile is {profile}. Use /connect if a provider needs login."
+            )
+            context["access_inventory"]["enforcement"] = (
+                "OpenCode external directory tool grants; shell commands require operator review "
+                "and retain OS access"
+            )
+        else:
+            write_doctor_json(agy_mcp_path(profile), {"mcpServers": {}})
+            write_doctor_json(
+                profile / ".gemini" / "antigravity-cli" / "settings.json",
+                {
+                    "agentMode": "",
+                    "toolPermission": "request-review",
+                    "allowNonWorkspaceAccess": False,
+                    "enableTerminalSandbox": True,
+                    "permissions": {"deny": ["mcp(*)"]},
+                },
+            )
+            environment.update({key: str(profile) for key in ("HOME", "USERPROFILE", "AGY_HOME")})
+            login = f"Denise's AntiGravity home is {profile}. Follow the agy sign-in prompt."
     report = denise.render_joined(context)
-    write_roots = [
-        root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
-    ]
     prompt = f"Read {doctor_dir['startup']} and follow the instructions in it"
     flags = model_flags(harness, settings["model"], settings["effort"], interactive=True)
+    directory_flags = [word for root in write_roots for word in ("--add-dir", root)]
     if harness == "codex":
         # No MCP server at all, and write grants only on the selected run's roots.
         argv = [*program, "-C", doctor_dir["workdir"], *flags]
         argv += ["-c", "sandbox_mode=workspace-write", "-c", "approval_policy=on-request"]
-        for root in write_roots:
-            argv += ["--add-dir", root]
+        argv += directory_flags
         argv += doctor_codex_mcp_flags(argv, environment=environment, cwd=doctor_dir["workdir"])
         argv += [prompt]
-    else:
-        argv = [*program, *flags, "--strict-mcp-config", "--permission-mode", "default"]
-        for root in write_roots:
-            argv += ["--add-dir", root]
+    elif harness == "claude-code":
+        argv = [
+            *program,
+            *flags,
+            "--strict-mcp-config",
+            "--permission-mode",
+            "default",
+            *directory_flags,
+        ]
         # Claude Code's variadic --add-dir consumes a trailing bare prompt as
         # another directory (#513); -- keeps the startup prompt positional.
         argv += ["--", prompt]
+    elif harness == "opencode":
+        verify_doctor_opencode_mcp(program, environment, Path(doctor_dir["workdir"]))
+        argv = [*program, *flags, "--prompt", prompt]
+    else:
+        argv = [*program, *flags, *directory_flags, "--prompt-interactive", prompt]
     print(
         f"Denise ({harness}) for run {args.run}: no hub tools; context {doctor_dir['context']}; "
         f"report {report}; write roots: {', '.join(write_roots) or '(none)'}.",
@@ -2244,10 +2356,23 @@ def parser() -> argparse.ArgumentParser:
     check = commands.add_parser("doctor", help="consult Denise about a run; no join, no hub")
     check.add_argument("--hub", metavar="NAME|HUB_ID|CHECKOUT", help="the hub to read")
     check.add_argument("--run", help="the run ID under the hub's runs/")
-    check.add_argument("--harness", required=True, choices=("claude", *DOCTOR_HARNESSES))
-    check.add_argument("--clean-login", action="store_true", help="use a separate per-run login")
+    check.add_argument(
+        "--harness", required=True, choices=("claude", *denise.DOCTOR_HARNESSES, "agy")
+    )
+    check.add_argument(
+        "--clean-login",
+        action="store_true",
+        help="separate Claude Code or Codex login; OpenCode and AntiGravity always use one",
+    )
     check.add_argument("--model", default="")
-    check.add_argument("--effort", default="")
+    check.add_argument("--effort", default="", help="reasoning effort; OpenCode uses its default")
+    check.add_argument(
+        "--remote-worker",
+        metavar="AGENT=HOST",
+        action="append",
+        default=[],
+        help="attribute a worker's evidence to its host (repeatable)",
+    )
     check.add_argument("--target", help="the target checkout (default: the hub's checkout)")
     check.add_argument("--sessions-dir", help=argparse.SUPPRESS)
     return top
@@ -2257,8 +2382,6 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     words, extra = split_arguments(argv)
     args = parser().parse_args(words)
     if args.action != "doctor":
-        from agent_hub_common.discovery import validate_agent_name
-
         try:
             validate_agent_name(args.agent)
         except ValueError as exc:

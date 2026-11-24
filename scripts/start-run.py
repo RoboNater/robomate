@@ -118,8 +118,12 @@ COMMENTS = {
     "reservations": "Optional shared-counter reservations issue (N, #N or OWNER/REPO#N).",
     "forge": "github or gitlab; empty lets robomate up detect it from the origin.",
     "alice_harness": "claude, codex, opencode, antigravity or devin; model and effort optional.",
-    "denise_settings_from": "Denise (doctor) settings: alice, bob, charlie or none.",
-    "denise_clean_login": "Use a separate per-run doctor login instead of the operator login.",
+    "denise_settings_from": "Denise inherits from alice, bob or charlie (default), or none.",
+    "denise_harness": "Doctor harness override: claude, codex, opencode or antigravity.",
+    "denise_model": "Doctor model override. Inherits from the source when the harness matches.",
+    "denise_effort": "Doctor effort override. OpenCode consultations use the default effort.",
+    "denise_clean_login": "Use a separate per-run login for Claude Code or Codex. "
+    "OpenCode and AntiGravity always use separate profiles.",
     "auto_start": "false prints each agent's interactive start command instead.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
     "workspace_setup": "Optional shell command to prepare each agent worktree before launch.",
@@ -205,7 +209,9 @@ def parser() -> argparse.ArgumentParser:
         flag = "--" + key.replace("_", "-")
         group = work if key in ("issue", "work_file") else result
         if isinstance(default, bool):
-            group.add_argument(flag, action=argparse.BooleanOptionalAction, default=None)
+            group.add_argument(
+                flag, action=argparse.BooleanOptionalAction, default=None, help=COMMENTS.get(key)
+            )
         else:
             kind = float if key in SECONDS_KEYS else int if isinstance(default, int) else str
             group.add_argument(flag, type=kind, default=None, help=COMMENTS.get(key))
@@ -415,6 +421,7 @@ def denise(values: Mapping[str, Any]) -> dict[str, str]:
     }
     return resolve_settings(
         team,
+        joined=True,
         **{key: values[f"denise_{key}"] for key in ("settings_from", "harness", "model", "effort")},
     )
 
@@ -644,9 +651,9 @@ def hub_status(checkout: Path, *, timeout_s: float = CLI_TIMEOUT_S) -> dict[str,
 
 
 def command_line(words: Sequence[str]) -> str:
-    """A command the operator can paste: PowerShell on Windows, POSIX shells elsewhere."""
+    """A command the operator can paste into PowerShell or their Bash shell."""
 
-    if os.name == "nt":
+    if os.name == "nt" and not os.environ.get("MSYSTEM"):
         return "& " + " ".join("'" + word.replace("'", "''") + "'" for word in words)
     return shlex.join(words)
 

@@ -64,7 +64,7 @@ def test_unsupported_inheritance_skips_even_with_explicit_selector(
 
 @pytest.mark.parametrize("harness", ["devin", "opencode"])
 def test_effort_adapter_capability_is_separate_from_harness_support(
-    harness: str, monkeypatch: pytest.MonkeyPatch
+    harness: str,
 ) -> None:
     agents = {**AGENTS, "bob": {"harness": harness, "model": "", "effort": "new-value"}}
     inherited = DENISE.resolve_settings(agents)
@@ -74,12 +74,18 @@ def test_effort_adapter_capability_is_separate_from_harness_support(
     assert "inherited effort 'new-value'" in inherited["effort_note"]
     assert f"{harness} default effort" in inherited["effort_note"]
 
-    # Step 3 can support a harness even when it has no interactive effort option.
-    monkeypatch.setattr(DENISE, "SUPPORTED", DENISE.SUPPORTED | {harness})
-    ready = DENISE.resolve_settings(agents)
-    assert ready["status"] == "ready" and ready["skip_reason"] == "" and ready["effort"] == ""
+    joined = DENISE.resolve_settings(agents, joined=True)
+    assert joined["status"] == ("ready" if harness == "opencode" else "skipped")
+    assert joined["effort"] == ""
     with pytest.raises(ValueError, match="--denise-effort is unsupported"):
-        DENISE.resolve_settings(agents, effort="another-new-value")
+        DENISE.resolve_settings(agents, effort="another-new-value", joined=True)
+
+
+def test_joined_antigravity_inherits_model_and_effort() -> None:
+    agents = {**AGENTS, "bob": {"harness": "agy", "model": "test-model", "effort": "high"}}
+    settings = DENISE.resolve_settings(agents, joined=True)
+    assert settings["status"] == "ready" and settings["harness"] == "antigravity"
+    assert (settings["model"], settings["effort"]) == ("test-model", "high")
 
 
 @pytest.mark.parametrize(
