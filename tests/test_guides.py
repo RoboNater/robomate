@@ -909,14 +909,16 @@ def test_served_reviewer_guide_carries_comment_items_deferrals_and_mutations(for
         assert fragment in text
 
 
+@pytest.mark.parametrize(
+    ("role", "worktree"),
+    [("reviewer", "the review worktree"), ("implementer", "your own worktree")],
+)
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
-def test_served_reviewer_guide_mutation_recipe_is_sandbox_safe(forge: str) -> None:
-    """#665: archive-copy default, absolute scratch path and pwd guard before edits."""
+def test_served_mutation_recipe_is_sandbox_safe(role: str, worktree: str, forge: str) -> None:
+    """#665/#678: archive-copy default, absolute scratch path and pwd guard before edits."""
 
     text = " ".join(
-        bytes(guide_response(CHECKED_IN_GUIDES, "reviewer", forge=forge).body)
-        .decode("utf-8")
-        .split()
+        bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode("utf-8").split()
     )
     for fragment in (
         "`M=$(mktemp -d)` (an absolute path)",
@@ -926,7 +928,34 @@ def test_served_reviewer_guide_mutation_recipe_is_sandbox_safe(forge: str) -> No
         "fall back to `git worktree add` outside the sandbox",
         'run `set -e`, `cd "$M" || exit 1` and `[ "$(pwd)" = "$M" ] || exit 1`',
         'never `cd "$TMPDIR/…"`',
-        ("confirm `git status --porcelain --untracked-files=no` in the review worktree is empty"),
+        (f"confirm `git status --porcelain --untracked-files=no` in {worktree} is empty"),
+    ):
+        assert fragment in text
+
+
+@pytest.mark.parametrize("role", ["implementer", "reviewer"])
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_mutation_recipe_runs_the_copy_sources(role: str, forge: str) -> None:
+    """#678: the copy's sources win, the import check proves it, and the limit is exact."""
+
+    text = " ".join(
+        bytes(guide_response(CHECKED_IN_GUIDES, role, forge=forge).body).decode("utf-8").split()
+    )
+    for fragment in (
+        'PYTHONPATH="$(ls -d "$M"/packages/*/src | paste -sd:)"',
+        "$env:PYTHONPATH = (Get-ChildItem \"$M/packages/*/src\").FullName -join ';'",
+        "import importlib, sys; m = importlib.import_module(sys.argv[2]); "
+        "sys.exit(0 if m.__file__.startswith(sys.argv[1]) else 1)",
+        '"$M" agent_hub || exit 1',
+        "valid unless the change alters dependencies, entry points or the set of "
+        "workspace packages",
+        "removes `PYTHONPATH` from a child process",
+        "`tests/test_conftest.py:130` and `tests/test_workspace.py:863`",
+        "relative to its own file",
+        "`git grep` with `cwd=ROOT` at `tests/test_runtime_content.py:1473`",
+        "control run in the same copy with the fix restored",
+        "the failure without the fix must come from the test's own assertion",
+        "about 60 s per test, about 2 minutes for the `bb72365` pair",
     ):
         assert fragment in text
 
