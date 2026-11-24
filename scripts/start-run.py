@@ -511,7 +511,8 @@ def write_config(path: Path, values: Mapping[str, Any], policy: Mapping[str, Any
     """Create a TOML run config; refuse to overwrite an existing file."""
 
     lines = [
-        "# robomate scripted run (scripts/start-run.py). Empty strings and 0 mean unset.",
+        "# robomate scripted run (scripts/start-run.py). Empty strings and 0 mean unset,",
+        '# except workspace_setup, where "" disables the default setup.',
         "# Command-line options override these; --issue or --work-file selects the work.",
     ]
     for key, value in values.items():
@@ -818,9 +819,9 @@ def launch_words(run: Run, agent: str, *, interactive: bool) -> list[str]:
         "--pytest-workers",
         str(values["pytest_workers"]),
     ]
-    # Always named: the launcher's own default is "auto", so an explicit empty
-    # string must reach it rather than be omitted (#603).
-    words += ["--workspace-setup", str(values["workspace_setup"])]
+    # One word, so a printed command survives shells that drop empty arguments,
+    # and an explicit "" must reach the launcher rather than be omitted (#603).
+    words += [f"--workspace-setup={values['workspace_setup']}"]
     for key in ("model", "effort"):
         if values[f"{agent}_{key}"]:
             words += [f"--{key}", str(values[f"{agent}_{key}"])]
