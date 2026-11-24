@@ -1269,6 +1269,90 @@ def test_testing_patterns_pointer_reaches_test_write_and_review_steps() -> None:
     )
 
 
+def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
+    """#611: a step conclusion hides skips; the doc's recipe extracts the summary."""
+
+    doc_link = (
+        "https://github.com/RoboNater/robomate/blob/main/docs/development/ci-windows-step-logs.md"
+    )
+    reviewer = read("guides/reviewer.md")
+    approve_step = section(
+        reviewer, "Use `approved` only when", "Use `changes_requested` when blocking findings"
+    )
+    assert doc_link in approve_step
+    assert approve_step.index("passed while they skipped") < approve_step.index(doc_link)
+    assert_fragments(
+        approve_step,
+        (
+            "passed while they skipped, is not a pass",
+            "confirm the changed tests actually ran",
+            "extract their pytest summary from the Windows job log",
+            "expected test count with `0 skipped`",
+            "proves the reported skips exclude the material tests",
+            "cannot attribute a skip to a non-material test",
+            "establish the material test's Windows outcome with a native run",
+        ),
+    )
+
+    agents = read("AGENTS.md")
+    watch = section(agents, "On a pull request, `test` and `windows`", "```sh")
+    # The pointer is its own short paragraph between the gh api conclusion
+    # sentence and the validation command block, so it cannot be read as part
+    # of either (#651 guidance).
+    paragraphs = [paragraph for paragraph in watch.split("\n\n") if paragraph]
+    assert len(paragraphs) == 2, paragraphs
+    conclusion_paragraph, pointer_paragraph = paragraphs
+    assert 'select(.name=="Run changed test files")' in conclusion_paragraph
+    assert_fragments(
+        pointer_paragraph,
+        (
+            "Windows step logs",
+            "[`docs/development/ci-windows-step-logs.md`]"
+            "(docs/development/ci-windows-step-logs.md)",
+            "reads `success` even when the changed tests skipped",
+            "only after the whole job completes",
+            "confirm the changed tests actually ran",
+            "expected count with `0 skipped`",
+            "no reported skip is attributable to the material test",
+            "native Windows run when the log cannot attribute",
+            "PowerShell equivalent",
+        ),
+    )
+
+    doc = read("docs/development/ci-windows-step-logs.md")
+    assert_fragments(
+        doc,
+        (
+            "--allow-escape-sequences",
+            "the response contains terminal escape sequences",
+            "productionresultssa",
+            "##[group]Run changed_tests_file=",
+            "##[endgroup]",
+            "SKIPPED [N]",
+            "`0 skipped`",
+            # r1-1: pytest folds same-location skips and reports a skip at the
+            # line that raised it, so neither a folded group nor a skip sited
+            # in a shared helper can attribute itself; the pass rule demands
+            # exclusion evidence and positive native Windows evidence for
+            # ambiguity.
+            "not which parametrized cases skipped",
+            "no matter which test skipped through it",
+            "no reported skip comes from a material test",
+            "not a shared helper, fixture, or folded group",
+            "a singleton whose location names no test",
+            "run the material test on native Windows with verbose per-test outcomes",
+            "for every node ID",
+            "carry no skip details at all",
+            "New-Guid",
+        ),
+    )
+
+    ci = read(".github/workflows/ci.yml")
+    rs_lines = [line for line in ci.splitlines() if "pytest -n auto -rs" in line]
+    assert rs_lines == ['            uv run --locked pytest -n auto -rs "${changed_tests[@]}"']
+    assert "- *changed-tests" in ci
+
+
 def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
     """#88: the orchestrator runs the process; the implementer and reviewer decide the work."""
     readme_how = section(read("README.md"), "## How it works", "## Guarantees")

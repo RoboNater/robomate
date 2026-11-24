@@ -40,7 +40,7 @@ jobs:
           git diff --name-only -z --diff-filter=AMR "$PR_BASE_SHA...HEAD" -- 'tests/test_*.py' > "$changed_tests_file"
           mapfile -d '' -t changed_tests < "$changed_tests_file"
           if (( ${#changed_tests[@]} )); then
-            uv run --locked pytest -n auto "${changed_tests[@]}"
+            uv run --locked pytest -n auto -rs "${changed_tests[@]}"
           else
             echo "No changed test files to run."
           fi
