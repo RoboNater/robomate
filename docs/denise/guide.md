@@ -83,6 +83,107 @@ a withdrawn question as permission. Plans to discard work, cancel/reassign tasks
 or alter workflow state require an explicit consequential decision. Advisory
 overrides never bypass identity/attachment guards.
 
+## Recover an OpenCode 1.x conversation after a rejected tool call
+
+Check the affected agent's launcher log and OpenCode history. In the recorded
+incident, OpenCode rejected a `write` call missing `content` and kept it in
+history. Every later request failed immediately with provider HTTP 400
+`invalid_request_error` and `isRetryable: false`, even though the history fit
+within the model's context limit. Each resume added another failed turn.
+Match the first recurring 400 to the preceding argument validation error
+before proposing a repair. [Incident record](https://github.com/RoboNater/robomate/issues/324#issuecomment-6340166076).
+
+This procedure uses the OpenCode 1.x SQLite schema observed in 1.18.35. Verify
+the installed version, database and schema before proposing an edit.
+[OpenCode 2 support (#325)](https://github.com/RoboNater/robomate/issues/325)
+is outside this procedure.
+
+Denise explains the evidence, proposes the fork test and repair, and helps the
+operator identify the exact rows. Every database or process action is an
+operator decision under the authority rules above, including stopping
+launchers, backing up the database, running the fork, editing or restoring the
+database, and resuming agents. The operator performs the raw database edits.
+
+1. Have the operator stop the verified launcher and confirm its harness has
+   exited. On the agent's host, identify the original `ses_…` conversation and
+   the database actually used by that agent's profile. The usual filename is
+   `opencode.db`. Some install channels use `opencode-<channel>.db`. Check any
+   `XDG_DATA_HOME` or `OPENCODE_DB` override. Denise's isolated OpenCode
+   profile has its own data directory. Use the verified path as `<database>`.
+2. Before any edit, have the operator create a backup in a fresh, private
+   location and check that the backup passes `PRAGMA quick_check;` with
+   result `ok`. SQLite's online backup gives a consistent snapshot while
+   other OpenCode processes are writing. [SQLite Online Backup API](https://www.sqlite.org/backup.html).
+
+   ```sh
+   sqlite3 "<database>" ".backup '<file>'"
+   sqlite3 -readonly "<file>" "PRAGMA quick_check;"
+   ```
+
+   Review the restore plan before proceeding. Restoring replaces the whole
+   database, so other sessions' writes after the backup would be lost. Before
+   restoring, close every OpenCode process or other client using that database.
+   Move `<database>` and its `<database>-wal` and `<database>-shm` files, if
+   present, aside together. Then copy the checked backup into the original
+   database path and verify it before reopening OpenCode.
+
+3. Reproduce on a fork. Use a working copy of the backup and set `OPENCODE_DB`
+   to that copy's absolute path for both probes. Disable hub tools as `ask`
+   does by setting `OPENCODE_CONFIG_CONTENT` to
+   `{"mcp":{"robomate":{"enabled":false}}}`. If the variable already contains
+   JSON, set `mcp.robomate.enabled` to `false` there and preserve other
+   settings. Keep both overrides in the probe terminal and close it after
+   the second probe. In the agent's worktree, substitute the original session
+   ID and provider/model below.
+
+   ```sh
+   opencode run --session "<id>" --fork --model "<provider/model>" --format json "Reply with OK without using tools"
+   ```
+
+   Record the fork's new session ID from the output's `sessionID`. If the fork
+   does not reproduce the same error, stop and reassess.
+4. Identify the rejected call in both sessions. The `part` table has `id`,
+   `message_id`, `session_id` and JSON `data`. Inspect the tool name, call
+   ID, input and error in `data` and match the call to its place in the
+   conversation. Forking gives messages and parts new IDs. Record the
+   original and fork row IDs separately. If the part cannot be identified
+   uniquely, stop. [OpenCode 1.18.35 table definition](https://github.com/anomalyco/opencode/blob/v1.18.35/packages/core/src/session/sql.ts#L82),
+   [fork implementation](https://github.com/anomalyco/opencode/blob/v1.18.35/packages/opencode/src/session/session.ts#L691).
+
+   With the probe process closed, have the operator open the working copy in
+   SQLite. Run `BEGIN IMMEDIATE;` on its own. Once it succeeds, substitute
+   the three verified IDs and delete the row in that same transaction.
+
+   ```sql
+   DELETE FROM part
+   WHERE session_id = '<session-id>'
+     AND message_id = '<message-id>'
+     AND id = '<part-id>'
+     AND json_extract(data, '$.type') = 'tool'
+   RETURNING id;
+   ```
+
+   Run `COMMIT;` only if the command returns the one expected ID. Otherwise
+   run `ROLLBACK;` and investigate. Close SQLite, then repeat the same probe
+   with `--session <fork-id>` and omit `--fork`. A normal answer after that
+   single deletion confirms the diagnosis. If it still fails, leave the
+   original conversation untouched.
+5. With the operator's approval, confirm the original conversation is closed,
+   recheck the backup and the original row, then apply the same transaction
+   to the original database using the original IDs. Keep the successful retry
+   and the surrounding messages.
+6. Have the operator open the exact original conversation interactively with
+   hub tools disabled, using the [guarded recovery guide](../development/agent-recovery.md).
+   Use `/undo` for the failed launcher continuation turns and stop at the last
+   useful turn. If snapshots were enabled, check and preserve worktree changes
+   before undoing, since undo can also revert files. Then run `/compact` and
+   confirm it succeeds before closing the interactive session.
+7. Have the operator resume affected agents using their guarded resume commands
+   or generated resume scripts. In the incident the operator had to pass
+   `--confirm-stopped` after Ctrl-C. Use it if an exit is missing from the log
+   and only after verifying that the old harness and launcher are stopped.
+   Confirm the original conversation resumes and hand control back to Alice.
+
 ## Authentication, evidence and reports
 
 For Claude Code and Codex, `agent-launcher.py doctor` uses the operator's
