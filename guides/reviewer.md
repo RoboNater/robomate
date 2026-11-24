@@ -68,8 +68,8 @@ merge the change request, or rely on the implementer's summary as evidence.
    production file must stay untouched, use a test-only `sitecustomize.py` shim
    in a scratch directory on `PYTHONPATH`, gated by an environment variable,
    that patches the fix out at interpreter start instead (see #4). A regression
-   test that passes with and without the fix is a blocking finding against the issue's regression-test
-   acceptance item (see the repair-checklist step 5 in
+   test that passes with and without the fix is a blocking finding against the
+   issue's regression-test acceptance item (see the repair-checklist step 5 in
    [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
    Check added or changed tests of the kinds listed in
    [testing-patterns](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-patterns.md)
