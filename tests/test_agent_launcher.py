@@ -2232,11 +2232,15 @@ def start_agent(area: dict[str, Path], *options: str, agent: str = "bob") -> int
     )
 
 
-@pytest.mark.parametrize("setting", [[], ["--workspace-setup", "auto"]], ids=["unset", "auto"])
-def test_workspace_setup_auto_syncs_a_uv_project(
+@pytest.mark.parametrize(
+    "setting",
+    [[], ["--workspace-setup", ""], ["--workspace-setup", "auto"], ["--workspace-setup", " AUTO "]],
+    ids=["unset", "empty", "auto", "padded-auto"],
+)
+def test_workspace_setup_default_syncs_a_uv_project(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, setting: list[str]
 ) -> None:
-    """#603: the default prepares a worktree whose root has uv.lock, once, in that worktree."""
+    """#603/#682: blank and "auto" ask for the default, which prepares a uv worktree once."""
 
     (area["worktree"] / "uv.lock").write_text("", encoding="utf-8")
     log = fake_uv(area["root"] / "fake bin", monkeypatch)
@@ -2254,8 +2258,12 @@ def test_workspace_setup_auto_syncs_a_uv_project(
     assert len(launches(area)) == 1
 
 
-@pytest.mark.parametrize("setting", [[], ["--workspace-setup", "auto"]], ids=["unset", "auto"])
-def test_workspace_setup_auto_leaves_a_non_uv_worktree_alone(
+@pytest.mark.parametrize(
+    "setting",
+    [[], ["--workspace-setup", ""], ["--workspace-setup", "auto"]],
+    ids=["unset", "empty", "auto"],
+)
+def test_workspace_setup_default_leaves_a_non_uv_worktree_alone(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, setting: list[str]
 ) -> None:
     log = fake_uv(area["root"] / "fake bin", monkeypatch)
@@ -2266,22 +2274,27 @@ def test_workspace_setup_auto_leaves_a_non_uv_worktree_alone(
     assert len(launches(area)) == 1
 
 
-def test_workspace_setup_empty_disables_auto_even_with_uv_lock(
-    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("setting", ["none", " None "], ids=["none", "padded-none"])
+def test_workspace_setup_none_disables_auto_even_with_uv_lock(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, setting: str
 ) -> None:
+    """#682: "none" turns setup off, recorded as given so resume keeps it."""
+
     (area["worktree"] / "uv.lock").write_text("", encoding="utf-8")
     log = fake_uv(area["root"] / "fake bin", monkeypatch)
 
-    assert start_agent(area, "--workspace-setup", "") == 0
+    assert start_agent(area, "--workspace-setup", setting) == 0
 
     assert uv_calls(log) == []
     assert len(launches(area)) == 1
+    starts = [row for row in rows(area) if row["event"] == "start"]
+    assert [row["workspace_setup"] for row in starts] == [setting]
 
 
 @pytest.mark.parametrize(
     ("saved", "expected"),
-    [("", 0), ("auto", 1), (None, 1)],
-    ids=["explicit-empty", "auto", "unrecorded"],
+    [("", 1), ("auto", 1), (None, 1), ("none", 0), (" None ", 0)],
+    ids=["explicit-empty", "auto", "unrecorded", "none", "padded-none"],
 )
 def test_resume_keeps_the_recorded_workspace_setup(
     area: dict[str, Path],
@@ -2289,7 +2302,7 @@ def test_resume_keeps_the_recorded_workspace_setup(
     saved: str | None,
     expected: int,
 ) -> None:
-    """#603: an explicit "" stays off across resume; auto (or an old row) still syncs."""
+    """#603/#682: "none" stays off; blank, auto or an old row resolves to the default."""
 
     (area["worktree"] / "uv.lock").write_text("", encoding="utf-8")
     log = fake_uv(area["root"] / "fake bin", monkeypatch)

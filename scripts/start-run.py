@@ -128,7 +128,7 @@ COMMENTS = {
     "auto_start": "false prints each agent's interactive start command instead.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
     "workspace_setup": "Shell command to prepare each agent worktree before launch: auto "
-    "syncs a uv project, empty disables setup.",
+    "syncs a uv project, none disables setup.",
     "max_resumes": "Launcher resume bounds; max_resumes = -1 is unlimited.",
     "join_window_s": "Maximum seconds for the team to join before startup fails.",
 }
@@ -371,6 +371,8 @@ def settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
             values[key] = canonical_path(values[key], Path.cwd())
     if values["run_dir"]:
         values["run_dir"] = canonical_path(values["run_dir"], Path(values["run_parent_dir"]))
+    if not str(values["workspace_setup"]).strip():
+        values["workspace_setup"] = launcher_defaults.WORKSPACE_SETUP_AUTO
     validate(values, policy, starting=False)
     return values, policy
 
@@ -511,8 +513,7 @@ def write_config(path: Path, values: Mapping[str, Any], policy: Mapping[str, Any
     """Create a TOML run config; refuse to overwrite an existing file."""
 
     lines = [
-        "# robomate scripted run (scripts/start-run.py). Empty strings and 0 mean unset,",
-        '# except workspace_setup, where "" disables the default setup.',
+        "# robomate scripted run (scripts/start-run.py). Empty strings and 0 mean unset.",
         "# Command-line options override these; --issue or --work-file selects the work.",
     ]
     for key, value in values.items():

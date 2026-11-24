@@ -241,7 +241,8 @@ def test_generated_default_config_reads_back_as_the_defaults(tmp_path: Path) -> 
     assert inherits in " ".join(START.parser().format_help().split())
     assert "Doctor harness override: claude, codex, opencode or antigravity." in text
     assert "OpenCode consultations use the default effort." in text
-    assert 'workspace_setup, where "" disables the default setup' in text
+    assert "Empty strings and 0 mean unset." in text
+    assert "workspace_setup, where" not in text
     # Generation never overwrites.
     assert START.main(["--generate-default-config", str(path)]) == 1
 
@@ -420,22 +421,27 @@ def test_each_agent_starts_headless_with_its_harness_model_effort_and_bounds(
         assert interactive[-1] == "--interactive" and "--max-resumes" not in interactive
 
 
-def test_workspace_setup_defaults_to_auto_and_an_explicit_empty_disables(tmp_path: Path) -> None:
-    """#603: unset and "auto" behave alike, and "" stays distinguishable through TOML and CLI."""
+def test_workspace_setup_defaults_to_auto_and_none_disables(tmp_path: Path) -> None:
+    """#682: unset, "" and "auto" resolve to the default; "none" stays off."""
 
     assert settings()[0]["workspace_setup"] == "auto"
-    assert settings("--workspace-setup", "")[0]["workspace_setup"] == ""
-    disabled = write(tmp_path / "disabled.toml", 'workspace_setup = ""\n')
-    assert settings("--config", str(disabled))[0]["workspace_setup"] == ""
+    assert settings("--workspace-setup", "")[0]["workspace_setup"] == "auto"
+    blank = write(tmp_path / "blank.toml", 'workspace_setup = ""\n')
+    assert settings("--config", str(blank))[0]["workspace_setup"] == "auto"
     plain = write(tmp_path / "plain.toml", 'account = "bot"\n')
     assert settings("--config", str(plain))[0]["workspace_setup"] == "auto"
+    assert settings("--workspace-setup", "none")[0]["workspace_setup"] == "none"
+    disabled = write(tmp_path / "disabled.toml", 'workspace_setup = "none"\n')
+    assert settings("--config", str(disabled))[0]["workspace_setup"] == "none"
 
 
-@pytest.mark.parametrize(("setting", "expected"), [("auto", "auto"), ("", "")])
+@pytest.mark.parametrize(
+    ("setting", "expected"), [("auto", "auto"), ("", "auto"), ("none", "none")]
+)
 def test_launch_words_always_name_the_workspace_setup(
     tmp_path: Path, setting: str, expected: str
 ) -> None:
-    """One word: the launcher's default is auto, and PowerShell drops an empty argument."""
+    """One word: PowerShell drops an empty argument, and the launcher's default is auto."""
 
     values, policy = settings("--run-dir", str(tmp_path / "run"), "--workspace-setup", setting)
     run_dir = Path(values["run_dir"])
@@ -447,17 +453,17 @@ def test_launch_words_always_name_the_workspace_setup(
     assert f"--workspace-setup={expected}" in words
 
 
-def test_a_printed_interactive_command_keeps_an_empty_workspace_setup(tmp_path: Path) -> None:
+def test_a_printed_interactive_command_keeps_workspace_setup_one_word(tmp_path: Path) -> None:
     """PowerShell 5.1 drops an empty native argument, so the printed flag must be one word."""
 
-    values, policy = settings("--run-dir", str(tmp_path / "run"), "--workspace-setup", "")
+    values, policy = settings("--run-dir", str(tmp_path / "run"), "--workspace-setup", "none")
     run_dir = Path(values["run_dir"])
     run = START.Run(values, policy, run_dir, run_dir / "run", "run")
     run.versions = {"claude-code": "2.1.999", "codex": "0.999.0"}
 
     line = START.command_line(START.launch_words(run, "bob", interactive=True))
 
-    assert any(word.strip("'\"") == "--workspace-setup=" for word in line.split())
+    assert any(word.strip("'\"") == "--workspace-setup=none" for word in line.split())
 
 
 # -- end to end ----------------------------------------------------------------------

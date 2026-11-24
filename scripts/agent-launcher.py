@@ -1652,11 +1652,16 @@ def workspace_setup_command(setting: str, workdir: Path) -> str:
     """The setup command for this worktree; ``auto`` means the default for a uv project.
 
     The detection rule is a ``uv.lock`` at the worktree root, so a target that
-    is not a uv project starts untouched. Any other string is the command as
-    given, and an explicit empty string turns the default off (#603).
+    is not a uv project starts untouched. A blank setting or ``auto`` (compared
+    case-insensitively, ignoring surrounding whitespace) asks for that default;
+    ``none`` likewise turns setup off. Any other string is the command as given
+    (#603, #682).
     """
 
-    if setting.strip() != common.WORKSPACE_SETUP_AUTO:
+    sentinel = setting.strip().lower()
+    if sentinel == common.WORKSPACE_SETUP_NONE:
+        return ""
+    if sentinel not in ("", common.WORKSPACE_SETUP_AUTO):
         return setting
     return common.DEFAULT_WORKSPACE_SETUP if (workdir / "uv.lock").is_file() else ""
 
@@ -2337,8 +2342,8 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument(
         "--workspace-setup",
         default=common.WORKSPACE_SETUP_AUTO,
-        help="shell command to prepare the worktree before launch; 'auto' syncs a uv "
-        "project, and '' disables setup",
+        help="shell command to prepare the worktree before launch; 'auto' (the default, "
+        "as is '') syncs a uv project, 'none' disables setup",
     )
     begin.add_argument("--lane-tmp-dir", help="the agent's explicitly assigned temporary root")
     begin.add_argument(
