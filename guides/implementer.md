@@ -43,10 +43,72 @@ change request, or merge it.
    you go.
 5. During iteration, run the affected test files. For each regression test the
    change adds, show it fails with the fix removed or reverted and passes with
-   it. Do this in a checkout that represents CI — a plain detached worktree of
-   the base branch with the change applied, not your own provisioned clone —
-   when the bug can depend on the environment. Name in the change request what
-   was reverted and the failure it produced (see the repair-checklist step 5 in
+   it. Commit the increment first, then make an absolute scratch copy of the
+   branch head, `M=$(mktemp -d)` (an absolute path),
+   `git archive <sha> | tar -x -C "$M"`, restore
+   the pre-fix changed files there (for example
+   `git archive <base> <path> | tar -x -C "$M"`), and run the test from `$M`
+   with the workspace venv, putting the copy's sources first on the import
+   path:
+
+   ```sh
+   PYTHONPATH="$(ls -d "$M"/packages/*/src | paste -sd:)" <workspace>/.venv/bin/python -m pytest …
+   ```
+
+   ```powershell
+   $env:PYTHONPATH = (Get-ChildItem "$M/packages/*/src").FullName -join ';'; <workspace>/.venv/Scripts/python.exe -m pytest …
+   ```
+
+   The entries come before `site-packages`, so the copy's packages win. That
+   matters because the workspace venv's editable installs still point at the
+   workspace; a fresh scratch copy cannot `uv sync` in the sandbox, since PyPI
+   is blocked. Before the mutation run, confirm for each package the change
+   touches that Python loads the copy, and stop if it does not:
+
+   ```sh
+   PYTHONPATH="$(ls -d "$M"/packages/*/src | paste -sd:)" <workspace>/.venv/bin/python -c 'import importlib, sys; m = importlib.import_module(sys.argv[2]); sys.exit(0 if m.__file__.startswith(sys.argv[1]) else 1)' "$M" agent_hub || exit 1
+   ```
+
+   This turns a silent false pass into a stop if a harness ever strips
+   `PYTHON*` variables, or editable installs move to import hooks. The recipe
+   is valid unless the change alters dependencies, entry points or the set of
+   workspace packages (the venv would need rebuilding), or the test under
+   check removes `PYTHONPATH` from a child process (for example the
+   nested-pytest tests `test_isolated_machine_state_strips_launcher_identity`
+   in `tests/test_conftest.py` and
+   `test_no_cwd_bridge_ignores_lane_clone_identity` in
+   `tests/test_workspace.py`). Those cases fall back to `git worktree add`
+   outside the sandbox; everything run in that worktree then also runs outside
+   the sandbox.
+
+   A test reading repository files must find them relative to its own file (as
+   `CHECKED_IN_GUIDES` does) or to the imported package; both then resolve into
+   `$M`. A test that reads a fixed workspace path is not checked by the copy. A
+   `git archive` copy has no `.git`, so a test that runs git against the
+   checkout (for example
+   `test_role_principle_and_decision_ownership_across_docs_and_guides`, which
+   runs `git grep` with `cwd=ROOT`) finds no repository, or a different one
+   above `$M`; such tests also use the `git worktree add` fallback. A
+   subprocess-hub mutation run is slow: with the fix removed, a test such as
+   `tests/test_main.py`'s may fail only by waiting out its bound (about 60 s
+   per test, about 2 minutes for the `bb72365` pair). That is the expected
+   failure, not a hang, so budget for it rather than abandoning the run.
+
+   For every recipe:
+
+   - use an absolute scratch path;
+   - before any edit, run `set -e`, `cd "$M" || exit 1` and
+     `[ "$(pwd)" = "$M" ] || exit 1`;
+   - never `cd "$TMPDIR/…"` in a command whose sandbox mode differs from the
+     one that created the directory;
+   - after the check, confirm `git status --porcelain --untracked-files=no` in
+     your own worktree is empty, so no mutation was committed or left tracked.
+
+   Every mutation check ends with a control run in the same copy with the fix
+   restored: it must pass, and the failure without the fix must come from the
+   test's own assertion, not from an environment error. Name in the change
+   request what was reverted and the failure it produced (see the
+   repair-checklist step 5 in
    [testing-time-and-waits](https://github.com/RoboNater/robomate/blob/main/docs/development/testing-time-and-waits.md)).
    When a test you add or change launches a subprocess, checks a process ID or
    whether a process is alive, asserts what a child process receives
