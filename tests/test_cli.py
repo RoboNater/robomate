@@ -5121,8 +5121,10 @@ def test_status_step_pr_and_stored_gate_describe_the_run(
 ) -> None:
     """#653: PR number, short head, issue, start and age, plus the stored gate."""
 
-    # A run that started yesterday shows its date; ages roll to hours and days.
-    clock = FrozenClock(datetime.now(UTC) - timedelta(days=2))
+    # Anchor to a fixed midday so the 42-minute advance never crosses 00:00 UTC;
+    # the same-day time-only and later different-day full-date stamps are then
+    # deterministic (#669). Ages still roll to hours and days below.
+    clock = FrozenClock(datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC))
     hub_store = _status_hub(
         tmp_path,
         clock,
