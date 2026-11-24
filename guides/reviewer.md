@@ -197,10 +197,11 @@ that ran and failed before reaching those tests, or passed while they skipped,
 is not a pass. To confirm the changed tests actually ran when only a green job
 is available, extract their pytest summary from the Windows job log with
 [ci-windows-step-logs](https://github.com/RoboNater/robomate/blob/main/docs/development/ci-windows-step-logs.md):
-the summary shows the expected test count with `0 skipped`, or accounts for
-every reported skip — and establishes the material test's Windows outcome with
-a native run when a folded skip group could hide it. Use `changes_requested`
-when blocking findings remain.
+the summary shows the expected test count with `0 skipped`, or proves the
+reported skips exclude the material tests — when the log cannot attribute a
+skip to a non-material test (folded groups, shared-helper or fixture sites,
+missing reasons), establish the material test's Windows outcome with a native
+run. Use `changes_requested` when blocking findings remain.
 Use `blocked` when review needs another party's action or the head moved, and
 `failed` when review execution itself failed. Keep the result under 32 KiB and
 put detailed evidence in the change-request comment.

@@ -1288,8 +1288,9 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
             "confirm the changed tests actually ran",
             "extract their pytest summary from the Windows job log",
             "expected test count with `0 skipped`",
-            "accounts for every reported skip",
-            "establishes the material test's Windows outcome",
+            "proves the reported skips exclude the material tests",
+            "cannot attribute a skip to a non-material test",
+            "establish the material test's Windows outcome with a native run",
         ),
     )
 
@@ -1312,7 +1313,8 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
             "only after the whole job completes",
             "confirm the changed tests actually ran",
             "expected count with `0 skipped`",
-            "the material test's Windows outcome is established",
+            "no reported skip is attributable to the material test",
+            "native Windows run when the log cannot attribute",
             "PowerShell equivalent",
         ),
     )
@@ -1328,14 +1330,19 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
             "##[endgroup]",
             "SKIPPED [N]",
             "`0 skipped`",
-            # r1-1: pytest folds same-location skips, which can hide the
-            # material test; the pass rule accounts for every reported skip
-            # and demands positive native Windows evidence for ambiguity.
+            # r1-1: pytest folds same-location skips and reports a skip at the
+            # line that raised it, so neither a folded group nor a skip sited
+            # in a shared helper can attribute itself; the pass rule demands
+            # exclusion evidence and positive native Windows evidence for
+            # ambiguity.
             "not which parametrized cases skipped",
-            "account for the summary's whole skipped count",
+            "no matter which test skipped through it",
+            "no reported skip comes from a material test",
+            "not a shared helper, fixture, or folded group",
+            "a singleton whose location names no test",
             "run the material test on native Windows with verbose per-test outcomes",
             "for every node ID",
-            "the log has no reason lines",
+            "carry no skip details at all",
             "New-Guid",
         ),
     )

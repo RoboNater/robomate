@@ -65,28 +65,38 @@ The step runs `uv run --locked pytest -n auto -rs` on the changed test files
 extracted lines are the pytest summary and, with `-rs`, skip-reason lines.
 Pytest groups skips in that summary: one
 `SKIPPED [N] <file>:<line>: <reason>` line per group of skips that share a
-location and a reason, with `N` counting the group. `SKIPPED [2]` therefore
-names a location and a reason but not which parametrized cases skipped, so a
-folded group can hide the material test — the one that needs native Windows to
-be meaningful — among its skips. Logs from before `-rs` (run 45109110210
-reported `1709 passed, 31 skipped` with no reason lines) carry no skip details
-at all.
+location and a reason, with `N` counting the group, and it reports a skip at
+the line that raised it. Three consequences make the summary weaker than it
+looks:
+
+- `SKIPPED [2]` names a location and a reason but not which parametrized
+  cases skipped, so a folded group can hide the material test — the one that
+  needs native Windows to be meaningful — among its skips.
+- A skip raised in a shared helper or fixture points at the helper's line no
+  matter which test skipped through it: two runs can print the identical,
+  fully accounted `SKIPPED [1] helper.py:<line>: <reason>` line with the
+  material test skipping in one and passing in the other.
+- Logs from before `-rs` (run 45109110210 reported `1709 passed, 31 skipped`
+  with no reason lines) carry no skip details at all.
 
 The step passed for real when:
 
 - the summary shows the number of tests the changed files contain — count
   them locally with `uv run --locked pytest --collect-only -q <files>` — and
   `0 skipped`; or
-- the `SKIPPED [N]` lines account for the summary's whole skipped count (the
-  bracketed counts add up to it), every line's reason is understood, and no
-  skipped group is at the material test's location.
+- the step's output proves that no reported skip comes from a material test:
+  the `SKIPPED [N]` lines account for the summary's whole skipped count (the
+  bracketed counts add up to it), every line's reason is understood, and each
+  skip's location identifies one specific non-material test — not a shared
+  helper, fixture, or folded group, none of which can say which test skipped.
 
-When a folded group leaves the material test's outcome unclear — the summary
-cannot say which parametrized case skipped, or the log has no reason lines —
-the step's summary alone is not evidence. Get positive native Windows evidence
-before approving: run the material test on native Windows with verbose
-per-test outcomes, for example `uv run --locked pytest <files> -vv`, which
-prints `PASSED` or `SKIPPED (reason)` for every node ID, and cite that run.
+When the step's output leaves a material test's outcome uncertain — folded
+groups, skips sited in shared helpers or fixtures (including a singleton
+whose location names no test), or reason-free logs from before `-rs` — the
+summary alone is not evidence. Get positive native Windows evidence before
+approving: run the material test on native Windows with verbose per-test
+outcomes, for example `uv run --locked pytest <files> -vv`, which prints
+`PASSED` or `SKIPPED (reason)` for every node ID, and cite that run.
 
 `No changed test files to run.` means the PR changed no `tests/test_*.py`
 file, so the step ran nothing; changed helpers such as `tests/conftest.py` and
