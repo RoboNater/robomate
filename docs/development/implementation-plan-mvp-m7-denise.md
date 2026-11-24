@@ -160,13 +160,14 @@ Filesystem permissions cannot enforce conversational authority or make shared gi
 private: inspect effects on sibling worktrees before writing common metadata.
 
 Denise has no robomate MCP entry or inherited worker/orchestrator environment. Use a
-user harness home/login by default in the joined doctor entry (#496), with explicit
+user harness home/login by default for Claude Code and Codex (#496), with explicit
 Claude `--strict-mcp-config` / `--permission-mode default` and Codex
 `approval_policy=on-request` / `sandbox_mode=workspace-write`. Codex discovers servers,
 disables each by name and verifies none remains enabled before startup, refusing on any
 failure with a `--clean-login` remedy. `mcp_servers={}` merges instead of clearing on
-codex-cli 0.167.0. User hooks/plugins/skills are intentionally acceptable in default mode;
-`--clean-login` selects a separate per-run profile with its own login instead. Clear
+codex-cli 0.167.0. User hooks/plugins/skills are intentionally acceptable with the
+operator's profile. `--clean-login` selects a separate per-run profile.
+OpenCode and AntiGravity always use separate profiles to isolate their MCP config. Clear
 ambient `ROBOMATE_HUB_URL` / `ROBOMATE_TOKEN*` during launch so another run cannot win
 discovery. Operator CLI inspection/actions get explicit selection from this run's context
 using the existing supported selector/environment, scoped to that command. Verify hub ID
@@ -240,7 +241,7 @@ The recovery procedure is:
 | --- | --- |
 | Local Linux/Bash and native Windows/PowerShell | First slice; separate robomate source and target repository, Claude Code/Codex. Both get automated coverage and live acceptance. |
 | Windows Git Bash | Render using existing quoting/path conventions; execute generated wrappers with a fake harness on Windows and record live coverage separately. |
-| Hub host with remote workers | Generate Denise on the hub host; include remote bundle/session paths as remote references. Local diagnosis/startup must work without contacting remote hosts. Operator may run guarded resume on the worker host or provide an existing trusted SSH connection; no automatic credential distribution or remote process control. |
+| Hub host with remote workers | Start Denise on the hub host. Attribute known remote workspace paths to the worker host and mark unavailable session evidence. Local diagnosis/startup works without contacting the worker. The operator runs guarded resume on the worker host using its original launcher inputs. |
 | Remote-only doctor terminal | Deferred: not required for M7. Explain how to start Denise on the hub host instead. Do not claim local grants reach remote state. |
 | OpenCode/AntiGravity | Follow the first slice with tested interactive configs and access grants on supported hosts. No MCP and no headless worker loop. Needed before M7 completion. |
 | M2 replacement of preparation | M2 Steps 10/11 provide an optional doctor entry in the successor launcher, reading locally saved context from the state resolver and `runs/<run_id>/manifest.json`. Preserve the guide at `docs/denise/guide.md`; keep the context, opt-in per-run clean doctor profile, scoped access inventory and local reports under that run's `denise/` directory. Startup must work without HTTP or join. Only Step 11 waits for M7 and demonstrated replacement behavior. |
@@ -346,29 +347,51 @@ host, including Codex extra-directory writes on native Windows.
 
 ### Step 3 — Remaining interactive harnesses, remote context and docs
 
-Add OpenCode/AntiGravity interactive doctor profiles; test the no-MCP configuration,
-model/effort flags and effective access independently. Interactive `opencode` rejects
-`--variant`, but the generated ask scripts already carry an effort as
-`agent.build.variant` in `OPENCODE_CONFIG_CONTENT`. Render an inherited OpenCode effort
-the same way if the interactive doctor session honours it; otherwise apply the
-default-effort rule. Either way, a team whose selected agent uses OpenCode gets
-a runnable consultation command. Cover Windows Git Bash and
-remote-worker metadata, honest unavailable evidence and a concrete worker-host resume
-recommendation. Add usage/troubleshooting to `docs/user-guide.md`, recovery links in
-`docs/development/agent-recovery.md`, `guides/README.md`'s pointer to the separate local
-`docs/denise/guide.md` (never copied into the served directory), and
-standard-run config/launcher help and fixtures. Document supported versus trusted-only or
-deferred combinations, credential setup, reports, consequential decisions and M2 handoff.
+Build on [#252](https://github.com/RoboNater/robomate/issues/252) and extend the
+`scripts/start-run.py` and `scripts/agent-launcher.py doctor` path with OpenCode
+and AntiGravity profiles. Test the no-MCP configuration, model and effort
+options, and selected directory grants independently with fake harnesses.
+OpenCode uses the default effort until a live interactive consultation
+verifies support for `agent.build.variant` in `OPENCODE_CONFIG_CONTENT`. Print
+a note naming the inherited effort and omit that option from the doctor
+command. Teams using OpenCode still get a runnable consultation command.
+
+Use the required `windows` CI job to exercise the reported command through
+PowerShell and Git Bash with fake harnesses. Extend the offline startup tests
+to check no HTTP, check-in or takeover, unchanged team session files, and
+separate reports and briefings per consultation. Use representative remote
+worker metadata with the doctor's `--remote-worker AGENT=HOST` option.
+Attribute available workspace metadata to the worker host, mark unavailable
+sessions honestly and recommend guarded `agent-launcher.py resume` on that
+host with the original `--hub-url`, `--token-file` and `--sessions-dir`.
+Operator-started networked hubs and live remote workers belong to Step 4.
+Consultations from a worker-only terminal require local hub state, so run the
+doctor on the hub host.
+
+Add usage, troubleshooting, credential setup, supported and trusted-only
+host combinations, reports, consequential decisions and the M2 handoff to
+the operator docs. Link the separate local `docs/denise/guide.md` from
+`guides/README.md` and link consultation guidance from recovery docs. Keep
+the standard-run config help, launcher help and fixtures current.
 
 ```sh
+uv sync --locked --all-packages --dev
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked mypy
+uv run --locked python scripts/sync-worker-prompt.py --check
 uv run --locked pytest tests/test_denise.py tests/test_agent_launcher.py tests/test_start_run.py tests/test_runtime_content.py tests/test_agent_recovery.py
+uv run --locked pytest -n auto
+uv run --locked python scripts/dependency-licenses.py --check
+uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/
 ```
 
-Extend the fake-harness and offline startup checks from Step 2. Use representative
-remote-worker metadata to verify that Denise attributes evidence to the worker host and
-recommends running guarded resume on that host. Record exact validation commands in the
-implementation PR. Live remote provisioning and process control belong to the
-operator acceptance step.
+Run each touched generator and helper and each emitted consultation command
+with a fake harness. Record exact commands in the implementation PR. Step 3
+validation is unattended. [#254](https://github.com/RoboNater/robomate/issues/254)
+records live interactive OpenCode and AntiGravity consultations, Git Bash on
+Windows, and remote-worker recovery against a networked sandbox hub started
+by the operator.
 
 ### Step 4 — Operator acceptance and evidence
 
@@ -383,12 +406,13 @@ tests alone. Any substantive production defect gets its own scoped fix PR.
 | --- | --- |
 | Separate target project: run `uv run --locked python scripts/start-run.py --config <config>` on Bash and native PowerShell, then run the printed `agent-launcher.py doctor` command | Interactive Claude Code and Codex consultations, correct target instructions and separate robomate source/docs, no extra joined agent or team session changes. Record actual read and write grants per host, including Codex extra-directory writes on native Windows. |
 | Separate tooling checkout: start Claude Code and Codex consultations and ask Denise to read the local guide and recovery docs | Record whether each harness can read the docs and which permission requests the operator sees on each host. |
+| Interactive OpenCode and AntiGravity doctors on supported hosts; paste the reported command in Git Bash on Windows | Verify the isolated profiles, model/effort and real directory access. Check OpenCode's interactive variant behavior and record permissions and login requirements. |
 | Hub unavailable: operator uses `robomate down` in the selected hub checkout, then runs `agent-launcher.py doctor`. Later they request restoration with `robomate up` in the same checkout | Startup, diagnosis and report work without HTTP or MCP. Restore only when requested. Verify the same hub ID, state and port, and confirm the workflow is preserved. Distinguish a stopped hub from unreachable remote HTTP. Stop disposable hubs after the exercise. |
 | Agent returned to shell: operator verifies exit, starts Denise and requests guarded `agent-launcher.py resume <agent>` on its host | Preserve workspace, config and exact conversation. Verify live hub and task identity and the existing pending result. Explain a completed or released task. |
 | Attached/orphan predecessor: keep a sandbox predecessor attached and request resume | Existing lock/attachment refusal is explained. Denise requests an explicit decision before terminating the identified orphan. After the operator handles it, recheck and use guarded resume. No kill by guessed PID or forced duplicate; document any task lost while waiting. |
 | Pending question or pause: inspect with `robomate inbox --json` and `robomate status --json`; try the relevant `agent-launcher.py resume` commands | Explain role-specific advice. Alice may need to resume to handle the question. If the operator decides, use `robomate answer <id> <answer>` and verify answered status, then leave normal workflow progression to Alice. Identity and attachment checks still apply to advisory overrides. |
 | Preserved uncommitted work: make a known sandbox worker edit, save `git -C <workspace> status --short` and `git -C <workspace> diff`, interrupt the agent and recover through Denise | Same branch/workspace and edit after recovery; preserve IDs and pending questions/results. No reset, clean, new clone, DB deletion or prep replay. Report verification and any unresolved ambiguity. |
-| Remote evidence unavailable: deny access to a worker host, then start Denise on the hub host | Useful local diagnosis; remote logs/status explicitly unknown, with worker-host commands recommended. No copied token or assumed path translation. Later operator-provided access does not silently change the run being operated on. |
+| Remote evidence unavailable: use a remote worker with an operator-started networked sandbox hub, then start Denise on the hub host without access to the worker | Record the worker's location, which evidence is unavailable and the recommendation to run guarded resume on the worker host with its original settings. Verify the selected run identity once the operator provides access. |
 
 ## Validation and CI
 

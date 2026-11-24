@@ -664,9 +664,20 @@ keys = ("FAKE_MARK", "OPENCODE_CONFIG_CONTENT", "TMPDIR", "ROBOMATE_HUB_URL", "R
         "ROBOMATE_TOKEN_FILE", "ROBOMATE_HUB_ID", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "HUB_HARNESS",
         "HUB_HARNESS_VERSION", "HUB_PROVIDER", "HUB_MODEL", "HUB_EFFORT", "UV_CACHE_DIR",
         "PYTEST_XDIST_AUTO_NUM_WORKERS", "HUB_TELEMETRY_LOG", "AGENT_NAME", "AGENT_RUNTIME",
-        "PWD", "VIRTUAL_ENV", "PATH")
+        "PWD", "VIRTUAL_ENV", "PATH", "HOME", "USERPROFILE", "AGY_HOME",
+        "OPENCODE_CONFIG", "OPENCODE_PERMISSION", "OPENCODE_DISABLE_PROJECT_CONFIG",
+        "OPENCODE_DISABLE_CLAUDE_CODE",
+        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME")
+profile = os.environ.get("AGY_HOME")
+agy_files = {}
+if profile:
+    for name in (".gemini/config/mcp_config.json", ".gemini/antigravity-cli/settings.json"):
+        path = os.path.join(profile, name)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as stream:
+                agy_files[name] = json.load(stream)
 record = {"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
-          "env": {k: os.environ.get(k) for k in keys}}
+          "env": {k: os.environ.get(k) for k in keys}, "agy_files": agy_files}
 log = os.environ["FAKE_LOG"]
 count = 0
 if os.path.exists(log):
@@ -2733,7 +2744,7 @@ def no_hub() -> Any:
     return FakeHub(lambda method: pytest.fail(f"the doctor read the hub: {method}"))
 
 
-@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode", "antigravity"])
 def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
     area: dict[str, Path], run: dict[str, Path], harness: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2780,12 +2791,9 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
     }.intersection(launch["argv"])
     if harness == "codex":
         assert "approval_policy=on-request" in launch["argv"]
-    else:
+    elif harness == "claude":
         assert "--strict-mcp-config" in launch["argv"]
-    granted = [
-        launch["argv"][i + 1] for i, word in enumerate(launch["argv"]) if word == "--add-dir"
-    ]
-    assert set(granted) == {
+    expected = {
         str(path.resolve())
         for path in (
             run["target"],
@@ -2796,9 +2804,24 @@ def test_doctor_starts_with_the_hub_down_and_no_join_mcp_or_supervision(
             area["checkout"] / ".git",
         )
     }
+    if harness == "opencode":
+        overlay = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+        external = {"*": "ask"}
+        for root in expected:
+            pattern = Path(root).as_posix()
+            external[pattern] = external[f"{pattern}/*"] = "allow"
+        assert overlay["permission"] == {"*": "ask", "external_directory": external}
+        assert launch["argv"][-2] == "--prompt"
+    else:
+        granted = [
+            launch["argv"][i + 1] for i, word in enumerate(launch["argv"]) if word == "--add-dir"
+        ]
+        assert set(granted) == expected
+        assert prompt not in granted and "--" not in granted
+    if harness == "antigravity":
+        assert launch["argv"][-2] == "--prompt-interactive"
     # Every grant stays a directory and the prompt stays positional: Claude
     # Code's variadic --add-dir otherwise consumes a trailing prompt (#513).
-    assert prompt not in granted and "--" not in granted
     if harness == "claude":
         assert launch["argv"][-2] == "--"
     # Everything the doctor wrote is under the selected run's denise/; team logs are untouched.
@@ -2847,8 +2870,11 @@ def test_doctor_context_keeps_robomate_and_target_apart(
     assert "secret" not in context_text
 
 
-def test_doctor_keeps_earlier_reports(area: dict[str, Path], run: dict[str, Path]) -> None:
-    words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "codex"]
+@pytest.mark.parametrize("harness", ["codex", "opencode", "antigravity"])
+def test_doctor_keeps_earlier_reports(
+    area: dict[str, Path], run: dict[str, Path], harness: str
+) -> None:
+    words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", harness]
     assert invoke(words, programs=programs(area), reader=no_hub()) == 0
     (first,) = (run["denise"] / "reports").iterdir()
     briefing = doctor_briefing(run)
@@ -2895,9 +2921,118 @@ def test_doctor_supports_only_its_ready_harnesses(
     area: dict[str, Path], run: dict[str, Path]
 ) -> None:
     with pytest.raises(SystemExit) as refused:
-        invoke(["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "opencode"])
+        invoke(["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "devin"])
     assert refused.value.code == 2
     assert launches(area) == []
+
+
+@pytest.mark.parametrize("named_host", [True, False])
+def test_doctor_remote_worker_does_not_use_same_named_hub_session(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    named_host: bool,
+) -> None:
+    manifest_path = run["run_dir"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    remote_path = r"D:\worker checkout\bob"
+    manifest["agents"][0].update(workspace_kind="clone", workspace_path=remote_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success-then-takeover-refused")
+    team_log = area["sessions"] / "bob.jsonl"
+    original_log = team_log.read_bytes()
+    words = [
+        "doctor",
+        "--hub",
+        str(area["checkout"]),
+        "--run",
+        RUN,
+        "--harness",
+        "codex",
+    ]
+    if named_host:
+        words += ["--remote-worker", "bob=worker.example"]
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 0
+    context = json.loads((doctor_briefing(run) / "context.json").read_bytes())
+    (worker,) = context["agents"]
+    host = "worker.example" if named_host else "unknown worker host"
+    assert worker["location"] == ("remote" if named_host else "unverified clone host")
+    assert worker["workspace"] == {
+        "host": host,
+        "path": remote_path,
+        "access": "unavailable",
+    }
+    assert worker["sessions"] == {
+        "host": host,
+        "path": None,
+        "access": "unavailable",
+    }
+    assert "agent-launcher.py resume bob" in worker["resume_advice"]
+    for flag in ("--hub-url", "--token-file", "--sessions-dir"):
+        assert flag in worker["resume_advice"]
+    assert remote_path not in {root["path"] for root in context["access_inventory"]["roots"]}
+    assert team_log.read_bytes() == original_log
+
+
+@pytest.mark.parametrize("harness", ["opencode", "antigravity"])
+def test_doctor_isolates_mcp_and_identity_from_the_calling_environment(
+    area: dict[str, Path], run: dict[str, Path], harness: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ambient = area["root"] / "ambient"
+    ambient.mkdir()
+    team_config = ambient / "opencode.json"
+    team_config.write_text('{"mcp":{"robomate":{"enabled":true}}}', encoding="utf-8")
+    for name, value in {
+        "AGY_HOME": str(ambient),
+        "OPENCODE_CONFIG": str(team_config),
+        "OPENCODE_PERMISSION": '{"*":"allow"}',
+        "XDG_CONFIG_HOME": str(ambient),
+        "XDG_DATA_HOME": str(ambient),
+        "XDG_STATE_HOME": str(ambient),
+        "XDG_CACHE_HOME": str(ambient),
+        "OPENCODE_CONFIG_CONTENT": team_config.read_text(encoding="utf-8"),
+        "ROBOMATE_TOKEN": "ambient-token",
+        "HUB_TELEMETRY_LOG": str(ambient / "telemetry.jsonl"),
+        "AGENT_NAME": "bob",
+        "FAKE_BRIDGE_JOIN": "success-then-takeover-refused",
+    }.items():
+        monkeypatch.setenv(name, value)
+    words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", harness]
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 0
+    (launch,) = launches(area)
+    env = launch["env"]
+    assert env["ROBOMATE_TOKEN"] is None and env["HUB_TELEMETRY_LOG"] is None
+    assert env["AGENT_NAME"] is None and sorted(ambient.iterdir()) == [team_config]
+    profile = run["denise"] / "configs" / harness
+    if harness == "opencode":
+        assert env["OPENCODE_CONFIG"] is None and env["OPENCODE_PERMISSION"] is None
+        assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == env["OPENCODE_DISABLE_CLAUDE_CODE"] == "1"
+        assert json.loads(env["OPENCODE_CONFIG_CONTENT"])["mcp"] == {}
+        for name in ("CONFIG", "DATA", "STATE", "CACHE"):
+            assert env[f"XDG_{name}_HOME"] == str(profile / name.lower())
+    else:
+        assert env["HOME"] == env["USERPROFILE"] == env["AGY_HOME"] == str(profile)
+        assert launch["agy_files"][".gemini/config/mcp_config.json"] == {"mcpServers": {}}
+        preferences = launch["agy_files"][".gemini/antigravity-cli/settings.json"]
+        assert preferences["permissions"] == {"deny": ["mcp(*)"]}
+        assert preferences["toolPermission"] == "request-review"
+        assert preferences["allowNonWorkspaceAccess"] is False
+        assert preferences["enableTerminalSandbox"] is True
+
+
+def test_doctor_refuses_effective_opencode_mcp(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_OPENCODE_CONFIG", '{"mcp":{"ambient":{"command":["secret-value"]}}}')
+    words = ["doctor", "--hub", str(area["checkout"]), "--run", RUN, "--harness", "opencode"]
+    assert invoke(words, programs=programs(area), reader=no_hub()) == 2
+    assert not launches(area)
+    error = capsys.readouterr().err
+    assert "effective config has enabled or unknown MCP entries" in error
+    assert "secret-value" not in error
 
 
 @pytest.mark.parametrize(

@@ -313,6 +313,52 @@ transcript rules are in [Ask an agent after the run](#ask-an-agent-after-the-run
 for the launcher's own behavior see
 [agent recovery](development/agent-recovery.md#asking-an-agent).
 
+#### Consulting Denise about a run
+
+Paste the consultation command printed by `start-run.py` into the same shell.
+From a robomate installation you can also select a saved run directly:
+
+```sh
+uv run --locked python scripts/agent-launcher.py doctor \
+  --hub /path/to/hub-checkout --run RUN_ID --harness opencode
+```
+
+Denise opens a fresh interactive consultation on the hub host. The selected
+hub's local state must contain `runs/<run_id>/manifest.json`. A stopped hub
+still supports offline diagnosis. For a missing or mismatched manifest,
+check the run ID and owning checkout or restore the matching saved manifest.
+Pass `--target` with the Git checkout root if the affected project is in a
+separate checkout.
+
+| Doctor harness | Login and access |
+| --- | --- |
+| Claude Code and Codex | Use the operator's login by default. Choose `--clean-login` for a separate per-run profile. The launcher passes selected directories, disables MCP and requests interactive permissions. Actual Claude Code shell containment on Windows depends on the installation. |
+| OpenCode 1.x | Uses a separate per-run profile. Use `/connect` if the provider needs login. The launcher checks `opencode debug config` for enabled MCP, approves the selected external directories at the tool layer and asks for other external access. Shell commands retain OS access. Use on a trusted host. |
+| AntiGravity (`agy`) | Uses a separate per-run home; follow the sign-in prompt there. The launcher configures an empty MCP profile, review prompts and scoped workspace directories. Terminal containment depends on the installed CLI and host. Treat it as trusted-only where the terminal sandbox is unavailable. |
+| OpenCode 2.x | Compatibility is unverified. OpenCode 2.x migration is tracked in [#518](https://github.com/RoboNater/robomate/issues/518). |
+| Devin and a doctor terminal on a worker-only host | Deferred. Run the doctor on the hub host with a supported harness. |
+
+With OpenCode, a team effort setting is printed in a note and omitted from the
+doctor command. The consultation uses the harness default. If the effective MCP
+check fails, check the OpenCode version and the generated or managed config, or
+select another doctor harness. The required Windows CI job covers the commands
+with fake harnesses in PowerShell and Git Bash. Live OpenCode and AntiGravity
+access and interactive startup are tracked in [#254](https://github.com/RoboNater/robomate/issues/254).
+
+For a remote worker, add `--remote-worker bob=worker-host` to the doctor command
+on the hub host. The index attributes remote workspace evidence to that host
+and marks its launcher sessions unavailable. Run guarded resume on the worker
+host with its original hub URL, local token file and session directory. See
+[remote joined agents](development/agent-recovery.md#remote-hosts).
+
+The doctor prints the context and a fresh Markdown report path under
+`<state>/runs/<run_id>/denise/`. Starting the consultation requests diagnosis.
+Ask explicitly before restarting a hub or agent, replacing an attached
+predecessor or handing work back. Use the operator's own terminal for recovery
+commands that need a hub token or machine operator credential when the doctor
+profile cannot access it. Keep credentials out of reports. See the
+[local Denise guide](denise/guide.md) for permissions, decisions and evidence.
+
 #### Stopping and resuming one agent mid-run
 
 The command prints each agent's launcher PID when it starts it. To take one
@@ -367,7 +413,7 @@ The standard helper's keys, and what replaces each:
 | `reservations` (was `roadmap`) | Same key. The statement names the reservations issue and adds prepare-run's counter and close-out text; without the key it says no issue was supplied. |
 | `forge` | Same key, passed to `robomate up --forge`. Empty (the new default) detects the forge from the origin. |
 | `alice_*`, `bob_*`, `charlie_*` harness, model, effort | Same keys, passed to `agent-launcher.py start`. Names and roles stay fixed: Alice orchestrator, Bob implementer, Charlie reviewer. |
-| `denise_settings_from`, `denise_*` | Same keys, validated at start. At the end the command prints `agent-launcher.py doctor --run <run_id>` with Denise's resolved harness, model and effort. The default uses the operator login; user hooks/plugins/skills may load. `denise_clean_login = true` (`--denise-clean-login`) appends `--clean-login` for a separate per-run login. MCP servers are disabled and explicit interactive permission modes override user defaults. User allow rules still apply; use `--clean-login` to avoid them (see [authentication](denise/guide.md#authentication-evidence-and-reports)). She is consulted on demand, never started with the team. |
+| `denise_settings_from`, `denise_*` | Defaults to Bob's settings. Choose Alice, Bob, Charlie or `none`; `none` requires an explicit `denise_harness`. Model and effort inherit only when the harness matches. Empty overrides select the harness defaults when changing harnesses. The report prints the resolved doctor command. `denise_clean_login = true` (`--denise-clean-login`) requests a separate login for Claude Code or Codex; OpenCode and AntiGravity already use one. See [Consulting Denise](#consulting-denise-about-a-run). |
 | `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done, its agents are released, or Ctrl-C. |
 | `pytest_workers` | Same key, the agents' `PYTEST_XDIST_AUTO_NUM_WORKERS`; 0 clears an inherited value. |
 | `workspace_setup` | Optional shell command run in each agent worktree before launch, with its isolated cache and temporary directory. Empty by default. On manual resume it runs again if `.venv` is missing. A failure stops that agent’s launcher and prints the output; during `start-run` startup, a launcher failure aborts the team and stops the hub, as with other preflight failures. Setup time counts against `join_window_s` (120 seconds by default); increase it for slow downloads. Setup output appears on failure. |

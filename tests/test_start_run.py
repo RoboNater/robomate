@@ -236,6 +236,11 @@ def test_generated_default_config_reads_back_as_the_defaults(tmp_path: Path) -> 
     }
     text = path.read_text(encoding="utf-8")
     assert "[policy]" in text and "# merge_method" in text
+    inherits = "Denise inherits from alice, bob (default) or charlie, or none."
+    assert inherits in text
+    assert inherits in " ".join(START.parser().format_help().split())
+    assert "Doctor harness override: claude, codex, opencode or antigravity." in text
+    assert "OpenCode consultations use the default effort." in text
     # Generation never overwrites.
     assert START.main(["--generate-default-config", str(path)]) == 1
 
@@ -899,20 +904,19 @@ def test_final_report_passes_clean_login_from_cli_and_saved_config(
         assert str(run.checkout) in expected
 
 
-@pytest.mark.parametrize("harness", ["opencode", "antigravity"])
 def test_report_skip_names_the_inherited_harness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    harness: str,
 ) -> None:
-    values, policy = settings("--bob-harness", harness, "--bob-effort", "high")
+    harness = "devin"
+    values, policy = settings("--bob-harness", harness)
     run = START.Run(values, policy, tmp_path, tmp_path / "checkout", "test", run_id="test-run")
     monkeypatch.setattr(START, "hub_status", lambda _: None)
     START.report(run)
     output = capsys.readouterr().out
     assert f"Denise skipped: inherited harness {harness} is not yet supported" in output
-    assert "--denise-harness claude or --denise-harness codex" in output
+    assert "--denise-harness" in output
     assert "consult Denise" not in output
 
 
@@ -935,12 +939,14 @@ def test_doctor_only_harness_does_not_need_team_mcp(
     assert checked == ["claude-code"]
 
 
-@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("harness", ["claude", "codex", "opencode", "antigravity"])
+@pytest.mark.parametrize("shell_style", ["native", "git-bash"] if os.name == "nt" else ["native"])
 def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     harness: str,
+    shell_style: str,
 ) -> None:
     run_id = "20261109_abcdef12"
     checkout = tmp_path / "hub owner's checkout"
@@ -962,19 +968,23 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
         "if words[-3:] == ['mcp', 'list', '--json']:\n"
         "    enabled = 'mcp_servers.robomate.enabled=false' not in words\n"
         "    print(json.dumps([{'name': 'robomate', 'enabled': enabled}]))\n"
+        "elif words == ['debug', 'config']:\n"
+        "    print(os.environ['OPENCODE_CONFIG_CONTENT'])\n"
         "else:\n"
         "    with open(os.environ['FAKE_DOCTOR_LOG'], 'w', encoding='utf-8') as log:\n"
-        "        json.dump(words, log)\n",
+        "        json.dump({'argv': words, 'cwd': os.getcwd()}, log)\n",
     )
     bin_dir = tmp_path / "fake bin"
     bin_dir.mkdir()
+    executable = "agy" if harness == "antigravity" else harness
     if os.name == "nt":
         # The windows job exercises native PowerShell and the .cmd harness shim.
-        shim = bin_dir / f"{harness}.cmd"
+        shim = bin_dir / f"{executable}.cmd"
         shim.write_bytes(f'@"{sys.executable}" "{fake}" %*\r\n'.encode())
     else:
         shim = write(
-            bin_dir / harness, f'#!/bin/sh\nexec {shlex.join([sys.executable, str(fake)])} "$@"\n'
+            bin_dir / executable,
+            f'#!/bin/sh\nexec {shlex.join([sys.executable, str(fake)])} "$@"\n',
         )
         shim.chmod(0o700)
     launch_log = tmp_path / "launch.json"
@@ -983,10 +993,14 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
         "FAKE_DOCTOR_LOG": str(launch_log),
         "PYTHONIOENCODING": "utf-8",
     }
+    # Inheritance is the field case that previously skipped OpenCode entirely.
     values, policy = settings(
-        "--denise-settings-from", "none", "--denise-harness", harness,
-        "--denise-model", "test model", "--denise-effort", "high",
-    )  # fmt: skip
+        "--bob-harness", harness, "--bob-model", "test model", "--bob-effort", "high"
+    )
+    if shell_style == "git-bash":
+        monkeypatch.setenv("MSYSTEM", "MINGW64")
+    else:
+        monkeypatch.delenv("MSYSTEM", raising=False)
     run = START.Run(values, policy, tmp_path, checkout, "offline", run_id=run_id)
     monkeypatch.setattr(START, "hub_status", lambda _: None)
     START.report(run)
@@ -996,23 +1010,34 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
         for line in output.splitlines()
         if "consult Denise about this run with: " in line
     ]
-    shell = (
-        ["pwsh", "-NoProfile", "-Command", command + "\nexit $LASTEXITCODE"]
-        if os.name == "nt"
-        else ["bash", "-c", command]
-    )
+    if shell_style == "git-bash":
+        recovery = importlib.import_module("agent_recovery")
+        shell = [recovery.bash_executable(), "-c", command]
+    elif os.name == "nt":
+        shell = ["pwsh", "-NoProfile", "-Command", command + "\nexit $LASTEXITCODE"]
+    else:
+        shell = ["bash", "-c", command]
     result = subprocess.run(
         shell, env=env, capture_output=True, encoding="utf-8", timeout=LIVENESS_S
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    words = json.loads(launch_log.read_bytes())
+    launch = json.loads(launch_log.read_bytes())
+    words = launch["argv"]
+    assert Path(launch["cwd"]).resolve() == (run_dir / "denise" / "workspace").resolve()
     assert words[words.index("--model") + 1] == "test model"
     if harness == "claude":
         assert words[words.index("--effort") + 1] == "high"
         assert words[-2] == "--" and "--strict-mcp-config" in words
-    else:
+    elif harness == "codex":
         assert "model_reasoning_effort=high" in words
         assert "mcp_servers.robomate.enabled=false" in words
+    elif harness == "opencode":
+        assert "inherited effort 'high'" in output and "default effort" in output
+        assert "--variant" not in words and "--effort" not in command
+        assert words[-2] == "--prompt"
+    else:
+        assert words[words.index("--effort") + 1] == "high"
+        assert words[-2] == "--prompt-interactive"
     assert words[-1].startswith("Read ") and "startup.md" in words[-1]
     assert sorted(sessions.iterdir()) == [team_log]
     assert team_log.read_bytes() == b"team session\n"
