@@ -273,6 +273,7 @@ def test_served_orchestrator_guide_handles_bridge_skew(forge: str) -> None:
     text = " ".join(guide.decode("utf-8").split())
     for fragment in (
         "registration reports a result schema fingerprint mismatch",
+        "ask the operator to check the worker's registration error and the hub log",
         "the whole team's shared bridge install",
         "Ask the operator to update the bridge install and restart the agents",
         "Do not offer reassignment to another worker on the same install",

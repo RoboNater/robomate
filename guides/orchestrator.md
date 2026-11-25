@@ -395,7 +395,9 @@ Handle events as follows:
 If a worker's `submit_result` validation lists fewer result types than its
 role needs, or rejects a field the hub requires, check the whole team's shared
 bridge install for skew with the hub. Use the same procedure if registration
-reports a result schema fingerprint mismatch.
+reports a result schema fingerprint mismatch. If a launched worker never
+appears in `get_state.agents`, ask the operator to check the worker's
+registration error and the hub log for a possible refusal.
 
 Ask the operator to update the bridge install and restart the agents. Both
 actions belong to the operator. Use `ask_user` when the skew prevents routing
