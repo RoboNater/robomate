@@ -213,7 +213,12 @@ class ActivityTracker:
             yield
         finally:
             record.holds.pop(hold_id, None)
-            if session == self.orchestrator_session and self._sessions.get(session) is record:
+            # Cancellation cleanup after detach is not activity from Alice.
+            if (
+                not record.detached
+                and session == self.orchestrator_session
+                and self._sessions.get(session) is record
+            ):
                 record.call(kind, clock())
 
     def silence_anchor(self, record: Activity | None, now: datetime) -> datetime:

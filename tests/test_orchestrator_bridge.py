@@ -26,7 +26,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.fastmcp.exceptions import ToolError
 from packaging.requirements import Requirement
-from timing import LIVENESS_S, wait_until
+from timing import LIVENESS_S, FrozenClock, wait_until
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 from worker_mcp.orchestrator import (
@@ -334,7 +334,7 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_bridge_close_detaches_its_held_wait(
-    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, frozen_clock: FrozenClock
 ) -> None:
     app.state.rpc.guides_dir = Path(__file__).resolve().parents[1] / "guides"
     app.state.rpc.hub_info = {
@@ -349,6 +349,8 @@ async def test_bridge_close_detaches_its_held_wait(
     held = asyncio.create_task(bridge.call("wait_for_event", {"timeout_s": LIVENESS_S}))
     try:
         await wait_until(lambda: hub_store.signals.waiting(EVENT_KEY), "Alice's wait to park")
+        last_call_at = hub_store.status_summary()["orchestrator_activity"]["last_call_at"]
+        frozen_clock.advance(30)
         await bridge.close()
         status = await client.post("/rpc", json=rpc("hub.status", {}))
         activity = status.json()["result"]["orchestrator_activity"]
@@ -356,6 +358,7 @@ async def test_bridge_close_detaches_its_held_wait(
         assert activity["heartbeat_age_s"] is None
         assert activity["holding"] is None
         assert activity["bridge"] == "disconnected"
+        assert activity["last_call_at"] == last_call_at
         assert hub_store.signals.waiting(EVENT_KEY) == 0
         assert hub_store.get_state()["unacked_delivered"] == []
         with pytest.raises(RuntimeError, match="orchestrator call cancelled"):
