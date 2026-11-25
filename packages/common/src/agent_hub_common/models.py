@@ -7,9 +7,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# A profile field the adapter was not told is recorded as this, never guessed
-# (spec §4.3), so Alice can tell "not reported" apart from a real value.
-UNKNOWN = "unknown"
+from .constants import SHA_HEX_40_RE, UNKNOWN
 
 
 class WorkflowStatus(StrEnum):
@@ -160,8 +158,6 @@ class EventState(StrEnum):
 
 
 SCHEMA_VERSION: int = 1
-
-SHA_HEX_40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 class ImplementerOutcome(StrEnum):
