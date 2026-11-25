@@ -737,15 +737,18 @@ kinds get a fixed `unknown` label.
 
 By default, never print decision summaries, keys/rationales, task titles,
 question/answer/withdrawal text, worker progress, report prose or raw event payload text.
-With `--notes`, include each `task_progress` note at its event record and each task's
-title at its task record. Render both as `robomate status --notes` does (#653, the
-`_agent_progress_lines` precedent): literal/control-escaped text under the fixed label
-`untrusted agent text`, each entry capped at the status note's single-line width with an
-explicit truncation marker. In `--json`, they appear only in a per-record `untrusted`
-object, `{kind: "progress_note" | "task_title", label: "untrusted agent text", text}`
-(absent without the flag), and never among a record's typed fields. Question and answer
-text, decision summaries and rationales, result bodies, report prose and raw event
-payloads stay excluded even with `--notes`.
+With `--notes`, add only each `task_progress` note at its event record and each task's
+title at its task record. Render both with the escaping and bound stated here, not with
+`status --notes`, which prints the full note: literal/control-escaped text (`literal()`),
+line breaks flattened to one line (`single_line()`), and the default status note's
+160-column cap with its explicit `...` marker (`_STATUS_NOTE_WIDTH`/`_truncate_note`).
+Precede text output with the fixed label `untrusted agent text`. In `--json`, they appear
+only in a per-record `untrusted` object,
+`{kind: "progress_note" | "task_title", label: "untrusted agent text", text}` (absent
+without the flag), where `text` is that same escaped, single-line, truncated form — never
+raw note text — and never among a record's typed fields. Question and answer text,
+decision keys and summaries/rationales, result bodies, withdrawal text, report prose and
+raw event payloads stay excluded even with `--notes`.
 
 Readable lifecycle rows use only stored closed-set fields: timestamp, actor or assignee,
 task role and state, verdict or outcome, and PR/SHA where present, for example
@@ -762,8 +765,9 @@ once in deterministic order, run/hub scoping, multiple pages/follow/reconnect wi
 omissions, valid JSON, bounded output, invalid cursors/run IDs, unknown labels, controls,
 and the payload-marker exclusion in every format. The exclusion also covers progress
 notes and task titles without `--notes`: their markers stay absent from text and JSON.
-With `--notes`, each appears only escaped, labelled and bounded, in both text and JSON,
-while question, answer, rationale and result markers stay absent even then. Readable rows
+With `--notes`, each appears only escaped, labelled, single-line and bounded, in both
+text and JSON, with `untrusted.text` carrying that same form; question, answer, rationale
+and result markers stay absent even then. Readable rows
 render only stored fields and never invent a missing transition or delivery. A
 store/migration test proves `release_agent` writes exactly one run-attributed
 `agent_released` record and none for an already-released agent; the `on_done: release`

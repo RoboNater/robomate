@@ -1383,12 +1383,14 @@ the launcher becomes a `robomate` supervisor subcommand.
   status, inbox count.
 - `robomate log [--timeline] [--follow] [--notes]`: interleaved events, decisions, and results
   using closed-set labels. By default it never prints untrusted payload text (#20). The
-  opt-in `--notes` adds each `task_progress` note and task title at its record, rendered
-  inert: literal/control-escaped, visibly labelled as untrusted agent text, and bounded
-  per entry, as `robomate status --notes` does (#653); in `--json` they appear only in a
-  separate, clearly named untrusted field. Question and answer text, decision summaries
-  and rationales, result bodies, report prose and raw event payloads remain excluded even
-  with `--notes`. This is the drill-down and the future dashboard's feed.
+  opt-in `--notes` adds only each `task_progress` note and task title at its record,
+  rendered inert: literal/control-escaped, flattened to one line, visibly labelled as
+  untrusted agent text, and capped at the default `status` note width of 160 columns with
+  an explicit truncation marker. In `--json` they appear only in a separate, clearly named
+  untrusted field, escaped, single-line and bounded the same way; raw note text is never
+  printed. Question and answer text, decision keys and summaries/rationales, result
+  bodies, withdrawal text, report prose and raw event payloads remain excluded even with
+  `--notes`. This is the drill-down and the future dashboard's feed.
 - `robomate report [run]`: the rendered run report (§7.3).
 - Summaries come from typed results and events, not from agent prose; `--notes` shows
   agent text only as labelled untrusted text.
@@ -1430,9 +1432,11 @@ only the hub's own repository: a change-request URL, which arrives in untrusted 
 results, never chooses the host or project (§10). Remote-agent mode requires a trusted network path.
 
 **Untrusted operator views.** The opt-in `--notes` timeline view (§11) renders agent
-progress notes and task titles inert: literal/control-escaped, visibly labelled, bounded
-per entry, and in `--json` only in a separate untrusted field. It is for the operator's
-reading only and never feeds summaries, reports, decisions or agent context.
+progress notes and task titles inert: literal/control-escaped, flattened to one line,
+visibly labelled, and capped at the default status note width. In `--json` they appear
+only in a separate untrusted field in that same escaped, single-line, truncated form. The
+view is for the operator's reading only and never feeds summaries, reports, decisions or
+agent context.
 
 **Credentials.** The MVP model is one shared bearer token per hub plus the separate
 operator credential beside the machine registry (§4, #128). Per-agent credentials stay a
