@@ -31,6 +31,10 @@ required-version = ">=0.12.18"
 # #181: pywin32 bundles LGPL-2.1 adodbapi. packages/win32_compat provides the calls mcp makes.
 # Only uv installs from this workspace honour this; see packages/win32_compat/README.md.
 exclude-dependencies = ["pywin32"]
+# #647: compile installed distributions' bytecode at sync, so the first process
+# after a fresh sync does not pay the compile cost. Editable workspace members
+# are compiled when they are first imported, not at sync.
+compile-bytecode = true
 
 [tool.uv.sources]
 agent-hub = { workspace = true }
