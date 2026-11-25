@@ -26,19 +26,26 @@ That is, the command `uv` with the remaining words as its argument list.
 Rules:
 
 - Name it exactly `robomate`, at **user (global) scope**, not project scope.
-- **No token, no hub URL, no identity and no paths other than `--project`.** Don't set `ROBOMATE_HUB_URL`, `ROBOMATE_TOKEN*`, `AGENT_NAME`, `HUB_WORKSPACE` or any `HUB_*` variable. The bridge finds the hub from the agent's worktree. robomate's launcher supplies identity on each launch: for Codex it adds `-c mcp_servers.robomate.env.<KEY>=…` overrides, which must merge into this entry.
+- **No token, no hub URL, no identity and no paths other than `--project`.** Don't set `ROBOMATE_HUB_URL`, `ROBOMATE_TOKEN*`, `AGENT_NAME` or any `HUB_*` variable in the static entry except `HUB_MCP_TIMEOUT_S` where specified in the table below. The bridge finds the hub from the agent's worktree. robomate's launcher supplies identity on each launch: for Codex it adds `-c mcp_servers.robomate.env.<KEY>=…` overrides, which must merge into this entry.
 - No `--role` and no `--name`. The agent declares both when it calls `join`.
 - Don't limit the tool list (no `enabled_tools`-style allow-list) unless the harness requires one. The same entry serves orchestrators and workers.
 - Older robomate docs and the `runtimes/*` templates show per-agent entries with a hub URL, token file and identity. Those belong to the older prepared-run route. Don't copy their `env` blocks.
 
 Settings that unattended runs need. Harness config formats change, so confirm the current location and key names in each harness's official documentation (search the web) for the installed version. If a key has been renamed, use the current name and say so in your report.
 
-| Harness | User-level config (typical; confirm) | Settings beyond the command |
-|---|---|---|
-| Claude Code | `claude mcp add --scope user …` (stored in `~/.claude.json`) | None. |
-| Codex CLI | `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows; `$CODEX_HOME/config.toml` if `CODEX_HOME` is set), table `[mcp_servers.robomate]` | `command`, `args`, `startup_timeout_sec = 120`, `tool_timeout_sec = 1900` (an idle call holds 1800 s plus 15 s HTTP margin). Approve every bridge tool, because unattended runs can't answer approval prompts: one `[mcp_servers.robomate.tools.<tool>]` table with `approval_mode = "approve"` for each tool name from step 4. |
-| OpenCode | Global config: `~/.config/opencode/opencode.json` or `opencode.jsonc` (confirm the Windows location), key `mcp.robomate` | `"type": "local"`, `"command": ["uv", "run", …]` (the whole command as one array), `"enabled": true`, `"timeout": 1900000` (milliseconds). |
-| Antigravity (`agy`) | The user-level MCP config `agy` reads. robomate's launcher has used `<home>/.gemini/config/mcp_config.json`; confirm against current docs. Key `mcpServers.robomate` | `command`, `args`, `"timeoutSeconds": 1900`. If `agy` requires an `enabledTools` allow-list, list every tool from step 4. |
+| Harness | User-level config (typical; confirm) | Settings beyond the command | `HUB_MCP_TIMEOUT_S` in the server environment |
+|---|---|---|---|
+| Claude Code | `claude mcp add --scope user …` (stored in `~/.claude.json`) | None. The static entry keeps the 100 s interactive or unknown-mode hold. | Unset. |
+| Codex CLI | `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows; `$CODEX_HOME/config.toml` if `CODEX_HOME` is set), table `[mcp_servers.robomate]` | `command`, `args`, `startup_timeout_sec = 120`, `tool_timeout_sec = 1900` (an idle call holds 1800 s plus 15 s HTTP margin). Approve every bridge tool, because unattended runs can't answer approval prompts: one `[mcp_servers.robomate.tools.<tool>]` table with `approval_mode = "approve"` for each tool name from step 4. | `"1900"` in `env`. |
+| OpenCode | Global config: `~/.config/opencode/opencode.json` or `opencode.jsonc` (confirm the Windows location), key `mcp.robomate` | `"type": "local"`, `"command": ["uv", "run", …]` (the whole command as one array), `"enabled": true`, `"timeout": 1900000` (milliseconds). | `"1900"` in `environment`. |
+| Antigravity (`agy`) | The user-level MCP config `agy` reads. robomate's launcher has used `<home>/.gemini/config/mcp_config.json`; confirm against current docs. Key `mcpServers.robomate` | `command`, `args`, `"timeoutSeconds": 1900`. If `agy` requires an `enabledTools` allow-list, list every tool from step 4. | `"1900"` in `env`. |
+
+`HUB_MCP_TIMEOUT_S` advertises the configured client budget to the bridge in
+seconds, including for OpenCode. Set the client timeout as well. Without a
+budget advertisement, the bridge uses the 100 s fallback hold. Claude Code's
+measured 1500 s print profile requires a launcher-supplied budget and
+`HUB_HARNESS_MODE="print"`. Keep both out of the static Claude Code entry and
+interactive sessions.
 
 OpenCode 1.19.5 converts the documented V2 `mcp.servers` layout to the flat
 form and drops its object timeout; use the flat form above and revisit when
@@ -68,16 +75,55 @@ user home for `~` (`%USERPROFILE%` on Windows).
 
 ## Steps
 
+A sandbox can restrict the bridge probe, harness verification commands,
+backups and edits of user-level configuration, skill installation, or writes
+to the checker's user-state snapshot. When access is needed and authorized,
+use the harness's normal permission or escalation mechanism for the specific
+operation. Use the access granted to complete routine setup yourself. If an
+operation requires access that is unavailable or denied, stop at the affected
+step and report the operation, path if applicable, and error or denial.
+
 1. **Check for active runs.** Ask the operator, unless they've already said, whether any robomate run is in progress on this machine. A user-level entry is loaded by every session of that harness, including a running agent's next resume. OpenCode also merges its global config into the `OPENCODE_CONFIG` file that older prepared runs pass. If a run is active, stop and confirm before changing anything.
 2. **Take inventory.** Work out the environment: Linux, macOS, native Windows or WSL. Treat WSL as a separate machine here. Configure only the harnesses installed inside it, with a Linux path to a checkout on the WSL filesystem. Never share one checkout's `.venv` between Windows and WSL. For each harness, record whether its CLI (`claude`, `codex`, `opencode`, `agy`) is on `PATH`, and its `--version`. Skip MCP setup for absent harnesses and report them. Confirm `uv` is on `PATH`.
-3. **Prepare the checkout.** In ROBOMATE_CHECKOUT, run `uv sync --locked --all-packages` so the bridge starts quickly on first launch. Don't edit, pull or switch branches in the checkout. If `--locked` fails, stop and report it. Never relock or hand-edit `uv.lock`.
+3. **Prepare the checkout.** In ROBOMATE_CHECKOUT, run `uv sync --locked --all-packages` so the bridge starts quickly on first launch. Don't edit, pull or switch branches in the checkout.
+
+   If the error is anything other than a cache-permission failure, stop and
+   report it immediately. This includes a lockfile mismatch, a dependency
+   resolution error, or a network error. Never relock or edit `uv.lock`.
+
+   For a cache-permission failure, create a writable temporary directory, set
+   `UV_CACHE_DIR` to its absolute path for the command, and retry the same
+   `uv sync --locked --all-packages`. An empty cache may require downloads. If
+   the retry fails, including if the network blocks downloads, stop and report
+   the error. Reuse the cache for the probe and baseline save as needed. Keep
+   `UV_CACHE_DIR` in the command environment and out of the static harness
+   entry. Remove the temporary cache after setup.
 4. **List the bridge's tools.** From ROBOMATE_CHECKOUT, run:
 
    ```
    uv run --locked python scripts/check-mcp-tools.py --list
    ```
 
-   It starts the bridge in a temporary directory with any hub selection removed from its environment, prints the server info and tool list as JSON, and exits. It contacts no hub. If it fails, stop and report its output.
+   The checker initializes the bridge in a temporary working directory, lists
+   its tools, and prints the server info and tool list as JSON. It contacts no
+   hub. Run the command with an outer time limit for the whole invocation
+   (for example, five minutes for an already synced checkout) and a way to
+   stop the process tree on your platform. If it gets stuck, cancel the command
+   and confirm the checker and the `uv` and bridge processes it started have
+   exited. If any remain, terminate only those processes and verify cleanup
+   before retrying.
+
+   Check the available output. If it identifies a recoverable environmental
+   problem, address it with permitted access and retry. If a sandboxed probe
+   hangs silently or fails without a clear cause, use the harness's normal
+   permission mechanism for one diagnostic retry with additional access when
+   authorized. Confirm cleanup before retrying and use the same time limit
+   and cleanup plan. If the diagnostic retry succeeds, report that the original
+   cause remains unconfirmed. If needed access is unavailable or denied,
+   cleanup cannot be confirmed, the probe has a genuine failure, or the retry
+   fails, report the blocker and available output. Proceed to config changes
+   only once the probe exits successfully with the server info and full tool
+   list.
 
    Expect the tool list to start with `join` and `whoami`, and to include worker tools (such as `await_assignment` and `submit_result`) and orchestrator tools (such as `assign_task` and `wait_for_event`). Use the list the probe actually returns.
 5. **For each installed harness:**
@@ -85,6 +131,8 @@ user home for `~` (`%USERPROFILE%` on Windows).
    2. Back up the config file before changing it: copy it to `<file>.bak-robomate-<YYYYMMDD-HHMMSS>` next to the original. If the file doesn't exist yet, note that instead.
    3. If a `robomate` server already exists at any scope, show it. Leave exactly one user-level `robomate` entry, matching this spec. Report any project-scope `robomate` entries, but leave them alone. Don't touch other MCP servers, settings, comments or formatting: OpenCode configs may be JSONC with comments, so preserve them. Use the harness's own CLI (`claude mcp add` / `claude mcp remove`, `codex mcp add`) when it can express every setting. Otherwise, edit the file minimally.
    4. Verify. The file still parses. The harness's own listing shows the entry: `claude mcp get robomate`, `codex mcp list`, `opencode mcp list`, or the `agy` equivalent. Where a listing reports connection health, the server connects. A bridge outside a robomate worktree starts fine and only fails at `join`.
+      If the listing cannot start the bridge because of a cache permission
+      error, use the scoped permission process above to retry the listing.
    5. For Codex, also check that the launcher's override style merges into the entry. Run `codex -c 'mcp_servers.robomate.env.HUB_HARNESS="codex"' mcp list` (adjust the quoting for PowerShell). It must succeed. Without a base entry, it fails with `invalid transport in mcp_servers.robomate`.
 6. **Install the skills.**
    1. Check each user skill directory in the table for names in `SKILL_INSTALLABLE`. Process shared destinations once. In the primary directory for each installed harness, install all entries marked `True`. In the other directories, address existing installs only. Leave unrelated skills alone.
@@ -97,7 +145,14 @@ user home for `~` (`%USERPROFILE%` on Windows).
    uv run --locked python scripts/check-mcp-tools.py --save
    ```
 
-   It records this checkout's tool names and input schemas as the configured baseline. Run with `--save` once to refresh an older baseline that has only names. The script checks Codex's approvals and checkout path, the static timeout settings described below, and installed skill links and copies. It reports absent installable skills for information. Expect the final `OK:` and exit 0. If it lists a problem, fix it as in step 5 or 6 and run it again.
+   It records this checkout's tool names and input schemas in a user-state
+   snapshot. If writing the snapshot requires access outside the sandbox, use
+   the same scoped permission process above for the save command. Run with
+   `--save` once to refresh an older baseline that has only names. The script
+   checks Codex's approvals and checkout path, the static timeout settings in
+   the harness table, and installed skill links and copies. It reports absent
+   installable skills for information. Expect the final `OK:` and exit 0. If
+   it lists a problem, fix it as in step 5 or 6 and run it again.
 8. **Don't:**
    - start a robomate hub, run `robomate up` or `robomate submit`, or call `join`;
    - start an agent session with a prompt;
@@ -124,12 +179,6 @@ Give a table with one row per harness: installed version, config file, action (a
   - `RE-RUN` (exit 1) means the checker found a tool, config or skill problem. Rerun this prompt. It saves a new baseline at the end.
   - Exit 2: the bridge didn't start, or there's no baseline. Read the output.
 - Rerun setup when this prompt changes to apply any new settings.
-
-New entries must also set bridge environment `HUB_MCP_TIMEOUT_S="1900"` to advertise
-the client budget. Without it, old static entries retain 100 s holds. Claude
-Code entries keep the unknown/interactive 100 s default; a print launcher sets
-`HUB_HARNESS_MODE="print"` for its measured 1500 s profile. Do not mark an
-interactive session as print.
 
 The checker audits Codex's static entry, OpenCode's global JSON/JSONC entries
 (and `OPENCODE_CONFIG` when set), and Antigravity's global MCP entry. It checks
