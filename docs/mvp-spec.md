@@ -1059,6 +1059,9 @@ Legacy questions and another session's questions still require an operator answe
 - **Hub restart:** `robomate up` in the owning checkout reuses the hub's state, `hub_id`, name,
   and port. Bridges reconnect with backoff under the same
   instance ID; an interrupted hold is re-issued. Agents see at most a retried call.
+  The hub reloads the last explicitly joined orchestrator's session identity from
+  its database. Ordinary calls from a superseded session receive `CONFLICT` after
+  restart. A different session must join with `takeover=true`.
 - **Agent restart:** join with `takeover` → task reattached (§5).
 - **Orchestrator restart:** join as orchestrator → re-briefing in the join response; the guide's
   "On resume" procedure (PoC skill) reconciles with the forge before acting.
@@ -1093,16 +1096,16 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | Tool | Who | Change from PoC |
 |---|---|---|
 | `join`, `whoami` | any | **new**: only tools callable before `join`; worker `join` over A2A (`check_in` alias kept until M2 Step 11); `whoami` over `GET /whoami` (#238) |
-| `await_assignment`, `get_role_guide`, `report_progress` | worker | adds the durable `closeout_requested` response (§7.3); hold capped by `MAX_HOLD_DEFAULT_S` (100 s, #12) until M3 per-harness profiles |
+| `await_assignment`, `get_role_guide`, `report_progress` | worker | adds the durable `closeout_requested` response (§7.3); NEXT uses the joined instance’s hold cap (§9.2) |
 | `request_closeout_reports(run_id, timeout_s=None)`, `get_closeout_reports(run_id)` | orchestrator | **new** (#215): durable bounded pre-release collection; submitted reports and explicit missing reasons (§7.3); omitted `timeout_s` uses run `closeout_wait_s` (default 300 s, maximum 1800 s, #386) |
 | `submit_closeout_report(run_id, report)` | worker, orchestrator | **new** (#215): one strict retrospective per run/author; worker A2A submission, caller-derived attribution, identical-retry receipt (§7.3) |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
-| `ask_orchestrator` | worker | renamed from `ask_alice` (`ask_alice` alias kept until M2 Step 11; #238) |
+| `ask_orchestrator` | worker | renamed from `ask_alice` (`ask_alice` alias kept until M2 Step 11; #238); question waits use the joined instance’s hold cap (§9.2) |
 | `get_operator_answer(question_id)` | worker | **new** (#129): reads `hub.operator_answer`, so a worker can check an operator decision it is told of |
 | `get_statement(sha)` | worker, orchestrator | **new** (#9) |
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
-| `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129) |
+| `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129); waits use the joined session’s hold cap (§9.2) |
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub snapshots and appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` requires `run_id`, fresh delivery evidence and typed close-out (§7.3); `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
@@ -1171,13 +1174,48 @@ the user-scope file, so one user-scope install covers both the CLI and the IDE.
 Cascade is not a target unless certified separately.
 
 ### 9.2 Harness profiles
-Kept in robomate (versioned with it): `max_hold_s` (under the harness's tool-call limit — 100 s for
-Claude Code, which backgrounds calls at 120 s; ~280 s for Codex, whose observed limit is 300 s),
-config locations per scope, known grants (sandbox, auto-approve), whether a continuation
-supervisor exists, and notes. The hub clamps every hold to the joined agent's profile.
-Devin's profile records its user-scope locations (`~/.config/devin/mcp_config.json` on
-POSIX, `%APPDATA%\devin\mcp_config.json` on Windows) and project-scope location
-(`.devin/mcp_config.json`), as for other harnesses.
+The common profile table is versioned with robomate and keyed by harness and mode.
+It records the supported client range, hold limit, config locations and timeout units
+by scope, approval controls, bridge and agent grants, and continuation support and
+limits. Supported settings can be provisional. Only evidence for the exact client,
+mode, settings and grants establishes a certified tuple.
+
+| Harness and mode | Profile maximum |
+|---|---|
+| Claude Code, interactive | 100 s, below the 120 s auto-background threshold |
+| Claude Code, print | 1500 s, below the observed 1800 s idle abort |
+| Codex, OpenCode and Antigravity CLI | 1800 s with matching timeout configuration |
+| Devin, Cline, unknown clients or missing advertisement | 100 s fallback |
+
+At authenticated join, the hub binds a ceiling to the worker instance or
+orchestrator session. It takes the minimum of the profile maximum, the advertised
+client budget minus a 15 s HTTP margin, and the hub's `HUB_MAX_WAIT_S`. The bridge
+reads the configured budget from `HUB_MCP_TIMEOUT_S` and may advertise a lower one.
+A long profile requires a matching harness and mode with launcher or install
+provenance. An agent's declared harness alone qualifies for the short fallback.
+The advertisement is an object with `mode` and `client_budget_s`. Worker A2A
+uses `hub.wait_advertisement` metadata and the orchestrator uses the
+`X-Robomate-Wait-Advertisement` header. The hub returns the effective
+`harness`, `mode`, `max_hold_s` and any advertised `client_budget_s` in the
+join's wait profile. The bridge
+adds its effective `default_wait_s`.
+
+The same cap applies to omitted and explicit timeouts for worker NEXT, question
+waits and the orchestrator inbox. A bridge can use its `HUB_DEFAULT_WAIT_S` to
+shorten the omitted wait. Where the bridge leaves the timeout out of the
+request, the hub clamps its own default. The hub rejects negative, non-finite
+and boolean timeouts, permits zero for immediate polling, and validates the
+inbox request against its 1800 s argument limit. The effective timeout drives
+both wait dispatch and the activity deadline, which adds a 30 s grace. Wakeups, leases, heartbeats and
+wall deadlines follow their existing rules. Close-out collection and merge gate
+use their separate limits.
+
+Takeover replaces the cap with the new join's negotiation. Orchestrator session
+ownership survives a hub restart (§7.5). A session or instance without an
+in-memory negotiation uses the fallback. The current bridge re-advertises on
+heartbeat and when opening a hold so the hub can restore the ceiling for that
+same session or instance.
+
 The [hub token controls by harness](user-guide.md#hub-token-controls-by-harness)
 record each launcher's read-deny support and its limits.
 

@@ -34,6 +34,8 @@ class MetaKeys(StrEnum):
     HARNESS = "hub.harness"
     HARNESS_SOURCE = "hub.harness_source"
     HARNESS_VERSION = "hub.harness_version"
+    WAIT_ADVERTISEMENT = "hub.wait_advertisement"
+    WAIT_PROFILE = "hub.wait_profile"
     PROVIDER = "hub.provider"
     MODEL = "hub.model"
     MODEL_SOURCE = "hub.model_source"

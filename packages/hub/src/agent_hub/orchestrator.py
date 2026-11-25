@@ -20,6 +20,7 @@ from agent_hub_common.orchestrator_tools import (
     Sha,
     Timeout,
 )
+from agent_hub_common.waits import FALLBACK_WAIT_S
 
 from .merge_gate import ForgeGate, MergeGate
 from .rpc_errors import error_code
@@ -32,6 +33,7 @@ class Caller:
 
     actor: str
     session: str | None
+    wait_timeout_s: float | None = None
 
 
 # The operator acts through the operator channel, never in a session.
@@ -62,10 +64,12 @@ class OrchestratorOps(OrchestratorTools):
         # which has a single caller.
         self.caller = caller
 
-    def bounded_wait(self, timeout_s: float | None) -> float:
+    def bounded_wait(
+        self, timeout_s: float | None, *, max_hold_s: float = FALLBACK_WAIT_S
+    ) -> float:
         if self.settings is not None:
-            return self.settings.bounded_wait(timeout_s)
-        return max(0.0, min(100.0 if timeout_s is None else timeout_s, 1800.0))
+            return self.settings.bounded_wait(timeout_s, max_hold_s=max_hold_s)
+        return min(FALLBACK_WAIT_S if timeout_s is None else timeout_s, max_hold_s)
 
     def _caller(self) -> Caller:
         caller = CALLER.get() or self.caller
@@ -164,7 +168,11 @@ class OrchestratorOps(OrchestratorTools):
     async def wait_for_event(
         self, timeout_s: Timeout | None = None, ack: str | None = None
     ) -> dict[str, Any]:
-        event = await self.store.wait_for_event(timeout_s=self.bounded_wait(timeout_s), ack=ack)
+        caller = CALLER.get()
+        effective = caller.wait_timeout_s if caller is not None else None
+        if effective is None:
+            effective = self.bounded_wait(timeout_s)
+        event = await self.store.wait_for_event(timeout_s=effective, ack=ack)
         return {"event": None if event is None else asdict(event)}
 
     async def assign_task(

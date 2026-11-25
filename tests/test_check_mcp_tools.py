@@ -191,14 +191,14 @@ def test_real_bridge(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 @pytest.mark.parametrize(
     ("harness", "mode", "timeout", "bad"),
     [
-        ("codex", "unknown", 330, True),
-        ("opencode", "unknown", 330, True),
-        ("antigravity", "unknown", 1900, False),
+        ("codex", None, 330, True),
+        ("opencode", None, 330, True),
+        ("antigravity", None, 1900, False),
         ("claude-code", "print", 1515, False),
         ("claude-code", "interactive", 330, False),
     ],
 )
-def test_static_timeout_profile(harness: str, mode: str, timeout: int, bad: bool) -> None:
+def test_static_timeout_profile(harness: str, mode: str | None, timeout: int, bad: bool) -> None:
     assert bool(check.check_timeout(harness, timeout, mode)) is bad
 
 
@@ -289,6 +289,7 @@ def test_valid_jsonc_keeps_quoted_comment_markers_and_converts_milliseconds(
         ({"timeoutSeconds": 0, "env": {"HUB_MCP_TIMEOUT_S": "1900"}}, True),
         ({"timeoutSeconds": -1, "env": {"HUB_MCP_TIMEOUT_S": "1900"}}, False),
         ({"timeoutSeconds": 1900, "env": {"HUB_MCP_TIMEOUT_S": "invalid"}}, True),
+        ({"timeoutSeconds": 1900, "env": {"HUB_MCP_TIMEOUT_S": "15"}}, True),
         ({"timeoutSeconds": 1900, "env": []}, True),
     ],
 )

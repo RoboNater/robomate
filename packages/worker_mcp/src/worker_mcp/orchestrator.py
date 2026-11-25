@@ -19,7 +19,12 @@ from agent_hub_common import AgentProfile, profile_from_env, validate_agent_name
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import HubEndpoint, discover
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
-from agent_hub_common.waits import default_wait_s
+from agent_hub_common.waits import (
+    HTTP_MARGIN_S,
+    WAIT_ADVERTISEMENT_HEADER,
+    WaitAdvertisement,
+    default_wait_s,
+)
 from mcp.server.fastmcp import FastMCP
 
 from .accounting import McpAccounting
@@ -55,6 +60,7 @@ class OrchestratorBridge:
         self._client: httpx.AsyncClient | None = http_client
         self._owns_client = http_client is None
         self.joined = False
+        self._wait_advertisement: WaitAdvertisement | None = None
         self._session_started = False
         self._heartbeat: asyncio.Task[None] | None = None
         self._accounting_task: asyncio.Task[None] | None = None
@@ -158,7 +164,9 @@ class OrchestratorBridge:
             )
         return self._client
 
-    async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self, method: str, params: dict[str, Any], *, join_ad: WaitAdvertisement | None = None
+    ) -> dict[str, Any]:
         client = self._http()
         substantive = method not in ("hub.heartbeat", "hub.record_calls")
         if substantive or (method == "hub.heartbeat" and params.get("detach") is not True):
@@ -167,7 +175,13 @@ class OrchestratorBridge:
             params = dict(params)
             if params.get("timeout_s") is None:
                 params["timeout_s"] = self.default_wait_s
-        timeout = float(params.get("timeout_s", 100)) + 15 if method == "wait_for_event" else 75.0
+        timeout = float(params["timeout_s"]) + HTTP_MARGIN_S if method == "wait_for_event" else 75.0
+        headers = {"X-Robomate-Actor": self.name, "X-Robomate-Session": self.session}
+        ad = join_ad
+        if method == "wait_for_event" or (method == "hub.heartbeat" and not params.get("detach")):
+            ad = self._wait_advertisement
+        if ad is not None:
+            headers[WAIT_ADVERTISEMENT_HEADER] = json.dumps(asdict(ad))
         request = {"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method, "params": params}
         attempts = 0
         while True:
@@ -178,7 +192,7 @@ class OrchestratorBridge:
                     "/rpc",
                     json=request,
                     timeout=timeout,
-                    headers={"X-Robomate-Actor": self.name, "X-Robomate-Session": self.session},
+                    headers=headers,
                 ) as response:
                     response_started = True
                     response.raise_for_status()
@@ -236,6 +250,7 @@ class OrchestratorBridge:
         takeover: bool = False,
         workspace_path: str | None = None,
         workspace_explicit: bool = False,
+        ad: WaitAdvertisement | None = None,
     ) -> dict[str, Any]:
         result = await self.call(
             "join",
@@ -247,7 +262,9 @@ class OrchestratorBridge:
                 "workspace_path": workspace_path,
                 "workspace_explicit": workspace_explicit,
             },
+            join_ad=ad,
         )
+        self._wait_advertisement = ad
         self.joined = True
         return result
 
