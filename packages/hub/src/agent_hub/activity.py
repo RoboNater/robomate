@@ -20,6 +20,8 @@ What counts:
 - A hold (NEXT, a worker question, `wait_for_event`, any orchestrator call in
   flight) exempts its agent from the silence check until it returns, errors,
   is cancelled, or passes its deadline plus `HOLD_GRACE_S`.
+  An orchestrator HTTP disconnect cancels that call only. Explicit bridge
+  detach clears the session's holds and liveness without changing ownership.
 
 Nothing here is persisted. A restarted hub starts every silence clock at its
 own start and knows no holds until the agents call again, so it never reports
@@ -43,9 +45,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from itertools import count
 
-# How long past its deadline a hold still exempts its agent. A held response
-# whose client vanished is cleaned up when the server notices, which may be a
-# little after the deadline; past this, the hold is ignored.
+# How long past its deadline a hold still exempts its agent. This is a fallback
+# when the server cannot observe a vanished client, such as a network partition.
 HOLD_GRACE_S = 30.0
 
 # A call this recent counts the orchestrator as active rather than idle. Her
@@ -91,6 +92,7 @@ class Activity:
     last_call_kind: str | None = None
     holds: dict[int, Hold] = field(default_factory=dict)
     heartbeat: datetime | None = None
+    detached: bool = False
 
     def call(self, kind: str, now: datetime) -> None:
         if self.last_call is None or now >= self.last_call:
@@ -183,8 +185,15 @@ class ActivityTracker:
 
     def orchestrator_heartbeat(self, session: str, now: datetime) -> None:
         record = self._sessions.get(session)
-        if record is not None and session == self.orchestrator_session:
+        if record is not None and session == self.orchestrator_session and not record.detached:
             record.heartbeat = now
+
+    def orchestrator_detached(self, session: str) -> None:
+        record = self._sessions.get(session)
+        if record is not None and session == self.orchestrator_session:
+            record.holds.clear()
+            record.heartbeat = None
+            record.detached = True
 
     @contextmanager
     def orchestrator_call(
@@ -204,7 +213,12 @@ class ActivityTracker:
             yield
         finally:
             record.holds.pop(hold_id, None)
-            if session == self.orchestrator_session and self._sessions.get(session) is record:
+            # Cancellation cleanup after detach is not activity from Alice.
+            if (
+                not record.detached
+                and session == self.orchestrator_session
+                and self._sessions.get(session) is record
+            ):
                 record.call(kind, clock())
 
     def silence_anchor(self, record: Activity | None, now: datetime) -> datetime:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
 import math
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -16,7 +17,7 @@ from typing import Any, Literal
 from agent_hub_common import AgentProfile, token_matches, validate_agent_name
 from agent_hub_common.accounting import CallRecord, hub_id
 from agent_hub_common.orchestrator_tools import OPERATIONS, Timeout
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool, validate_call
 from pydantic_core import to_jsonable_python
 
@@ -81,6 +82,17 @@ class OrchestratorSession:
     actor: str
     session: str
     last_seen: datetime
+
+
+@dataclass(eq=False, slots=True)
+class _HeldCall:
+    work: asyncio.Task[Any]
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
+    detached: bool = False
+
+    def cancel(self) -> None:
+        if not self.work.cancelling():
+            self.work.cancel()
 
 
 def parse_caller(headers: Mapping[str, str]) -> tuple[str, str] | None:
@@ -166,6 +178,7 @@ class RpcDispatcher:
         self.operator_token: str | None = None
         self.orchestrator: OrchestratorSession | None = None
         self._superseded_sessions: set[str] = set()
+        self._held_calls: dict[str, set[_HeldCall]] = {}
         self._operations: dict[str, Callable[..., Awaitable[Any]]] = {
             name: validate_call(
                 config=ConfigDict(hide_input_in_errors=True) if "closeout_report" in name else None,
@@ -177,12 +190,12 @@ class RpcDispatcher:
         }
 
     async def dispatch(
-        self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks
+        self, payload: Any, request: Request, background: BackgroundTasks
     ) -> dict[str, Any]:
         request_id = payload.get("id") if isinstance(payload, dict) else None
         audit = _Audit()
         try:
-            result = await self._dispatch(payload, headers, background, audit)
+            result = await self._dispatch(payload, request, background, audit)
         except RpcError as exc:
             self._audit(audit, f"error {exc.code}")
             return _error(request_id, exc.code, exc.message)
@@ -212,7 +225,7 @@ class RpcDispatcher:
             logger.exception("Could not record the rpc_audit row for %s", method)
 
     async def _dispatch(
-        self, payload: Any, headers: Mapping[str, str], background: BackgroundTasks, audit: _Audit
+        self, payload: Any, request: Request, background: BackgroundTasks, audit: _Audit
     ) -> Any:
         if isinstance(payload, dict) and isinstance(payload.get("method"), str):
             audit.method = payload["method"]
@@ -224,6 +237,7 @@ class RpcDispatcher:
             or not _valid_id(payload["id"])
         ):
             raise RpcError(INVALID_REQUEST, "Invalid Request")
+        headers = request.headers
         caller = parse_caller(headers)
         if caller is not None:
             audit.actor, audit.session = caller
@@ -543,11 +557,17 @@ class RpcDispatcher:
             if caller is None:
                 raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
             params = payload.get("params", {})
-            if not isinstance(params, dict) or params:
-                raise RpcError(INVALID_PARAMS, "hub.heartbeat takes no params")
-            self._accept_session(*caller)
-            # Bridge liveness only: never activity (#144).
-            self.ops.store.note_orchestrator_heartbeat(caller[1])
+            if not isinstance(params, dict) or set(params) - {"detach"}:
+                raise RpcError(INVALID_PARAMS, "hub.heartbeat accepts only detach")
+            detach = params.get("detach", False)
+            if not isinstance(detach, bool):
+                raise RpcError(INVALID_PARAMS, "detach must be a boolean")
+            if detach:
+                await self._detach_session(*caller)
+            else:
+                self._accept_session(*caller)
+                # Bridge liveness only: never activity (#144).
+                self.ops.store.note_orchestrator_heartbeat(caller[1])
             return {"ok": True}
         if method == "hub.record_calls":
             if caller is None:
@@ -604,16 +624,78 @@ class RpcDispatcher:
         token = CALLER.set(Caller(*caller))
         try:
             with self.ops.store.orchestrator_call(caller[1], method, hold_s):
-                result = await operation(**params)
+                result = await self._run_held(request, caller, method, operation, params)
         finally:
             CALLER.reset(token)
         if self.orchestrator is not None and caller[1] != self.orchestrator.session:
-            if method == "wait_for_event" and isinstance(result, dict):
-                event = result.get("event")
-                if isinstance(event, dict) and isinstance(event.get("delivery_id"), str):
-                    self.ops.store.expire_event_leases(event["delivery_id"])
+            self._expire_wait_delivery(method, result)
             raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
         return result
+
+    async def _run_held(
+        self,
+        request: Request,
+        caller: tuple[str, str],
+        method: str,
+        operation: Callable[..., Awaitable[Any]],
+        params: dict[str, Any],
+    ) -> Any:
+        session = caller[1]
+
+        async def operate() -> Any:
+            # A replacement may have registered before this task started.
+            self._check_session(*caller)
+            return await operation(**params)
+
+        work = asyncio.create_task(operate())
+        held = _HeldCall(work)
+        calls = self._held_calls.setdefault(session, set())
+        calls.add(held)
+
+        async def watch_disconnect() -> None:
+            # The route has already consumed the full request body.
+            while (await request.receive())["type"] != "http.disconnect":
+                pass
+            held.cancel()
+
+        disconnected = asyncio.create_task(watch_disconnect())
+        try:
+            done, _ = await asyncio.wait((disconnected, work), return_when=asyncio.FIRST_COMPLETED)
+            disconnected.cancel()
+            await asyncio.gather(disconnected, return_exceptions=True)
+            if disconnected in done or held.detached:
+                raise RpcError(CONFLICT, "orchestrator call cancelled")
+            return work.result()
+        except BaseException:
+            held.cancel()
+            disconnected.cancel()
+            results = await asyncio.gather(disconnected, work, return_exceptions=True)
+            # The event poll can lease and return in the same turn as the
+            # disconnect. Only its delivery ID belongs to this cancelled call.
+            self._expire_wait_delivery(method, results[1])
+            raise
+        finally:
+            calls.remove(held)
+            if not calls:
+                del self._held_calls[session]
+            held.finished.set()
+
+    def _expire_wait_delivery(self, method: str, result: Any) -> None:
+        if method == "wait_for_event" and isinstance(result, dict):
+            event = result.get("event")
+            if isinstance(event, dict) and isinstance(event.get("delivery_id"), str):
+                self.ops.store.expire_event_leases(event["delivery_id"])
+
+    async def _detach_session(self, actor: str, session: str) -> None:
+        self._check_session(actor, session, detaching=True)
+        # Keep ownership and the explicit takeover requirement. Detach may
+        # also arrive before the bridge's first operation reached this hub.
+        self.ops.store.activity.orchestrator_detached(session)
+        calls = tuple(self._held_calls.get(session, ()))
+        for call in calls:
+            call.detached = True
+            call.cancel()
+        await asyncio.gather(*(call.finished.wait() for call in calls))
 
     @staticmethod
     def _call_record(row: Any, actor: str) -> CallRecord:
@@ -675,14 +757,20 @@ class RpcDispatcher:
             raise RpcError(INVALID_PARAMS, "invalid repeat_bytes")
         return CallRecord(**row)
 
-    def _check_session(self, actor: str, session: str, *, takeover: bool = False) -> None:
+    def _check_session(
+        self, actor: str, session: str, *, takeover: bool = False, detaching: bool = False
+    ) -> None:
         if session in self._superseded_sessions:
             raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
         current = self.orchestrator
         if current is not None:
-            if current.session == session and current.actor != actor:
-                raise RpcError(CONFLICT, "orchestrator session belongs to another actor")
-            if current.session != session and not takeover:
+            if current.session == session:
+                if current.actor != actor:
+                    raise RpcError(CONFLICT, "orchestrator session belongs to another actor")
+                activity = self.ops.store.activity.orchestrator()
+                if not detaching and activity is not None and activity.detached:
+                    raise RpcError(CONFLICT, "orchestrator session detached")
+            elif not takeover:
                 raise RpcError(
                     CONFLICT, "an orchestrator is already attached; join with takeover=true"
                 )

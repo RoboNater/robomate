@@ -20,13 +20,13 @@ from agent_hub.store import HubStore
 from agent_hub_common import TaskRole, TaskState
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import DiscoveryError, NoHubError
-from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
+from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block, rpc
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server.fastmcp.exceptions import ToolError
 from packaging.requirements import Requirement
-from timing import LIVENESS_S, wait_until
+from timing import LIVENESS_S, FrozenClock, wait_until
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 from worker_mcp.orchestrator import (
@@ -333,6 +333,59 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
 
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+async def test_bridge_close_detaches_its_held_wait(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    app.state.rpc.guides_dir = Path(__file__).resolve().parents[1] / "guides"
+    app.state.rpc.hub_info = {
+        "repo_root": "/repo",
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": BASE_URL,
+        "default_branch": "main",
+    }
+    bridge = OrchestratorBridge(http_client=client)
+    await bridge.call("hub.heartbeat", {})
+    held = asyncio.create_task(bridge.call("wait_for_event", {"timeout_s": LIVENESS_S}))
+    try:
+        await wait_until(lambda: hub_store.signals.waiting(EVENT_KEY), "Alice's wait to park")
+        last_call_at = hub_store.status_summary()["orchestrator_activity"]["last_call_at"]
+        frozen_clock.advance(30)
+        await bridge.close()
+        status = await client.post("/rpc", json=rpc("hub.status", {}))
+        activity = status.json()["result"]["orchestrator_activity"]
+        assert activity["session"] == bridge.session
+        assert activity["heartbeat_age_s"] is None
+        assert activity["holding"] is None
+        assert activity["bridge"] == "disconnected"
+        assert activity["last_call_at"] == last_call_at
+        assert hub_store.signals.waiting(EVENT_KEY) == 0
+        assert hub_store.get_state()["unacked_delivered"] == []
+        with pytest.raises(RuntimeError, match="orchestrator call cancelled"):
+            await asyncio.wait_for(held, LIVENESS_S)
+        late = await client.post(
+            "/rpc", json=rpc("hub.heartbeat", {}), headers={"X-Robomate-Session": bridge.session}
+        )
+        assert late.json()["error"]["message"] == "orchestrator session detached"
+
+        successor = OrchestratorBridge(http_client=client)
+        try:
+            with pytest.raises(RuntimeError, match="join with takeover=true"):
+                await successor.call("get_state", {})
+            await successor.call("join", {"name": "alice", "takeover": True})
+            hub_store.check_in("bob")
+            result = await successor.call("wait_for_event", {"timeout_s": 0})
+            assert result["event"]["payload"]["agent"] == "bob"
+            assert result["event"]["delivery_attempts"] == 1
+        finally:
+            await successor.close()
+    finally:
+        held.cancel()
+        await asyncio.gather(held, return_exceptions=True)
+        await bridge.close()
+
+
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
 async def test_worker_task_survives_orchestrator_session_restart(
     app: FastAPI, hub_store: HubStore, tmp_path: Path
 ) -> None:
@@ -440,7 +493,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
 
 
 async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -> None:
-    from test_cli import await_hub, hub_state, hub_token, start, stop
+    from test_cli import _hub_stderr, _hub_stdout, await_hub, hub_state, hub_token, start, stop
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -595,9 +648,15 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             env=bridge_env,
             capture_output=True,
             text=True,
-            timeout=60,
+            encoding="utf-8",
+            timeout=LIVENESS_S,
         )
-        assert joined_cli.returncode == 0, joined_cli.stderr
+        assert joined_cli.returncode == 0, (
+            f"{joined_cli.stderr}\n"
+            f"robomate up launcher pid {hub.pid}, return code {hub.poll()}\n"
+            f"--- hub stdout ---\n{_hub_stdout(hub)}\n"
+            f"--- hub stderr ---\n{_hub_stderr(hub)}"
+        )
         assert "'guide_sha256':" in joined_cli.stdout
         assert "'role': 'orchestrator'" in joined_cli.stdout
         with sqlite3.connect(hub_state(repo) / "hub.db") as connection:

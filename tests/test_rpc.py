@@ -33,11 +33,12 @@ from agent_hub.rpc import (
     require_operator,
 )
 from agent_hub.signals import EVENT_KEY
-from agent_hub.store import DuplicateAgentError, HubStore
+from agent_hub.store import DuplicateAgentError, EventRecord, HubStore
 from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from delivery_support import DeliveredForge, seed_delivery
 from fastapi import FastAPI
+from starlette.types import Message, Receive, Scope, Send
 from timing import LIVENESS_S, FrozenClock, wait_until
 
 
@@ -820,6 +821,93 @@ async def test_wait_for_event_holds_the_request_until_an_event_arrives(
     assert hub_store.get_state()["unacked_delivered"][0]["delivery_id"] == event["delivery_id"]
 
 
+@pytest.mark.parametrize("race_event", [False, True])
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+async def test_disconnected_rpc_releases_only_its_hold_and_delivery(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+    race_event: bool,
+) -> None:
+    dropped = asyncio.Event()
+
+    async def disconnecting_app(scope: Scope, receive: Receive, send: Send) -> None:
+        body_pending = True
+
+        async def receive_or_disconnect() -> Message:
+            nonlocal body_pending
+            if body_pending:
+                message = await receive()
+                body_pending = message.get("more_body", False)
+                return message
+            await dropped.wait()
+            return {"type": "http.disconnect"}
+
+        await app(scope, receive_or_disconnect, send)
+
+    await call(client, "hub.heartbeat")
+    hub_store.check_in("bob")
+    prior = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    hub_store.check_in("charlie")
+    other = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    original_lease = HubStore.lease_next_event
+
+    def lease_while_disconnecting(
+        store: HubStore, lease_s: float | None = None
+    ) -> EventRecord | None:
+        event = original_lease(store, lease_s)
+        if event is not None:
+            dropped.set()
+        return event
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=disconnecting_app),
+        base_url=BASE_URL,
+        headers={"Authorization": f"Bearer {TOKEN}", **CALLER_HEADERS},
+    ) as dropping_client:
+        held = asyncio.create_task(
+            call(
+                dropping_client,
+                "wait_for_event",
+                timeout_s=LIVENESS_S,
+                ack=prior["delivery_id"],
+            )
+        )
+        try:
+            await wait_until(lambda: hub_store.signals.waiting(EVENT_KEY), "the wait to park")
+            if race_event:
+                monkeypatch.setattr(HubStore, "lease_next_event", lease_while_disconnecting)
+                hub_store.check_in("dana")
+            else:
+                dropped.set()
+            body = await asyncio.wait_for(held, LIVENESS_S)
+            assert error_of(body) == (CONFLICT, "orchestrator call cancelled")
+        finally:
+            held.cancel()
+            await asyncio.gather(held, return_exceptions=True)
+
+    activity = hub_store.status_summary()["orchestrator_activity"]
+    assert activity["holding"] is None
+    assert activity["bridge"] == "connected"
+    assert activity["heartbeat_age_s"] is not None
+    assert hub_store.signals.waiting(EVENT_KEY) == 0
+    assert not hub_store.ack_event(prior["delivery_id"])
+    # Retry as the same session before takeover can expire all leases.
+    retried = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    if race_event:
+        assert retried is not None
+        assert retried["payload"]["agent"] == "dana"
+        assert retried["delivery_attempts"] == 2
+    else:
+        assert retried is None
+    outstanding = {
+        event["delivery_id"]: event["delivery_expires"]
+        for event in hub_store.get_state()["unacked_delivered"]
+    }
+    assert outstanding[other["delivery_id"]] == other["delivery_expires"]
+
+
 async def test_wait_for_event_times_out_with_a_null_event(client: httpx.AsyncClient) -> None:
     started = time.monotonic()
 
@@ -916,10 +1004,19 @@ async def test_heartbeat_fences_old_session_and_releases_delivery(
         CONFLICT,
         "superseded by a newer orchestrator session",
     )
+    assert error_of(await call(client, "hub.heartbeat", old, detach=True)) == (
+        CONFLICT,
+        "superseded by a newer orchestrator session",
+    )
+    assert hub_store.status_summary()["orchestrator_activity"]["bridge"] == "connected"
     assert error_of(await bare_call(app, "hub.heartbeat"))[0] == INVALID_REQUEST
     assert error_of(await call(client, "hub.heartbeat", new, unexpected=True)) == (
         INVALID_PARAMS,
-        "hub.heartbeat takes no params",
+        "hub.heartbeat accepts only detach",
+    )
+    assert error_of(await call(client, "hub.heartbeat", new, detach="true")) == (
+        INVALID_PARAMS,
+        "detach must be a boolean",
     )
 
 
