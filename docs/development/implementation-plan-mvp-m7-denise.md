@@ -65,7 +65,7 @@ denise_settings_from = "bob"   # alice | bob | charlie | none
 denise_harness = ""           # empty: inherit selected agent's harness
 denise_model = ""             # empty: inherit when using the same harness
 denise_effort = ""            # empty: inherit when using the same harness
-# start-run.py only: append --clean-login to the final doctor command
+# start-run.py only: saved in denise/settings.json (overridden by --[no-]clean-login)
 denise_clean_login = false
 ```
 
@@ -75,11 +75,13 @@ defaults, not a potentially invalid inherited model. With `settings_from = "none
 explicit harness is required and empty model/effort use harness defaults. Validate
 configuration structure and known option capabilities early, naming a remedy. Persist
 effective values and the inheritance source so a later config edit cannot silently change
-a generated consultation. Do not infer model identity from a vendor or claim an unknown
+a generated consultation — a joined run started by `start-run.py` writes them (together
+with `clean_login`, any `effort_note`, and the run's log directory) to
+`runs/<run_id>/denise/settings.json`. Do not infer model identity from a vendor or claim an unknown
 effort value.
 
 For supported combinations, `start-run.py` prints the optional consultation command
-regardless of team `auto_start`. An unsupported inherited harness leaves team startup
+once the team has joined and again in the final report, regardless of team `auto_start`. An unsupported inherited harness leaves team startup
 available and produces a warning with a supported `--denise-harness` override.
 An explicit harness override is a nonempty `denise_harness` setting. Selecting
 `denise_settings_from` alone still uses inheritance. Step 1 tested these defaults
@@ -104,6 +106,7 @@ The joined launch keeps the following files inside the selected run:
 
 | File | Purpose |
 | --- | --- |
+| `denise/settings.json` | Persisted effective Denise settings (`settings_from`, `harness`, `model`, `effort`, `clean_login`, skip/effort notes) and `start-run.py`'s log directory. |
 | `denise/consultations/<id>/context.json` | Small path, identity and settings index with host-local references. |
 | `denise/consultations/<id>/startup.md` | Short briefing with paths to the context, local guide and matching report. |
 | `denise/workspace/`, `denise/configs/`, `denise/tmp/` | Stable consultation working directory, optional clean-login profile and temporary files. |
@@ -324,11 +327,21 @@ skips Denise only for the unsupported harness. Keep prepared-run tooling at Step
 The optional carry-over from the Step 1 review about re-preparation diagnostics
 concerns that legacy path.
 
-Resolve the hub and run offline, give concrete remedies for missing or mismatched
+Resolve the hub and run offline — inferring both when started inside `<state>/runs/<id>/`
+(refusing conflicting `--hub` or `--run`), defaulting `--run` to the hub's only run or its
+only unfinished run with the choice and reason printed and recorded in `context.json`, and
+defaulting `--harness`, `--model`, `--effort` and `--clean-login` from `denise/settings.json`
+— give concrete remedies for missing or mismatched
 inputs, and pin each consultation's startup and context files to its own report.
 Launch with scoped directory grants and interactive permissions. Denise's explicitly
 requested recovery follows the local guide and may leave the restored hub running.
 `AGENTS.md` retains joined workers' isolated-smoke exception.
+
+Follow-up [#623](https://github.com/RoboNater/robomate/issues/623) (landing before Step 4)
+adds those `--run`/working-directory/settings defaults, prints the simplified consultation
+command once all agents have joined as well as in the final report, and indexes agents from
+`sessions/<agent>.jsonl` launch rows alongside actual hub, launcher, session and bridge log
+paths.
 
 Exercise the command printed by `start-run.py` using fake harness executables, with
 the hub stopped. Verify startup requires no HTTP, worker check-in or orchestrator

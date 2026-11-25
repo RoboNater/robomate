@@ -111,7 +111,8 @@ Alice's join response supplies the next steps for starting a queued run.
 - The statement of work can also be pasted to the orchestrator in chat; `robomate submit` is
   preferred because it is stored byte-for-byte (§7.1).
 - **Help on demand (M7, alongside M2).** `scripts/start-run.py` prints a run-specific
-  `agent-launcher.py doctor` command. The operator can run it in another terminal to
+  `agent-launcher.py doctor` command once the team has joined, as well as at the end.
+  The operator can run it in another terminal to
   open an interactive consultation with the selected run's context, even when the hub
   is down. Team startup and orchestration proceed independently. See §5.1 and the
   [M7 plan](development/implementation-plan-mvp-m7-denise.md).
@@ -545,7 +546,8 @@ values pass through the harness adapters without a new allowlist. If an effort o
 cannot be rendered for the interactive harness, a nonempty `denise_effort` override errors.
 For a supported harness, an inherited effort with no interactive representation is
 omitted from the consultation command. `start-run.py` prints a note naming that effort,
-and Denise uses the harness default.
+and Denise uses the harness default. The run records Denise's effective settings so the
+doctor can use them without flags.
 
 **Startup context.** A short local prompt identifies the run directory and manifest,
 expected hub identity and checkout, target repository, agents and workspace locations,

@@ -241,13 +241,25 @@ take precedence over the file.
 
 ```sh
 uv run --locked python scripts/agent-launcher.py doctor \
-    --hub /path/to/hub-checkout --run RUN_ID --harness codex
+    [--hub /path/to/hub-checkout] [--run RUN_ID] [--harness codex]
 ```
 
-The doctor reads the hub's state location and `runs/<run_id>/manifest.json`
-locally and opens an interactive consultation in `denise/workspace`. A
-missing run lists the saved runs. Each consultation writes `context.json`
-and `startup.md` under
+`--hub`, `--run` and `--harness` are all optional:
+
+- **Hub and run:** when started inside `<state>/runs/<run_id>/` (including
+  `denise/workspace`), both the hub (`hub.json`) and run are inferred from that
+  path and conflicting `--hub` or `--run` flags are refused. Otherwise `--hub`
+  defaults to the current git checkout, and `--run` defaults to the hub's only
+  run or its only unfinished run (printing the choice and reason, or listing
+  runs when ambiguous).
+- **Harness, model, effort and clean login:** explicit flags override the
+  effective settings saved in `runs/<run_id>/denise/settings.json` (switching
+  `--harness` drops inherited model and effort); if no settings are saved,
+  `--harness` is required.
+
+The doctor reads the hub's state location, `runs/<run_id>/manifest.json`, and
+local session logs and opens an interactive consultation in `denise/workspace`.
+Each consultation writes `context.json` and `startup.md` under
 `denise/consultations/<id>/` and a matching `denise/reports/<id>.md`.
 Use `--target` for a separate affected checkout. See the
 [doctor harness table](../user-guide.md#consulting-denise-about-a-run) for

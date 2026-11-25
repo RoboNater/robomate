@@ -733,6 +733,29 @@ def test_one_start_runs_the_team_headless_to_a_done_run(
     run_id = next(path.name for path in (state / "runs").iterdir())
     assert sorted(p.name for p in (state / "runs" / run_id / "closeout").glob("report-*.md"))
 
+    # Persisted Denise settings carry source, effective values and the log directory (#623).
+    denise_settings = json.loads(
+        (state / "runs" / run_id / "denise" / "settings.json").read_text(encoding="utf-8")
+    )
+    assert denise_settings["settings_from"] == "bob"
+    assert denise_settings["harness"] == "claude-code"
+    assert denise_settings["model"] == values["bob_model"]
+    assert denise_settings["effort"] == values["bob_effort"]
+    assert denise_settings["clean_login"] is False
+    assert denise_settings["status"] == "ready"
+    assert Path(denise_settings["logs_dir"]).resolve() == (run_dir / "logs").resolve()
+
+    # The consultation command is printed once all agents have joined and again in the report.
+    lines = done.stdout.splitlines()
+    joined_idx = next(i for i, line in enumerate(lines) if "all agents joined" in line)
+    consult_indices = [
+        i for i, line in enumerate(lines) if "consult Denise about this run with: " in line
+    ]
+    assert len(consult_indices) == 2
+    assert consult_indices[0] > joined_idx and consult_indices[1] > consult_indices[0]
+    first_command = lines[consult_indices[0]].split("consult Denise about this run with: ", 1)[1]
+    assert "--harness" not in first_command and "--run" not in first_command
+
     # Nothing rendered: the run directory holds the checkout, the hub's directory,
     # the agents' logs and their uv caches, and no config, prompt or script.
     assert sorted(path.name for path in run_dir.iterdir()) == [
@@ -1074,7 +1097,13 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
         monkeypatch.setenv("MSYSTEM", "MINGW64")
     else:
         monkeypatch.delenv("MSYSTEM", raising=False)
-    run = START.Run(values, policy, tmp_path, checkout, "offline", run_id=run_id)
+    run = START.Run(values, policy, tmp_path, checkout, "offline", run_id=run_id, state_dir=state)
+    settings_path = START.persist_denise_settings(run, state)
+    assert settings_path == run_dir / "denise" / "settings.json"
+    saved_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert saved_settings["settings_from"] == "bob"
+    assert saved_settings["model"] == "test model"
+    assert Path(saved_settings["logs_dir"]).resolve() == (tmp_path / "logs").resolve()
     monkeypatch.setattr(START, "hub_status", lambda _: None)
     START.report(run)
     output = capsys.readouterr().out
@@ -1083,6 +1112,9 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
         for line in output.splitlines()
         if "consult Denise about this run with: " in line
     ]
+    # Single run with saved settings needs no --run, --harness, --model or --effort flags.
+    for omitted in ("--run", "--harness", "--model", "--effort", "--clean-login"):
+        assert omitted not in command
     if shell_style == "git-bash":
         recovery = importlib.import_module("agent_recovery")
         shell = [recovery.bash_executable(), "-c", command]
@@ -1116,6 +1148,79 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
     assert team_log.read_bytes() == b"team session\n"
     (report,) = (run_dir / "denise" / "reports").iterdir()
     assert str(report) in result.stdout
+
+
+def test_denise_hint_adds_run_flag_only_when_other_runs_exist_and_prints_after_join(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = tmp_path / "state"
+    run_id = "20261125_bbbbbbbb"
+    (state / "runs" / run_id).mkdir(parents=True)
+    write(state / "runs" / run_id / "manifest.json", json.dumps({"run_id": run_id}))
+    values, policy = settings(
+        "--charlie-harness",
+        "claude",
+        "--charlie-model",
+        "claude-opus-5-5",
+        "--charlie-effort",
+        "medium",
+        "--denise-settings-from",
+        "charlie",
+        "--denise-clean-login",
+    )
+    run = START.Run(
+        values, policy, tmp_path, tmp_path / "checkout", "test", run_id=run_id, state_dir=state
+    )
+    settings_path = START.persist_denise_settings(run, state)
+    assert settings_path is not None and settings_path.is_file()
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert saved["settings_from"] == "charlie"
+    assert (saved["harness"], saved["model"], saved["effort"]) == (
+        "claude-code",
+        "claude-opus-5-5",
+        "medium",
+    )
+    assert saved["clean_login"] is True
+
+    # Single run -> no --run flag.
+    START.print_denise_hint(run)
+    single_out = capsys.readouterr().out
+    assert "consult Denise about this run with: " in single_out
+    assert "--run" not in single_out and "--harness" not in single_out
+
+    # Another run exists -> --run <run_id> is added, still no harness/model/effort flags.
+    other = "20261124_aaaaaaaa"
+    (state / "runs" / other).mkdir(parents=True)
+    write(state / "runs" / other / "manifest.json", json.dumps({"run_id": other}))
+    START.print_denise_hint(run)
+    multi_out = capsys.readouterr().out
+    assert f"--run {run_id}" in multi_out or f"'--run' '{run_id}'" in multi_out
+    assert "--harness" not in multi_out and "--clean-login" not in multi_out
+
+    # Supervise prints consultation command immediately after "all agents joined".
+    class FinishedProcess:
+        def poll(self) -> int:
+            return 0
+
+    run.agents = {name: FinishedProcess() for name in START.AGENTS}
+    joined_status = {
+        "orchestrator": {"name": "alice", "session": "s1"},
+        "agents": [
+            {"name": "bob", "activity": {"instance": "i-bob"}},
+            {"name": "charlie", "activity": {"instance": "i-charlie"}},
+        ],
+    }
+    monkeypatch.setattr(START, "hub_status", lambda _, **kw: joined_status)
+    monkeypatch.setattr(START, "wait_for_done", lambda _: None)
+    assert START.supervise(run) == 0
+    lines = capsys.readouterr().out.splitlines()
+    joined_line = next(i for i, text in enumerate(lines) if "all agents joined" in text)
+    consult_line = next(
+        i for i, text in enumerate(lines) if "consult Denise about this run with: " in text
+    )
+    assert consult_line == joined_line + 1
 
 
 def test_missing_mcp_entry_refuses_before_clone(smoke: dict[str, Any]) -> None:

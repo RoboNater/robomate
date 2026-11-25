@@ -7,8 +7,10 @@ The inventory describes intended access, not an enforced sandbox (M7 Step 2).
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -326,6 +328,235 @@ DOCTOR_LEAVES = {
     "tmp": "tmp",
     "reports": "reports",
 }
+JOINED_SETTINGS_FILENAME = "settings.json"
+JOINED_SETTINGS_SCHEMA_VERSION = 1
+SESSION_LAUNCH_EVENTS = ("start", "resume", "manual_resume")
+
+
+def joined_settings_path(run_dir: Path) -> Path:
+    return run_dir / "denise" / JOINED_SETTINGS_FILENAME
+
+
+def write_joined_settings(
+    run_dir: Path,
+    settings: Mapping[str, Any],
+    *,
+    clean_login: bool = False,
+    logs_dir: Path | None = None,
+) -> Path:
+    """Persist effective Denise settings and run log directory atomically inside the run."""
+    path = joined_settings_path(run_dir)
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    payload: dict[str, Any] = {
+        "schema_version": JOINED_SETTINGS_SCHEMA_VERSION,
+        "settings_from": str(settings.get("settings_from") or "none"),
+        "harness": str(settings.get("harness") or ""),
+        "model": str(settings.get("model") or ""),
+        "effort": str(settings.get("effort") or ""),
+        "clean_login": bool(clean_login),
+        "status": str(settings.get("status") or "ready"),
+        "skip_reason": str(settings.get("skip_reason") or ""),
+    }
+    if settings.get("effort_note"):
+        payload["effort_note"] = str(settings["effort_note"])
+    if logs_dir is not None:
+        payload["logs_dir"] = str(logs_dir.resolve())
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return path
+
+
+def load_joined_settings(run_dir: Path) -> dict[str, Any] | None:
+    """Read ``runs/<id>/denise/settings.json`` if present; raise ValueError if corrupt."""
+    path = joined_settings_path(run_dir)
+    if not path.is_file():
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{path} is unreadable ({exc})") from None
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return loaded
+
+
+def resolve_doctor_settings(
+    persisted: Mapping[str, Any] | None,
+    *,
+    harness: str = "",
+    model: str = "",
+    effort: str = "",
+    clean_login: bool | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Resolve doctor flags over persisted run settings; return (settings, used_persisted).
+
+    Order: explicit CLI flags > persisted run settings > error naming ``--harness``.
+    When an explicit ``--harness`` switches away from the persisted harness,
+    inherited model and effort are dropped so another harness's values are never
+    forwarded by mistake.
+    """
+    remedy = "use --harness claude, codex, opencode or antigravity"
+    if persisted is None:
+        if not harness:
+            raise ValueError(
+                f"no --harness given and no saved Denise settings exist for this run; {remedy}"
+            )
+        resolved = resolve_settings(
+            {},
+            settings_from="none",
+            harness=harness,
+            model=model,
+            effort=effort,
+            joined=True,
+        )
+        return {**resolved, "clean_login": bool(clean_login)}, []
+
+    p_status = str(persisted.get("status") or "ready")
+    p_source = str(persisted.get("settings_from") or "none")
+    p_harness = str(persisted.get("harness") or "")
+    p_model = str(persisted.get("model") or "")
+    p_effort = str(persisted.get("effort") or "")
+    p_clean_login = bool(persisted.get("clean_login", False))
+    p_skip_reason = str(persisted.get("skip_reason") or "")
+    p_effort_note = str(persisted.get("effort_note") or "")
+
+    if not harness and p_status != "ready":
+        detail = p_skip_reason or f"inherited harness {p_harness!r} is not supported for Denise"
+        raise ValueError(f"Denise skipped in saved settings: {detail}. Override with {remedy}.")
+    if not harness and not p_harness:
+        raise ValueError(f"no --harness given and saved Denise settings name no harness; {remedy}")
+
+    selected = harness or p_harness
+    effective = HARNESS_NAMES.get(selected.strip().lower())
+    if effective is None or effective not in DOCTOR_HARNESSES:
+        raise ValueError(f"invalid --harness {selected!r}; {remedy}")
+    p_effective = HARNESS_NAMES.get(p_harness.strip().lower()) if p_harness else None
+    same_harness = effective == p_effective
+    resolved_model = model or (p_model if same_harness else "")
+    resolved_effort = effort or (p_effort if same_harness else "")
+    notes: dict[str, str] = {}
+    if resolved_effort and effective not in EFFORT_SUPPORTED:
+        if effort:
+            raise ValueError(
+                f"explicit effort is unsupported for interactive {effective}. Omit it."
+            )
+        notes["effort_note"] = (
+            f"Denise uses the {effective} default effort; "
+            f"the consultation omits inherited effort {resolved_effort!r}"
+        )
+        resolved_effort = ""
+    elif same_harness and not effort and p_effort_note:
+        notes["effort_note"] = p_effort_note
+
+    effective_clean_login = p_clean_login if clean_login is None else clean_login
+    used: list[str] = []
+    if not harness:
+        used.append(f"harness={effective}")
+    if not model and resolved_model and same_harness:
+        used.append(f"model={resolved_model}")
+    if not effort and resolved_effort and same_harness:
+        used.append(f"effort={resolved_effort}")
+    if clean_login is None and p_clean_login:
+        used.append("clean_login=true")
+
+    result: dict[str, Any] = {
+        "settings_from": p_source if (same_harness or not harness) else "none",
+        "harness": effective,
+        "model": resolved_model,
+        "effort": resolved_effort,
+        "clean_login": effective_clean_login,
+        "status": "ready",
+        "skip_reason": "",
+        **notes,
+    }
+    return result, used
+
+
+def _session_launch_rows(
+    sessions_dir: Path,
+    *,
+    run_id: str | None,
+    workflow_id: str | None,
+    known_agents: set[str] | None = None,
+) -> dict[str, tuple[dict[str, Any], bool]]:
+    """Latest launch row per agent from ``sessions/<agent>.jsonl`` for this run.
+
+    Returns ``{name: (row, scoped)}`` where ``scoped`` is True when the row
+    matched this run's ``run_id`` or ``workflow_id``. Skips bridge telemetry
+    logs, non-agent names (such as ``agent.1.jsonl``), partial JSON lines, and
+    launch rows belonging to another run. Unscoped launch rows (neither
+    ``run_id`` nor ``workflow_id``) are kept only for agents already known from
+    the manifest or persisted log directory (or when the manifest itself has
+    neither ID), so an unrelated earlier-run agent is never pulled into this
+    run's index.
+    """
+    if not sessions_dir.is_dir():
+        return {}
+    known = known_agents or set()
+    has_run_identity = bool(run_id or workflow_id)
+    launches: dict[str, tuple[dict[str, Any], bool]] = {}
+    for path in sorted(sessions_dir.glob("*.jsonl")):
+        if path.name.endswith("-bridge.jsonl"):
+            continue
+        name = path.stem
+        try:
+            validate_agent_name(name)
+        except ValueError:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        exact: dict[str, Any] | None = None
+        unscoped: dict[str, Any] | None = None
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("event") not in SESSION_LAUNCH_EVENTS:
+                continue
+            row_agent = row.get("agent")
+            if isinstance(row_agent, str) and row_agent and row_agent != name:
+                continue
+            row_run = row.get("run_id")
+            row_workflow = row.get("workflow_id")
+            if (run_id and row_run == run_id) or (workflow_id and row_workflow == workflow_id):
+                exact = row
+            elif not row_run and not row_workflow:
+                unscoped = row
+        if exact is not None:
+            launches[name] = (exact, True)
+        elif unscoped is not None and (not has_run_identity or name in known):
+            launches[name] = (unscoped, False)
+    return launches
+
+
+def _log_dir_agents(logs_dir: Path | None) -> list[str]:
+    """Agent names with launcher logs (``<agent>.log``) in the persisted logs directory."""
+    if logs_dir is None or not logs_dir.is_dir():
+        return []
+    found: list[str] = []
+    for path in sorted(logs_dir.glob("*.log")):
+        name = path.stem
+        if name == "hub":
+            continue
+        try:
+            validate_agent_name(name)
+        except ValueError:
+            continue
+        found.append(name)
+    return found
 
 
 def build_joined_context(
@@ -338,8 +569,11 @@ def build_joined_context(
     target: Path,
     target_common: str | None,
     tooling_root: Path,
-    settings: Mapping[str, str],
+    settings: Mapping[str, Any],
     remote_workers: Mapping[str, str],
+    logs_dir: Path | None = None,
+    run_selection: Mapping[str, str] | None = None,
+    hub_selection: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Index a joined run from its locally readable ``runs/<run_id>/manifest.json``.
 
@@ -353,6 +587,14 @@ def build_joined_context(
     doctor_dir = run_dir / "denise"
     hub = manifest.get("hub") if isinstance(manifest.get("hub"), Mapping) else {}
     assert isinstance(hub, Mapping)
+    if logs_dir is None:
+        try:
+            persisted = load_joined_settings(run_dir)
+        except ValueError:
+            persisted = None
+        raw_logs = persisted.get("logs_dir") if persisted else None
+        if isinstance(raw_logs, str) and raw_logs:
+            logs_dir = Path(raw_logs)
     inventory: dict[str, dict[str, Any]] = {}
 
     def add(path: str | Path | None, purpose: str, mode: str = "write") -> dict[str, Any]:
@@ -376,26 +618,47 @@ def build_joined_context(
     state = add(state_dir, "selected hub durable state")
     sessions = reference(sessions_dir, host)
     add(tooling_root, "robomate code and documentation", "read")
+    if logs_dir is not None:
+        add(logs_dir, "run launcher and hub logs", "read")
     saved_agents = {
         agent["name"]: agent
         for agent in manifest.get("agents", [])
         if isinstance(agent, Mapping) and isinstance(agent.get("name"), str)
     }
+    raw_run_id = manifest.get("run_id")
+    raw_workflow_id = manifest.get("workflow_id")
+    log_agents = _log_dir_agents(logs_dir)
+    session_launches = _session_launch_rows(
+        sessions_dir,
+        run_id=str(raw_run_id) if raw_run_id else None,
+        workflow_id=str(raw_workflow_id) if raw_workflow_id else None,
+        known_agents=set(saved_agents) | set(log_agents),
+    )
     agents = []
-    for name in dict.fromkeys((*saved_agents, *remote_workers)):
+    for name in dict.fromkeys((*saved_agents, *session_launches, *log_agents, *remote_workers)):
         try:
             validate_agent_name(name)
         except ValueError:
             continue
         agent = saved_agents.get(name, {})
-        entry = {
+        clone = agent.get("workspace_kind") == "clone"
+        is_remote = name in remote_workers or clone
+        launch_entry = None if is_remote else session_launches.get(name)
+        launch = launch_entry[0] if launch_entry is not None else {}
+        launch_scoped = launch_entry[1] if launch_entry is not None else True
+        role = agent.get("standing_role") or launch.get("role")
+        entry: dict[str, Any] = {
             "name": name,
-            "standing_role": agent.get("standing_role"),
-            "harness": agent.get("harness"),
+            "role": role,
+            "standing_role": role,
+            "harness": agent.get("harness") or launch.get("harness"),
+            "model": agent.get("model") or launch.get("model") or None,
+            "effort": agent.get("effort") or launch.get("effort") or None,
             "workspace_id": agent.get("workspace_id"),
         }
-        clone = agent.get("workspace_kind") == "clone"
-        if name in remote_workers or clone:
+        if not is_remote and launch_entry is not None and not launch_scoped:
+            entry["session_scope"] = "unscoped"
+        if is_remote:
             worker_host = remote_workers.get(name, "unknown worker host")
             entry.update(
                 location="remote" if name in remote_workers else "unverified clone host",
@@ -410,37 +673,81 @@ def build_joined_context(
                 ),
             )
         else:
-            if agent.get("workspace_kind") == "worktree":
+            if launch.get("launcher_pid") is not None:
+                entry["launcher_pid"] = launch.get("launcher_pid")
+            if agent.get("workspace_kind") == "worktree" and agent.get("workspace_path"):
                 entry["workspace"] = reference(agent.get("workspace_path"), host)
-            entry["sessions"] = reference(sessions_dir / f"{name}.jsonl", host)
+            elif isinstance(launch.get("workdir"), str) and launch.get("workdir"):
+                entry["workspace"] = reference(launch["workdir"], host)
+            session_ref = reference(sessions_dir / f"{name}.jsonl", host)
+            bridge_ref = reference(sessions_dir / f"{name}-bridge.jsonl", host)
+            entry["sessions"] = session_ref
+            entry["bridge_telemetry"] = bridge_ref
+            agent_logs: list[dict[str, Any]] = []
+            if logs_dir is not None:
+                launcher_log_ref = reference(logs_dir / f"{name}.log", host)
+                entry["launcher_log"] = launcher_log_ref
+                agent_logs.append(launcher_log_ref)
+            agent_logs.extend([session_ref, bridge_ref])
+            entry["logs"] = agent_logs
         agents.append(entry)
+
+    hub_logs: list[dict[str, Any]] = []
+    seen_hub_logs: set[str] = set()
+
+    def add_hub_log(path: Path) -> None:
+        item = reference(path, host)
+        key = os.path.normcase(item["path"]) if item["path"] else ""
+        if key and key not in seen_hub_logs:
+            seen_hub_logs.add(key)
+            hub_logs.append(item)
+
+    if logs_dir is not None:
+        add_hub_log(logs_dir / "hub.log")
+    state_hub_log = state_dir / "logs" / "hub.log"
+    if logs_dir is None or state_hub_log.exists():
+        add_hub_log(state_hub_log)
+    legacy_hub_log = state_dir / "hub.log"
+    if legacy_hub_log.exists():
+        add_hub_log(legacy_hub_log)
+
+    run_section: dict[str, Any] = {
+        "run_id": manifest.get("run_id"),
+        "workflow_id": manifest.get("workflow_id"),
+        "status": manifest.get("status"),
+        "directory": reference(run_dir, host),
+        "manifest": reference(run_dir / "manifest.json", host),
+        "hub_id": hub.get("hub_id"),
+        "pr_url": manifest.get("pr_url"),
+        "merged_sha": manifest.get("merged_sha"),
+    }
+    if logs_dir is not None:
+        run_section["logs_dir"] = reference(logs_dir, host)
+    if run_selection is not None:
+        run_section["selection"] = dict(run_selection)
+
+    hub_section: dict[str, Any] = {
+        "name": hub.get("name"),
+        "checkout": hub_root,
+        "manifest_checkout": reference(hub.get("checkout"), host),
+        "git_common_dir": add(hub_common, "selected hub git common directory"),
+        "state": state,
+        "sessions": sessions,
+        "origin": safe_origin(str(hub.get("origin") or "")),
+        "url": safe_origin(str(hub.get("url") or "")),
+        "logs": hub_logs,
+    }
+    if hub_selection is not None:
+        hub_section["selection"] = dict(hub_selection)
+
     return {
         "schema_version": 1,
         "captured_at": datetime.now(UTC).isoformat(),
-        "provenance": "local read of the hub's run manifest; no HTTP or MCP was used; path "
-        "existence is not process liveness or authentication",
+        "provenance": "local read of the hub's run manifest and session logs; no HTTP or MCP "
+        "was used; path existence is not process liveness or authentication",
         "host": host,
-        "run": {
-            "run_id": manifest.get("run_id"),
-            "workflow_id": manifest.get("workflow_id"),
-            "status": manifest.get("status"),
-            "directory": reference(run_dir, host),
-            "manifest": reference(run_dir / "manifest.json", host),
-            "hub_id": hub.get("hub_id"),
-            "pr_url": manifest.get("pr_url"),
-            "merged_sha": manifest.get("merged_sha"),
-        },
-        "hub": {
-            "name": hub.get("name"),
-            "checkout": hub_root,
-            "manifest_checkout": reference(hub.get("checkout"), host),
-            "git_common_dir": add(hub_common, "selected hub git common directory"),
-            "state": state,
-            "sessions": sessions,
-            "origin": safe_origin(str(hub.get("origin") or "")),
-            "url": safe_origin(str(hub.get("url") or "")),
-            "logs": [reference(state_dir / "hub.log", host)],
-        },
+        "run": run_section,
+        "hub": hub_section,
         "target": {
             "checkout": checkout,
             "git_common_dir": add(target_common, "selected target git common directory"),
