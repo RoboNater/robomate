@@ -786,7 +786,9 @@ Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
   for the run branch in your own repository (`gh pr list --head` on GitHub, the
   equivalent `glab` query on GitLab): exactly one match is used and labelled
   `found by branch` on the `PR` line, then its gate is read like a recorded
-  PR's. Zero or several matches show none and name the reason. A PR found this
+  PR's. On that reading, `head matches` compares the PR against the head the
+  lookup itself returned, not a recorded or approved head. Zero or several
+  matches show none and name the reason. A PR found this
   way is never written back; binding still comes only from a submitted result.
   With a recorded PR, `--live` uses it and makes no branch query. Both use only
   your existing `gh`/`glab` login.
