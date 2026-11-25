@@ -33,6 +33,7 @@ from .merge_gate import (
     Mergeable,
     MergeGateError,
     PrState,
+    _communicate,
     _merged_sha,
     _settled,
     classify_checks,
@@ -94,10 +95,8 @@ async def run_glab(args: Sequence[str]) -> GlabResult:
         env=env,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), GLAB_TIMEOUT_S)
+        stdout, stderr = await _communicate(process, GLAB_TIMEOUT_S)
     except TimeoutError:
-        process.kill()
-        await process.wait()
         raise GitLabGateError(f"{_describe(args)} timed out after {GLAB_TIMEOUT_S:g} s") from None
     return GlabResult(
         returncode=process.returncode if process.returncode is not None else -1,

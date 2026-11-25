@@ -17,6 +17,7 @@ import pytest
 from agent_hub.store import HubStore
 from delivery_support import finish_run
 from test_alice_launcher import CODEX_ID, LAUNCHER
+from timing import FrozenClock
 
 RECOVERY = importlib.import_module("agent_recovery")
 
@@ -791,6 +792,31 @@ def test_alice_hub_evidence_uses_orchestrator_activity_session(
     assert "orchestrator session on the hub workflow" in text
     assert "backward-clock tolerance" in text
     assert "on timing alone" not in text
+
+
+def test_alice_resume_accepts_detach_but_refuses_a_live_hold(
+    recovery_args: argparse.Namespace, hub_store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    session = "old-alice"
+    hub_store.note_orchestrator_session("alice", session)
+    hub_store.note_orchestrator_heartbeat(session)
+    reader = RecoveryReader()
+    save_rows(recovery_args, [row("start", agent="alice"), row("exit", agent="alice")])
+
+    with hub_store.orchestrator_call(session, "wait_for_event", 100):
+        frozen_clock.advance(61)
+        live = hub_store.status_summary()["orchestrator_activity"]
+        assert live["heartbeat_age_s"] >= 60
+        reader.state["hub.status"]["orchestrator_activity"] = live
+        with pytest.raises(LAUNCHER.Stop, match="predecessor is still attached/holding"):
+            RECOVERY.prepare(recovery_args, reader, "alice")
+
+        hub_store.note_orchestrator_heartbeat(session)
+        hub_store.activity.orchestrator_detached(session)
+        detached = hub_store.status_summary()["orchestrator_activity"]
+        assert detached["bridge"] == "disconnected"
+        reader.state["hub.status"]["orchestrator_activity"] = detached
+        assert RECOVERY.prepare(recovery_args, reader, "alice")[0] == CODEX_ID
 
 
 def test_trailing_resume_without_exit_leaves_conversation_window_open(

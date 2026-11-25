@@ -20,7 +20,7 @@ from agent_hub.store import HubStore
 from agent_hub_common import TaskRole, TaskState
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import DiscoveryError, NoHubError
-from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block
+from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block, rpc
 from fastapi import FastAPI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -329,6 +329,56 @@ async def test_superseded_heartbeat_stops_without_repeating_error_logs(
         await bridge._heartbeat_loop()
         assert requests == 1
     finally:
+        await bridge.close()
+
+
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+async def test_bridge_close_detaches_its_held_wait(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    app.state.rpc.guides_dir = Path(__file__).resolve().parents[1] / "guides"
+    app.state.rpc.hub_info = {
+        "repo_root": "/repo",
+        "origin": "git@github.com:example/repo.git",
+        "forge": "github",
+        "url": BASE_URL,
+        "default_branch": "main",
+    }
+    bridge = OrchestratorBridge(http_client=client)
+    await bridge.call("hub.heartbeat", {})
+    held = asyncio.create_task(bridge.call("wait_for_event", {"timeout_s": LIVENESS_S}))
+    try:
+        await wait_until(lambda: hub_store.signals.waiting(EVENT_KEY), "Alice's wait to park")
+        await bridge.close()
+        status = await client.post("/rpc", json=rpc("hub.status", {}))
+        activity = status.json()["result"]["orchestrator_activity"]
+        assert activity["session"] == bridge.session
+        assert activity["heartbeat_age_s"] is None
+        assert activity["holding"] is None
+        assert activity["bridge"] == "disconnected"
+        assert hub_store.signals.waiting(EVENT_KEY) == 0
+        assert hub_store.get_state()["unacked_delivered"] == []
+        with pytest.raises(RuntimeError, match="orchestrator call cancelled"):
+            await asyncio.wait_for(held, LIVENESS_S)
+        late = await client.post(
+            "/rpc", json=rpc("hub.heartbeat", {}), headers={"X-Robomate-Session": bridge.session}
+        )
+        assert late.json()["error"]["message"] == "orchestrator session detached"
+
+        successor = OrchestratorBridge(http_client=client)
+        try:
+            with pytest.raises(RuntimeError, match="join with takeover=true"):
+                await successor.call("get_state", {})
+            await successor.call("join", {"name": "alice", "takeover": True})
+            hub_store.check_in("bob")
+            result = await successor.call("wait_for_event", {"timeout_s": 0})
+            assert result["event"]["payload"]["agent"] == "bob"
+            assert result["event"]["delivery_attempts"] == 1
+        finally:
+            await successor.close()
+    finally:
+        held.cancel()
+        await asyncio.gather(held, return_exceptions=True)
         await bridge.close()
 
 

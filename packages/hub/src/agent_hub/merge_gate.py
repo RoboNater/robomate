@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from time import monotonic
@@ -117,16 +118,28 @@ async def run_gh(args: Sequence[str]) -> GhResult:
         env=env,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), GH_TIMEOUT_S)
+        stdout, stderr = await _communicate(process, GH_TIMEOUT_S)
     except TimeoutError:
-        process.kill()
-        await process.wait()
         raise MergeGateError(f"{_describe(args)} timed out after {GH_TIMEOUT_S:g} s") from None
     return GhResult(
         returncode=process.returncode if process.returncode is not None else -1,
         stdout=stdout.decode("utf-8", errors="replace"),
         stderr=stderr.decode("utf-8", errors="replace"),
     )
+
+
+async def _communicate(
+    process: asyncio.subprocess.Process, timeout_s: float
+) -> tuple[bytes, bytes]:
+    """Reap the query subprocess if its caller disconnects or times out."""
+
+    try:
+        return await asyncio.wait_for(process.communicate(), timeout_s)
+    except (TimeoutError, asyncio.CancelledError):
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.communicate()
+        raise
 
 
 @dataclass(frozen=True, slots=True)
