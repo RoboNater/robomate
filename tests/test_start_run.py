@@ -526,6 +526,9 @@ def smoke(tmp_path: Path) -> dict[str, Any]:
         "    if isinstance(args, list) and args and str(args[0]).endswith("
         "'verify-sandboxes.sh'):\n"
         "        return subprocess.CompletedProcess(args, 0, '', '')\n"
+        "    if os.environ.get('MOCK_TRACE_START_RUN_DOWN') and sys.argv[0].endswith("
+        "'start-run.py') and isinstance(args, list) and args[1:] == ['-m', 'robomate', 'down']:\n"
+        "        print('test trace: start-run called robomate down', flush=True)\n"
         "    return _run(args, *a, **kw)\n"
         "subprocess.run = run\n"
         "if sys.argv[1:2] == ['up']:\n"
@@ -770,6 +773,8 @@ def test_a_hand_resumed_launcher_keeps_the_hub_up_after_the_original_ones_exit(
     barrier = root / "join-barrier"
     env = smoke["env"] | {
         "MOCK_HARNESS_EXIT_AFTER_JOIN": str(barrier),
+        # stop_hub prints "hub ... stopped" even if its child already exited.
+        "MOCK_TRACE_START_RUN_DOWN": "1",
         "HUB_HEARTBEAT_S": "1",
         "HUB_LOST_AFTER_S": "8",
         "HUB_SWEEP_INTERVAL_S": "1",
@@ -780,19 +785,21 @@ def test_a_hand_resumed_launcher_keeps_the_hub_up_after_the_original_ones_exit(
     # The hand-resumed bridges inherit this environment and must heartbeat
     # inside the hub's short loss grace, or they are declared lost mid-work.
     resume_env = smoke["env"] | {"HUB_HEARTBEAT_S": "1"}
+    resume_logs = {agent: root / f"{agent}-resume.log" for agent in START.AGENTS}
     logs: list[Any] = []
-    resumes: list[subprocess.Popen[str]] = []
-    with output.open("w", encoding="utf-8") as stream:
-        started = subprocess.Popen(
-            [sys.executable, str(ROOT / "scripts/start-run.py"), "--config", str(config),
-             "--issue", "7"],
-            cwd=root,
-            env=env,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )  # fmt: skip
+    resumes: dict[str, subprocess.Popen[str]] = {}
+    started: subprocess.Popen[str] | None = None
     try:
+        with output.open("w", encoding="utf-8") as stream:
+            started = subprocess.Popen(
+                [sys.executable, str(ROOT / "scripts/start-run.py"), "--config", str(config),
+                 "--issue", "7"],
+                cwd=root,
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )  # fmt: skip
         # Every original launcher joins and waits, so the command sees a full
         # team before any of them exits.
         wait_until_sync(
@@ -803,7 +810,7 @@ def test_a_hand_resumed_launcher_keeps_the_hub_up_after_the_original_ones_exit(
             "the original launchers join",
             timeout_s=3 * LIVENESS_S,
         )
-        assert started.poll() is None, output.read_text(encoding="utf-8")
+        assert started.poll() is None
         (barrier / "go").write_text("go\n", encoding="utf-8")
 
         # After their exits the command keeps the hub up for the hand recovery.
@@ -816,22 +823,20 @@ def test_a_hand_resumed_launcher_keeps_the_hub_up_after_the_original_ones_exit(
             # A hub start, three joins and exits, then the wait: a hang bound.
             timeout_s=3 * LIVENESS_S,
         )
-        assert started.poll() is None, output.read_text(encoding="utf-8")
+        assert started.poll() is None
 
-        for agent in START.AGENTS:
-            log = (root / f"{agent}-resume.log").open("w", encoding="utf-8")
+        for agent, path in resume_logs.items():
+            log = path.open("w", encoding="utf-8")
             logs.append(log)
-            resumes.append(
-                subprocess.Popen(
-                    [sys.executable, str(ROOT / "scripts/agent-launcher.py"), "resume",
-                     agent, "--hub", str(checkout), "--max-resumes", "0",
-                     "--predecessor-poll-s", "0.5"],
-                    cwd=checkout,
-                    env=resume_env,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+            resumes[agent] = subprocess.Popen(
+                [sys.executable, str(ROOT / "scripts/agent-launcher.py"), "resume",
+                 agent, "--hub", str(checkout), "--max-resumes", "0",
+                 "--predecessor-poll-s", "0.5"],
+                cwd=checkout,
+                env=resume_env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
             )  # fmt: skip
 
         # The command did not stop the hub under the hand-resumed launchers.
@@ -841,27 +846,48 @@ def test_a_hand_resumed_launcher_keeps_the_hub_up_after_the_original_ones_exit(
             env=smoke["env"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=2 * LIVENESS_S,
         )
         assert status.returncode == 0, status.stdout + status.stderr
         assert json.loads(status.stdout).get("hub_id")
         assert started.poll() is None
 
-        for agent, process in zip(START.AGENTS, resumes, strict=True):
-            code = process.wait(timeout=5 * LIVENESS_S)
-            text = (root / f"{agent}-resume.log").read_text(encoding="utf-8")[-3000:]
-            assert code == 0, f"{agent}'s hand-resumed launcher exited with {code}: {text}"
+        for agent, resume in resumes.items():
+            code = resume.wait(timeout=5 * LIVENESS_S)
+            assert code == 0, f"{agent}'s hand-resumed launcher exited with {code}"
         started.wait(timeout=5 * LIVENESS_S)
+        printed = output.read_text(encoding="utf-8")
+        assert "workflow done" in printed
+        assert "hub scripted stopped" in printed
+    except (Exception, pytest.fail.Exception) as failure:
+        # Capture the exits and log tails before cleanup can kill a process.
+        exits = {agent: process.poll() for agent, process in resumes.items()}
+        if started is not None:
+            exits["start-run"] = started.poll()
+        diagnostics = [f"Process exit codes before cleanup (None means running): {exits}"]
+        hub_state = run_dir / "scripted.robomate" / "scripted" / "state"
+        for path in (
+            output,
+            run_dir / "logs/hub.log",
+            hub_state / "logs/hub.log",
+            *resume_logs.values(),
+        ):
+            try:
+                tail = path.read_text(encoding="utf-8", errors="replace")[-5000:]
+            except OSError as exc:
+                tail = f"(log unavailable: {exc.strerror})"
+            diagnostics.append(f"--- {path.relative_to(root)} (tail) ---\n{tail or '(empty log)'}")
+        failure.add_note("\n".join(diagnostics))
+        raise
     finally:
-        for process in [started, *resumes]:
-            if process.poll() is None:
+        for process in [started, *resumes.values()]:
+            if process is not None and process.poll() is None:
                 process.kill()
                 process.wait()
         for log in logs:
             log.close()
-    printed = output.read_text(encoding="utf-8")
-    assert "workflow done" in printed, printed
-    assert "hub scripted stopped" in printed, printed
 
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGTERM is TerminateProcess on Windows")
