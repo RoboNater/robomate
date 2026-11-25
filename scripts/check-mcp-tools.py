@@ -6,7 +6,7 @@ Codex's per-tool approvals (and any Antigravity allow-list) must name every
 tool the bridge serves. This script starts the bridge from a checkout, lists
 its tools, and compares them with:
 
-  1. the snapshot saved the last time you ran it with --save, and
+  1. the names and input schemas saved the last time you ran it with --save, and
   2. if Codex is configured, the [mcp_servers.robomate.tools.*] approval
      tables actually in its config.toml.
 
@@ -24,7 +24,7 @@ Workflow: after running the setup prompt, run once with --save. After each
 
     0  tool and setup checks passed
     1  re-run the prompt, then run again with --save
-    2  couldn't decide (no baseline yet, or the bridge failed to start)
+    2  couldn't decide (no usable baseline, or the bridge failed to start)
 
 It contacts no hub. It does start the bridge with `uv run --locked`, which
 syncs the checkout's .venv, so run it only when no robomate run is active.
@@ -69,8 +69,8 @@ def snapshot_path() -> Path:
     return base / "robomate-mcp-check" / "snapshot.json"
 
 
-def probe(checkout: Path, harness: str) -> tuple[dict, list[str]]:
-    """Start the bridge, return (serverInfo, tool names). Contacts no hub."""
+def probe(checkout: Path, harness: str) -> tuple[dict, dict[str, dict]]:
+    """Start the bridge, return (serverInfo, input schemas by tool). Contacts no hub."""
     env = {
         k: v
         for k, v in os.environ.items()
@@ -132,7 +132,7 @@ def probe(checkout: Path, harness: str) -> tuple[dict, list[str]]:
             server = receive()["result"]["serverInfo"]
             send({"jsonrpc": "2.0", "method": "notifications/initialized"})
             send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-            tools = [tool["name"] for tool in receive()["result"]["tools"]]
+            tools = {tool["name"]: tool["inputSchema"] for tool in receive()["result"]["tools"]}
             return server, tools
         finally:
             watchdog.cancel()
@@ -393,7 +393,7 @@ def main() -> int:
     options.add_argument(
         "--save",
         action="store_true",
-        help="record the current tool list as the configured baseline",
+        help="record the current tool names and input schemas as the configured baseline",
     )
     options.add_argument(
         "--list",
@@ -414,20 +414,21 @@ def main() -> int:
         return 2
 
     try:
-        server, tool_list = probe(checkout, ns.harness)
+        server, input_schemas = probe(checkout, ns.harness)
     except Exception as exc:  # noqa: BLE001 - report anything and exit 2
         print(f"error: bridge probe failed: {exc}", file=sys.stderr)
         return 2
     if ns.list:
         print(
             json.dumps(
-                {"server": server, "tool_count": len(tool_list), "tools": tool_list}, indent=2
+                {"server": server, "tool_count": len(input_schemas), "tools": list(input_schemas)},
+                indent=2,
             )
         )
         return 0
     head = git_head(checkout)
     print(f"checkout: {checkout} @ {head or '?'}")
-    tools = set(tool_list)
+    tools = set(input_schemas)
     print(f"bridge: {server.get('name')} {server.get('version')}, {len(tools)} tools")
 
     try:
@@ -444,6 +445,7 @@ def main() -> int:
             "server_version": server.get("version"),
             "git_head": head,
             "tools": sorted(tools),
+            "input_schemas": input_schemas,
             "saved_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         }
         ns.snapshot.parent.mkdir(parents=True, exist_ok=True)
@@ -454,6 +456,7 @@ def main() -> int:
 
     problems: list[str] = []
     saved = store.get("checkouts", {}).get(key)
+    legacy_baseline = False
     if saved is None:
         print(f"no baseline for this checkout in {ns.snapshot}")
     else:
@@ -466,6 +469,15 @@ def main() -> int:
             problems.append("tools added since baseline: " + ", ".join(added))
         if removed := sorted(before - tools):
             problems.append("tools removed since baseline: " + ", ".join(removed))
+        before_schemas = saved.get("input_schemas")
+        if before_schemas is None:
+            legacy_baseline = True
+        else:
+            changed = sorted(
+                name for name in before & tools if before_schemas.get(name) != input_schemas[name]
+            )
+            if changed:
+                problems.append("input schemas changed since baseline: " + ", ".join(changed))
 
     codex_problems, codex_checked = check_codex(checkout, tools)
     problems += codex_problems
@@ -479,6 +491,9 @@ def main() -> int:
             print(f"  - {problem}")
         print("RE-RUN the setup prompt, then run this again with --save.")
         return 1
+    if legacy_baseline:
+        print("UNKNOWN: baseline has no input schemas. Run again with --save to record them.")
+        return 2
     if saved is None and not codex_checked:
         print(
             "UNKNOWN: nothing to compare against. If the prompt was just run for this "

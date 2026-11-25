@@ -97,7 +97,7 @@ user home for `~` (`%USERPROFILE%` on Windows).
    uv run --locked python scripts/check-mcp-tools.py --save
    ```
 
-   It records this checkout's tool list as the configured baseline. It checks Codex's approvals and checkout path, the static timeout settings described below, and installed skill links and copies. It reports absent installable skills for information. Expect the final `OK:` and exit 0. If it lists a problem, fix it as in step 5 or 6 and run it again.
+   It records this checkout's tool names and input schemas as the configured baseline. Run with `--save` once to refresh an older baseline that has only names. The script checks Codex's approvals and checkout path, the static timeout settings described below, and installed skill links and copies. It reports absent installable skills for information. Expect the final `OK:` and exit 0. If it lists a problem, fix it as in step 5 or 6 and run it again.
 8. **Don't:**
    - start a robomate hub, run `robomate up` or `robomate submit`, or call `join`;
    - start an agent session with a prompt;
