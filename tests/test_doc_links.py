@@ -25,7 +25,7 @@ CITED_TEST_DOCS = (
     ROOT / "docs" / "development" / "testing-patterns.md",
     ROOT / "docs" / "development" / "testing-time-and-waits.md",
 )
-FENCE = re.compile(r"^(```|~~~).*?^\1", re.MULTILINE | re.DOTALL)
+FENCE = re.compile(r"^ {0,3}(```|~~~).*?^ {0,3}\1", re.MULTILINE | re.DOTALL)
 CODE_SPAN = re.compile(r"`[^`\n]*`")
 LINK = re.compile(r"\]\(<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\)")
 SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
@@ -148,16 +148,15 @@ def test_cited_tests_exist(doc: Path) -> None:
         files = {
             path.resolve() for path in (ROOT / name for name in DOC_TEST_FILE.findall(paragraph))
         }
-        paired = next(iter(files)) if len(files) == 1 else None
         for name in names:
             if name not in defined:
                 problems.append(
                     f"{doc.relative_to(ROOT).as_posix()}: {name} is not defined under tests/"
                 )
-            elif paired is not None and paired not in defined[name]:
+            elif files and not defined[name] & files:
+                linked = ", ".join(path.relative_to(ROOT).as_posix() for path in sorted(files))
                 problems.append(
-                    f"{doc.relative_to(ROOT).as_posix()}: {name} is not defined in "
-                    f"{paired.relative_to(ROOT).as_posix()}"
+                    f"{doc.relative_to(ROOT).as_posix()}: {name} is not defined in {linked}"
                 )
     assert problems == []
 
@@ -178,6 +177,11 @@ def test_heading_slugs_follow_github_rules() -> None:
         "3-nested-pytest-1",
         "oskillpid-0-is-ctrl_c_event-on-windows-use-process_alive",
     }
+
+
+def test_indented_fence_headings_do_not_create_anchors() -> None:
+    text = _without_fences("1. step\n\n   ```sh\n   # Setup\n   ```\n\n## Setup\n")
+    assert _heading_slugs(text) == {"setup"}
 
 
 def test_explicit_anchor_counts(tmp_path: Path) -> None:
