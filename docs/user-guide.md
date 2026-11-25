@@ -310,7 +310,8 @@ Hub tools are switched off for the conversation, so ask Bob to read the
 closeout reports from `<state>/runs/<run_id>/closeout/` (the report prints the
 full path; the state is `<run_dir>/<hub_name>.robomate/<hub_name>/state`).
 `--fork` keeps the original transcript: Claude Code uses `--fork-session`,
-Codex `codex fork`, OpenCode `--fork`. The per-harness suppression and
+Codex `codex fork`, OpenCode 1.x `--fork` (OpenCode 2.x's interactive CLI does
+not support `--fork`, so `ask --fork` refuses it on 2.x). The per-harness suppression and
 transcript rules are in [Ask an agent after the run](#ask-an-agent-after-the-run);
 for the launcher's own behavior see
 [agent recovery](development/agent-recovery.md#asking-an-agent).
@@ -714,7 +715,7 @@ the state or token directory, regardless of the harness controls below.
 | --- | --- |
 | Claude Code | Sandbox `denyRead` hides the token directory from sandboxed shell commands. The bridge runs outside that sandbox. Native Windows sandbox availability varies. |
 | Codex | The token boundary is guide-only with the launcher's `workspace-write` settings, whose roots control writes. [Codex 0.170.0 configuration schema](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/core/config.schema.json) |
-| OpenCode | **2.x (Linux, verified on `2.4.1`):** headless starts and resumes launch with `--standalone` and an ordered `agents.<name>.permissions` array that denies absolute paths outside the assigned roots and parent-directory traversals for filesystem tools, allows the assigned roots, and appends `read` denies for the token directory (both absolute and relative to the worktree; verified live on Linux). **1.x:** adds `read` and `external_directory` denies for the token directory after inherited read rules and launcher directory allows. On both versions these are tool permissions; shell path checks are best effort and shell processes retain OS access. Interactive launches use the harness's configured permissions. Native Windows enforcement still needs a live check. |
+| OpenCode | **2.x (Linux, verified on `2.4.1`):** headless starts and resumes launch with `--standalone` and an ordered `agents.<name>.permissions` array that denies absolute paths outside the assigned roots and parent-directory traversals for filesystem tools (`read`, `edit`, `write`, `glob`, `grep`, `list`), allows the assigned roots, re-appends inherited protective filesystem rules (such as global denies and default `.env` asks) after the root allows, and appends `read` denies for the token directory (both absolute and relative to the worktree; verified live on Linux, including when the token directory is inside an allowed root). OpenCode 2.x performs **no shell path check** — shell commands retain full OS access. Built-in outside-path reads (such as tool-output files outside assigned roots) are intentionally denied by `read /*`, matching 1.x's boundary, while the `skill` tool itself remains allowed. **1.x:** adds `read` and `external_directory` denies for the token directory after inherited read rules and launcher directory allows (shell path checks are best effort and shell processes retain OS access). Interactive launches use the harness's configured permissions. Native Windows enforcement is tracked in [#711](https://github.com/RoboNater/robomate/issues/711). |
 | AntiGravity | The launcher uses the run's `--dangerously-skip-permissions` mode and supplies no per-launch token-directory deny. Antigravity documents user-configured `read_file` deny rules. [Antigravity CLI permissions](https://antigravity.google/docs/cli-permissions) |
 | Devin CLI | The launcher uses the run's `dangerous` mode and supplies no per-launch token-directory deny. The guide supplies the boundary for this mode. [Devin CLI investigation](harness-investigation-devin-cli.md) |
 
@@ -976,7 +977,9 @@ original conversation, so questions become part of that harness transcript.
 Forking is opt-in to keep the default a direct reopening and behave consistently
 with AntiGravity, which has no CLI fork option. **Use `--fork` when preserving
 the original transcript matters**: Claude Code uses `--fork-session`, Codex uses
-`codex fork ID`, and OpenCode uses `--fork`. AntiGravity and Devin CLI reject
+`codex fork ID`, and OpenCode 1.x uses `--fork` (OpenCode 2.x rejects `--fork`
+on interactive `opencode`, so `ask --fork` refuses it on 2.x; only non-interactive
+`opencode run --fork` supports forking). AntiGravity and Devin CLI reject
 `--fork` before launching; retain a transcript copy before asking there if
 needed.
 
@@ -1032,7 +1035,8 @@ Existing run scripts must be regenerated to acquire these controls.
 
 Harness support was checked against local Claude Code, Codex, OpenCode and
 AntiGravity CLI help. Claude's `--permission-mode auto` applies to interactive
-`--resume`; OpenCode's TUI supports `--auto`, `--session` and `--fork` together
+`--resume`; OpenCode 1.x's TUI supports `--auto`, `--session` and `--fork` together,
+while OpenCode 2.x's TUI supports `--standalone`, `--auto` and `--session` (no `--fork` or `--model`)
 ([CLI reference](https://opencode.ai/docs/cli/)). Devin's
 [command reference](https://docs.devin.ai/cli/reference/commands.md) lists
 `--permission-mode` and `--respect-workspace-trust` as general flags, including

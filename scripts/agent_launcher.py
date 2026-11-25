@@ -163,7 +163,7 @@ def provider_error(line: str, provider: str) -> tuple[str | None, ProviderSignat
             raw_body = error["response"]["body"]
         else:
             return session, None
-        body = json.loads(raw_body)
+        body = raw_body if isinstance(raw_body, dict) else json.loads(raw_body)
         detail = body["error"]
         kind, code = detail["type"], detail.get("code")
         if (

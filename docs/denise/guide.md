@@ -99,16 +99,19 @@ within the model's context limit. Each resume added another failed turn.
 Match the first recurring 400 to the preceding argument validation error
 before proposing a repair. [Incident record](https://github.com/RoboNater/robomate/issues/324#issuecomment-6340166076).
 
-This procedure uses the OpenCode 1.x SQLite schema observed in 1.18.35. Verify
-the installed version, database and schema before proposing an edit.
-OpenCode 2.x ([#518](https://github.com/RoboNater/robomate/issues/518)) adds
-`session_v2` and `session_part` tables alongside `session` and `part`, requires
-`--standalone` and a full disabled `mcp.servers.robomate` entry (`type`,
-`command`, `disabled: true`) in `OPENCODE_CONFIG_CONTENT` to suppress hub tools
-when reproducing on a fork, and uses a different JSON error shape (which the
-launcher's repeated-error stop recognizes for both 1.x and 2.x). Do not run the
-1.x `DELETE FROM part` SQL against a 2.x session without first verifying the
-2.x session tables.
+This procedure uses the OpenCode 1.x SQLite schema observed in 1.18.35 and
+applies to **OpenCode 1.x only**. Verify the installed version, database and
+schema before proposing an edit. Fresh OpenCode 2.x (`2.4.1`,
+[#518](https://github.com/RoboNater/robomate/issues/518)) databases do not have
+a `part` or `session` table at all: 2.x stores sessions in `session_v2`,
+`session_message`, and `session_part` (keyed by `(session_id, message_id,
+ordinal, type, call_id)` rather than `part.id`; upgraded 1.x databases retain
+the legacy tables alongside the 2.x tables). On 2.x, non-interactive
+`opencode run --standalone --session <id> --fork` still works (using a full
+disabled `mcp.servers.robomate` entry with `type`, `command`, and
+`disabled: true` in `OPENCODE_CONFIG_CONTENT` to suppress hub tools), and the
+launcher's repeated-error stop (#329) recognizes both 1.x and 2.x JSON error
+shapes, but do not run the 1.x `DELETE FROM part` SQL against a 2.x session.
 
 Denise explains the evidence, proposes the fork test and repair, and helps the
 operator identify the exact rows. Every database or process action is an

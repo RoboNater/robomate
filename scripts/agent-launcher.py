@@ -574,15 +574,15 @@ def is_opencode_v2(
     program: list[str],
     environment: Mapping[str, str],
     workdir: Path | None = None,
-    version: str = "",
 ) -> bool:
-    """Return whether OpenCode is 2.x (from a recorded version or ``--version`` probe)."""
-    from opencode_headless import detect_major_version, parse_major_version
+    """Return whether the installed OpenCode binary is 2.x.
 
-    if version:
-        major = parse_major_version(version)
-        if major is not None:
-            return major >= 2
+    Always probes the installed binary rather than trusting a saved
+    ``harness_version`` (which belongs to the session's original host state and
+    is stale after an in-place 1.x -> 2.x upgrade).
+    """
+    from opencode_headless import detect_major_version
+
     return detect_major_version(program, environment, workdir) >= 2
 
 
@@ -592,7 +592,13 @@ def model_flags(
     if harness == "opencode" and opencode_v2:
         # Interactive OpenCode 2.x rejects --model and --variant; OPENCODE_CONFIG_CONTENT
         # carries model#variant. Headless `opencode run` uses --model provider/model#variant.
-        if interactive or not model:
+        if interactive:
+            return []
+        if not model:
+            if effort:
+                common.say(
+                    f"OpenCode 2.x requires --model to attach #{effort}; omitting effort {effort!r}"
+                )
             return []
         spec = f"{model}#{effort}" if effort and "#" not in model else model
         return ["--model", spec]
@@ -1769,9 +1775,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     place.sessions.mkdir(parents=True, exist_ok=True)
     log = log_path(place.sessions, args.agent)
     program = program_for(tools, args.harness)
-    oc_v2 = args.harness == "opencode" and is_opencode_v2(
-        program, os.environ, workdir, version=args.harness_version
-    )
+    oc_v2 = args.harness == "opencode" and is_opencode_v2(program, os.environ, workdir)
     flags = model_flags(
         args.harness,
         args.model,
@@ -1902,9 +1906,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             f"{args.agent} on this host before resuming.",
         )
     program = program_for(tools, harness)
-    oc_v2 = harness == "opencode" and is_opencode_v2(
-        program, os.environ, workdir, version=str(saved.get("harness_version") or "")
-    )
+    oc_v2 = harness == "opencode" and is_opencode_v2(program, os.environ, workdir)
     flags = model_flags(harness, model, effort, interactive=args.interactive, opencode_v2=oc_v2)
     identity = replace(
         saved_identity(saved, harness, model, effort),
@@ -2040,9 +2042,12 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     model, effort = str(saved.get("model") or ""), str(saved.get("effort") or "")
     start_dir = workdir if workdir.is_dir() else Path.cwd()
     program = program_for(tools, harness)
-    oc_v2 = harness == "opencode" and is_opencode_v2(
-        program, os.environ, start_dir, version=str(saved.get("harness_version") or "")
-    )
+    oc_v2 = harness == "opencode" and is_opencode_v2(program, os.environ, start_dir)
+    if harness == "opencode" and oc_v2 and args.fork:
+        raise Usage(
+            "OpenCode 2.x interactive CLI does not support --fork (only `opencode run --fork` "
+            "does); omit --fork or fork non-interactively first"
+        )
     argv = interactive_resume(
         harness,
         program,
@@ -2488,9 +2493,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
     ]
     login = ""
-    oc_v2 = harness == "opencode" and is_opencode_v2(
-        program, environment, Path(doctor_dir["workdir"])
-    )
+    oc_v2 = harness == "opencode" and is_opencode_v2(program, environment)
     if effective_clean_login or harness in denise.ISOLATED_HARNESSES:
         # Separate homes keep authentication and MCP configuration scoped to this run.
         profile = Path(doctor_dir["configs"]) / profile_name

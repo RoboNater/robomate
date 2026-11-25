@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import uuid
 from collections.abc import Mapping
@@ -37,10 +38,11 @@ def detect_major_version(
     program: list[str], environment: Mapping[str, str], workdir: Path | None = None
 ) -> int:
     """Return OpenCode's major version (2 for 2.x, 1 for 1.x or minimal fake harnesses)."""
+    cwd = workdir if workdir is not None and workdir.is_dir() else None
     try:
         probe = subprocess.run(
             [*program, "--version"],
-            cwd=workdir,
+            cwd=cwd,
             env=environment,
             capture_output=True,
             text=True,
@@ -132,29 +134,95 @@ def _token_read_paths(token_dir: Path, worktree: Path) -> list[str]:
     return paths
 
 
+def _matches_fs_tool(action: object) -> bool:
+    if not isinstance(action, str):
+        return False
+    if action == "*":
+        return True
+    return any(fnmatchcase(tool, action) for tool in _V2_FS_TOOLS)
+
+
+def _is_blanket_allow(rule: Mapping[str, Any]) -> bool:
+    return (
+        rule.get("action") == "*" and rule.get("resource") == "*" and rule.get("effect") == "allow"
+    )
+
+
+def read_build_permissions_v2(
+    program: list[str], environment: Mapping[str, str], worktree: Path
+) -> list[dict[str, Any]] | None:
+    """Read resolved ``build`` permissions from ``opencode debug agents --standalone``.
+
+    Returns None when a minimal test shim does not implement ``debug agents``;
+    callers fall back to ``config["permissions"]`` and ``config["agents"]["build"]``.
+    """
+    try:
+        probe = subprocess.run(
+            [*program, "debug", "agents", "--standalone"],
+            cwd=worktree,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    try:
+        agents = json.loads(probe.stdout)
+    except ValueError:
+        return None
+    if not isinstance(agents, list):
+        return None
+    for item in agents:
+        if isinstance(item, dict) and item.get("id") == "build":
+            perms = item.get("permissions")
+            if isinstance(perms, list) and all(isinstance(r, dict) for r in perms):
+                return copy.deepcopy(perms)
+    return None
+
+
 def policy_v2(
-    config: Mapping[str, Any], roots: list[Path], name: str, *, token_dir: Path | None = None
+    config: Mapping[str, Any],
+    roots: list[Path],
+    name: str,
+    *,
+    token_dir: Path | None = None,
+    resolved_build_permissions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build an OpenCode 2.x agent entry with ordered ``permissions`` rules.
 
-    OpenCode 2.x removes ``external_directory`` prompts and matches path rules
-    against the literal path passed to each tool. To preserve narrow worktree
-    grants while still allowing relative paths inside the worktree:
+    OpenCode 2.x prepends its built-in defaults (e.g. ``read *.env ask``) and
+    the operator's global ``permissions`` before the agent's ``permissions``
+    array (last-match-wins). To preserve narrow worktree grants without
+    cancelling global denies or default ``.env`` rules:
+      - never inject a blanket ``* * allow`` rule;
       - deny absolute paths (``/*``, ``?:/*``) and parent traversals (``..``,
-        ``../*``, ``*/../*``) for filesystem tools;
-      - allow each assigned root (``<root>`` and ``<root>/*``);
-      - deny ``read`` on ``token_dir`` (both absolute and relative to the
-        worktree) after the root allows.
+        ``../*``, ``*/../*``) for filesystem tools, then allow each assigned
+        root (``<root>`` and ``<root>/*``);
+      - re-append inherited filesystem-matching protective rules (global and
+        default denies/asks and narrower exceptions like ``*.env.example``)
+        after the root allows so they still win inside the worktree;
+      - append ``read`` denies for ``token_dir`` (absolute and relative) last.
     """
     build = copy.deepcopy(config.get("agents", {}).get("build", {}))
     if not isinstance(build, dict):
         build = {}
-    raw_permissions = build.pop("permissions", None)
-    if isinstance(raw_permissions, list) and all(isinstance(r, dict) for r in raw_permissions):
-        permissions: list[dict[str, Any]] = copy.deepcopy(raw_permissions)
-    else:
-        permissions = [{"action": "*", "resource": "*", "effect": "allow"}]
+    build_perms = build.pop("permissions", None)
 
+    inherited: list[dict[str, Any]] = []
+    if resolved_build_permissions is not None:
+        inherited.extend(copy.deepcopy(resolved_build_permissions))
+    else:
+        global_perms = config.get("permissions")
+        if isinstance(global_perms, list):
+            inherited.extend(copy.deepcopy(r) for r in global_perms if isinstance(r, dict))
+        if isinstance(build_perms, list):
+            inherited.extend(copy.deepcopy(r) for r in build_perms if isinstance(r, dict))
+
+    permissions: list[dict[str, Any]] = []
     for tool in _V2_FS_TOOLS:
         for deny_pattern in ("/*", "?:/*", "..", "../*", "*/../*"):
             permissions.append({"action": tool, "resource": deny_pattern, "effect": "deny"})
@@ -162,6 +230,14 @@ def policy_v2(
             root_posix = root.as_posix().rstrip("/")
             permissions.append({"action": tool, "resource": root_posix, "effect": "allow"})
             permissions.append({"action": tool, "resource": f"{root_posix}/*", "effect": "allow"})
+
+    # Re-append inherited filesystem-matching rules (excluding blanket * * allow)
+    # so global denies and default .env asks still override the root allows above.
+    for rule in inherited:
+        if _is_blanket_allow(rule):
+            continue
+        if _matches_fs_tool(rule.get("action")):
+            permissions.append(rule)
 
     if token_dir is not None:
         if "*" in str(token_dir) or "?" in str(token_dir):
@@ -280,13 +356,23 @@ def _fold_v2_variant(command: list[str]) -> list[str]:
         cleaned.append(word)
         i += 1
     if variant:
+        attached = False
         for idx, word in enumerate(cleaned):
             if word == "--model" and idx + 1 < len(cleaned) and "#" not in cleaned[idx + 1]:
                 cleaned[idx + 1] = f"{cleaned[idx + 1]}#{variant}"
+                attached = True
                 break
             if word.startswith("--model=") and "#" not in word:
                 cleaned[idx] = f"{word}#{variant}"
+                attached = True
                 break
+        if not attached:
+            print(
+                f"agent-launcher: OpenCode 2.x requires --model to attach #{variant}; "
+                f"omitting effort {variant!r}",
+                file=sys.stderr,
+                flush=True,
+            )
     return cleaned
 
 
@@ -335,8 +421,15 @@ def prepare(
     overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))
     token_dir = token_file.resolve().parent if token_file is not None else None
     if is_v2:
+        resolved_build = read_build_permissions_v2(program, env, worktree)
         overlay.setdefault("agents", {}).update(
-            policy_v2(config, roots, name, token_dir=token_dir)["agents"]
+            policy_v2(
+                config,
+                roots,
+                name,
+                token_dir=token_dir,
+                resolved_build_permissions=resolved_build,
+            )["agents"]
         )
     else:
         overlay.setdefault("agent", {}).update(
