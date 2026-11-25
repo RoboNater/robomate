@@ -55,6 +55,7 @@ class OrchestratorBridge:
         self._client: httpx.AsyncClient | None = http_client
         self._owns_client = http_client is None
         self.joined = False
+        self._session_started = False
         self._heartbeat: asyncio.Task[None] | None = None
         self._accounting_task: asyncio.Task[None] | None = None
         self._calls: asyncio.Queue[CallRecord] = asyncio.Queue(maxsize=256)
@@ -112,11 +113,25 @@ class OrchestratorBridge:
             await self.flush_accounting()
 
     async def close(self) -> None:
+        detach = self._session_started
+        self._session_started = False
+        if self._heartbeat is not None:
+            self._heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._heartbeat
+            self._heartbeat = None
         if self._accounting_task is not None:
             self._accounting_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._accounting_task
             self._accounting_task = None
+        if detach:
+            try:
+                await asyncio.wait_for(self.call("hub.heartbeat", {"detach": True}), timeout=5.0)
+            except SupersededSessionError:
+                logger.info("Orchestrator session already superseded")
+            except Exception as exc:
+                logger.warning("Could not detach from the hub: %s", exc)
         await self.flush_accounting()
         if not self._calls.empty():
             self.dropped_calls += self._calls.qsize()
@@ -125,11 +140,6 @@ class OrchestratorBridge:
             logger.warning(
                 "MCP accounting dropped %d rows in this bridge session", self.dropped_calls
             )
-        if self._heartbeat is not None:
-            self._heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat
-            self._heartbeat = None
         if self._client is not None and self._owns_client:
             await self._client.aclose()
             self._client = None
@@ -150,6 +160,9 @@ class OrchestratorBridge:
 
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         client = self._http()
+        substantive = method not in ("hub.heartbeat", "hub.record_calls")
+        if substantive or (method == "hub.heartbeat" and params.get("detach") is not True):
+            self._session_started = True
         if method == "wait_for_event":
             params = dict(params)
             if params.get("timeout_s") is None:
@@ -178,15 +191,9 @@ class OrchestratorBridge:
                             raise SupersededSessionError(message)
                         raise RuntimeError(message)
                     result: dict[str, Any] = body["result"]
-                    if self._heartbeat is None and method not in (
-                        "hub.heartbeat",
-                        "hub.record_calls",
-                    ):
+                    if substantive and self._session_started and self._heartbeat is None:
                         self._heartbeat = asyncio.create_task(self._heartbeat_loop())
-                    if self._accounting_task is None and method not in (
-                        "hub.heartbeat",
-                        "hub.record_calls",
-                    ):
+                    if substantive and self._session_started and self._accounting_task is None:
                         self._accounting_task = asyncio.create_task(self._accounting_loop())
                     return result
             except httpx.TransportError as exc:

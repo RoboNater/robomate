@@ -4118,8 +4118,8 @@ class HubStore:
     def expire_event_leases(self, delivery_id: str | None = None) -> int:
         """Make outstanding event deliveries eligible for immediate redelivery.
 
-        A delivery ID limits cleanup to an in-flight call from a superseded
-        orchestrator. Without one, a new session releases every stale lease.
+        A delivery ID limits cleanup to the abandoned response's lease.
+        Without one, a new session releases every stale lease.
         """
 
         expired_at = to_iso(self._now() - timedelta(microseconds=1))
@@ -4917,7 +4917,9 @@ class HubStore:
             if moment is not None
         ]
         bridge_age = None if not heard else max(0.0, (now - max(heard)).total_seconds())
-        if fields["holding"] is not None or (
+        if record is not None and record.detached:
+            bridge = DISCONNECTED
+        elif fields["holding"] is not None or (
             bridge_age is not None and bridge_age <= BRIDGE_CONNECTED_S
         ):
             bridge = CONNECTED

@@ -352,7 +352,7 @@ def create_app(
             payload = await request.json()
         except ValueError:
             payload = None
-        body = await dispatcher.dispatch(payload, request.headers, background)
+        body = await dispatcher.dispatch(payload, request, background)
         return JSONResponse(body, background=background)
 
     @app.get("/guides/{role}.md", include_in_schema=False, dependencies=[Depends(require_bearer)])

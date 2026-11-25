@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sqlite3
@@ -9,6 +10,7 @@ from typing import Any
 
 import pytest
 from agent_hub.database import initialize_database
+from agent_hub.gitlab_gate import run_glab
 from agent_hub.mcp import create_mcp
 from agent_hub.merge_gate import (
     Check,
@@ -28,6 +30,7 @@ from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import HubStore
 from conftest import MonotonicClock
 from delivery_support import finish_run
+from timing import LIVENESS_S
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -680,6 +683,43 @@ async def test_a_gh_failure_names_the_call_and_its_error() -> None:
 
 
 # -- the real runner ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("run", [run_gh, run_glab])
+async def test_cancelled_gate_query_kills_and_reaps_its_cli(
+    monkeypatch: pytest.MonkeyPatch, run: Any
+) -> None:
+    started = asyncio.Event()
+    killed = asyncio.Event()
+    reaped = asyncio.Event()
+
+    class Process:
+        async def communicate(self) -> tuple[bytes, bytes]:
+            if not started.is_set():
+                started.set()
+                await asyncio.Event().wait()
+            assert killed.is_set()
+            reaped.set()
+            return b"", b""
+
+        def kill(self) -> None:
+            killed.set()
+
+    async def spawn(*args: Any, **kwargs: Any) -> Process:
+        return Process()
+
+    monkeypatch.setattr("shutil.which", lambda name: name)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    query = asyncio.create_task(run(["--version"]))
+    try:
+        await asyncio.wait_for(started.wait(), LIVENESS_S)
+        query.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(query, LIVENESS_S)
+        assert reaped.is_set()
+    finally:
+        query.cancel()
+        await asyncio.gather(query, return_exceptions=True)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the stand-in gh is a POSIX script")

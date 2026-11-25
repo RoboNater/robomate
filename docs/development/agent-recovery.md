@@ -723,8 +723,13 @@ Start and resume launchers share an OS lock for the lifetime of the process.
 An existing launcher, a recorded predecessor PID still present without an
 exit, or an attached worker bridge refuses launch. Alice also refuses while
 her old RPC session has a live hold or a heartbeat less than 60 seconds old.
-Wait for detach/expiry, or have the operator inspect and stop its orphan bridge;
-then retry. No option bypasses these guards. Workers never stop predecessors.
+A clean bridge shutdown detaches its session, ends its held calls and clears
+its heartbeat immediately. A dropped HTTP connection ends the affected call;
+the last heartbeat can still keep the guard active until it ages out. If the
+hub cannot see the disconnect, the hold expires after its deadline plus 30
+seconds. Wait for detach or expiry, or have the operator inspect and stop its
+orphan bridge, then retry. No option bypasses these guards. Workers never stop
+predecessors.
 For a launcher started by `agent-launcher.py`, stop it with `stop <agent>` or
 Ctrl-C; both record the child's `exit`, so the next resume needs no
 `--confirm-stopped` (#534). When no exit was recorded (an older log, a
