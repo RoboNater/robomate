@@ -1150,6 +1150,58 @@ async def test_hub_id_pin_reaches_the_hub_from_an_unrelated_checkout(
     assert worker.settings.token == TOKEN
 
 
+async def test_unbound_bridge_refuses_agent_chosen_hub_with_the_fail_closed_text(
+    tmp_path: Path, healthz: Callable[[str], str]
+) -> None:
+    """join(hub=...) cannot pick a registered hub for an unbound bridge (#526)."""
+
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "LOCALAPPDATA": str(tmp_path / "local")}
+    _register_live_hub(tmp_path, "hub-a", "alpha", env, healthz)
+    _register_live_hub(tmp_path, "hub-b", "beta", env, healthz)
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    checkout_b = tmp_path / "beta" / "checkout"
+
+    for selector in ("alpha", "hub-b", str(checkout_b)):
+        worker = WorkerHubClient(WorkerSettings.unjoined(cwd=unbound, environ=env))
+        with pytest.raises(DiscoveryError) as refused:
+            await worker.join("bob", "implementer", hub=selector)
+        message = str(refused.value)
+        assert "this robomate bridge has no hub" in message
+        assert "report blocked" in message
+        assert "hub=" not in message
+        assert "http://" not in message
+        assert "alpha" not in message and "beta" not in message
+        assert "hub-a" not in message and "hub-b" not in message
+        assert str(checkout_b) not in message
+
+
+@pytest.mark.parametrize("selector", ["beta", "hub-b"])
+async def test_operator_opt_in_lets_an_unbound_bridge_join_the_named_hub(
+    selector: str,
+    tmp_path: Path,
+    healthz: Callable[[str], str],
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+) -> None:
+    """`robomate mcp --allow-hub-selection` keeps the operator's route (#526)."""
+
+    _join_guides(settings)
+    env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "LOCALAPPDATA": str(tmp_path / "local")}
+    _register_live_hub(tmp_path, "hub-a", "alpha", env, healthz)
+    url_b = _register_live_hub(tmp_path, "hub-b", "beta", env, healthz)
+    unbound = tmp_path / "unbound"
+    unbound.mkdir()
+    worker = WorkerHubClient(
+        WorkerSettings.unjoined(cwd=unbound, environ=env, allow_hub_selection=True),
+        http_client=client,
+    )
+    result = await worker.join("bob", "implementer", hub=selector)
+    assert result["status"] == "registered"
+    assert worker.settings.hub_url == url_b
+
+
 async def test_join_hub_override_is_refused_for_a_different_pinned_hub(
     tmp_path: Path, healthz: Callable[[str], str]
 ) -> None:
@@ -1159,7 +1211,7 @@ async def test_join_hub_override_is_refused_for_a_different_pinned_hub(
     _register_live_hub(tmp_path, "hub-a", "alpha", env, healthz)
     _register_live_hub(tmp_path, "hub-b", "beta", env, healthz)
     pinned = env | {"ROBOMATE_HUB_ID": "hub-b"}
-    worker = WorkerHubClient(WorkerSettings.unjoined(environ=pinned))
+    worker = WorkerHubClient(WorkerSettings.unjoined(environ=pinned, allow_hub_selection=True))
     with pytest.raises(DiscoveryError) as refused:
         await worker.join("bob", "implementer", hub="hub-a")
     assert "names a different hub" in str(refused.value)

@@ -97,7 +97,11 @@ async def run_worker(stdout: TextIO) -> None:
 
 
 async def run_worker_bridge(
-    stdout: TextIO, *, name: str | None = None, harness: str | None = None
+    stdout: TextIO,
+    *,
+    name: str | None = None,
+    harness: str | None = None,
+    allow_hub_selection: bool = False,
 ) -> None:
     """Serve worker tools; discover the hub only when a tool is first called."""
 
@@ -115,7 +119,11 @@ async def run_worker_bridge(
                         endpoint, agent_name=configured_name, harness=harness
                     )
                 else:
-                    settings = WorkerSettings.unjoined(harness=harness, cwd=Path.cwd())
+                    settings = WorkerSettings.unjoined(
+                        harness=harness,
+                        cwd=Path.cwd(),
+                        allow_hub_selection=allow_hub_selection,
+                    )
                 created = WorkerHubClient(settings)
                 await created.__aenter__()
                 client = created

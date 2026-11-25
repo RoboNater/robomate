@@ -211,6 +211,7 @@ async def test_mcp_unbound_bridge_fails_closed_without_leaking_hubs(
         )
 
     monkeypatch.setattr("worker_mcp.client.discover", listing_error)
+    monkeypatch.setattr("worker_mcp.client.find_hub", listing_error)
     client = WorkerHubClient(WorkerSettings.unjoined(cwd=Path("/unbound"), environ={}))
     server = create_worker_mcp(client)
 
@@ -221,6 +222,16 @@ async def test_mcp_unbound_bridge_fails_closed_without_leaking_hubs(
     assert "report blocked" in message
     assert "hub=" not in message
     assert "hub-a" not in message and "http://alpha" not in message
+
+    # #526: an agent-chosen hub cannot select from the registry either.
+    with pytest.raises(ToolError) as selected:
+        await server.call_tool("join", {"name": "bob", "role": "implementer", "hub": "alpha"})
+    selected_message = str(selected.value)
+    assert "this robomate bridge has no hub" in selected_message
+    assert "report blocked" in selected_message
+    assert "alpha" not in selected_message
+    assert "hub-a" not in selected_message
+    assert "http://alpha" not in selected_message
 
     who = await server.call_tool("whoami", {})
     assert isinstance(who, tuple)

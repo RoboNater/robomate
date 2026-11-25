@@ -2404,7 +2404,12 @@ async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
     from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 
     if args.role in (None, "worker"):
-        await run_worker_bridge(stdout, name=args.name, harness=args.harness)
+        await run_worker_bridge(
+            stdout,
+            name=args.name,
+            harness=args.harness,
+            allow_hub_selection=args.allow_hub_selection,
+        )
     else:
         bridge = OrchestratorBridge(args.name or "alice", harness=args.harness)
         try:
@@ -2559,6 +2564,14 @@ def main() -> None:
     mcp.add_argument("--role", choices=("orchestrator", "worker"), default=None)
     mcp.add_argument("--name")
     mcp.add_argument("--harness")
+    mcp.add_argument(
+        "--allow-hub-selection",
+        action="store_true",
+        help=(
+            "let an unbound worker bridge accept an agent's join(hub=...); set it "
+            "only in an operator's MCP entry (#526)"
+        ),
+    )
     args = parser.parse_args()
     try:
         if args.command == "up":
