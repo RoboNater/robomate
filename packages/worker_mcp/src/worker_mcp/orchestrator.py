@@ -57,6 +57,7 @@ class OrchestratorBridge:
         self.cwd = cwd
         self.session = str(uuid.uuid4())
         self._endpoint: HubEndpoint | None = None
+        self._hub_id: str | None = None
         self._client: httpx.AsyncClient | None = http_client
         self._owns_client = http_client is None
         self.joined = False
@@ -205,6 +206,17 @@ class OrchestratorBridge:
                             raise SupersededSessionError(message)
                         raise RuntimeError(message)
                     result: dict[str, Any] = body["result"]
+                    run_id = params.get("run_id")
+                    if (
+                        method == "set_workflow_status"
+                        and params.get("status") == "done"
+                        and result.get("ok") is True
+                        and self._hub_id
+                        and isinstance(run_id, str)
+                        and run_id
+                    ):
+                        # The launcher may no longer be able to read the hub after done.
+                        self.telemetry.emit("workflow_done", hub_id=self._hub_id, run_id=run_id)
                     if substantive and self._session_started and self._heartbeat is None:
                         self._heartbeat = asyncio.create_task(self._heartbeat_loop())
                     if substantive and self._session_started and self._accounting_task is None:
@@ -264,6 +276,9 @@ class OrchestratorBridge:
             },
             join_ad=ad,
         )
+        hub = result.get("hub")
+        hub_id = hub.get("hub_id") if isinstance(hub, dict) else None
+        self._hub_id = hub_id if isinstance(hub_id, str) else None
         self._wait_advertisement = ad
         self.joined = True
         return result

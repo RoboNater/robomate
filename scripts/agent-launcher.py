@@ -1283,6 +1283,10 @@ class JoinedOrchestrator(Joined):
         self.setup(args)
 
     def resumable(self, exit_code: int, resumes: int) -> str:
+        if self.pending_stop is None and self.bridge_completed_run():
+            self.log("stop", reason="done", workflow_status="done", resumes=resumes)
+            say(f"workflow done after {resumes} automatic resume(s) (confirmed by the bridge)")
+            return "done"
         workflow = self.read_hub()
         if (
             self.pending_stop is None
@@ -1296,6 +1300,18 @@ class JoinedOrchestrator(Joined):
                 f"and {self.args.sessions}.",
             )
         return super().resumable(exit_code, resumes)
+
+    def bridge_completed_run(self) -> bool:
+        """The current harness's bridge received the hub's acknowledgement of done (#703)."""
+        if self.join_offset is None or not self.hub_id or not self.run_id:
+            return False
+        return any(
+            row.get("event") == "workflow_done"
+            and row.get("agent") == self.agent
+            and row.get("hub_id") == self.hub_id
+            and row.get("run_id") == self.run_id
+            for row in telemetry_rows(self.bridge_log(), self.join_offset)
+        )
 
 
 _UNSEEN = object()

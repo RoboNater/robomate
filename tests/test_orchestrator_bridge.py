@@ -17,7 +17,7 @@ import pytest
 from agent_hub.database import database
 from agent_hub.signals import EVENT_KEY
 from agent_hub.store import HubStore
-from agent_hub_common import TaskRole, TaskState
+from agent_hub_common import AgentProfile, TaskRole, TaskState
 from agent_hub_common.accounting import CallRecord
 from agent_hub_common.discovery import DiscoveryError, NoHubError
 from conftest import BASE_URL, TOKEN, closed_port_url, record_local_hub, reserve_port_block, rpc
@@ -109,6 +109,47 @@ async def _call(server: Any, tool_name: str, **arguments: Any) -> dict[str, Any]
     result = await server.call_tool(tool_name, arguments)
     assert isinstance(result, tuple)
     return cast(dict[str, Any], result[1])
+
+
+async def test_bridge_records_only_acknowledged_workflow_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "alice-bridge.jsonl"
+    monkeypatch.setenv("HUB_TELEMETRY_LOG", str(path))
+
+    def hub(request: httpx.Request) -> httpx.Response:
+        rpc = json.loads(request.content)
+        if rpc["method"] == "join":
+            return httpx.Response(200, json={"result": {"hub": {"hub_id": "test-hub"}}})
+        if rpc["params"].get("run_id") == "rejected-run":
+            return httpx.Response(200, json={"error": {"message": "run is unfinished"}})
+        return httpx.Response(200, json={"result": {"ok": True}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(hub), base_url=BASE_URL) as client:
+        bridge = OrchestratorBridge(http_client=client)
+        try:
+            await bridge.register(AgentProfile())
+            await bridge.call("set_workflow_status", {"status": "active", "summary": "working"})
+            with pytest.raises(RuntimeError, match="run is unfinished"):
+                await bridge.call(
+                    "set_workflow_status",
+                    {"status": "done", "summary": "premature", "run_id": "rejected-run"},
+                )
+            await bridge.call(
+                "set_workflow_status",
+                {"status": "done", "summary": "private summary", "run_id": "finished-run"},
+            )
+        finally:
+            await bridge.close()
+
+    text = path.read_text(encoding="utf-8")
+    completions = [
+        (row["agent"], row["hub_id"], row["run_id"])
+        for row in map(json.loads, text.splitlines())
+        if row["event"] == "workflow_done"
+    ]
+    assert completions == [("alice", "test-hub", "finished-run")]
+    assert "private summary" not in text
 
 
 async def test_tool_list_matches_legacy_fixture() -> None:
