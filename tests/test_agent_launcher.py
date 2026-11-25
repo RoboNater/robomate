@@ -3104,15 +3104,14 @@ def test_doctor_keeps_earlier_reports(
     assert str(second_briefing / "startup.md") in launches(area)[1]["argv"][-1]
 
 
-@pytest.mark.parametrize("selected", [None, "20990101_00000000", "../runs"])
+@pytest.mark.parametrize("selected", ["20990101_00000000", "../runs"])
 def test_doctor_refuses_an_unknown_run_without_creating_one(
     area: dict[str, Path],
     run: dict[str, Path],
-    selected: str | None,
+    selected: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    words = ["doctor", "--hub", str(area["checkout"]), "--harness", "codex"]
-    words += ["--run", selected] if selected else []
+    words = ["doctor", "--hub", str(area["checkout"]), "--harness", "codex", "--run", selected]
 
     assert invoke(words, programs=programs(area), reader=no_hub()) == 2
 
@@ -3120,6 +3119,248 @@ def test_doctor_refuses_an_unknown_run_without_creating_one(
     assert RUN in capsys.readouterr().err
     assert sorted(p.name for p in (area["state"] / "runs").iterdir()) == [RUN]
     assert not run["denise"].exists()
+
+
+def _write_run_manifest(
+    area: dict[str, Path], run_id: str, *, status: str = "done", hub_id: str = HUB
+) -> Path:
+    run_dir = area["state"] / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "run_id": run_id,
+        "workflow_id": f"wf-{run_id}",
+        "status": status,
+        "hub": {
+            "hub_id": hub_id,
+            "name": "hub",
+            "checkout": str(area["checkout"]),
+            "origin": "https://github.com/example/target.git",
+            "forge": "github",
+            "url": "http://127.0.0.1:9",
+        },
+        "agents": [{"name": "bob", "standing_role": "implementer", "harness": "codex"}],
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return run_dir
+
+
+def test_doctor_defaults_to_single_run_and_records_selection(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = invoke(
+        ["doctor", "--hub", str(area["checkout"]), "--harness", "codex"],
+        programs=programs(area),
+        reader=no_hub(),
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert f"doctor: using run {RUN}" in out and "the only run" in out
+    assert len(launches(area)) == 1
+    context = json.loads((doctor_briefing(run) / "context.json").read_bytes())
+    assert context["run"]["run_id"] == RUN
+    assert context["run"]["selection"]["source"] == "only_run"
+
+
+def test_doctor_defaults_to_single_unfinished_run_and_refuses_when_both_done(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    earlier = "20261120_11111111"
+    _write_run_manifest(area, earlier, status="done")
+
+    # RUN is active and earlier is done -> selects RUN.
+    code = invoke(
+        ["doctor", "--hub", str(area["checkout"]), "--harness", "codex"],
+        programs=programs(area),
+        reader=no_hub(),
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert f"doctor: using run {RUN}" in out and "unfinished" in out
+    context = json.loads((doctor_briefing(run) / "context.json").read_bytes())
+    assert context["run"]["selection"]["source"] == "only_unfinished"
+
+    # Mark RUN done too -> refuses and lists both runs.
+    manifest_path = run["run_dir"] / "manifest.json"
+    saved = json.loads(manifest_path.read_bytes())
+    saved["status"] = "done"
+    manifest_path.write_text(json.dumps(saved), encoding="utf-8")
+
+    code = invoke(
+        ["doctor", "--hub", str(area["checkout"]), "--harness", "codex"],
+        programs=programs(area),
+        reader=no_hub(),
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert earlier in err and RUN in err
+
+
+def test_doctor_infers_hub_and_run_from_run_directory_and_refuses_conflicts(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    other = "20261120_22222222"
+    _write_run_manifest(area, other, status="active")
+    workspace = run["denise"] / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.chdir(workspace)
+
+    # No --hub or --run needed from <state>/runs/<id>/denise/workspace.
+    code = invoke(["doctor", "--harness", "codex"], programs=programs(area), reader=no_hub())
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "doctor: using hub" in out and f"doctor: using run {RUN}" in out
+    context = json.loads((doctor_briefing(run) / "context.json").read_bytes())
+    assert context["run"]["run_id"] == RUN
+    assert context["run"]["selection"]["source"] == "cwd_run_dir"
+    assert context["hub"]["selection"]["source"] == "cwd_run_dir"
+
+    # Conflicting --run is refused naming both run IDs.
+    code = invoke(
+        ["doctor", "--run", other, "--harness", "codex"],
+        programs=programs(area),
+        reader=no_hub(),
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert other in err and RUN in err
+
+    # Conflicting --hub is refused naming both hubs.
+    other_checkout = area["root"] / "other checkout"
+    other_checkout.mkdir()
+    git(other_checkout, "init", "-q")
+    other_state = other_checkout / ".robomate"
+    other_state.mkdir()
+    (other_state / "hub.json").write_text(
+        json.dumps({"hub_id": "other-hub", "name": "other", "checkout": str(other_checkout)}),
+        encoding="utf-8",
+    )
+    code = invoke(
+        ["doctor", "--hub", str(other_checkout), "--harness", "codex"],
+        programs=programs(area),
+        reader=no_hub(),
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "other" in err and str(area["state"]) in err
+
+    # Relocated hub state outside any git checkout resolves hub from hub.json and run from path.
+    relocated_state = area["root"] / "relocated.robomate" / "relocated" / "state"
+    relocated_run = relocated_state / "runs" / RUN
+    relocated_ws = relocated_run / "denise" / "workspace"
+    relocated_ws.mkdir(parents=True)
+    relocated_hub = {
+        "hub_id": "relocated-hub",
+        "name": "relocated",
+        "checkout": str(area["checkout"]),
+        "origin": "https://github.com/example/target.git",
+        "forge": "github",
+        "url": "http://127.0.0.1:9",
+    }
+    (relocated_state / "hub.json").write_text(json.dumps(relocated_hub), encoding="utf-8")
+    (relocated_run / "manifest.json").write_text(
+        json.dumps({"run_id": RUN, "status": "active", "hub": relocated_hub, "agents": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(relocated_ws)
+    code = invoke(["doctor", "--harness", "codex"], programs=programs(area), reader=no_hub())
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "doctor: using hub relocated" in out and f"doctor: using run {RUN}" in out
+
+
+def test_doctor_settings_order_and_persisted_defaults(
+    area: dict[str, Path],
+    run: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # No persisted settings and no --harness refuses naming --harness.
+    assert (
+        invoke(
+            ["doctor", "--hub", str(area["checkout"]), "--run", RUN],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 2
+    )
+    assert "--harness" in capsys.readouterr().err
+    assert launches(area) == []
+
+    # Persist Charlie's settings (claude-code / claude-opus-5-5 / medium).
+    CLI.denise.write_joined_settings(
+        run["run_dir"],
+        {
+            "settings_from": "charlie",
+            "harness": "claude-code",
+            "model": "claude-opus-5-5",
+            "effort": "medium",
+            "status": "ready",
+            "skip_reason": "",
+        },
+        clean_login=True,
+    )
+
+    # No flags uses persisted harness, model, effort and clean_login.
+    assert (
+        invoke(
+            ["doctor", "--hub", str(area["checkout"])],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "using saved Denise settings (from charlie)" in out
+    assert "harness=claude-code" in out and "model=claude-opus-5-5" in out
+    first = launches(area)[-1]
+    assert first["argv"][first["argv"].index("--model") + 1] == "claude-opus-5-5"
+    assert first["argv"][first["argv"].index("--effort") + 1] == "medium"
+    assert first["env"]["CLAUDE_CONFIG_DIR"] == str(run["denise"] / "configs" / "claude")
+
+    # --harness codex overrides the harness and drops inherited model and effort;
+    # --no-clean-login overrides persisted clean_login=true.
+    assert (
+        invoke(
+            ["doctor", "--hub", str(area["checkout"]), "--harness", "codex", "--no-clean-login"],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 0
+    )
+    second = launches(area)[-1]
+    assert "--model" not in second["argv"]
+    assert not any("model_reasoning_effort=" in word for word in second["argv"])
+    assert second["env"].get("CODEX_HOME") != str(run["denise"] / "configs" / "codex")
+
+    # Persisted skip reports skip reason + remedy unless --harness overrides.
+    CLI.denise.write_joined_settings(
+        run["run_dir"],
+        {
+            "settings_from": "bob",
+            "harness": "devin",
+            "model": "",
+            "effort": "",
+            "status": "skipped",
+            "skip_reason": "inherited harness devin is not yet supported for Denise",
+        },
+        clean_login=False,
+    )
+    assert (
+        invoke(
+            ["doctor", "--hub", str(area["checkout"])],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "devin" in err and "--harness" in err
 
 
 def test_doctor_supports_only_its_ready_harnesses(

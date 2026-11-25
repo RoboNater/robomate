@@ -13,7 +13,14 @@ Run it from the hub's checkout (or name the hub with ``--hub``)::
     uv run --project <robomate checkout> python scripts/agent-launcher.py stop bob
     uv run --project <robomate checkout> python scripts/agent-launcher.py ask bob
     uv run --project <robomate checkout> python scripts/agent-launcher.py doctor \\
-        --run <run_id> --harness codex
+        [--hub <hub>] [--run <run_id>] [--harness <harness>]
+
+For ``doctor``, ``--hub``, ``--run`` and ``--harness`` are optional: from inside
+``<state>/runs/<id>/`` both the hub and run come from that path (conflicting
+explicit flags are refused); otherwise ``--run`` defaults to the hub's only run
+or its only unfinished run; ``--harness``, ``--model``, ``--effort`` and
+``--clean-login`` take explicit flags, then the run's saved Denise settings
+(``runs/<id>/denise/settings.json``), or refuse naming ``--harness``.
 
 ``start`` finds the agent's worktree with ``robomate workspace <agent>``, starts
 the harness there with a first prompt naming the join, next step, and turn rule,
@@ -2122,63 +2129,205 @@ def doctor_remote_workers(values: list[str]) -> dict[str, str]:
     return workers
 
 
-def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
-    """Denise's optional entry: local reads only, no join, no MCP, no supervision."""
+def same_path(left: str | Path, right: str | Path) -> bool:
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+
+
+def infer_run_directory(cwd: Path) -> tuple[Any, str, Path] | None:
+    """Resolve ``(LocalHub, run_id, run_dir)`` when ``cwd`` is inside ``<state>/runs/<id>/``."""
+
+    from agent_hub_common.discovery import (
+        DiscoveryError,
+        LocalHub,
+        hub_checkout,
+        is_legacy_state_dir,
+        read_hub_json,
+    )
+
+    resolved = cwd.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if candidate.parent.name != "runs" or not _RUN_ID.fullmatch(candidate.name):
+            continue
+        state_dir = candidate.parent.parent
+        if not (state_dir / "hub.json").is_file():
+            continue
+        try:
+            info = read_hub_json(state_dir)
+        except DiscoveryError as exc:
+            raise Usage(f"{exc}. Restore {state_dir / 'hub.json'} first.") from None
+        if info is None:
+            continue
+        checkout = hub_checkout(info)
+        if checkout is None and is_legacy_state_dir(state_dir):
+            checkout = state_dir.parent
+        if checkout is None:
+            raise Usage(
+                f"{state_dir / 'hub.json'} names no checkout; "
+                "select a local hub with --hub <checkout>"
+            )
+        token = (
+            state_dir / "token"
+            if is_legacy_state_dir(state_dir)
+            else state_dir.parent / "token" / "token"
+        )
+        return LocalHub(checkout, info, state_dir, token), candidate.name, candidate
+    return None
+
+
+def resolve_doctor_hub_and_run(
+    args: argparse.Namespace, environment: Mapping[str, str]
+) -> tuple[Any, str, dict[str, str], dict[str, str]]:
+    """Resolve hub and run ID for ``doctor``, printing any inferred or defaulted choice."""
 
     from agent_hub_common.discovery import DiscoveryError, LocalHub, find_hub
 
-    if extra:
-        raise Usage("doctor does not accept --harness-args; use --model, --effort or --clean-login")
-    environment = cleared_environment()
-    try:
-        hub = find_hub(Path.cwd(), environment, selector=args.hub, list_hubs=False)
-    except DiscoveryError as exc:
-        raise Usage(
-            f"{exc}. Select a local hub with --hub <checkout>; restore its local state if missing."
-        ) from None
-    assert isinstance(hub, LocalHub)
+    cwd = Path.cwd().resolve()
+    inferred = infer_run_directory(cwd)
+    if inferred is not None:
+        inferred_hub, inferred_run, inferred_run_dir = inferred
+        if args.hub:
+            try:
+                hub = find_hub(cwd, environment, selector=args.hub, list_hubs=False)
+            except DiscoveryError as exc:
+                raise Usage(
+                    f"{exc}. Select a local hub with --hub <checkout>; "
+                    "restore its local state if missing."
+                ) from None
+            assert isinstance(hub, LocalHub)
+            id_mismatch = bool(
+                hub.hub_id and inferred_hub.hub_id and hub.hub_id != inferred_hub.hub_id
+            )
+            if not same_path(hub.state_dir, inferred_hub.state_dir) or id_mismatch:
+                raise Usage(
+                    f"--hub {args.hub} selects {hub.label()} ({hub.state_dir}), which conflicts "
+                    f"with the current run directory's {inferred_hub.label()} "
+                    f"({inferred_hub.state_dir}); omit --hub or run from outside that run directory"
+                )
+            hub_selection = {"source": "explicit", "reason": f"--hub {args.hub}"}
+        else:
+            hub = inferred_hub
+            reason = f"from run directory {cwd}"
+            hub_selection = {"source": "cwd_run_dir", "reason": reason}
+            print(f"doctor: using {hub.label()} ({reason})", flush=True)
+        if args.run:
+            if args.run != inferred_run:
+                raise Usage(
+                    f"--run {args.run} conflicts with the current run directory's run "
+                    f"{inferred_run} ({inferred_run_dir}); pass --run {inferred_run} or run "
+                    "from outside that run directory"
+                )
+            run_id = args.run
+            run_selection = {"source": "explicit", "reason": f"--run {args.run}"}
+        else:
+            run_id = inferred_run
+            reason = f"from current directory {cwd}"
+            run_selection = {"source": "cwd_run_dir", "reason": reason}
+            print(f"doctor: using run {run_id} ({reason})", flush=True)
+    else:
+        try:
+            hub = find_hub(cwd, environment, selector=args.hub, list_hubs=False)
+        except DiscoveryError as exc:
+            raise Usage(
+                f"{exc}. Select a local hub with --hub <checkout>; "
+                "restore its local state if missing."
+            ) from None
+        assert isinstance(hub, LocalHub)
+        hub_selection = (
+            {"source": "explicit", "reason": f"--hub {args.hub}"}
+            if args.hub
+            else {"source": "checkout", "reason": f"from checkout {hub.checkout}"}
+        )
+        run_id = args.run or ""
+        run_selection = {"source": "explicit", "reason": f"--run {run_id}"} if run_id else {}
+
     runs = hub.state_dir / "runs"
     available = (
         sorted(p.name for p in runs.iterdir() if (p / "manifest.json").is_file())
         if runs.is_dir()
         else []
     )
-    if not args.run or not _RUN_ID.fullmatch(args.run) or args.run not in available:
-        named = f"run {args.run!r} has no manifest in {runs}" if args.run else "no --run given"
-        raise Usage(
-            f"{named}. Select one of this hub's runs with --run: "
-            f"{', '.join(available) or '(none)'}. The doctor never creates a run."
-        )
-    run_dir = runs / args.run
+    if run_id:
+        if not _RUN_ID.fullmatch(run_id) or run_id not in available:
+            raise Usage(
+                f"run {run_id!r} has no manifest in {runs}. Select one of this hub's runs with "
+                f"--run: {', '.join(available) or '(none)'}. The doctor never creates a run."
+            )
+        return hub, run_id, hub_selection, run_selection
+
+    if len(available) == 1:
+        run_id = available[0]
+        reason = f"the only run under {hub.label()}"
+        print(f"doctor: using run {run_id} ({reason})", flush=True)
+        return hub, run_id, hub_selection, {"source": "only_run", "reason": reason}
+
+    if len(available) > 1:
+        not_done: list[tuple[str, str]] = []
+        for candidate in available:
+            try:
+                data = json.loads((runs / candidate / "manifest.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                not_done.append((candidate, "unreadable"))
+                continue
+            status = data.get("status") if isinstance(data, dict) else None
+            if status != "done":
+                not_done.append((candidate, str(status or "unknown")))
+        if len(not_done) == 1:
+            run_id, status_label = not_done[0]
+            reason = f"the only unfinished run under {hub.label()} (status {status_label})"
+            print(f"doctor: using run {run_id} ({reason})", flush=True)
+            return hub, run_id, hub_selection, {"source": "only_unfinished", "reason": reason}
+
+    raise Usage(
+        f"no --run given. Select one of this hub's runs with --run: "
+        f"{', '.join(available) or '(none)'}. The doctor never creates a run."
+    )
+
+
+def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
+    """Denise's optional entry: local reads only, no join, no MCP, no supervision."""
+
+    if extra:
+        raise Usage("doctor does not accept --harness-args; use --model, --effort or --clean-login")
+    environment = cleared_environment()
+    hub, run_id, hub_selection, run_selection = resolve_doctor_hub_and_run(args, environment)
+    run_dir = hub.state_dir / "runs" / run_id
     try:
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise Usage(
             f"{run_dir / 'manifest.json'} is unreadable ({exc}); restore it first"
         ) from None
-    if not isinstance(manifest, dict) or manifest.get("run_id") != args.run:
-        raise Usage(
-            f"{run_dir / 'manifest.json'} does not describe run {args.run}; restore it first"
-        )
+    if not isinstance(manifest, dict) or manifest.get("run_id") != run_id:
+        raise Usage(f"{run_dir / 'manifest.json'} does not describe run {run_id}; restore it first")
     manifest_hub = manifest.get("hub")
     saved_id = manifest_hub.get("hub_id") if isinstance(manifest_hub, dict) else None
     if saved_id and hub.hub_id and saved_id != hub.hub_id:
         raise Usage(
-            f"run {args.run} records hub {saved_id}, but the selected hub is {hub.hub_id}; "
+            f"run {run_id} records hub {saved_id}, but the selected hub is {hub.hub_id}; "
             "select the owning checkout with --hub or restore the matching manifest"
         )
     try:
-        settings = denise.resolve_settings(
-            {},
-            settings_from="none",
+        persisted = denise.load_joined_settings(run_dir)
+        settings, used_persisted = denise.resolve_doctor_settings(
+            persisted,
             harness=args.harness,
             model=args.model,
             effort=args.effort,
-            joined=True,
+            clean_login=args.clean_login,
         )
     except ValueError as exc:
         raise Usage(str(exc)) from None
+    if used_persisted:
+        source = persisted.get("settings_from") if persisted else ""
+        origin = f" (from {source})" if source and source != "none" else ""
+        print(
+            f"doctor: using saved Denise settings{origin}: {', '.join(used_persisted)}",
+            flush=True,
+        )
+    if note := settings.get("effort_note"):
+        print(f"doctor: {note}", flush=True)
     harness = settings["harness"]
+    effective_clean_login = bool(settings["clean_login"])
     profile_name = "claude" if harness == "claude-code" else harness
     target = Path(args.target).expanduser().resolve() if args.target else hub.checkout.resolve()
     target_common = denise.git_common_dir(target) if target.is_dir() else None
@@ -2198,6 +2347,8 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         tooling_root=ROOT,
         settings=settings,
         remote_workers=doctor_remote_workers(args.remote_worker),
+        run_selection=run_selection,
+        hub_selection=hub_selection,
     )
     doctor_dir = context["doctor"]
     environment = common.launch_environment(
@@ -2213,7 +2364,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
     ]
     login = ""
-    if args.clean_login or harness in denise.ISOLATED_HARNESSES:
+    if effective_clean_login or harness in denise.ISOLATED_HARNESSES:
         # Separate homes keep authentication and MCP configuration scoped to this run.
         profile = Path(doctor_dir["configs"]) / profile_name
         doctor_dir["profile"] = str(profile)
@@ -2281,7 +2432,7 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     else:
         argv = [*program, *flags, *directory_flags, "--prompt-interactive", prompt]
     print(
-        f"Denise ({harness}) for run {args.run}: no hub tools; context {doctor_dir['context']}; "
+        f"Denise ({harness}) for run {run_id}: no hub tools; context {doctor_dir['context']}; "
         f"report {report}; write roots: {', '.join(write_roots) or '(none)'}.",
         flush=True,
     )
@@ -2393,15 +2544,28 @@ def parser() -> argparse.ArgumentParser:
     question.add_argument("--safe-mode", action="store_true")
     hub_options(question)
     check = commands.add_parser("doctor", help="consult Denise about a run; no join, no hub")
-    check.add_argument("--hub", metavar="NAME|HUB_ID|CHECKOUT", help="the hub to read")
-    check.add_argument("--run", help="the run ID under the hub's runs/")
     check.add_argument(
-        "--harness", required=True, choices=("claude", *denise.DOCTOR_HARNESSES, "agy")
+        "--hub",
+        metavar="NAME|HUB_ID|CHECKOUT",
+        help="the hub to read (default: current run directory or git checkout)",
+    )
+    check.add_argument(
+        "--run",
+        help="the run ID under the hub's runs/ "
+        "(default: current run directory, only run, or only unfinished run)",
+    )
+    check.add_argument(
+        "--harness",
+        default="",
+        choices=("claude", *denise.DOCTOR_HARNESSES, "agy"),
+        help="doctor harness override (default: run's saved Denise settings)",
     )
     check.add_argument(
         "--clean-login",
-        action="store_true",
-        help="separate Claude Code or Codex login; OpenCode and AntiGravity always use one",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="separate Claude Code or Codex login; OpenCode and AntiGravity always use one "
+        "(default: run's saved Denise settings, else false)",
     )
     check.add_argument("--model", default="")
     check.add_argument(

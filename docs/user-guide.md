@@ -279,11 +279,13 @@ agents' worktrees beside the clone, in `<hub_name>.robomate/<hub_name>/`. An
 existing clone is reused only if its origin is `repository`; a live hub of
 that clone is reused and left running, and a hub with a live or queued run is
 refused. Each agent's launcher writes to `<run_dir>/logs/<agent>.log`, and
-the hub's log is `logs/hub.log`. The command stays in the foreground until the
+the hub's log is `logs/hub.log`. Once all agents have joined, the command prints
+Denise's consultation command so you can start a doctor session while the run is
+still live. The command stays in the foreground until the
 run is done, or its agents are released, even after every launcher it started
 has exited; only then does it report the run's status, where its closeout
 reports are, a runnable `agent-launcher.py ask` command for each agent and
-Denise's doctor command, and stop the hub if it started it. A launcher you
+Denise's doctor command again, and stop the hub if it started it. A launcher you
 resumed by hand therefore keeps its hub. Restart a stopped hub with
 `robomate up` in the clone; its state is kept. After a launcher fails, the
 command prints the `agent-launcher.py resume <agent>` line to run while the
@@ -315,13 +317,27 @@ for the launcher's own behavior see
 
 #### Consulting Denise about a run
 
-Paste the consultation command printed by `start-run.py` into the same shell.
-From a robomate installation you can also select a saved run directly:
+`start-run.py` persists Denise's effective settings (and the run's log directory)
+in `<state>/runs/<run_id>/denise/settings.json` and prints the consultation
+command once all agents have joined, and again in the final report. Paste that
+command into another terminal — with saved settings and no other runs on the hub,
+it needs only `--hub <checkout>` (plus `--run <run_id>` while other runs exist).
+From the hub checkout or inside `<state>/runs/<run_id>/`, you can also call
+`doctor` with no flags at all, or override any option explicitly:
 
 ```sh
 uv run --locked python scripts/agent-launcher.py doctor \
-  --hub /path/to/hub-checkout --run RUN_ID --harness opencode
+  [--hub /path/to/hub-checkout] [--run RUN_ID] [--harness opencode]
 ```
+
+Selection order: from inside `<state>/runs/<run_id>/` (including
+`denise/workspace`), `doctor` resolves both the hub and the run from that path
+and refuses conflicting `--hub` or `--run` flags; otherwise `--hub` defaults to
+the current git checkout and `--run` defaults to the hub's only run or its only
+unfinished run (printing the choice and reason, and listing runs when ambiguous).
+`--harness`, `--model`, `--effort` and `--clean-login` take explicit flags first,
+then the run's saved `denise/settings.json`, or refuse naming `--harness`.
+Overriding `--harness` to a different harness drops the saved model and effort.
 
 Denise opens a fresh interactive consultation on the hub host. The selected
 hub's local state must contain `runs/<run_id>/manifest.json`. A stopped hub
@@ -413,7 +429,7 @@ The standard helper's keys, and what replaces each:
 | `reservations` (was `roadmap`) | Same key. The statement names the reservations issue and adds prepare-run's counter and close-out text; without the key it says no issue was supplied. |
 | `forge` | Same key, passed to `robomate up --forge`. Empty (the new default) detects the forge from the origin. |
 | `alice_*`, `bob_*`, `charlie_*` harness, model, effort | Same keys, passed to `agent-launcher.py start`. Names and roles stay fixed: Alice orchestrator, Bob implementer, Charlie reviewer. |
-| `denise_settings_from`, `denise_*` | Defaults to Bob's settings. Choose Alice, Bob, Charlie or `none`; `none` requires an explicit `denise_harness`. Model and effort inherit only when the harness matches. Empty overrides select the harness defaults when changing harnesses. The report prints the resolved doctor command. `denise_clean_login = true` (`--denise-clean-login`) requests a separate login for Claude Code or Codex; OpenCode and AntiGravity already use one. See [Consulting Denise](#consulting-denise-about-a-run). |
+| `denise_settings_from`, `denise_*` | Defaults to Bob's settings. Choose Alice, Bob, Charlie or `none`; `none` requires an explicit `denise_harness`. Model and effort inherit only when the harness matches. Empty overrides select the harness defaults when changing harnesses. Effective settings and the log directory are saved to `runs/<run_id>/denise/settings.json`; the doctor command is printed once the team joins and again in the final report. `denise_clean_login = true` (`--denise-clean-login`) requests a separate login for Claude Code or Codex; OpenCode and AntiGravity already use one. See [Consulting Denise](#consulting-denise-about-a-run). |
 | `auto_start` | Same key. `false` prints each agent's `agent-launcher.py start ... --interactive` command, then keeps the hub up until the run is done, its agents are released, or Ctrl-C. |
 | `pytest_workers` | Same key, the agents' `PYTEST_XDIST_AUTO_NUM_WORKERS`; 0 clears an inherited value. |
 | `workspace_setup` | Shell command run in each agent worktree before launch, with its isolated cache and temporary directory. `"auto"` (the default, also used when the key is absent or empty) runs `uv sync --locked --all-packages --dev` when the worktree has a `uv.lock` at its root and does nothing otherwise, so targets that are not uv projects start untouched. `"none"` (compared case-insensitively, ignoring surrounding whitespace) disables setup; any other string is run as given. On manual resume it runs again if `.venv` is missing, keeping the setting the start recorded (an explicit `"none"` stays off). A failure stops that agent’s launcher and prints the output; during `start-run` startup, a launcher failure aborts the team and stops the hub, as with other preflight failures. Setup time counts against `join_window_s` (120 seconds by default); a cold sync on a slow link is best given a larger window. Setup output appears on failure. |
