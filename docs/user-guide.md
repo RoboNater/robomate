@@ -779,11 +779,11 @@ Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
 - `Gate` is the latest stored merge-gate reading for the run: time and age, the
   CI summary with pending or failed check names, `head matches`,
   `base behind` and `mergeable` with the forge's merge-state status. With no
-  reading it says `no gate reading yet`. **`--live`** runs one read-only forge
-  query, prints it labelled `live`, and writes no reading; a forge failure
-  prints `live failed: …` and falls back to the stored reading without failing
-  `status`. With no recorded PR, `--live` first looks up the open PR/MR for the
-  run branch in your own repository (`gh pr list --head` on GitHub, the
+  reading it says `no gate reading yet`. **`--live`** makes read-only forge
+  queries, prints the gate reading labelled `live`, and writes nothing; a forge
+  failure prints `live failed: …` and falls back to the stored reading without
+  failing `status`. With no recorded PR, `--live` first looks up the open PR/MR
+  for the run branch in your own repository (`gh pr list --head` on GitHub, the
   equivalent `glab` query on GitLab): exactly one match is used and labelled
   `found by branch` on the `PR` line, then its gate is read like a recorded
   PR's. Zero or several matches show none and name the reason. A PR found this
