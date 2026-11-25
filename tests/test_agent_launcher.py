@@ -3362,6 +3362,41 @@ def test_doctor_settings_order_and_persisted_defaults(
     err = capsys.readouterr().err
     assert "devin" in err and "--harness" in err
 
+    # Corrupt settings.json refuses when --harness is omitted, but warns and continues
+    # when --harness is given explicitly (explicit > persisted).
+    (run["denise"] / "settings.json").write_text("{corrupt", encoding="utf-8")
+    assert (
+        invoke(
+            ["doctor", "--hub", str(area["checkout"])],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "settings.json" in err and "--harness" in err
+
+    assert (
+        invoke(
+            [
+                "doctor",
+                "--hub",
+                str(area["checkout"]),
+                "--harness",
+                "codex",
+                "--model",
+                "explicit-model",
+            ],
+            programs=programs(area),
+            reader=no_hub(),
+        )
+        == 0
+    )
+    err = capsys.readouterr().err
+    assert "warning: ignoring unreadable saved Denise settings" in err
+    recovered = launches(area)[-1]
+    assert recovered["argv"][recovered["argv"].index("--model") + 1] == "explicit-model"
+
 
 def test_doctor_supports_only_its_ready_harnesses(
     area: dict[str, Path], run: dict[str, Path]

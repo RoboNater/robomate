@@ -29,11 +29,12 @@ Alice during an active run) as well as from `manifest.json`, and references the
 actual hub log, agent launcher logs (from the run's persisted log directory),
 `sessions/<agent>.jsonl` and `sessions/<agent>-bridge.jsonl`. A `missing`
 reference should be rechecked on disk rather than assumed absent; report when
-logs, sessions or a remote host are unavailable. Remote host/path pairs are not local grants; never translate drive
-or WSL paths by guesswork or copy credentials to workers. If tooling has moved,
-ask for an explicit replacement and validate it as robomate rather than silently
-searching other checkouts. If a manifest is missing, recommend restoring it from
-the saved run artifacts; do not invent a run or initiate a fresh workflow.
+logs, sessions or a remote host are unavailable. Remote host/path pairs are not
+local grants; never translate drive or WSL paths by guesswork or copy
+credentials to workers. If tooling has moved, ask for an explicit replacement
+and validate it as robomate rather than silently searching other checkouts. If
+a manifest is missing, recommend restoring it from the saved run artifacts; do
+not invent a run or initiate a fresh workflow.
 
 The access inventory names selected-run repair roots and actual resolved git
 common directories, including linked worktrees and bare repositories. Installation
@@ -216,10 +217,10 @@ With `--clean-login`, the profile stays per run under
 between runs. No user profile is copied. Claude Code needs `/login`; Codex
 needs `CODEX_HOME=<that profile> codex login`. The printed login notice names
 these commands. A clean Codex profile's config is rewritten without MCP or
-approval entries; the launch checks still apply. `start-run.py` accepts `--denise-clean-login` / `denise_clean_login = true`
-and saves `clean_login` in `denise/settings.json`, which `doctor` reads by
-default unless overridden with `--clean-login` or `--no-clean-login`. The
-default is false.
+approval entries; the launch checks still apply. `start-run.py` accepts
+`--denise-clean-login` / `denise_clean_login = true` and saves `clean_login` in
+`denise/settings.json`, which `doctor` reads by default unless overridden with
+`--clean-login` or `--no-clean-login`. The default is false.
 
 OpenCode and AntiGravity always use separate profiles under `denise/configs/`.
 Use OpenCode's `/connect` to sign in to a provider in that profile, or follow

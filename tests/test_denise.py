@@ -377,9 +377,14 @@ def test_joined_context_indexes_agents_from_session_logs_and_persisted_logs(
     # Only Alice and Bob have bridge telemetry on disk; Charlie's should appear as missing.
     (sessions / "alice-bridge.jsonl").write_text('{"event":"joined"}\n', encoding="utf-8")
     (sessions / "bob-bridge.jsonl").write_text('{"event":"joined"}\n', encoding="utf-8")
-    # Unrelated earlier-run agent should not pollute this run.
+    # Unrelated earlier-run agent (scoped or unscoped) should not pollute this run.
     (sessions / "dana.jsonl").write_text(
         json.dumps({"event": "start", "agent": "dana", "run_id": "earlier-run", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (sessions / "dave.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "dave", "role": "worker", "harness": "codex"})
         + "\n",
         encoding="utf-8",
     )
@@ -510,3 +515,61 @@ def test_resolve_doctor_settings_precedence_and_skip_remedy() -> None:
 
     with pytest.raises(ValueError, match="--harness"):
         DENISE.resolve_doctor_settings(None)
+
+
+def test_unscoped_session_row_kept_only_for_known_agents_and_marked_unscoped(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git(checkout, "init", "-q")
+    state = tmp_path / "state"
+    run_id = "20261125_unscoped"
+    run_dir = state / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    sessions = state / "sessions"
+    sessions.mkdir(parents=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "bob.log").write_text("bob launcher\n", encoding="utf-8")
+    (sessions / "bob.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "bob", "role": "implementer", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (sessions / "dave.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "dave", "role": "worker", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    context = DENISE.build_joined_context(
+        {"run_id": run_id, "status": "active", "hub": {"checkout": str(checkout)}, "agents": []},
+        run_dir=run_dir,
+        state_dir=state,
+        sessions_dir=sessions,
+        hub_checkout=checkout,
+        target=checkout,
+        target_common=DENISE.git_common_dir(checkout),
+        tooling_root=ROOT,
+        settings={"harness": "codex", "model": "", "effort": ""},
+        remote_workers={},
+        logs_dir=logs_dir,
+    )
+    by_name = {agent["name"]: agent for agent in context["agents"]}
+    assert set(by_name) == {"bob"}
+    assert by_name["bob"]["harness"] == "codex"
+    assert by_name["bob"]["session_scope"] == "unscoped"
+
+
+def test_write_joined_settings_cleans_up_temp_file_on_dump_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(DENISE.json, "dump", boom)
+    with pytest.raises(OSError, match="disk full"):
+        DENISE.write_joined_settings(run_dir, {"harness": "codex"})
+    assert list((run_dir / "denise").iterdir()) == []

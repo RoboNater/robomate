@@ -2308,6 +2308,14 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         )
     try:
         persisted = denise.load_joined_settings(run_dir)
+    except ValueError as exc:
+        if not args.harness:
+            raise Usage(
+                f"{exc}. Fix or remove it, or pass --harness claude|codex|opencode|antigravity."
+            ) from None
+        say(f"warning: ignoring unreadable saved Denise settings ({exc}); using explicit flags")
+        persisted = None
+    try:
         settings, used_persisted = denise.resolve_doctor_settings(
             persisted,
             harness=args.harness,

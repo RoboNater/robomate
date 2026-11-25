@@ -361,16 +361,18 @@ def write_joined_settings(
         payload["effort_note"] = str(settings["effort_note"])
     if logs_dir is not None:
         payload["logs_dir"] = str(logs_dir.resolve())
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=path.parent, delete=False
-    ) as stream:
-        temporary = Path(stream.name)
-        json.dump(payload, stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    temporary: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
         temporary.replace(path)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path
 
 
@@ -485,15 +487,24 @@ def _session_launch_rows(
     *,
     run_id: str | None,
     workflow_id: str | None,
-) -> dict[str, dict[str, Any]]:
+    known_agents: set[str] | None = None,
+) -> dict[str, tuple[dict[str, Any], bool]]:
     """Latest launch row per agent from ``sessions/<agent>.jsonl`` for this run.
 
-    Skips bridge telemetry logs, non-agent names (such as ``agent.1.jsonl``),
-    partial JSON lines and launch rows belonging to another run.
+    Returns ``{name: (row, scoped)}`` where ``scoped`` is True when the row
+    matched this run's ``run_id`` or ``workflow_id``. Skips bridge telemetry
+    logs, non-agent names (such as ``agent.1.jsonl``), partial JSON lines, and
+    launch rows belonging to another run. Unscoped launch rows (neither
+    ``run_id`` nor ``workflow_id``) are kept only for agents already known from
+    the manifest or persisted log directory (or when the manifest itself has
+    neither ID), so an unrelated earlier-run agent is never pulled into this
+    run's index.
     """
     if not sessions_dir.is_dir():
         return {}
-    launches: dict[str, dict[str, Any]] = {}
+    known = known_agents or set()
+    has_run_identity = bool(run_id or workflow_id)
+    launches: dict[str, tuple[dict[str, Any], bool]] = {}
     for path in sorted(sessions_dir.glob("*.jsonl")):
         if path.name.endswith("-bridge.jsonl"):
             continue
@@ -524,9 +535,10 @@ def _session_launch_rows(
                 exact = row
             elif not row_run and not row_workflow:
                 unscoped = row
-        chosen = exact or unscoped
-        if chosen is not None:
-            launches[name] = chosen
+        if exact is not None:
+            launches[name] = (exact, True)
+        elif unscoped is not None and (not has_run_identity or name in known):
+            launches[name] = (unscoped, False)
     return launches
 
 
@@ -615,12 +627,13 @@ def build_joined_context(
     }
     raw_run_id = manifest.get("run_id")
     raw_workflow_id = manifest.get("workflow_id")
+    log_agents = _log_dir_agents(logs_dir)
     session_launches = _session_launch_rows(
         sessions_dir,
         run_id=str(raw_run_id) if raw_run_id else None,
         workflow_id=str(raw_workflow_id) if raw_workflow_id else None,
+        known_agents=set(saved_agents) | set(log_agents),
     )
-    log_agents = _log_dir_agents(logs_dir)
     agents = []
     for name in dict.fromkeys((*saved_agents, *session_launches, *log_agents, *remote_workers)):
         try:
@@ -630,7 +643,9 @@ def build_joined_context(
         agent = saved_agents.get(name, {})
         clone = agent.get("workspace_kind") == "clone"
         is_remote = name in remote_workers or clone
-        launch = {} if is_remote else session_launches.get(name, {})
+        launch_entry = None if is_remote else session_launches.get(name)
+        launch = launch_entry[0] if launch_entry is not None else {}
+        launch_scoped = launch_entry[1] if launch_entry is not None else True
         role = agent.get("standing_role") or launch.get("role")
         entry: dict[str, Any] = {
             "name": name,
@@ -641,6 +656,8 @@ def build_joined_context(
             "effort": agent.get("effort") or launch.get("effort") or None,
             "workspace_id": agent.get("workspace_id"),
         }
+        if not is_remote and launch_entry is not None and not launch_scoped:
+            entry["session_scope"] = "unscoped"
         if is_remote:
             worker_host = remote_workers.get(name, "unknown worker host")
             entry.update(
