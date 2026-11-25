@@ -107,11 +107,12 @@ How long a hold lasts depends on how the test reaches it:
 | Over HTTP or MCP, without one | `default_wait_s`: `TEST_WAIT_S`, 0.2 s. |
 | Directly on the store: `store.await_assignment`, `await_reply`, `wait_for_event` | Exactly `timeout_s`. Neither the cap nor the default applies. |
 
-Both settings are applied by `HubSettings.bounded_wait`, which only the
-protocol layer calls (`_timeout`, for every `message/stream` hold). The store
-takes its `timeout_s` as given. A request that omits the timeout reaches
-`bounded_wait(None)`; a raw A2A call can do that, but `WorkerHubClient` always
-sends one, falling back to its own `default_wait_s`.
+The A2A protocol and orchestrator RPC dispatcher apply
+`HubSettings.bounded_wait` with the caller's negotiated cap (§9.2). The store
+takes its `timeout_s` as given. When a request omits the timeout, the hub
+clamps its configured default. Raw A2A or RPC requests can omit the timeout.
+The bridges send their own default as the requested value for an omitted
+tool argument.
 
 So an implicit hold is a 0.2 s budget in disguise. A test that sends a
 `message/stream` question or `NEXT` with no `timeout_s` and then does the work

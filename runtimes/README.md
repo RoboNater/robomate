@@ -147,7 +147,8 @@ your own repositories.
 Idle waits use the bridge-resolved profile returned by `join.wait_profile`:
 Claude Code print 1500 s; Codex, OpenCode and Antigravity 1800 s; interactive
 Claude and unknown clients 100 s. New entries advertise `HUB_MCP_TIMEOUT_S=1900`;
-old static entries keep 100 s until updated. Only print launchers set
-`HUB_HARNESS_MODE=print`. Explicit tool timeout overrides `HUB_DEFAULT_WAIT_S`,
-which overrides the profile. `HUB_MAX_WAIT_S` on the hub clamps every hold.
+old static entries keep 100 s until updated. Only Claude Code print launchers set
+`HUB_HARNESS_MODE=print`. An explicit timeout overrides the bridge
+`HUB_DEFAULT_WAIT_S`. Both are capped by the negotiated profile maximum,
+the advertised client budget less 15 s, and the hub’s `HUB_MAX_WAIT_S`.
 The bridge HTTP deadline stays hold + 15 s; heartbeat/loss/stall settings stay unchanged.

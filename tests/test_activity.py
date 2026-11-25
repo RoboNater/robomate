@@ -803,17 +803,13 @@ def test_pause_freezes_existing_stall_episode(hub: HubStore, clock: FakeClock) -
 def test_full_profile_hold_preserves_liveness_and_activity(
     store: HubStore, frozen_clock: FrozenClock, hold_s: int
 ) -> None:
-    from agent_hub.rpc import _hold_s
-
     instance = worker(store)
     orchestrate(store)
     while (event := store.lease_next_event()) is not None:
         store.ack_event(event.delivery_id)
-    duration = _hold_s("wait_for_event", {"timeout_s": hold_s})
-    assert duration == hold_s
     with (
         store.worker_hold("bob", instance, "await_assignment", hold_s),
-        store.orchestrator_call(SESSION, "wait_for_event", duration),
+        store.orchestrator_call(SESSION, "wait_for_event", hold_s),
     ):
         for _ in range(hold_s // 30):
             frozen_clock.advance(30)

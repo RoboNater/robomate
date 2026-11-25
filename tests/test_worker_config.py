@@ -271,3 +271,41 @@ def test_orchestrator_install_hint_and_environment_precedence(
     assert OrchestratorBridge(harness="codex").default_wait_s == 1500
     monkeypatch.setenv("HUB_DEFAULT_WAIT_S", "45")
     assert OrchestratorBridge(harness="codex").default_wait_s == 45
+
+
+@pytest.mark.parametrize("raw", ["15", "0", "-1", "inf", "nan", "invalid"])
+def test_rejects_insufficient_or_invalid_advertised_budgets(raw: str) -> None:
+    with pytest.raises(ConfigurationError, match="HUB_MCP_TIMEOUT_S"):
+        WorkerSettings.unjoined(harness="codex", environ={"HUB_MCP_TIMEOUT_S": raw})
+
+
+@pytest.mark.parametrize(
+    ("harness", "mode", "source", "budget", "expected"),
+    [
+        ("claude-code", "print", "env", 1900, ("print", 1500)),
+        ("claude-code", "interactive", "env", 1900, ("interactive", 100)),
+        ("claude-code", "headless", "env", 1900, ("fallback", 100)),
+        ("codex", "print", "env", 1900, ("fallback", 100)),
+        ("codex", "unknown", "env", 1900, ("fallback", 100)),
+        ("codex", "headless", "declared", 1900, ("fallback", 100)),
+        ("unsupported", "headless", "install", 90, ("fallback", 75)),
+        ("codex", "headless", "install", 400, ("headless", 385)),
+    ],
+)
+def test_negotiation_matches_mode_and_provenance_and_reserves_http_margin(
+    harness: str, mode: str, source: str, budget: float, expected: tuple[str, float]
+) -> None:
+    from agent_hub_common.waits import WaitAdvertisement, negotiate_wait
+
+    ad = WaitAdvertisement(mode, budget)
+    negotiated = negotiate_wait(harness, ModelSource(source), ad)
+    assert (negotiated.mode, negotiated.max_hold_s) == expected
+
+
+def test_operator_default_and_advertisement_respect_a_short_client_budget() -> None:
+    settings = WorkerSettings.unjoined(
+        harness="codex", environ={"HUB_MCP_TIMEOUT_S": "55", "HUB_DEFAULT_WAIT_S": "90"}
+    )
+    assert settings.wait_advertisement is not None
+    assert settings.wait_advertisement.client_budget_s == 55
+    assert settings.default_wait_s == 40

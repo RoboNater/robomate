@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -85,8 +86,8 @@ def _positive_seconds(env: Mapping[str, str], name: str, default: float) -> floa
         seconds = float(raw)
     except ValueError as exc:
         raise ConfigurationError(f"{name} must be a number of seconds") from exc
-    if seconds <= 0:
-        raise ConfigurationError(f"{name} must be greater than zero")
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ConfigurationError(f"{name} must be finite and greater than zero")
     return seconds
 
 
@@ -235,11 +236,12 @@ class HubSettings:
     log_level: str = "INFO"
     log_file: Path | None = None
 
-    def bounded_wait(self, requested: float | None) -> float:
+    def bounded_wait(self, requested: float | None, *, max_hold_s: float | None = None) -> float:
         """Clamp a caller-requested hold to the configured ceiling."""
 
-        seconds = self.default_wait_s if requested is None else float(requested)
-        return max(0.0, min(seconds, self.max_wait_s))
+        seconds = self.default_wait_s if requested is None else requested
+        ceiling = self.max_wait_s if max_hold_s is None else min(self.max_wait_s, max_hold_s)
+        return float(max(0.0, min(seconds, ceiling)))
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> HubSettings:

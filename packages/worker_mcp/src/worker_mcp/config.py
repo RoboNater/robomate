@@ -17,7 +17,7 @@ from agent_hub_common import (
     profile_from_env,
 )
 from agent_hub_common.discovery import HubEndpoint
-from agent_hub_common.waits import default_wait_s as resolve_wait_s
+from agent_hub_common.waits import WaitAdvertisement, bridge_wait_settings
 from agent_hub_common.workspace import canonical_workspace, read_identity
 
 DEFAULT_WAIT_S = float(MAX_HOLD_DEFAULT_S)
@@ -75,6 +75,7 @@ class WorkerSettings:
     # its hub with join(hub=...). Never an agent decision.
     allow_hub_selection: bool = False
     default_wait_s: float = DEFAULT_WAIT_S
+    wait_advertisement: WaitAdvertisement | None = None
     heartbeat_s: float = DEFAULT_HEARTBEAT_S
     max_retries: int = DEFAULT_MAX_RETRIES
     backoff_factor_s: float = DEFAULT_BACKOFF_FACTOR_S
@@ -142,6 +143,7 @@ class WorkerSettings:
                 resolved_profile = replace(
                     resolved_profile, harness=harness.strip(), harness_source=ModelSource.INSTALL
                 )
+        ad, configured_default = bridge_wait_settings(resolved_profile.harness, env)
         raw_hub_url = (env.get("HUB_URL") or env.get("ROBOMATE_HUB_URL") or "").strip().rstrip("/")
         raw_token = (env.get("HUB_TOKEN") or env.get("ROBOMATE_TOKEN") or "").strip()
         raw_token_file = env.get("ROBOMATE_TOKEN_FILE", "").strip()
@@ -157,11 +159,8 @@ class WorkerSettings:
             agent_name=raw_agent_name,
             profile=resolved_profile,
             allow_hub_selection=allow_hub_selection,
-            default_wait_s=(
-                default_wait_s
-                if default_wait_s is not None
-                else resolve_wait_s(resolved_profile.harness, env)
-            ),
+            default_wait_s=(default_wait_s if default_wait_s is not None else configured_default),
+            wait_advertisement=ad,
             heartbeat_s=heartbeat_s,
             max_retries=max_retries,
             backoff_factor_s=backoff_factor_s,
@@ -192,7 +191,6 @@ class WorkerSettings:
             raise ConfigurationError("AGENT_NAME must be set")
         agent_name = raw_agent_name.strip()
 
-        default_wait_s = resolve_wait_s(profile_from_env(env).harness, env)
         heartbeat_s = _positive_seconds(env, "HUB_HEARTBEAT_S", DEFAULT_HEARTBEAT_S)
         max_retries = _non_negative_int(env, "HUB_MAX_RETRIES", DEFAULT_MAX_RETRIES)
         backoff_factor_s = _positive_seconds(env, "HUB_BACKOFF_FACTOR_S", DEFAULT_BACKOFF_FACTOR_S)
@@ -200,6 +198,7 @@ class WorkerSettings:
 
         workspace = None
         profile = profile_from_env(env)
+        ad, default_wait_s = bridge_wait_settings(profile.harness, env)
         if "HUB_WORKSPACE" in env:
             workspace = canonical_workspace(env["HUB_WORKSPACE"])
             identity = read_identity(workspace, agent_name)
@@ -212,6 +211,7 @@ class WorkerSettings:
             profile=profile,
             workspace=workspace,
             default_wait_s=default_wait_s,
+            wait_advertisement=ad,
             heartbeat_s=heartbeat_s,
             max_retries=max_retries,
             backoff_factor_s=backoff_factor_s,
