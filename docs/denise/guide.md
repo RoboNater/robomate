@@ -111,7 +111,9 @@ the legacy tables alongside the 2.x tables). On 2.x, non-interactive
 disabled `mcp.servers.robomate` entry with `type`, `command`, and
 `disabled: true` in `OPENCODE_CONFIG_CONTENT` to suppress hub tools), and the
 launcher's repeated-error stop (#329) recognizes both 1.x and 2.x JSON error
-shapes, but do not run the 1.x `DELETE FROM part` SQL against a 2.x session.
+shapes. Whether OpenCode 2.x can still retain a rejected tool call in history
+is currently unverified; do not run the 1.x `DELETE FROM part` SQL against a
+2.x session.
 
 Denise explains the evidence, proposes the fork test and repair, and helps the
 operator identify the exact rows. Every database or process action is an

@@ -4772,6 +4772,8 @@ def test_opencode_v2_policy_preserves_global_denies_and_default_env_asks(
                 {"action": "read", "resource": "*.env", "effect": "ask"},
                 {"action": "read", "resource": "*.env.*", "effect": "ask"},
                 {"action": "read", "resource": "*.env.example", "effect": "allow"},
+                {"action": "read", "resource": "*", "effect": "allow"},
+                {"action": "edit", "resource": "/home/*", "effect": "allow"},
                 {"action": "shell", "resource": "rm *", "effect": "deny"},
                 {"action": "read", "resource": "*secret*", "effect": "deny"},
             ],
@@ -4793,15 +4795,21 @@ def test_opencode_v2_policy_preserves_global_denies_and_default_env_asks(
     launch = launches(area)[0]
     name = launch["argv"][launch["argv"].index("--agent") + 1]
     rules = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])["agents"][name]["permissions"]
-    # Never inject a blanket allow-all that would cancel global shell/read denies.
+    # Never inject a blanket allow-all or re-add broad/outside global allows.
     assert {"action": "*", "resource": "*", "effect": "allow"} not in rules
+    assert {"action": "read", "resource": "*", "effect": "allow"} not in rules
+    assert {"action": "edit", "resource": "/home/*", "effect": "allow"} not in rules
+    assert {"action": "external_directory", "resource": "*", "effect": "deny"} in rules
     worktree_allow_idx = rules.index(
         {"action": "read", "resource": area["worktree"].as_posix() + "/*", "effect": "allow"}
     )
     env_ask_idx = rules.index({"action": "read", "resource": "*.env", "effect": "ask"})
+    env_example_idx = rules.index(
+        {"action": "read", "resource": "*.env.example", "effect": "allow"}
+    )
     secret_deny_idx = rules.index({"action": "read", "resource": "*secret*", "effect": "deny"})
-    token_deny_idx = len(rules) - 4
-    assert worktree_allow_idx < env_ask_idx < secret_deny_idx < token_deny_idx
+    token_deny_idx = len(rules) - 6
+    assert worktree_allow_idx < env_ask_idx < env_example_idx < secret_deny_idx < token_deny_idx
 
 
 def test_opencode_v2_saved_1x_session_uses_installed_2x_binary_and_refuses_ask_fork(

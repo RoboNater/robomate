@@ -137,15 +137,46 @@ def _token_read_paths(token_dir: Path, worktree: Path) -> list[str]:
 def _matches_fs_tool(action: object) -> bool:
     if not isinstance(action, str):
         return False
-    if action == "*":
+    if action in ("*", "external_directory"):
         return True
     return any(fnmatchcase(tool, action) for tool in _V2_FS_TOOLS)
 
 
-def _is_blanket_allow(rule: Mapping[str, Any]) -> bool:
-    return (
-        rule.get("action") == "*" and rule.get("resource") == "*" and rule.get("effect") == "allow"
-    )
+def _is_broad_or_outside_resource(resource: object, roots: list[Path]) -> bool:
+    if not isinstance(resource, str) or resource == "*":
+        return True
+    if resource.startswith("/") or (len(resource) >= 2 and resource[1] == ":"):
+        norm = resource.rstrip("/")
+        return not any(
+            norm == r.as_posix().rstrip("/") or norm.startswith(r.as_posix().rstrip("/") + "/")
+            for r in roots
+        )
+    return False
+
+
+def _narrows_readded_restriction(
+    rule: Mapping[str, Any], readded: list[dict[str, Any]], roots: list[Path]
+) -> bool:
+    """Return whether an inherited allow only narrows an earlier re-added deny/ask."""
+    resource = rule.get("resource")
+    action = rule.get("action")
+    if not isinstance(action, str) or not isinstance(resource, str):
+        return False
+    if _is_broad_or_outside_resource(resource, roots):
+        return False
+    for earlier in readded:
+        if earlier.get("effect") not in ("deny", "ask"):
+            continue
+        earlier_action = earlier.get("action")
+        earlier_resource = earlier.get("resource")
+        if not isinstance(earlier_action, str) or not isinstance(earlier_resource, str):
+            continue
+        action_matches = (
+            earlier_action == "*" or earlier_action == action or fnmatchcase(action, earlier_action)
+        )
+        if action_matches and fnmatchcase(resource, earlier_resource):
+            return True
+    return False
 
 
 def read_build_permissions_v2(
@@ -153,8 +184,9 @@ def read_build_permissions_v2(
 ) -> list[dict[str, Any]] | None:
     """Read resolved ``build`` permissions from ``opencode debug agents --standalone``.
 
-    Returns None when a minimal test shim does not implement ``debug agents``;
-    callers fall back to ``config["permissions"]`` and ``config["agents"]["build"]``.
+    Warns on stderr and returns None if ``debug agents`` fails or is not
+    implemented by a minimal test shim, so callers can fall back to
+    ``config["permissions"]`` and ``config["agents"]["build"]``.
     """
     try:
         probe = subprocess.run(
@@ -167,8 +199,20 @@ def read_build_permissions_v2(
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
+        print(
+            "agent-launcher: warning: `opencode debug agents --standalone` failed or timed out; "
+            "falling back to `debug config` permissions",
+            file=sys.stderr,
+            flush=True,
+        )
         return None
     if probe.returncode != 0:
+        print(
+            "agent-launcher: warning: `opencode debug agents --standalone` returned non-zero; "
+            "falling back to `debug config` permissions",
+            file=sys.stderr,
+            flush=True,
+        )
         return None
     try:
         agents = json.loads(probe.stdout)
@@ -197,15 +241,16 @@ def policy_v2(
     OpenCode 2.x prepends its built-in defaults (e.g. ``read *.env ask``) and
     the operator's global ``permissions`` before the agent's ``permissions``
     array (last-match-wins). To preserve narrow worktree grants without
-    cancelling global denies or default ``.env`` rules:
+    cancelling global denies or reopening outside paths via inherited allows:
       - never inject a blanket ``* * allow`` rule;
-      - deny absolute paths (``/*``, ``?:/*``) and parent traversals (``..``,
-        ``../*``, ``*/../*``) for filesystem tools, then allow each assigned
-        root (``<root>`` and ``<root>/*``);
-      - re-append inherited filesystem-matching protective rules (global and
-        default denies/asks and narrower exceptions like ``*.env.example``)
-        after the root allows so they still win inside the worktree;
-      - append ``read`` denies for ``token_dir`` (absolute and relative) last.
+      - deny ``external_directory`` and outside/traversal paths for filesystem
+        tools, then allow each assigned root (``<root>`` and ``<root>/*``);
+      - re-append inherited filesystem-matching ``deny`` and ``ask`` rules, plus
+        any narrower ``allow`` that only carves out an exception to an earlier
+        re-added ``deny``/``ask`` (e.g. ``*.env.example`` under ``*.env.*``),
+        while dropping broad or outside-root allows (e.g. ``read *``,
+        ``edit /home/*``);
+      - append ``read`` and ``external_directory`` denies for ``token_dir`` last.
     """
     build = copy.deepcopy(config.get("agents", {}).get("build", {}))
     if not isinstance(build, dict):
@@ -222,7 +267,18 @@ def policy_v2(
         if isinstance(build_perms, list):
             inherited.extend(copy.deepcopy(r) for r in build_perms if isinstance(r, dict))
 
-    permissions: list[dict[str, Any]] = []
+    permissions: list[dict[str, Any]] = [
+        {"action": "external_directory", "resource": "*", "effect": "deny"},
+    ]
+    for root in roots:
+        root_posix = root.as_posix().rstrip("/")
+        permissions.append(
+            {"action": "external_directory", "resource": root_posix, "effect": "allow"}
+        )
+        permissions.append(
+            {"action": "external_directory", "resource": f"{root_posix}/*", "effect": "allow"}
+        )
+
     for tool in _V2_FS_TOOLS:
         for deny_pattern in ("/*", "?:/*", "..", "../*", "*/../*"):
             permissions.append({"action": tool, "resource": deny_pattern, "effect": "deny"})
@@ -231,17 +287,31 @@ def policy_v2(
             permissions.append({"action": tool, "resource": root_posix, "effect": "allow"})
             permissions.append({"action": tool, "resource": f"{root_posix}/*", "effect": "allow"})
 
-    # Re-append inherited filesystem-matching rules (excluding blanket * * allow)
-    # so global denies and default .env asks still override the root allows above.
+    # Re-append inherited filesystem-matching deny/ask rules, plus any narrow
+    # allow that only relaxes a preceding re-added deny/ask (e.g. *.env.example).
+    # Broad/outside allows (e.g. `read *`, `edit /home/*`) are intentionally dropped
+    # so they cannot reopen the narrow worktree boundary.
+    readded: list[dict[str, Any]] = []
     for rule in inherited:
-        if _is_blanket_allow(rule):
+        if not _matches_fs_tool(rule.get("action")):
             continue
-        if _matches_fs_tool(rule.get("action")):
-            permissions.append(rule)
+        effect = rule.get("effect")
+        if effect in ("deny", "ask") or (
+            effect == "allow" and _narrows_readded_restriction(rule, readded, roots)
+        ):
+            readded.append(rule)
+    permissions.extend(readded)
 
     if token_dir is not None:
         if "*" in str(token_dir) or "?" in str(token_dir):
             raise ValueError("OpenCode token directory cannot contain wildcard characters")
+        abs_token = token_dir.as_posix().rstrip("/")
+        permissions.append(
+            {"action": "external_directory", "resource": abs_token, "effect": "deny"}
+        )
+        permissions.append(
+            {"action": "external_directory", "resource": f"{abs_token}/*", "effect": "deny"}
+        )
         for path in _token_read_paths(token_dir, roots[0]):
             permissions.append({"action": "read", "resource": path, "effect": "deny"})
             permissions.append({"action": "read", "resource": f"{path}/*", "effect": "deny"})
