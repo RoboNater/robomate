@@ -7,13 +7,7 @@ from functools import wraps
 from types import MethodType
 from typing import Annotated, Any, TypeVar
 
-from agent_hub_common import (
-    CloseoutResult,
-    ImplementerResult,
-    RebaseResult,
-    ReviewerResult,
-    StandingRole,
-)
+from agent_hub_common import StandingRole, TaskResult
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -324,9 +318,7 @@ def create_worker_mcp(
     @server.tool()
     async def submit_result(
         task_id: str,
-        # RebaseResult last: a body that fits several models validates as the
-        # first, and the hub re-validates against the task's role either way.
-        result: CloseoutResult | ImplementerResult | ReviewerResult | RebaseResult,
+        result: TaskResult,
     ) -> dict[str, Any]:
         """Submit the final result for a task, validated against the role's schema."""
         resolved = await resolve()

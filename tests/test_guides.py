@@ -268,6 +268,22 @@ def test_served_orchestrator_hub_boundary(forge: str) -> None:
 
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
+def test_served_orchestrator_guide_handles_bridge_skew(forge: str) -> None:
+    guide = bytes(guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge).body)
+    text = " ".join(guide.decode("utf-8").split())
+    for fragment in (
+        "registration reports a result schema fingerprint mismatch",
+        "ask the operator to check the worker's registration error and the hub log",
+        "the whole team's shared bridge install",
+        "Ask the operator to update the bridge install and restart the agents",
+        "Do not offer reassignment to another worker on the same install",
+        "Never suggest submitting outside the configured bridge or using the hub token",
+    ):
+        assert fragment in text
+    assert "WorkerHubClient" not in text
+
+
+@pytest.mark.parametrize("forge", ["github", "gitlab"])
 def test_served_rebase_guide_preserves_branch_push_rules(forge: str) -> None:
     """Decision 1 also applies when an existing branch is rebased or merged."""
     text = " ".join(

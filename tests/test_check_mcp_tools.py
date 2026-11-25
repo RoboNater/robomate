@@ -38,7 +38,9 @@ def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_home: Path) -> P
         monkeypatch.setenv(name, str(user_home / "state"))
     monkeypatch.setattr(check.shutil, "which", lambda _: None)
     monkeypatch.setattr(check, "json_config_paths", lambda: [], raising=False)
-    monkeypatch.setattr(check, "probe", lambda *_: ({"name": "bridge", "version": "1"}, ["a", "b"]))
+    monkeypatch.setattr(
+        check, "probe", lambda *_: ({"name": "bridge", "version": "1"}, {"a": {}, "b": {}})
+    )
     return checkout
 
 
@@ -75,11 +77,53 @@ def test_baseline_and_changes(
     assert run(monkeypatch, setup) == 2
     assert run(monkeypatch, setup, "--save") == 0
     assert run(monkeypatch, setup) == 0
-    monkeypatch.setattr(check, "probe", lambda *_: ({}, ["b", "c"]))
+    monkeypatch.setattr(check, "probe", lambda *_: ({}, {"b": {}, "c": {}}))
     assert run(monkeypatch, setup) == 1
     out = capsys.readouterr().out
     assert "added since baseline: c" in out
     assert "removed since baseline: a" in out
+
+
+def test_submit_result_union_change(
+    setup: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result_union = [{"$ref": "#/$defs/ImplementerResult"}]
+    schema = {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string"},
+            "result": {"anyOf": result_union},
+        },
+        "$defs": {
+            "ImplementerResult": {"type": "object"},
+            "CloseoutResult": {"type": "object"},
+        },
+    }
+    monkeypatch.setattr(check, "probe", lambda *_: ({}, {"submit_result": schema}))
+    assert run(monkeypatch, setup, "--save") == 0
+    capsys.readouterr()
+
+    result_union.append({"$ref": "#/$defs/CloseoutResult"})
+    assert run(monkeypatch, setup) == 1
+    out = capsys.readouterr().out
+    assert "input schemas changed since baseline: submit_result" in out
+    assert "tools added" not in out
+    assert "tools removed" not in out
+
+
+def test_legacy_tool_baseline_requires_saving_schemas(
+    setup: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = check.snapshot_path()
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text(
+        json.dumps({"checkouts": {str(setup.resolve()): {"tools": ["a", "b"]}}}),
+        encoding="utf-8",
+    )
+    assert run(monkeypatch, setup) == 2
+    assert "baseline has no input schemas" in capsys.readouterr().out
+    assert run(monkeypatch, setup, "--save") == 0
+    assert run(monkeypatch, setup) == 0
 
 
 @pytest.mark.parametrize(

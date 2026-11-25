@@ -1123,7 +1123,18 @@ active seconds), after which its report is recorded as missing. The hub
 creates no task or report from that response. Operators should upgrade hub and bridges together and
 restart long-lived bridge processes when upgrading; workers do not perform
 that lifecycle action. Current bridges and mock consumers handle the response
-explicitly. Version 1 has no capability gate for mixed-version delivery.
+explicitly.
+
+**Worker result schema compatibility (#504).** Worker `join` and `check_in`
+advertise their bridge package version and a fingerprint of their typed result
+schemas. The hub compares these with its own version and the schemas it
+validates by task role. A version mismatch with a matching fingerprint warns
+in the hub log, the `agent_checked_in` event, and the current worker profile
+in `get_state`. A fingerprint mismatch refuses registration with an error
+and logs the reason. Older bridges may omit the fingerprint. They register
+with an `unverified` warning so Alice can ask the operator to update the shared
+install before assigning work. These metadata fields are additive. Wire
+version 1 and the typed task result bodies stay unchanged.
 
 The orchestrator operations move from in-process MCP to an authenticated HTTP JSON-RPC route
 on the hub; the worker A2A route is unchanged. `robomate status/submit/inbox/answer` use the same

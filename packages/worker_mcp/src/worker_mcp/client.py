@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from uuid import uuid4
 
 import httpx
@@ -27,8 +27,10 @@ from agent_hub_common import (
     RebaseResult,
     ReviewerResult,
     StandingRole,
+    TaskResult,
     validate_agent_name,
 )
+from agent_hub_common.compatibility import installed_version, result_schema_fingerprint
 from agent_hub_common.discovery import (
     HUB_ID_ENV,
     DiscoveryError,
@@ -702,6 +704,12 @@ class WorkerHubClient:
         ad = self.settings.wait_advertisement
         return {MetaKeys.WAIT_ADVERTISEMENT: asdict(ad)} if ad is not None else {}
 
+    def _registration_metadata(self) -> dict[str, Any]:
+        return self._wait_advertisement_metadata() | {
+            MetaKeys.BRIDGE_VERSION: installed_version("worker-mcp"),
+            MetaKeys.RESULT_SCHEMA_SHA256: result_schema_fingerprint(*get_args(TaskResult)),
+        }
+
     def _wait_profile(self, reported: Any) -> dict[str, Any]:
         effective = dict(reported) if isinstance(reported, dict) else {}
         limit = effective.get("max_hold_s", self.settings.default_wait_s)
@@ -740,7 +748,7 @@ class WorkerHubClient:
             MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
             MetaKeys.OPERATION_ID: op_id,
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
-            **self._wait_advertisement_metadata(),
+            **self._registration_metadata(),
         }
         if profile.workspace_id is not None:
             metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
@@ -756,7 +764,8 @@ class WorkerHubClient:
         result = await self._post_rpc("message/send", params)
         if not isinstance(result, dict):
             raise WorkerProtocolError(None, "check_in response was not a dict")
-        context_id = result.get("contextId") or (result.get("metadata") or {}).get("contextId")
+        res_meta = result.get("metadata") or {}
+        context_id = result.get("contextId") or res_meta.get("contextId")
         if not context_id or not isinstance(context_id, str):
             raise WorkerProtocolError(None, "check_in response did not contain contextId")
         self.context_id = context_id
@@ -768,9 +777,8 @@ class WorkerHubClient:
             "status": "registered",
             "agent": self.settings.agent_name,
             "context_id": self.context_id,
-            "wait_profile": self._wait_profile(
-                (result.get("metadata") or {}).get(MetaKeys.WAIT_PROFILE)
-            ),
+            "wait_profile": self._wait_profile(res_meta.get(MetaKeys.WAIT_PROFILE)),
+            "bridge_compatibility": res_meta.get(MetaKeys.BRIDGE_COMPATIBILITY),
             "profile": {
                 "harness": profile.harness,
                 "harness_source": profile.harness_source.value,
@@ -957,7 +965,7 @@ class WorkerHubClient:
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
             MetaKeys.WORKSPACE_EXPLICIT: workspace_explicit,
             MetaKeys.WORKSPACE_PATH: reported_workspace_path,
-            **self._wait_advertisement_metadata(),
+            **self._registration_metadata(),
         }
         if profile.workspace_id is not None:
             metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
@@ -1090,6 +1098,7 @@ class WorkerHubClient:
             "setup": hub_setup,
             "profile": profile_dict,
             "wait_profile": self._wait_profile(res_meta.get(MetaKeys.WAIT_PROFILE)),
+            "bridge_compatibility": res_meta.get(MetaKeys.BRIDGE_COMPATIBILITY),
             "role_guide": (
                 f'Guide by reference: call get_role_guide(role="{standing_role.value}") '
                 "on assignment."
@@ -1464,12 +1473,7 @@ class WorkerHubClient:
     async def submit_result(
         self,
         task_id: str,
-        result: ImplementerResult
-        | ReviewerResult
-        | RebaseResult
-        | CloseoutResult
-        | dict[str, Any]
-        | str,
+        result: TaskResult | dict[str, Any] | str,
         summary: str | None = None,
         artifacts: list[Any] | None = None,
         operation_id: str | None = None,

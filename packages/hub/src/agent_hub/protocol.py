@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict, dataclass
 from dataclasses import field as dataclass_field
@@ -66,6 +67,7 @@ from agent_hub_common import (
     TaskState,
     validate_agent_name,
 )
+from agent_hub_common.compatibility import installed_version, result_schema_fingerprint
 from agent_hub_common.waits import EffectiveWaitProfile, WaitAdvertisement, negotiate_wait
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -669,6 +671,44 @@ class A2AProtocol:
             return A2AMessage.model_validate(json.loads(resp_json))
         raise _invalid(f"metadata.{MetaKeys.KIND} {kind!r} is not a message/send intent on a task")
 
+    def _bridge_compatibility(
+        self, agent_name: str, metadata: Mapping[str, Any]
+    ) -> dict[str, str | None]:
+        bridge_version = _profile_text(metadata, MetaKeys.BRIDGE_VERSION)
+        if bridge_version is not None and not re.fullmatch(
+            r"[a-zA-Z0-9.+!_-]{1,128}", bridge_version
+        ):
+            raise _invalid(f"metadata.{MetaKeys.BRIDGE_VERSION} must be a package version")
+        fingerprint = metadata.get(MetaKeys.RESULT_SCHEMA_SHA256)
+        if fingerprint is not None and (
+            not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+        ):
+            raise _invalid(f"metadata.{MetaKeys.RESULT_SCHEMA_SHA256} must be a SHA-256 digest")
+
+        hub_version = installed_version("agent-hub")
+        hub_fingerprint = result_schema_fingerprint(*RESULT_MODELS.values())
+        warnings = []
+        if bridge_version is not None and hub_version != UNKNOWN and bridge_version != hub_version:
+            warnings.append(f"bridge version mismatch (bridge {bridge_version}, hub {hub_version})")
+        if fingerprint is None:
+            warnings.append("bridge did not report a result schema fingerprint")
+        elif fingerprint != hub_fingerprint:
+            warnings.append("result schema fingerprint mismatch")
+            warning = ". ".join(warnings)
+            logger.warning("Worker %s registration refused: %s", agent_name, warning)
+            raise _invalid(
+                f"worker {agent_name} registration refused: {warning}. "
+                "Ask the operator to update the bridge install and restart the agents."
+            )
+        return {
+            "bridge_version": bridge_version,
+            "hub_version": hub_version,
+            "result_schema_sha256": fingerprint,
+            "hub_result_schema_sha256": hub_fingerprint,
+            "status": "unverified" if fingerprint is None else "compatible",
+            "warning": ". ".join(warnings) or None,
+        }
+
     def _check_in(
         self, message: A2AMessage, metadata: dict[str, Any], remote_addr: str | None
     ) -> A2AMessage:
@@ -701,6 +741,7 @@ class A2AProtocol:
         if not isinstance(raw_takeover, bool):
             raise _invalid(f"metadata.{MetaKeys.TAKEOVER} must be a boolean")
         takeover = raw_takeover
+        compatibility = self._bridge_compatibility(agent_name, metadata)
         profile = _profile(metadata)
         ad = self._wait_advertisement(metadata)
         # M2 Step 7b (#314): `setup` and agent pins from the layers (Step 5).
@@ -800,6 +841,11 @@ class A2AProtocol:
                 "setup": join_setup,
             }
             | ({"wait_advertisement": asdict(ad)} if ad is not None else {})
+            | {
+                key: metadata[key]
+                for key in (MetaKeys.BRIDGE_VERSION, MetaKeys.RESULT_SCHEMA_SHA256)
+                if key in metadata
+            }
         )
 
         def _build_ack(agent: AgentRecord) -> str:
@@ -809,6 +855,7 @@ class A2AProtocol:
                 MetaKeys.STATUS: agent.status.value,
                 MetaKeys.WORKER_INSTANCE_ID: agent.worker_instance_id,
                 MetaKeys.STANDING_ROLE: agent.standing_role.value,
+                MetaKeys.BRIDGE_COMPATIBILITY: compatibility,
             }
             if agent.workspace_id is not None:
                 ack_meta[MetaKeys.WORKSPACE_ID] = agent.workspace_id
@@ -849,7 +896,10 @@ class A2AProtocol:
             workspace_path=workspace_path,
             workspace_kind=workspace_kind,
             claimant=claimant,
+            bridge_compatibility=compatibility,
         )
+        if registered and compatibility["warning"]:
+            logger.warning("Worker %s registration: %s", agent_name, compatibility["warning"])
         note_a2a(actor=agent_name)
         response = A2AMessage.model_validate(json.loads(resp_json))
         # A replayed check-in names the instance it registered; a refused one

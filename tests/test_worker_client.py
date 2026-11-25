@@ -65,6 +65,71 @@ async def test_worker_check_in_and_state(
     assert hub_store.agent_by_name("bob") is not None
 
 
+@pytest.mark.parametrize("entry_point", ["join", "check_in"])
+@pytest.mark.parametrize("case", ["version", "fingerprint", "legacy"])
+async def test_worker_registration_checks_bridge_compatibility(
+    entry_point: str,
+    case: str,
+    client: httpx.AsyncClient,
+    worker_settings: WorkerSettings,
+    hub_store: HubStore,
+    settings: HubSettings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _join_guides(settings)
+    worker = WorkerHubClient(worker_settings, http_client=client)
+    post = worker._post_rpc
+
+    async def report_skew(method: str, params: dict[str, Any]) -> Any:
+        meta = params["message"]["metadata"]
+        if case == "version":
+            meta["hub.bridge_version"] = "999.0"
+        elif case == "fingerprint":
+            meta["hub.result_schema_sha256"] = "0" * 64
+        else:
+            meta.pop("hub.bridge_version", None)
+            meta.pop("hub.result_schema_sha256", None)
+        return await post(method, params)
+
+    monkeypatch.setattr(worker, "_post_rpc", report_skew)
+
+    async def register() -> dict[str, Any]:
+        if entry_point == "join":
+            return await worker.join("bob", "implementer")
+        return await worker.check_in()
+
+    if case == "fingerprint":
+        with pytest.raises(WorkerProtocolError, match="result schema fingerprint mismatch"):
+            await register()
+        assert hub_store.agent_by_name("bob") is None
+        assert not worker.is_joined
+        assert hub_store.next_event() is None
+        assert "result schema fingerprint mismatch" in caplog.text
+        return
+
+    joined = await register()
+    compatibility = joined.get("bridge_compatibility")
+    assert compatibility is not None
+    event = hub_store.next_event()
+    assert event is not None and event.kind is EventKind.AGENT_CHECKED_IN
+    assert event.payload["bridge_compatibility"] == compatibility
+    assert hub_store.ack_event(event.delivery_id)
+    state = hub_store.get_state()
+    assert state["agents"][0]["bridge_compatibility"] == compatibility
+    assert state["tasks"] == []
+    if case == "version":
+        assert compatibility["status"] == "compatible"
+        assert compatibility["bridge_version"] == "999.0"
+        assert compatibility["result_schema_sha256"] == compatibility["hub_result_schema_sha256"]
+        assert "bridge version mismatch" in compatibility["warning"]
+        assert "bridge version mismatch" in caplog.text
+    else:
+        assert compatibility["status"] == "unverified"
+        assert compatibility["result_schema_sha256"] is None
+        assert "did not report a result schema fingerprint" in caplog.text
+
+
 def test_worker_instance_id_is_generated_once_per_client_startup(
     worker_settings: WorkerSettings,
 ) -> None:
