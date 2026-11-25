@@ -427,7 +427,7 @@ operator through Alice before implementing it.
 | §7.3, §11 | Report source fields, missing historical evidence, active draft/default selection, headline, private post-commit export/retry using #423 semantics | 3 |
 | §7.2, §7.3, §7.4, §7.5, §8, §11 | Abandon audit/cancellation; existing `on_done` retention; scoped notification, Alice queue start/exit/standby, terminal-question refusal and late-event isolation. §7.2's “the second starts only after the first is `done`” also covers `abandoned`, where Alice starts it and nothing starts it automatically | 4 |
 | §7.3, §8, §13; closeout/recovery/user docs | #357 appendix, abandoned per-author export, launcher handoff, accepted post-closeout gap and operator routing | 5 |
-| §8, §11 | Persist workflow attribution for events/decisions/messages; bounded read-only timeline, legacy unscoped handling and additive event metadata; no prose summaries | 6 |
+| §8, §11, §12 | Persist workflow attribution for events/decisions/messages; bounded read-only timeline, legacy unscoped handling and additive event metadata; no prose by default; opt-in escaped progress notes and titles; hub-only `agent_released` record; notes view inert and operator-only | 6 |
 | §7.5; recovery and role guides | Closeout/done/abandon recovery examples; successor launcher commands and live evidence limits | 7 |
 | §13 | Link verified acceptance evidence; retain milestone order | 8 |
 | §7.3 / tool window and missing semantics | Owned by #386/#424; consume their final contract, do not edit it concurrently | Their own PRs, before 5/7 |
@@ -483,9 +483,9 @@ other lanes; a dependency diagram is not a reservation.
 | 1 | Yes: stored closeout context on task | No change expected | Additive role/result and assignment fields; test old role consumers and dispatch explicitly |
 | 2 | Yes: durable workflow PR/head binding | No change expected | Policy JSON additions need no separate migration; finalization must bind a run durably |
 | 3 | No new migration expected | No change expected | Derived report; reuse #423's durable retry mechanism rather than invent a second marker |
-| 4 | Yes: workflow status and event-kind constraints plus abandonment audit | No change expected | Reuse Step 6 attribution; additive operator method/control event; check status/hold/launcher consumers |
+| 4 | Yes: workflow status and event-kind constraints plus abandonment audit | No change expected | Reuse Step 6 attribution; additive operator method/control event; compose its event-kind CHECK with Step 6's, so whichever lands second rebuilds on the other; check status/hold/launcher consumers |
 | 5 | No new migration expected | No change expected | Existing reports/context and safe renderer |
-| 6 | Yes: nullable workflow foreign keys/indexes on event, decision and message | No change expected | Persist new writer attribution; backfill only authoritative references; additive response fields |
+| 6 | Yes: nullable workflow foreign keys/indexes on event, decision and message; widen `event.kind` for `agent_released` and `event.state` for its hub-only record | No change expected | Persist new writer attribution and lifecycle records; Step 4 widens the same `event.kind` CHECK, so whichever lands second rebuilds on the other; backfill only authoritative references; additive response fields |
 | 7 | No migration expected | No change expected | Tests/guides, production changes only for reproduced defects |
 | 8 | None | None | Evidence only; the real subject run may separately use a counter |
 
@@ -609,7 +609,11 @@ counts and unfinished state, but per-author abandoned exports/appendix wait for 
 Fence retries by original run identity. Preserve worktrees and evidence. Refuse worker or
 orchestrator attempts to set abandoned even though it becomes a workflow enum member.
 Use Step 6 attribution for `workflow_abandoned`, task-cancellation events and the audit
-rows. Apply live-run inbox/status filtering and terminal `hub.answer` refusal atomically;
+rows. Step 6 also widens `event.kind` and `event.state` for `agent_released`; its hub-only
+`recorded` rows are never deliverable, so this step's terminal-run exclusion and
+acknowledgement rules apply only to deliverable events. Whichever of Steps 4 and 6 lands
+second rebuilds the `event` table on the other's schema. Apply live-run inbox/status
+filtering and terminal `hub.answer` refusal atomically;
 exclude old actionable work events without erasing historical records. Update Alice's
 kickoff/event/resume/terminal instructions and launcher guards for the queue/standby/exit
 choices above, including an Alice already blocked in `wait_for_event`. Source new tasks
@@ -683,12 +687,14 @@ uv run --locked pytest tests/test_agent_launcher.py
 §7.3/§8/§13 and report/user documentation updates. #359 live evidence follows this PR;
 workers neither launch the live team nor operate its hub.
 
-### Step 6 — Run attribution and payload-free timeline (#20)
+### Step 6 — Run attribution and timeline, payload-free by default (#20)
 
 **Scope.** Persist attribution for event/decision/message writers and expose
-`robomate log --timeline [--follow] [--json] [--run RUN]`, a selected-hub read-only operator
-view of interleaved records, task/result metadata and gate readings. The bare `log` uses
-the same safe view; this replaces #20's old script spelling. #185/#186 UI stays deferred.
+`robomate log --timeline [--follow] [--json] [--run RUN] [--notes]`, a selected-hub
+read-only operator view of interleaved records, task/result metadata and gate readings.
+The default view stays payload-free; `--notes` is the operator's opt-in exception. Step 6
+also records `agent_released` for the timeline. The bare `log` uses the same safe view;
+this replaces #20's old script spelling. #185/#186 UI stays deferred.
 
 **Approach.** Add nullable `workflow_id` foreign keys and indexes to `event`, `decision`
 and `message`. Update every writer to take explicit attribution from the affected
@@ -700,6 +706,20 @@ Expose workflow/run IDs additively in event records and re-briefing. During migr
 backfill messages from their task, and events only where a valid stored task/question/run
 reference establishes one workflow. Old decisions with no authoritative reference stay
 NULL; do not parse prose, decision keys or timestamp ranges to invent their owner.
+
+Add a closed-set `agent_released` event kind. `release_agent` and the `on_done: release`
+sweep insert exactly one record for each agent whose status changes, in the same
+transaction as that update and attributed to the run being released; an agent already
+released writes none. It carries only the released agent and the stored releasing actor
+(the `release_agent` caller, or `done policy` for the sweep). Release is not a
+notification to Alice, so the record is hub-only:
+it uses a new terminal `recorded` event state that the delivery lease never selects and
+that implies no delivery or acknowledgement, so the same migration widens the
+`event.state` CHECK alongside `event.kind`'s. `wait_for_event` routing, its
+acknowledgement path and §8's event-kind list are therefore unchanged; the record appears
+only in the timeline (and the audit database). It remains distinct from §7.3's
+`missing_reason = 'agent_released'`, which the same transaction still maintains. A release
+with no live run is stored hub-scoped and labelled as such, like other hub-level records.
 
 Timeline `--run` selects matching attributed records and reports a count of excluded
 legacy unscoped records; the unfiltered view labels those and hub-scoped records
@@ -713,36 +733,63 @@ Use a bounded paginated projection with stable cursor and deterministic ordering
 `(timestamp, source kind, row ID)`; follow tracks per-source ID watermarks so a backward
 clock step does not skip newly inserted rows. Each page has a stable read snapshot.
 Closed-set kind/state/role/outcome and validated IDs/SHAs/PR references only; unknown
-kinds get a
-fixed `unknown` label. Never print decision summaries, keys/rationales, task titles,
-question/answer/withdrawal text, worker progress, report prose or event payload text.
-Withdrawal metadata can show state, actor/time and settling event ID without implying an
-answer. No inference of intermediate task transitions or past delivery attempts that
-were never stored. Report current attempts/acked timestamps as snapshots, not a fabricated
-history. Call/telemetry detail is deferred to M6; it is not required for useful #20 output.
+kinds get a fixed `unknown` label.
+
+By default, never print decision summaries, keys/rationales, task titles,
+question/answer/withdrawal text, worker progress, report prose or raw event payload text.
+With `--notes`, include each `task_progress` note at its event record and each task's
+title at its task record. Render both as `robomate status --notes` does (#653, the
+`_agent_progress_lines` precedent): literal/control-escaped text under the fixed label
+`untrusted agent text`, each entry capped at the status note's single-line width with an
+explicit truncation marker. In `--json`, they appear only in a per-record `untrusted`
+object, `{kind: "progress_note" | "task_title", label: "untrusted agent text", text}`
+(absent without the flag), and never among a record's typed fields. Question and answer
+text, decision summaries and rationales, result bodies, report prose and raw event
+payloads stay excluded even with `--notes`.
+
+Readable lifecycle rows use only stored closed-set fields: timestamp, actor or assignee,
+task role and state, verdict or outcome, and PR/SHA where present, for example
+`07:39:44 reviewer charlie task completed verdict=approved PR #699 @ 3d1b242`. Missing
+fields stay absent. Withdrawal metadata can show state, actor/time and settling event ID
+without implying an answer. No inference of intermediate task transitions or past delivery
+attempts that were never stored. Report current attempts/acked timestamps as snapshots,
+not a fabricated history. Call/telemetry detail is deferred to M6; it is not required for
+useful #20 output. Neither the user guide nor the README command list describes
+`robomate log` today; #20 adds the command and these `--notes` trust rules there.
 
 **Tests.** Add `tests/test_timeline.py`: seeded same-time rows from all sources appear
 once in deterministic order, run/hub scoping, multiple pages/follow/reconnect with no
 omissions, valid JSON, bounded output, invalid cursors/run IDs, unknown labels, controls,
-and payload-marker exclusion in every format. Migration/writer tests cover every event,
-decision and message insertion path, taskless messages, old-question answers after a new
-run starts, authoritative backfill versus unscoped legacy decisions, and isolation of
-two sequential runs with overlapping/equal/backward timestamps. Check new run decisions
-appear under `--run`, and hub-only records are never falsely assigned. Follow is a
-read-only bounded hold and stops cleanly. Confirm no event ack/lease/expiry mutation,
-and withdrawn remains distinct from answered. Pytest-owned CLI tests execute all new
-flags; keep hub-report's existing
+and the payload-marker exclusion in every format. The exclusion also covers progress
+notes and task titles without `--notes`: their markers stay absent from text and JSON.
+With `--notes`, each appears only escaped, labelled and bounded, in both text and JSON,
+while question, answer, rationale and result markers stay absent even then. Readable rows
+render only stored fields and never invent a missing transition or delivery. A
+store/migration test proves `release_agent` writes exactly one run-attributed
+`agent_released` record and none for an already-released agent; the `on_done: release`
+sweep does the same. The recorded state is never leased, delivered or acknowledged.
+Migration/writer tests cover every event, decision and message insertion path, taskless
+messages, old-question answers after a new run starts, authoritative backfill versus
+unscoped legacy decisions, and isolation of two sequential runs with
+overlapping/equal/backward timestamps. Check new run decisions appear under `--run`, and
+hub-only records are never falsely assigned. Follow is a read-only bounded hold and stops
+cleanly. Confirm no event ack/lease/expiry mutation, and withdrawn remains distinct from
+answered. Pytest-owned CLI tests execute all new flags; keep hub-report's existing
 payload-marker regression green.
 
 ```sh
 uv run --locked pytest tests/test_timeline.py tests/test_database.py tests/test_store.py tests/test_durable_events.py tests/test_idempotency.py tests/test_closeout.py tests/test_hub_report.py tests/test_rpc.py tests/test_cli.py
 ROBOMATE_TEST_DB_LATENCY_MS=250 uv run --locked pytest tests/test_timeline.py
+# Reviewer, against a pytest-seeded or isolated smoke hub covering one full run:
+uv run --locked robomate log --timeline --run <run_id>
+uv run --locked robomate log --timeline --notes --run <run_id>
 ```
 
 **Size:** medium to large (writer audit plus projection). **Suggested model:** tier 1
 implementer and reviewer. **Dependencies:** existing run identity only; parallel with
-Steps 1–3, required before Step 4. **Counters:** table. Update §8/§11 and #20's reviewer
-command to this attribution and CLI contract; reserve the migration only at pickup.
+Steps 1–3, required before Step 4. **Counters:** table. Update §8/§11/§12 and #20's
+reviewer command to this attribution and CLI contract; reserve the migration only at
+pickup.
 
 ### Step 7 — Close the resume test gaps (#18)
 
@@ -833,8 +880,10 @@ its operator fallback would count as an intervention, so use a harness and route
    use the inbox, record the attempt as failing the no-intervention criterion, fix/route
    it separately and repeat; never treat silence or a withdrawn question as approval.
 5. Operator reads `uv run --locked robomate status --json`,
-   `uv run --locked robomate report RUN_ID`, and
-   `uv run --locked robomate log --timeline --run RUN_ID --json`. Stop that hub using
+   `uv run --locked robomate report RUN_ID`,
+   `uv run --locked robomate log --timeline --run RUN_ID --json`, and beside it
+   `uv run --locked robomate log --timeline --notes --run RUN_ID` for the labelled
+   untrusted agent text. Stop that hub using
    `robomate down` from its owner; read the manifest, report and closeout index/files
    offline and compare with online data. Keep any export errors and retry results visible.
    Do not delete state/worktrees before archiving reviewed evidence.
