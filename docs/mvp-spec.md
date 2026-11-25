@@ -346,7 +346,7 @@ on a hub. **There is no silent attach**: a checkout never reaches a hub it was n
    `--hub <name | hub_id | checkout path>`, at the same rank; for a bridge at `join`,
    `join(hub=<name | hub_id | checkout path>)` is resolved against the machine registry on
    the same terms; a name that matches hubs of several repositories fails with the choices.
-   A bridge with no launcher pin whose working directory is not bound refuses
+   A worker bridge with no launcher pin whose working directory is not bound refuses
    `join(hub=...)` unless the operator started it with `robomate mcp
    --allow-hub-selection`; the refusal uses the unbound-bridge message above and names no
    hub, so an agent cannot choose its run's hub (#526). A launcher pin still wins: a

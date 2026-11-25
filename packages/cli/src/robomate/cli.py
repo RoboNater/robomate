@@ -2568,8 +2568,8 @@ def main() -> None:
         "--allow-hub-selection",
         action="store_true",
         help=(
-            "let an unbound bridge accept an agent's join(hub=...); set it only "
-            "in an operator's MCP entry (#526)"
+            "let an unbound worker bridge accept an agent's join(hub=...); set it "
+            "only in an operator's MCP entry (#526)"
         ),
     )
     args = parser.parse_args()
