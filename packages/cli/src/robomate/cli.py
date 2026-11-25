@@ -28,12 +28,10 @@ from agent_hub_common import (
     MAX_STATEMENT_BYTES,
     SHA_HEX_40_RE,
     HubSettings,
-    load_config_layers,
     load_or_create_token,
     read_token_file,
     reserve_stdout,
 )
-from agent_hub_common.config_layers import repository_config_path
 from agent_hub_common.discovery import (
     BINDING_FILENAME,
     HUB_ID_ENV,
@@ -322,6 +320,9 @@ def _entry_port(entry: dict[str, Any]) -> int | None:
 
 
 async def _run_up(args: argparse.Namespace, repo: Repository, placement: HubPlacement) -> None:
+    # Deferred so the non-serving commands keep pydantic out of `import robomate.cli` (#647).
+    from agent_hub_common.config_layers import load_config_layers
+
     directory = placement.state_dir
     layered_config = load_config_layers(
         hub_config=directory / "config.toml",
@@ -2198,6 +2199,9 @@ def _relocate(selector: str | None) -> None:
     leaves a pointer file where the state was. The same hub_id serves from the
     new location at the next `robomate up`.
     """
+
+    # Deferred so the non-serving commands keep pydantic out of `import robomate.cli` (#647).
+    from agent_hub_common.config_layers import load_config_layers, repository_config_path
 
     escape_unencodable_output()
     read_token_file(operator_token_path(), "operator token")

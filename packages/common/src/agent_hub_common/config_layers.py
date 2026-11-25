@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from pydantic import ConfigDict, TypeAdapter, ValidationError
 
+from .constants import UNKNOWN
 from .discovery import (
     WORKTREE_ROOT_SUFFIX,
     DiscoveryError,
@@ -29,7 +30,7 @@ from .discovery import (
     repository_dir,
     validate_agent_name,
 )
-from .models import UNKNOWN, RolePolicy, WorkflowPolicy
+from .models import RolePolicy, WorkflowPolicy
 
 LayerName = Literal["hub", "repository", "user"]
 

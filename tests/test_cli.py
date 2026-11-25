@@ -442,6 +442,24 @@ def stop(root: Path, env: dict[str, str], process: subprocess.Popen[str]) -> Non
                 process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
 
 
+def test_cli_import_leaves_pydantic_and_the_hub_unloaded() -> None:
+    """#647: `status`, `down`, `ls`, `inbox` and `answer` pay no pydantic cost."""
+
+    script = (
+        "import sys, robomate.cli\n"
+        "print(sorted(m for m in ('pydantic', 'pydantic_core', 'agent_hub', 'fastapi')"
+        " if m in sys.modules))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+        timeout=CLI_COMMAND_TIMEOUT_S,
+    )
+    assert result.stdout.strip() == "[]"
+
+
 # Stands in for a hub that is alive but never records itself in hub.json.
 _SILENT_HUB = (
     "import sys, time; print('hub stdout so far', flush=True); "
