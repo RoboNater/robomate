@@ -34,6 +34,7 @@ from agent_hub_common.discovery import (
     DiscoveryError,
     NoHubError,
     discover,
+    find_hub,
     resolve_checkout,
     select_hub,
 )
@@ -561,7 +562,9 @@ class WorkerHubClient:
         if self.settings.allow_hub_selection:
             return True
         try:
-            discover(cwd, self.settings.environ, list_hubs=False)
+            # Same order and NoHubError as _bind_hub's discovery, but without
+            # the liveness round-trip: the gate only classifies the bridge.
+            find_hub(cwd, self.settings.environ, list_hubs=False)
         except NoHubError:
             return False
         except DiscoveryError:

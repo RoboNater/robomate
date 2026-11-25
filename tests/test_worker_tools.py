@@ -211,6 +211,7 @@ async def test_mcp_unbound_bridge_fails_closed_without_leaking_hubs(
         )
 
     monkeypatch.setattr("worker_mcp.client.discover", listing_error)
+    monkeypatch.setattr("worker_mcp.client.find_hub", listing_error)
     client = WorkerHubClient(WorkerSettings.unjoined(cwd=Path("/unbound"), environ={}))
     server = create_worker_mcp(client)
 
