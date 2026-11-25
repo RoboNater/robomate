@@ -10,11 +10,22 @@ the hub's `/rpc` route without importing the hub server.
 import inspect
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from .models import CLOSEOUT_WAIT_MAX_S, WorkflowStatus
+from .waits import MAX_WAIT_S
 
-Timeout = Annotated[float, Field(ge=0, le=1800, allow_inf_nan=False)]
+
+def _hold_seconds(value: Any) -> Any:
+    # Preserve RPC numeric strings while excluding JSON booleans before coercion.
+    if isinstance(value, bool):
+        raise ValueError("timeout_s must be a number of seconds")
+    return value
+
+
+Timeout = Annotated[
+    float, Field(ge=0, le=MAX_WAIT_S, allow_inf_nan=False), BeforeValidator(_hold_seconds)
+]
 CloseoutTimeout = Annotated[
     float, Field(strict=True, gt=0, le=CLOSEOUT_WAIT_MAX_S, allow_inf_nan=False)
 ]

@@ -24,8 +24,10 @@ owns orchestration; you own only the task currently assigned to you.
 2. Call `await_assignment()` without timeout_s to use `join.wait_profile.default_wait_s`.
    A timeout is normal: call again. Never poll in a tight loop. Measured profiles:
    Claude Code print 1500 s; Codex/OpenCode/Antigravity 1800 s; Claude Code
-   interactive, unknown modes and old static entries 100 s. Interactive Claude
-   backgrounds calls at 120 s; print mode must stay below its 1800 s idle abort.
+   interactive, unknown modes and old static entries 100 s. These are profile
+   maxima. The negotiated `join.wait_profile.max_hold_s` caps both omitted and
+   explicit timeouts. Interactive Claude backgrounds calls at 120 s. Print mode
+   must stay below its 1800 s idle abort.
    A `{closeout_requested: true, run_id, deadline, instructions}` response is
    an explicit retrospective request, not a task or release. Follow its fresh
    instructions and call `submit_closeout_report(run_id, report)` before the

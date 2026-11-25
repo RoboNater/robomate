@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 import pytest
+from agent_hub.activity import HOLD_GRACE_S
 from agent_hub.store import HubStore
 from agent_hub_common import (
     MAX_MESSAGE_PART_BYTES,
@@ -1365,3 +1366,124 @@ async def test_paced_next_preserves_hold_lease_and_stall_progress(
     response = await asyncio.wait_for(pending, LIVENESS_S)
     assert sse_results(response)[0]["metadata"][MetaKeys.RELEASE]
     assert hub_store.assess_activity()["agents"]["bob"].get("holding") is None
+
+
+@pytest.mark.hub_settings(default_wait_s=900, max_wait_s=1600)
+@pytest.mark.parametrize("question", [False, True], ids=["next", "question"])
+@pytest.mark.parametrize("requested", [None, 1800, 20], ids=["omitted", "high", "low"])
+@pytest.mark.parametrize(
+    ("ad", "limit"),
+    [
+        (None, 100),
+        ({"mode": "headless", "client_budget_s": 65}, 50),
+        ({"mode": "headless", "client_budget_s": 1900}, 1600),
+    ],
+    ids=["old-client", "low-budget", "high-budget"],
+)
+async def test_worker_negotiated_hold_matches_the_activity_deadline(
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    monkeypatch: pytest.MonkeyPatch,
+    question: bool,
+    requested: float | None,
+    ad: dict[str, Any] | None,
+    limit: float,
+) -> None:
+    registration: dict[str, Any] = {
+        MetaKeys.AGENT: "bob",
+        MetaKeys.HARNESS: "codex",
+        MetaKeys.HARNESS_SOURCE: "install",
+        MetaKeys.SCHEMA_VERSION: 1,
+        MetaKeys.OPERATION_ID: "hold-cap",
+    }
+    if ad is not None:
+        registration[MetaKeys.WAIT_ADVERTISEMENT] = ad
+    result = (await post(client, "message/send", message("READY", metadata=registration)))["result"]
+    assert result["metadata"][MetaKeys.WAIT_PROFILE]["max_hold_s"] == limit
+
+    context = result["contextId"]
+    instance = result["metadata"][MetaKeys.WORKER_INSTANCE_ID]
+    task_id = None
+    meta: dict[str, Any] = {}
+    expected = min(900 if requested is None else requested, limit)
+    durations = []
+
+    def capture(self: HubStore, timeout_s: float) -> None:
+        activity = self.activity.worker("bob", instance)
+        assert activity is not None
+        hold = activity.active_hold(self.clock())
+        assert hold is not None
+        assert hold.kind == ("ask_alice" if question else "await_assignment")
+        durations.append((timeout_s, (hold.deadline - hold.started).total_seconds()))
+
+    async def record_assignment(
+        self: HubStore, context_id: str, timeout_s: float, **kw: Any
+    ) -> None:
+        capture(self, timeout_s)
+
+    async def record_reply(
+        self: HubStore, task_id: str, question_id: int, timeout_s: float, **kw: Any
+    ) -> None:
+        capture(self, timeout_s)
+
+    if question:
+        task = hub_store.assign_task("bob", "implementer", "title", "instructions")
+        assert (await hub_store.await_assignment(context, timeout_s=0)) is not None
+        task_id = task.id
+        meta[MetaKeys.KIND] = "question"
+        meta[MetaKeys.SCHEMA_VERSION] = 1
+        monkeypatch.setattr(HubStore, "await_reply", record_reply)
+    else:
+        monkeypatch.setattr(HubStore, "await_assignment", record_assignment)
+    if requested is not None:
+        meta[MetaKeys.TIMEOUT_S] = requested
+    response = await client.post(
+        "/a2a",
+        json=rpc(
+            "message/stream",
+            message(
+                "Question?" if question else "NEXT",
+                context_id=context,
+                task_id=task_id,
+                metadata=meta,
+            ),
+        ),
+    )
+    assert sse_results(response)[0]["metadata"][MetaKeys.TIMEOUT] is True
+    assert durations == [(expected, expected + HOLD_GRACE_S)]
+
+
+@pytest.mark.parametrize("timeout", [True, -1, "1", float("inf"), float("nan")])
+async def test_a2a_rejects_invalid_hold_timeouts(client: httpx.AsyncClient, timeout: Any) -> None:
+    import json
+
+    context = await check_in(client, "bob")
+    body = rpc(
+        "message/stream",
+        message("NEXT", context_id=context, metadata={MetaKeys.TIMEOUT_S: timeout}),
+    )
+    # Use raw JSON to exercise the server's handling of non-finite values.
+    response = await client.post("/a2a", content=json.dumps(body))
+    assert response.json()["error"]["code"] == -32602
+    assert MetaKeys.TIMEOUT_S in response.json()["error"]["message"]
+
+
+async def test_invalid_worker_advertisement_does_not_register(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    reply = await post(
+        client,
+        "message/send",
+        message(
+            "READY",
+            metadata={
+                MetaKeys.AGENT: "bob",
+                MetaKeys.SCHEMA_VERSION: 1,
+                MetaKeys.OPERATION_ID: "invalid-ad",
+                MetaKeys.WAIT_ADVERTISEMENT: {"mode": "headless", "client_budget_s": True},
+            },
+        ),
+    )
+    assert reply["error"]["code"] == -32602
+    assert MetaKeys.WAIT_ADVERTISEMENT in reply["error"]["message"]
+    assert hub_store.agent_by_name("bob") is None

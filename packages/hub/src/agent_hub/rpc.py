@@ -5,18 +5,27 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import json
 import logging
 import math
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from agent_hub_common import AgentProfile, token_matches, validate_agent_name
+from agent_hub_common import AgentProfile, ModelSource, token_matches, validate_agent_name
 from agent_hub_common.accounting import CallRecord, hub_id
 from agent_hub_common.orchestrator_tools import OPERATIONS, Timeout
+from agent_hub_common.waits import (
+    FALLBACK_WAIT_S,
+    MAX_WAIT_S,
+    WAIT_ADVERTISEMENT_HEADER,
+    EffectiveWaitProfile,
+    WaitAdvertisement,
+    negotiate_wait,
+)
 from fastapi import BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool, validate_call
 from pydantic_core import to_jsonable_python
@@ -82,6 +91,9 @@ class OrchestratorSession:
     actor: str
     session: str
     last_seen: datetime
+    harness: str = "unknown"
+    harness_source: ModelSource = ModelSource.UNKNOWN
+    wait_profile: EffectiveWaitProfile | None = None
 
 
 @dataclass(eq=False, slots=True)
@@ -402,6 +414,7 @@ class RpcDispatcher:
             if caller is None:
                 raise RpcError(INVALID_REQUEST, "orchestrator session headers are required")
             params = OrchestratorJoin.model_validate(payload.get("params", {}))
+            ad = self._wait_advertisement(request)
             name = validate_agent_name(params.name)
             if name != caller[0]:
                 raise RpcError(INVALID_PARAMS, "join name must match the actor header")
@@ -517,7 +530,21 @@ class RpcDispatcher:
                 workspace_path=workspace_path,
                 workspace_kind=workspace_kind,
             )
-            self._accept_session(*caller, takeover=params.takeover)
+            profile = self._negotiate_wait(
+                params.profile.harness, params.profile.harness_source, ad
+            )
+            self._accept_session(
+                *caller,
+                takeover=params.takeover,
+                joined=OrchestratorSession(
+                    name,
+                    caller[1],
+                    self.ops.store.clock(),
+                    params.profile.harness,
+                    params.profile.harness_source,
+                    profile,
+                ),
+            )
             unchanged = self._guide_hashes.get(caller[1]) == digest
             self._guide_hashes[caller[1]] = digest
             state = self.ops.store.get_state()
@@ -529,6 +556,7 @@ class RpcDispatcher:
                 "role": "orchestrator",
                 "standing_role": "orchestrator",
                 "session": caller[1],
+                "wait_profile": asdict(profile),
                 "hub": dict(self.hub_info or {}) | {"forge": forge},
                 "guide": f"unchanged ({digest})" if unchanged else guide,
                 "guide_sha256": digest,
@@ -565,7 +593,8 @@ class RpcDispatcher:
             if detach:
                 await self._detach_session(*caller)
             else:
-                self._accept_session(*caller)
+                ad = self._wait_advertisement(request)
+                self._accept_session(*caller, resume=ad)
                 # Bridge liveness only: never activity (#144).
                 self.ops.store.note_orchestrator_heartbeat(caller[1])
             return {"ok": True}
@@ -614,14 +643,17 @@ class RpcDispatcher:
                 INVALID_REQUEST,
                 f"{method} requires the {ACTOR_HEADER} and {SESSION_HEADER} headers",
             )
-        self._accept_session(*caller)
-        hold_s = _hold_s(method, params)
+        wait_timeout_s = None
         if method == "wait_for_event":
-            # Validate before clamping: negative or over-bound requests must still
-            # fail, and the tracker must use the same coerced value as the tool.
+            # Validate before clamping. RPC continues to accept numeric strings.
             requested = WaitTimeout.model_validate({"timeout_s": params.get("timeout_s")})
-            hold_s = self.ops.bounded_wait(requested.timeout_s)
-        token = CALLER.set(Caller(*caller))
+            current = self._accept_session(*caller, resume=self._wait_advertisement(request))
+            limit = current.wait_profile.max_hold_s if current.wait_profile else FALLBACK_WAIT_S
+            wait_timeout_s = self.ops.bounded_wait(requested.timeout_s, max_hold_s=limit)
+        else:
+            self._accept_session(*caller)
+        hold_s = 75.0 if wait_timeout_s is None else wait_timeout_s
+        token = CALLER.set(Caller(*caller, wait_timeout_s=wait_timeout_s))
         try:
             with self.ops.store.orchestrator_call(caller[1], method, hold_s):
                 result = await self._run_held(request, caller, method, operation, params)
@@ -757,11 +789,37 @@ class RpcDispatcher:
             raise RpcError(INVALID_PARAMS, "invalid repeat_bytes")
         return CallRecord(**row)
 
+    @staticmethod
+    def _wait_advertisement(request: Request) -> WaitAdvertisement | None:
+        raw = request.headers.get(WAIT_ADVERTISEMENT_HEADER)
+        if raw is None:
+            return None
+        try:
+            return WaitAdvertisement.from_wire(json.loads(raw))
+        except ValueError as exc:
+            raise RpcError(INVALID_PARAMS, f"wait_advertisement: {exc}") from exc
+
+    def _negotiate_wait(
+        self, harness: str, source: ModelSource, ad: WaitAdvertisement | None
+    ) -> EffectiveWaitProfile:
+        settings = self.ops.settings
+        return negotiate_wait(harness, source, ad, settings.max_wait_s if settings else MAX_WAIT_S)
+
     def _check_session(
         self, actor: str, session: str, *, takeover: bool = False, detaching: bool = False
     ) -> None:
         if session in self._superseded_sessions:
             raise RpcError(CONFLICT, "superseded by a newer orchestrator session")
+        if self.orchestrator is None:
+            recorded = self.ops.store.joined_orchestrator()
+            if recorded is not None:
+                self.orchestrator = OrchestratorSession(
+                    recorded.name,
+                    recorded.worker_instance_id,
+                    datetime.fromisoformat(recorded.last_seen),
+                    recorded.harness,
+                    recorded.harness_source,
+                )
         current = self.orchestrator
         if current is not None:
             if current.session == session:
@@ -775,30 +833,32 @@ class RpcDispatcher:
                     CONFLICT, "an orchestrator is already attached; join with takeover=true"
                 )
 
-    def _accept_session(self, actor: str, session: str, *, takeover: bool = False) -> None:
+    def _accept_session(
+        self,
+        actor: str,
+        session: str,
+        *,
+        takeover: bool = False,
+        joined: OrchestratorSession | None = None,
+        resume: WaitAdvertisement | None = None,
+    ) -> OrchestratorSession:
         self._check_session(actor, session, takeover=takeover)
         current = self.orchestrator
         if current is not None and current.session != session:
             self._superseded_sessions.add(current.session)
             self.ops.store.expire_event_leases()
             self._record_audit(actor, session, SUPERSEDE_METHOD, "ok")
-        self.orchestrator = OrchestratorSession(actor, session, self.ops.store.clock())
+            current = None
+        now = self.ops.store.clock()
+        current = joined or current or OrchestratorSession(actor, session, now)
+        if resume is not None and current.wait_profile is None:
+            current = replace(
+                current,
+                wait_profile=self._negotiate_wait(current.harness, current.harness_source, resume),
+            )
+        self.orchestrator = replace(current, last_seen=now)
         self.ops.store.note_orchestrator_session(actor, session)
-
-
-def _hold_s(method: str, params: Mapping[str, Any]) -> float:
-    """How long an orchestrator call may legitimately run before it stops exempting her.
-
-    `wait_for_event` holds for its own timeout; the merge gate settles for up
-    to a minute; nothing else should take longer than the bridge's 75 s.
-    """
-
-    if method == "wait_for_event":
-        timeout = params.get("timeout_s", 100)
-        if isinstance(timeout, int | float) and not isinstance(timeout, bool):
-            return max(float(timeout), 0.0)
-        return 100.0
-    return 75.0
+        return self.orchestrator
 
 
 def _valid_id(request_id: Any) -> bool:

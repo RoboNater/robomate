@@ -38,6 +38,7 @@ from agent_hub_common.discovery import (
     resolve_checkout,
     select_hub,
 )
+from agent_hub_common.waits import HTTP_MARGIN_S
 from agent_hub_common.workspace import IDENTITY_FILE, canonical_workspace, read_identity
 
 from .config import WorkerSettings
@@ -220,6 +221,8 @@ class WorkerHubClient:
         }
         if detach:
             metadata[MetaKeys.DETACH] = True
+        else:
+            metadata.update(self._wait_advertisement_metadata())
         if self.current_task_id is not None:
             metadata[MetaKeys.CURRENT_TASK_ID] = self.current_task_id
         result = await self._post_rpc(
@@ -389,7 +392,7 @@ class WorkerHubClient:
             "params": params,
         }
         # Client read timeout must comfortably exceed the requested server hold timeout
-        client_timeout = hold_timeout_s + 15.0
+        client_timeout = hold_timeout_s + HTTP_MARGIN_S
         attempts = 0
         while True:
             response_started = False
@@ -695,6 +698,15 @@ class WorkerHubClient:
             effort_source=resolved_effort_source,
         )
 
+    def _wait_advertisement_metadata(self) -> dict[str, Any]:
+        ad = self.settings.wait_advertisement
+        return {MetaKeys.WAIT_ADVERTISEMENT: asdict(ad)} if ad is not None else {}
+
+    def _wait_profile(self, reported: Any) -> dict[str, Any]:
+        effective = dict(reported) if isinstance(reported, dict) else {}
+        limit = effective.get("max_hold_s", self.settings.default_wait_s)
+        return effective | {"default_wait_s": min(self.settings.default_wait_s, limit)}
+
     async def check_in(
         self,
         capabilities: list[str] | None = None,
@@ -728,6 +740,7 @@ class WorkerHubClient:
             MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
             MetaKeys.OPERATION_ID: op_id,
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
+            **self._wait_advertisement_metadata(),
         }
         if profile.workspace_id is not None:
             metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
@@ -755,6 +768,9 @@ class WorkerHubClient:
             "status": "registered",
             "agent": self.settings.agent_name,
             "context_id": self.context_id,
+            "wait_profile": self._wait_profile(
+                (result.get("metadata") or {}).get(MetaKeys.WAIT_PROFILE)
+            ),
             "profile": {
                 "harness": profile.harness,
                 "harness_source": profile.harness_source.value,
@@ -881,6 +897,7 @@ class WorkerHubClient:
                 takeover=takeover,
                 workspace_path=reported_workspace_path,
                 workspace_explicit=workspace_explicit,
+                ad=self.settings.wait_advertisement,
             )
             self.settings = replace(self.settings, agent_name=clean_name)
             self.standing_role = standing_role
@@ -915,7 +932,7 @@ class WorkerHubClient:
                 "workspace_id": result.get("workspace_id", profile.workspace_id),
                 "cwd_inside_workspace": cwd_inside,
                 "profile": pinned_profile,
-                "wait_profile": {"default_wait_s": self.settings.default_wait_s},
+                "wait_profile": self._wait_profile(result.get("wait_profile")),
             }
 
         self.settings = replace(self.settings, agent_name=clean_name)
@@ -940,6 +957,7 @@ class WorkerHubClient:
             MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
             MetaKeys.WORKSPACE_EXPLICIT: workspace_explicit,
             MetaKeys.WORKSPACE_PATH: reported_workspace_path,
+            **self._wait_advertisement_metadata(),
         }
         if profile.workspace_id is not None:
             metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
@@ -1071,7 +1089,7 @@ class WorkerHubClient:
             "cwd_inside_workspace": final_cwd_inside,
             "setup": hub_setup,
             "profile": profile_dict,
-            "wait_profile": {"default_wait_s": self.settings.default_wait_s},
+            "wait_profile": self._wait_profile(res_meta.get(MetaKeys.WAIT_PROFILE)),
             "role_guide": (
                 f'Guide by reference: call get_role_guide(role="{standing_role.value}") '
                 "on assignment."
@@ -1223,6 +1241,7 @@ class WorkerHubClient:
                 "parts": [{"kind": "text", "text": "NEXT"}],
                 "metadata": {
                     MetaKeys.TIMEOUT_S: hold_s,
+                    **self._wait_advertisement_metadata(),
                     MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
                 },
             }
@@ -1375,6 +1394,7 @@ class WorkerHubClient:
                 "metadata": {
                     MetaKeys.KIND: "question",
                     MetaKeys.TIMEOUT_S: hold_s,
+                    **self._wait_advertisement_metadata(),
                     MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
                     MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
                 },

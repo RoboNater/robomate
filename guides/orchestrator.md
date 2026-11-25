@@ -62,7 +62,8 @@ previous guide. When a workflow is active follow On resume below. Use
 `wait_for_event()` for the event loop: omit timeout_s to use
 `join.wait_profile.default_wait_s`. Claude Code print uses 1500 s,
 Codex/OpenCode/Antigravity 1800 s; interactive Claude, unknown modes and old
-static entries use 100 s. The bridge sends heartbeats.
+static entries use 100 s. The negotiated `join.wait_profile.max_hold_s` caps
+both omitted and explicit timeouts. The bridge sends heartbeats.
 The forge appendix supplies all forge CLI commands, including merge and read-back.
 Run forge CLI and Git commands from your assigned worktree, and keep the
 harness tool workdir there. For GitHub, use a full PR URL or `--repo OWNER/REPO`

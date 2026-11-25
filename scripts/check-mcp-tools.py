@@ -49,7 +49,7 @@ import threading
 import tomllib
 from pathlib import Path
 
-from agent_hub_common.waits import HTTP_MARGIN_S, profile_wait_s
+from agent_hub_common.waits import HTTP_MARGIN_S, harness_profile, profile_wait_s
 
 PROBE_TIMEOUT_S = 180
 
@@ -162,7 +162,7 @@ def codex_config() -> Path:
     return (Path(home) if home else Path.home() / ".codex") / "config.toml"
 
 
-def check_timeout(harness: str, timeout_s: object, mode: str = "unknown") -> list[str]:
+def check_timeout(harness: str, timeout_s: object, mode: str | None = None) -> list[str]:
     """Flag an old client budget even though its bridge keeps the 100 s fallback."""
     required = profile_wait_s(harness, mode) + HTTP_MARGIN_S
     if (
@@ -286,17 +286,16 @@ def jsonc_object(text: str) -> dict:
 
 def check_client_timeout(harness: str, entry: dict) -> list[str]:
     """Check client units and reject an advertisement overstating its budget."""
-    field, units, default = {
-        "codex": ("tool_timeout_sec", 1, 300),
-        "opencode": ("timeout", 1000, None),
-        "antigravity": ("timeoutSeconds", 1, 180),
-    }[harness]
-    raw = entry.get(field, default)
+    profile = harness_profile(harness)
+    if profile is None or profile.timeout is None:
+        return [f"{harness}: no supported timeout setting"]
+    timeout = profile.timeout
+    raw = entry.get(timeout.field, timeout.default)
     numeric = isinstance(raw, int | float) and not isinstance(raw, bool) and math.isfinite(raw)
     unlimited = harness == "antigravity" and numeric and raw < 0
     if harness == "antigravity" and numeric and raw == 0:
-        raw = default  # Antigravity 0 retains its default per-tool timeout.
-    actual = raw / units if numeric else raw
+        raw = timeout.default  # Antigravity 0 retains its default per-tool timeout.
+    actual = raw / timeout.units_per_second if numeric else raw
     problems = [] if unlimited else check_timeout(harness, actual)
     env = entry.get("environment" if harness == "opencode" else "env", {})
     if not isinstance(env, dict):
@@ -306,12 +305,14 @@ def check_client_timeout(harness: str, entry: dict) -> list[str]:
             advertised = float(env["HUB_MCP_TIMEOUT_S"])
         except (TypeError, ValueError):
             advertised = float("nan")
-        if not math.isfinite(advertised) or advertised <= 0:
-            problems.append(f"{harness}: HUB_MCP_TIMEOUT_S must be positive finite seconds")
+        if not math.isfinite(advertised) or advertised <= HTTP_MARGIN_S:
+            problems.append(
+                f"{harness}: HUB_MCP_TIMEOUT_S must be finite and exceed {HTTP_MARGIN_S:g}s"
+            )
         elif not unlimited and numeric and advertised > actual:
             problems.append(
                 f"{harness}: HUB_MCP_TIMEOUT_S={advertised:g}s exceeds the real "
-                f"{field} client budget ({actual:g}s)"
+                f"{timeout.field} client budget ({actual:g}s)"
             )
     return problems
 

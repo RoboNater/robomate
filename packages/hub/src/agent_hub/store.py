@@ -4694,6 +4694,14 @@ class HubStore:
 
             remember(self, connection)
 
+    def joined_orchestrator(self) -> AgentRecord | None:
+        """Return the durable session identity of the last explicit orchestrator join."""
+        with database(self.path) as connection:
+            row = connection.execute(
+                "SELECT * FROM agent WHERE standing_role = 'orchestrator' AND status = 'idle'"
+            ).fetchone()
+        return None if row is None else _agent(row)
+
     def note_orchestrator_session(self, actor: str, session: str) -> None:
         """The session `/rpc` just accepted as the current orchestrator."""
 

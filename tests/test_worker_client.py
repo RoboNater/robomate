@@ -15,6 +15,7 @@ from agent_hub_common import (
     HubSettings,
     ImplementerOutcome,
     ImplementerResult,
+    MetaKeys,
     ModelSource,
     RebaseResult,
     ReviewerResult,
@@ -1322,17 +1323,32 @@ async def test_restart_during_long_stream_errors_without_replaying_hold_and_brid
 
 
 async def test_real_http_hub_restart_interrupts_long_holds_and_same_bridges_recover(
-    settings: HubSettings, worker_settings: WorkerSettings, frozen_clock: FrozenClock
+    settings: HubSettings,
+    worker_settings: WorkerSettings,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import uvicorn
     from agent_hub import create_app
     from agent_hub.signals import EVENT_KEY, context_key
+    from agent_hub_common.waits import WaitAdvertisement
     from conftest import reserve_port_block
     from worker_mcp.orchestrator import OrchestratorBridge
 
     port = reserve_port_block(1)
     url = f"http://127.0.0.1:{port}"
-    config = replace(settings, host="127.0.0.1", port=port, public_url=url, max_wait_s=1800)
+    config = replace(
+        settings,
+        host="127.0.0.1",
+        port=port,
+        public_url=url,
+        max_wait_s=1800,
+        guides_dir=Path(__file__).resolve().parents[1] / "guides",
+    )
+    ad = WaitAdvertisement("headless", 1900)
+    codex = AgentProfile(harness="codex", harness_source=ModelSource.ENV)
+    worker_settings = replace(worker_settings, profile=codex, wait_advertisement=ad)
+
     servers = []
     running = []
 
@@ -1359,8 +1375,10 @@ async def test_real_http_hub_restart_interrupts_long_holds_and_same_bridges_reco
         ):
             bridge = OrchestratorBridge(http_client=http)
             try:
-                await worker.check_in()
-                await bridge.call("get_state", {})
+                joined = await worker.check_in()
+                assert joined["wait_profile"]["max_hold_s"] == 1800
+                alice = await bridge.register(codex, ad=ad)
+                assert alice["wait_profile"]["max_hold_s"] == 1800
                 while (event := store.lease_next_event()) is not None:
                     store.ack_event(event.delivery_id)
                 worker_hold = asyncio.create_task(worker.await_assignment(timeout_s=1800))
@@ -1377,8 +1395,23 @@ async def test_real_http_hub_restart_interrupts_long_holds_and_same_bridges_reco
                     with pytest.raises(httpx.HTTPError):
                         await hold
                 await start()
-                assert await worker.await_assignment(timeout_s=0) == {"timeout": True}
-                assert "agents" in await bridge.call("get_state", {})
+                durations = []
+
+                async def capture_assignment(
+                    self: HubStore, context: str, timeout_s: float, **kw: Any
+                ) -> None:
+                    durations.append(timeout_s)
+
+                async def capture_inbox(
+                    self: HubStore, timeout_s: float, ack: str | None = None
+                ) -> None:
+                    durations.append(timeout_s)
+
+                monkeypatch.setattr(HubStore, "await_assignment", capture_assignment)
+                monkeypatch.setattr(HubStore, "wait_for_event", capture_inbox)
+                assert await worker.await_assignment(timeout_s=1800) == {"timeout": True}
+                assert await bridge.call("wait_for_event", {"timeout_s": 1800}) == {"event": None}
+                assert durations == [1800, 1800]
             finally:
                 await bridge.close()
     finally:
@@ -1533,3 +1566,79 @@ async def test_assignment_metadata_contract(
         assert assignment[WORKER_ASSIGNMENT_FIELDS[key]] == value
     assert assignment["task_id"] == task.id
     assert assignment["instructions"] == "Read it"
+
+
+@pytest.mark.hub_settings(default_wait_s=1000, max_wait_s=1800)
+async def test_worker_takeover_and_heartbeat_restore_only_the_current_instance(
+    client: httpx.AsyncClient,
+    settings: HubSettings,
+    worker_settings: WorkerSettings,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub import create_app
+    from agent_hub_common.waits import WaitAdvertisement
+    from conftest import message, rpc, sse_results
+
+    settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
+    (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
+
+    durations = []
+
+    async def capture(self: HubStore, context: str, timeout_s: float, **kw: Any) -> None:
+        durations.append(timeout_s)
+
+    monkeypatch.setattr(HubStore, "await_assignment", capture)
+    codex = AgentProfile(harness="codex", harness_source=ModelSource.INSTALL)
+    old_settings = replace(
+        worker_settings, profile=codex, wait_advertisement=WaitAdvertisement("headless", 1900)
+    )
+    new_settings = replace(old_settings, wait_advertisement=WaitAdvertisement("interactive", 515))
+    old = WorkerHubClient(old_settings, http_client=client)
+    current = WorkerHubClient(new_settings, http_client=client)
+    assert (await old.join("bob", "implementer"))["wait_profile"]["max_hold_s"] == 1800
+    joined = await current.join("bob", "implementer", takeover=True)
+    assert joined["wait_profile"]["mode"] == "interactive"
+    assert joined["wait_profile"]["max_hold_s"] == 500
+    assert await current.await_assignment(timeout_s=1800) == {"timeout": True}
+
+    restarted = create_app(settings)
+    frozen_clock.install(restarted.state.store)
+    async with (
+        restarted.router.lifespan_context(restarted),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=restarted),
+            base_url=BASE_URL,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        ) as http,
+    ):
+        old_bridge = WorkerHubClient(old_settings, http_client=http)
+        old_bridge.context_id = old.context_id
+        old_bridge.worker_instance_id = old.worker_instance_id
+        same_bridge = WorkerHubClient(new_settings, http_client=http)
+        same_bridge.context_id = current.context_id
+        same_bridge.worker_instance_id = current.worker_instance_id
+        assert not await old_bridge.heartbeat()
+        with pytest.raises(WorkerProtocolError, match="superseded"):
+            await old_bridge.await_assignment(timeout_s=1800)
+
+        async def next_without_advertisement() -> None:
+            response = await http.post(
+                "/a2a",
+                json=rpc(
+                    "message/stream",
+                    message(
+                        "NEXT",
+                        context_id=same_bridge.context_id,
+                        metadata={MetaKeys.WORKER_INSTANCE_ID: same_bridge.worker_instance_id},
+                    ),
+                ),
+            )
+            assert sse_results(response)[0]["metadata"][MetaKeys.TIMEOUT] is True
+
+        await next_without_advertisement()
+        assert await same_bridge.heartbeat()
+        await next_without_advertisement()
+        assert durations == [500, 100, 500]

@@ -12,8 +12,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 from uuid import uuid4
 
@@ -64,6 +66,7 @@ from agent_hub_common import (
     TaskState,
     validate_agent_name,
 )
+from agent_hub_common.waits import EffectiveWaitProfile, WaitAdvertisement, negotiate_wait
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -478,7 +481,7 @@ def _task_object(
 
 @dataclass(frozen=True, slots=True)
 class A2AProtocol:
-    """Maps A2A calls onto hub state. Holds no state of its own."""
+    """Maps A2A calls onto hub state and tracks negotiated instance hold limits."""
 
     store: HubStore
     settings: HubSettings
@@ -486,6 +489,30 @@ class A2AProtocol:
     # repository context (test hubs, the `hub` entry point): no worktree is
     # created and the bridge's path is echoed.
     worktree_manager: Any | None = None
+    _wait_profiles: dict[str, tuple[str, EffectiveWaitProfile]] = dataclass_field(
+        default_factory=dict, init=False
+    )
+
+    def _wait_advertisement(self, metadata: Mapping[str, Any]) -> WaitAdvertisement | None:
+        if MetaKeys.WAIT_ADVERTISEMENT not in metadata:
+            return None
+        try:
+            return WaitAdvertisement.from_wire(metadata[MetaKeys.WAIT_ADVERTISEMENT])
+        except ValueError as exc:
+            raise _invalid(f"metadata.{MetaKeys.WAIT_ADVERTISEMENT}: {exc}") from exc
+
+    def _wait_profile(
+        self, agent: AgentRecord, ad: WaitAdvertisement | None, *, new_join: bool = False
+    ) -> EffectiveWaitProfile:
+        current = self._wait_profiles.get(agent.name)
+        if not new_join and current is not None and current[0] == agent.worker_instance_id:
+            return current[1]
+        profile = negotiate_wait(agent.harness, agent.harness_source, ad, self.settings.max_wait_s)
+        # An old-client call immediately after restart uses the fallback without
+        # binding it. A subsequent resume advertisement can still restore the cap.
+        if new_join or ad is not None:
+            self._wait_profiles[agent.name] = (agent.worker_instance_id, profile)
+        return profile
 
     async def dispatch(self, payload: Any, remote_addr: str | None = None) -> Response:
         """Route one JSON-RPC request, turning refusals into error responses.
@@ -675,6 +702,7 @@ class A2AProtocol:
             raise _invalid(f"metadata.{MetaKeys.TAKEOVER} must be a boolean")
         takeover = raw_takeover
         profile = _profile(metadata)
+        ad = self._wait_advertisement(metadata)
         # M2 Step 7b (#314): `setup` and agent pins from the layers (Step 5).
         # Only joins get them; legacy `check_in` keeps its pre-worktree behaviour.
         join_setup: str | None = None
@@ -771,6 +799,7 @@ class A2AProtocol:
                 "workspace_explicit": workspace_explicit,
                 "setup": join_setup,
             }
+            | ({"wait_advertisement": asdict(ad)} if ad is not None else {})
         )
 
         def _build_ack(agent: AgentRecord) -> str:
@@ -807,7 +836,7 @@ class A2AProtocol:
                 ).model_dump(mode="json", exclude_none=True)
             )
 
-        resp_json, _ = self.store.check_in(
+        resp_json, registered = self.store.check_in(
             agent_name,
             profile,
             standing_role=standing_role,
@@ -828,6 +857,13 @@ class A2AProtocol:
         instance = (response.metadata or {}).get(MetaKeys.WORKER_INSTANCE_ID)
         if isinstance(instance, str) and instance:
             self.store.note_worker_call(agent_name, instance, "check_in")
+            agent = self.store.agent_by_name(agent_name)
+            if agent is not None and agent.worker_instance_id == instance:
+                response.metadata = (response.metadata or {}) | {
+                    MetaKeys.WAIT_PROFILE: asdict(
+                        self._wait_profile(agent, ad, new_join=registered)
+                    )
+                }
         return response
 
     def _heartbeat(
@@ -846,6 +882,7 @@ class A2AProtocol:
                 f"metadata.{MetaKeys.CURRENT_TASK_ID} must be a non-empty string when present"
             )
         agent_name = name.strip()
+        ad = self._wait_advertisement(metadata)
         if metadata.get(MetaKeys.DETACH) is True:
             # The instance's last word as it shuts down (#115).
             accepted = self.store.detach(agent_name, instance_id)
@@ -859,6 +896,8 @@ class A2AProtocol:
         agent = self.store.agent_by_name(agent_name)
         if agent is not None:
             note_a2a(actor=agent.name)
+            if accepted and agent.worker_instance_id == instance_id and ad is not None:
+                self._wait_profile(agent, ad)
         return _agent_message(
             "HEARTBEAT",
             context_id=None if agent is None else agent.context_id,
@@ -938,14 +977,14 @@ class A2AProtocol:
     def _stream(self, request_id: RequestId, params: MessageSendParams) -> Response:
         message = params.message
         metadata = _metadata(message)
-        timeout_s = self._timeout(metadata)
+        agent = self._resolve_agent(message, metadata)
+        timeout_s = self._timeout(agent, metadata)
 
         if message.task_id is not None:
             if metadata.get(MetaKeys.KIND) != "question":
                 raise _invalid(
                     f"a streaming call on a task must be metadata.{MetaKeys.KIND}=question"
                 )
-            agent = self._resolve_agent(message, metadata)
             task = self._owned_task(message.task_id, agent)
             question = _text(message)
             if not question:
@@ -964,7 +1003,6 @@ class A2AProtocol:
 
         if _text(message).upper() != NEXT_TEXT:
             raise _invalid(f"a streaming call with no taskId must be the {NEXT_TEXT} poll")
-        agent = self._resolve_agent(message, metadata)
         return self._streaming(self._assignment_stream(request_id, agent, timeout_s))
 
     def _streaming(self, body: AsyncIterator[bytes]) -> StreamingResponse:
@@ -1100,13 +1138,16 @@ class A2AProtocol:
             metadata=metadata,
         )
 
-    def _timeout(self, metadata: Mapping[str, Any]) -> float:
+    def _timeout(self, agent: AgentRecord, metadata: Mapping[str, Any]) -> float:
         requested = metadata.get(MetaKeys.TIMEOUT_S)
-        if requested is None:
-            return self.settings.bounded_wait(None)
-        if not isinstance(requested, int | float) or isinstance(requested, bool):
-            raise _invalid(f"metadata.{MetaKeys.TIMEOUT_S} must be a number of seconds")
-        return self.settings.bounded_wait(float(requested))
+        if requested is not None and (
+            not isinstance(requested, int | float)
+            or isinstance(requested, bool)
+            or not 0 <= requested < math.inf
+        ):
+            raise _invalid(f"metadata.{MetaKeys.TIMEOUT_S} must be finite non-negative seconds")
+        profile = self._wait_profile(agent, self._wait_advertisement(metadata))
+        return self.settings.bounded_wait(requested, max_hold_s=profile.max_hold_s)
 
     # -- tasks/get and tasks/cancel ----------------------------------------
 

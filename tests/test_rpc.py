@@ -10,6 +10,7 @@ from typing import Any, cast
 import httpx
 import pytest
 from agent_hub import create_app
+from agent_hub.activity import HOLD_GRACE_S
 from agent_hub.database import database
 from agent_hub.gitlab_gate import GitLabGate, GlabResult
 from agent_hub.merge_gate import GhResult, MergeGate, MergeGateError
@@ -530,6 +531,8 @@ async def test_every_json_rpc_id_is_echoed_and_other_ids_are_refused(
         ),
         ("wait_for_event", {"timeout_s": 1801}, "timeout_s"),
         ("wait_for_event", {"timeout_s": -1}, "timeout_s"),
+        ("wait_for_event", {"timeout_s": True}, "timeout_s"),
+        ("wait_for_event", {"timeout_s": "NaN"}, "timeout_s"),
         ("set_task_state", {"task_id": "t", "state": "done", "note": "n"}, "state"),
         ("set_workflow_status", {"status": "finished", "summary": "s"}, "status"),
         ("reply", {"task_id": "t", "text": "hi"}, "message_id"),
@@ -2190,3 +2193,105 @@ async def test_long_inbox_hold_uses_hub_clamp_for_activity_and_wait(
     assert response["result"]["event"]["kind"] == "agent_checked_in"
     # conftest caps hub holds at 1 s; coercion and tracking use the same value.
     assert observed == [("wait_for_event", 1.0)]
+
+
+@pytest.mark.hub_settings(default_wait_s=900, max_wait_s=1600)
+@pytest.mark.parametrize("requested", [None, 1800, 20], ids=["omitted", "high", "low"])
+@pytest.mark.parametrize(
+    ("budget", "limit"), [(None, 100), (65, 50), (1900, 1600)], ids=["old", "low", "high"]
+)
+async def test_inbox_negotiated_hold_matches_the_activity_deadline(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    requested: float | None,
+    budget: int | None,
+    limit: float,
+) -> None:
+    from agent_hub_common.waits import WAIT_ADVERTISEMENT_HEADER
+
+    headers = (
+        None
+        if budget is None
+        else {
+            WAIT_ADVERTISEMENT_HEADER: f'{{"mode":"headless","client_budget_s":{budget}}}',
+        }
+    )
+    joined = await call(
+        client,
+        "join",
+        headers=headers,
+        name="alice",
+        profile={"harness": "codex", "harness_source": "env"},
+    )
+    assert joined["result"]["wait_profile"]["max_hold_s"] == limit
+    durations = []
+
+    async def capture(self: HubStore, timeout_s: float, ack: str | None = None) -> None:
+        activity = self.activity.orchestrator()
+        assert activity is not None
+        hold = activity.active_hold(self.clock())
+        assert hold is not None and hold.kind == "wait_for_event"
+        durations.append((timeout_s, (hold.deadline - hold.started).total_seconds()))
+
+    monkeypatch.setattr(HubStore, "wait_for_event", capture)
+    params: dict[str, Any] = {} if requested is None else {"timeout_s": requested}
+    response = await call(client, "wait_for_event", **params)
+    assert response["result"] == {"event": None}
+    expected = min(900 if requested is None else requested, limit)
+    assert durations == [(expected, expected + HOLD_GRACE_S)]
+
+
+@pytest.mark.hub_settings(default_wait_s=900, max_wait_s=1800)
+async def test_inbox_takeover_and_restart_restore_only_the_current_session(
+    client: httpx.AsyncClient,
+    settings: HubSettings,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_hub_common.waits import WAIT_ADVERTISEMENT_HEADER
+
+    print_ad = {WAIT_ADVERTISEMENT_HEADER: '{"mode":"print","client_budget_s":1900}'}
+    profile = {"harness": "claude-code", "harness_source": "env"}
+    old = await call(client, "join", headers=print_ad, name="alice", profile=profile)
+    assert old["result"]["wait_profile"]["max_hold_s"] == 1500
+    new_session = {SESSION_HEADER: "1b1cb203-d9d2-40da-84f1-d11580b1e1bd"}
+    low_ad = {WAIT_ADVERTISEMENT_HEADER: '{"mode":"print","client_budget_s":515}'}
+    replacement = await call(
+        client, "join", headers=new_session | low_ad, name="alice", profile=profile, takeover=True
+    )
+    assert replacement["result"]["wait_profile"]["max_hold_s"] == 500
+    bad = await call(
+        client,
+        "join",
+        headers={
+            SESSION_HEADER: "4eeac2b4-2408-446e-bd3e-4cbacae3adbb",
+            WAIT_ADVERTISEMENT_HEADER: '{"mode":"print","client_budget_s":15}',
+        },
+        name="alice",
+        profile=profile,
+        takeover=True,
+    )
+    assert error_of(bad)[0] == INVALID_PARAMS
+
+    restarted = create_app(settings)
+    frozen_clock.install(restarted.state.store)
+    durations = []
+
+    async def capture(self: HubStore, timeout_s: float, ack: str | None = None) -> None:
+        durations.append(timeout_s)
+
+    monkeypatch.setattr(HubStore, "wait_for_event", capture)
+    async with restarted.router.lifespan_context(restarted):
+        assert (
+            error_of(await bare_call(restarted, "hub.heartbeat", CALLER_HEADERS | print_ad))[0]
+            == CONFLICT
+        )
+        current = CALLER_HEADERS | new_session
+        assert (await bare_call(restarted, "wait_for_event", current))["result"] == {"event": None}
+        assert (await bare_call(restarted, "hub.heartbeat", current | low_ad))["result"] == {
+            "ok": True
+        }
+        assert (await bare_call(restarted, "wait_for_event", current | print_ad))["result"] == {
+            "event": None
+        }
+    assert durations == [100, 500]
