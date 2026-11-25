@@ -1,6 +1,15 @@
 """Constants and metadata keys used across hub and worker packages."""
 
+import re
 from enum import StrEnum
+
+# A profile field the adapter was not told is recorded as this, never guessed
+# (spec §4.3), so Alice can tell "not reported" apart from a real value.
+UNKNOWN = "unknown"
+
+# Full-length git object name, as published by the forge (#647 keeps this and
+# `UNKNOWN` free of pydantic so `import robomate.cli` stays light).
+SHA_HEX_40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 # Operational payload limits from spec §3. They are byte limits, not character
 # limits, so non-ASCII text cannot bypass them through UTF-8 expansion.

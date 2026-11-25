@@ -8,10 +8,14 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from .constants import UNKNOWN
 from .logging_setup import default_log_file
-from .models import UNKNOWN, AgentProfile, ModelSource
 from .registry import operator_token_path
+
+if TYPE_CHECKING:
+    from .models import AgentProfile
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,10 @@ def profile_from_env(environ: Mapping[str, str] | None = None) -> AgentProfile:
     the profile exists to stop. `AGENT_RUNTIME`, the Step 4 name for the
     harness, is still honoured when `HUB_HARNESS` is unset.
     """
+
+    # The models module imports pydantic; defer it so `import robomate.cli`
+    # (which never builds a profile) stays light (#647).
+    from .models import AgentProfile, ModelSource
 
     env = os.environ if environ is None else environ
     harness = _declared(env, "HUB_HARNESS", "AGENT_RUNTIME")
