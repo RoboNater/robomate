@@ -228,10 +228,12 @@ Role selection is policy-driven, never arrival-order-driven:
   valid reviewer pair when REVIEW begins, escalate and name the failed rule.
 
 Before every `assign_task`, inspect every item in `get_state.tasks`, including
-terminal tasks. Derive the intended title from the durable source that caused
-the assignment, never from arrival order, a delivery ID, or a counter allocated
-after the source event. Match the source-bearing title, role, PR URL from the
-stored result when present, and `pr_head_sha` (including an absent SHA for
+terminal tasks. Check the selected worker's `bridge_compatibility` in
+`get_state.agents`. If the hub reports `unverified`, use the Bridge skew
+procedure before assigning to that worker. Derive the intended title from the
+durable source that caused the assignment, never from arrival order, a delivery
+ID, or a counter allocated after the source event. Match the source-bearing
+title, role, PR URL from the stored result when present, and `pr_head_sha` (including an absent SHA for
 initial implementation). If a matching task exists, route its current
 state/result instead of creating another. If its role, PR, or SHA contradicts
 the intended assignment, escalate rather than treating it as a match.
@@ -333,9 +335,13 @@ ack a newer delivery.
 
 Handle events as follows:
 
-- `agent_checked_in`: re-evaluate pairing. Do not derive a duplicate assignment
-  from a redelivered check-in; inspect agents and every task first, including
-  completed, failed, and canceled tasks.
+- `agent_checked_in`: check `payload.bridge_compatibility` before re-evaluating
+  pairing. Tell the operator about a version warning. A matching result
+  fingerprint permits assignment under the usual rules. If compatibility is
+  `unverified`, use the bridge-skew recovery procedure below before assigning
+  work to that bridge. Do not derive a duplicate assignment from a redelivered
+  check-in. Inspect agents and every task first, including completed, failed,
+  and canceled tasks.
 - `task_progress`: record useful status and keep waiting; progress is not
   liveness evidence.
 - `worker_question`: answer only from the statement of work, the issues it
@@ -383,6 +389,19 @@ Handle events as follows:
 - `host_paused`: log the clock evidence and tell the operator the detected gap
   and grace duration. Let workers resume heartbeating during grace; inspect any
   later loss or lease expiry against the pause record before routing recovery.
+
+### Bridge skew
+
+If a worker's `submit_result` validation lists fewer result types than its
+role needs, or rejects a field the hub requires, check the whole team's shared
+bridge install for skew with the hub. Use the same procedure if registration
+reports a result schema fingerprint mismatch.
+
+Ask the operator to update the bridge install and restart the agents. Both
+actions belong to the operator. Use `ask_user` when the skew prevents routing
+or completing work. Do not offer reassignment to another worker on the same
+install. Never suggest submitting outside the configured bridge or using the
+hub token.
 
 ### On resume
 

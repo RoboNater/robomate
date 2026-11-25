@@ -1576,10 +1576,24 @@ class HubStore:
                         connection, exclude_id=str(recent["id"])
                     )
             agents = []
-            for row in connection.execute("SELECT * FROM agent ORDER BY name").fetchall():
+            # Keep registration diagnostics visible after Alice acknowledges
+            # the event, and across hub restarts. Use only the current bridge's
+            # check-in so a replacement can't inherit the previous warning.
+            agents_with_compatibility = connection.execute(
+                "SELECT agent.*, (SELECT json_extract(payload_json, '$.bridge_compatibility')"
+                " FROM event WHERE kind = ?"
+                " AND json_extract(payload_json, '$.agent') = agent.name"
+                " AND json_extract(payload_json, '$.worker_instance_id') = agent.worker_instance_id"
+                " ORDER BY id DESC LIMIT 1) AS bridge_compatibility"
+                " FROM agent ORDER BY name",
+                (EventKind.AGENT_CHECKED_IN.value,),
+            )
+            for row in agents_with_compatibility:
                 agent = _agent(row)
                 summary = asdict(agent)
                 summary.pop("reattached_task", None)
+                if row["bridge_compatibility"] is not None:
+                    summary["bridge_compatibility"] = json.loads(row["bridge_compatibility"])
                 summary["model_mismatch"] = _model_mismatch(
                     agent.model_source, agent.model, agent.declared_model
                 )
@@ -2784,6 +2798,7 @@ class HubStore:
         workspace_path: str | None = None,
         workspace_kind: str | None = None,
         claimant: Claimant | None = None,
+        bridge_compatibility: Mapping[str, str | None] | None = None,
     ) -> Any:
         """Register a worker, or re-admit a returning one on its own context.
 
@@ -2800,6 +2815,9 @@ class HubStore:
         instance, a claimant that does not match the held row's workspace and
         harness profile is refused before any write. `None` skips the gate
         for legacy/prepared check-ins and direct store callers.
+
+        A compatibility report travels in the check-in event, committed with
+        registration so it is visible as soon as the worker can be assigned.
         """
 
         name = validate_agent_name(name)
@@ -2985,6 +3003,7 @@ class HubStore:
                 EventKind.AGENT_CHECKED_IN,
                 {"agent": name}
                 | profile_payload
+                | ({"bridge_compatibility": bridge_compatibility} if bridge_compatibility else {})
                 | {
                     "context_id": context_id,
                     "worker_instance_id": instance_id,
