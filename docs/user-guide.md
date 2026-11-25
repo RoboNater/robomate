@@ -772,15 +772,24 @@ Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
 - `PR` names the run's PR or MR number and short head, the issue it addresses
   (or the statement's source and short SHA-256 when the statement names no
   issue), and the start time with its age. The date appears when the run did not
-  start today and ages roll over to hours and days. Before a PR exists the line
-  reads `none yet` and still shows the issue and start.
+  start today and ages roll over to hours and days. Before a submitted result
+  binds a PR, the line names the hub's run branch instead —
+  `none recorded (branch robomate/<hub>/<agent>/<label>)` — and still shows the
+  issue and start.
 - `Gate` is the latest stored merge-gate reading for the run: time and age, the
   CI summary with pending or failed check names, `head matches`,
   `base behind` and `mergeable` with the forge's merge-state status. With no
   reading it says `no gate reading yet`. **`--live`** runs one read-only forge
   query, prints it labelled `live`, and writes no reading; a forge failure
   prints `live failed: …` and falls back to the stored reading without failing
-  `status`. Both use only your existing `gh`/`glab` login.
+  `status`. With no recorded PR, `--live` first looks up the open PR/MR for the
+  run branch in your own repository (`gh pr list --head` on GitHub, the
+  equivalent `glab` query on GitLab): exactly one match is used and labelled
+  `found by branch` on the `PR` line, then its gate is read like a recorded
+  PR's. Zero or several matches show none and name the reason. A PR found this
+  way is never written back; binding still comes only from a submitted result.
+  With a recorded PR, `--live` uses it and makes no branch query. Both use only
+  your existing `gh`/`glab` login.
 - `Agents` counts alive, stalled, lost and released agents and the queue length.
   **`--activity`** adds one line per agent, the orchestrator included: the last
   hub call or action, its UTC time and age, and the task it concerns or
@@ -798,10 +807,13 @@ escaped note. Notes are untrusted agent text, are never interpreted, and never
 appear under `--brief`.
 
 `--json` carries the same facts additively: a `run` object (status, created,
-age, PR/MR URL, head and approved SHAs, issue or statement source and SHA,
-review rounds used, current and last task), a `gate` object (or `null`), and
+age, branch, PR/MR URL, head and approved SHAs, issue or statement source and
+SHA, review rounds used, current and last task), a `gate` object (or `null`), and
 per agent `last_call_at`, `last_progress_at`, `last_progress_age_s`,
 `current_task_role`, `latest_note`, `latest_note_escaped` and `session_log`.
+`--live` adds `live_gate` and `live_gate_error`; a `live_gate` reading carries
+its `pr_url` and `pr_found_by_branch` so tools can tell a branch lookup from a
+recorded binding.
 Existing keys and their meaning are unchanged. A hub older than these fields
 still prints, with `not reported by this hub` where they are missing.
 

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from agent_hub_common import (
     MAX_STATEMENT_BYTES,
+    SHA_HEX_40_RE,
     HubSettings,
     load_config_layers,
     load_or_create_token,
@@ -94,6 +95,8 @@ from agent_hub_common.workspace import create_clone
 
 if TYPE_CHECKING:
     from agent_hub.forge_preflight import PreflightCheck
+    from agent_hub.gitlab_gate import GitLabProject
+    from agent_hub.merge_gate import GitHubProject
 
 VERSION = "0.1.0"
 
@@ -1386,20 +1389,144 @@ def _live_gate(status: dict[str, Any], pr_url: str, expected_head: str) -> Any:
     return gate.check(pr_url, expected_head)
 
 
-def _live_gate_reading(status: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    """Run `--live`'s read-only query without writing or failing `status` (#653)."""
+def _live_branch_prs(status: dict[str, Any], branch: str) -> list[tuple[str, str]]:
+    """Open PRs/MRs whose head is the run's branch, in this hub's own repository.
 
-    from agent_hub_common import SHA_HEX_40_RE
+    Read-only, and never written back: the run's PR binding still comes only
+    from a submitted result (#671). Raises when the forge cannot be read, so
+    `--live` can label it and fall back to the stored reading.
+    """
+
+    import anyio
+
+    origin = str(status.get("origin") or "")
+    if status.get("forge") == "gitlab":
+        from agent_hub.gitlab_gate import GitLabProject
+
+        gitlab_project = GitLabProject.from_origin(origin)
+        return anyio.run(_gitlab_prs_by_branch, gitlab_project, branch)
+    from agent_hub.merge_gate import GitHubProject
+
+    github_project = GitHubProject.from_origin(origin)
+    return anyio.run(_github_prs_by_branch, github_project, branch)
+
+
+async def _github_prs_by_branch(project: GitHubProject, branch: str) -> list[tuple[str, str]]:
+    """One `gh pr list` restricted to this project and head branch (#671)."""
+
+    from agent_hub.merge_gate import MergeGateError, run_gh
+
+    args = [
+        "pr",
+        "list",
+        "--repo",
+        f"{project.host}/{project.owner}/{project.repo}",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "url,headRefOid",
+        # Two is enough to tell "exactly one" from "several".
+        "--limit",
+        "2",
+    ]
+    result = await run_gh(args)
+    if result.returncode != 0:
+        detail = result.stderr.strip()[:500] or f"exit {result.returncode}"
+        raise MergeGateError(f"gh pr list failed: {detail}")
+    try:
+        data: Any = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise MergeGateError("gh pr list printed invalid JSON") from exc
+    if not isinstance(data, list):
+        raise MergeGateError("gh pr list did not print a JSON array")
+    matches: list[tuple[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise MergeGateError("gh pr list printed a pull request that is not an object")
+        url = item.get("url")
+        head = item.get("headRefOid")
+        if not isinstance(url, str) or not isinstance(head, str):
+            raise MergeGateError("gh pr list printed a pull request without a URL and head")
+        if not SHA_HEX_40_RE.fullmatch(head):
+            raise MergeGateError("gh pr list printed a head that is not a commit SHA")
+        # Only this project's own PRs reach the caller, whatever gh printed.
+        matches.append((project.parse_pr_url(url).url, head.lower()))
+    return matches
+
+
+async def _gitlab_prs_by_branch(project: GitLabProject, branch: str) -> list[tuple[str, str]]:
+    """One `glab api` merge-request query for this project's source branch (#671)."""
+
+    from agent_hub.gitlab_gate import GitLabGateError, run_glab
+
+    query = f"merge_requests?state=opened&source_branch={urllib.parse.quote(branch, safe='')}"
+    args = project.api(query)
+    result = await run_glab(args)
+    if result.returncode != 0:
+        detail = result.stderr.strip()[:500] or f"exit {result.returncode}"
+        raise GitLabGateError(f"glab api merge_requests failed: {detail}")
+    text = result.stdout.strip()
+    if not text:
+        return []
+    try:
+        data: Any = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise GitLabGateError("glab api merge_requests printed invalid JSON") from exc
+    if not isinstance(data, list):
+        raise GitLabGateError("glab api merge_requests did not print a JSON array")
+    matches: list[tuple[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise GitLabGateError("glab api merge_requests printed an MR that is not an object")
+        url = item.get("web_url")
+        head = item.get("sha")
+        if not isinstance(url, str) or not isinstance(head, str):
+            raise GitLabGateError("glab api merge_requests printed an MR without a URL and head")
+        if not SHA_HEX_40_RE.fullmatch(head):
+            raise GitLabGateError("glab api merge_requests printed a head that is not a commit SHA")
+        # Only this project's own MRs reach the caller, whatever glab printed.
+        matches.append((project.parse_mr_url(url).url, head.lower()))
+    return matches
+
+
+def _live_gate_reading(status: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Run `--live`'s read-only query without writing or failing `status` (#653, #671).
+
+    A recorded PR is used as-is, with no branch query. Otherwise the hub-named
+    run branch is looked up on the forge, and exactly one open PR in this
+    repository is used, labelled as found by branch.
+    """
 
     if "run" not in status:
         return None, "unavailable: not reported by this hub"
     run = status.get("run")
     if not isinstance(run, dict):
         return None, "unavailable: no PR yet"
-    pr_url = run.get("pr_url")
+    pr_url: object = run.get("pr_url")
+    head: object
+    found_by_branch = False
+    if not isinstance(pr_url, str) or not pr_url:
+        branch = run.get("branch")
+        if not isinstance(branch, str) or not branch:
+            return None, "unavailable: no PR yet"
+        try:
+            matches = _live_branch_prs(status, branch)
+        except Exception as exc:  # --live never fails status; the caller falls back
+            detail = _printable(str(exc))[:500] or type(exc).__name__
+            return None, f"failed: {detail}"
+        shown = _printable(branch)
+        if not matches:
+            return None, f"none found: no open PR for branch {shown}"
+        if len(matches) > 1:
+            return None, f"none found: {len(matches)} open PRs match branch {shown}"
+        pr_url, head = matches[0]
+        found_by_branch = True
+    else:
+        head = run.get("head_sha") or run.get("approved_sha")
     if not isinstance(pr_url, str) or not pr_url:
         return None, "unavailable: no PR yet"
-    head = run.get("head_sha") or run.get("approved_sha")
     if not isinstance(head, str) or not SHA_HEX_40_RE.fullmatch(head):
         return None, "unavailable: no head recorded yet"
     try:
@@ -1423,6 +1550,9 @@ def _live_gate_reading(status: dict[str, Any]) -> tuple[dict[str, Any] | None, s
             "mergeable": getattr(report.mergeable, "value", report.mergeable),
             "merge_state_status": report.merge_state_status,
             "error_code": None,
+            # Additive for #671: where this reading's PR came from.
+            "pr_url": pr_url,
+            "pr_found_by_branch": found_by_branch,
         },
         None,
     )
@@ -1498,13 +1628,38 @@ def _headline_lines(
             step = f"none   {verdict}"
         lines.append(_status_field("Step", step))
         pr_url = run.get("pr_url")
+        branch = run.get("branch")
         target = _run_target(run)
         started = _run_started(run.get("created"), status.get("assessed_at"), run.get("age_s"))
+        # --live may find the open PR by the run's branch before any result
+        # binds it; it is labelled as found, never as recorded (#671).
+        live_pr_url: str | None = None
+        live_pr_head: object = None
+        if isinstance(live, dict) and live.get("pr_found_by_branch") is True:
+            reported_live_pr = live.get("pr_url")
+            if isinstance(reported_live_pr, str) and reported_live_pr:
+                live_pr_url = reported_live_pr
+                live_pr_head = live.get("current_head_sha")
         if isinstance(pr_url, str) and pr_url:
             lines.append(
                 _status_field(
                     "PR",
                     f"#{_pr_number(pr_url)} @ {_short_sha(head)}   {target}   {started}",
+                )
+            )
+        elif live_pr_url is not None:
+            lines.append(
+                _status_field(
+                    "PR",
+                    f"#{_pr_number(live_pr_url)} @ {_short_sha(live_pr_head)}"
+                    f"   found by branch   {target}   {started}",
+                )
+            )
+        elif isinstance(branch, str) and branch:
+            lines.append(
+                _status_field(
+                    "PR",
+                    f"none recorded (branch {_printable(branch)})   {target}   {started}",
                 )
             )
         else:
@@ -2308,7 +2463,10 @@ def main() -> None:
     status.add_argument(
         "--live",
         action="store_true",
-        help="read the merge gate from the forge once, labelled live; never writes",
+        help=(
+            "read the merge gate from the forge once, labelled live; with no recorded PR,"
+            " find one open PR by the run branch; never writes"
+        ),
     )
     status.add_argument(
         "--snapshot",

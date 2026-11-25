@@ -2836,6 +2836,26 @@ def test_status_summary_projects_run_activity_notes_and_latest_gate_reading(
     assert bob["session_log"] == str(sessions / "bob.jsonl")
 
 
+def test_status_summary_includes_the_hub_named_run_branch(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """#671: status carries the run branch for a read-only PR lookup."""
+
+    path = tmp_path / "hub.db"
+    initialize_database(path)
+    store = HubStore(path, hub_name="hub")
+    frozen_clock.install(store)
+    store.start_workflow(
+        "Address issue `RoboNater/robomate#671` and deliver it.", source="submit:stdin"
+    )
+    store.check_in("bob")
+    store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+
+    run = store.status_summary()["run"]
+    assert run["branch"] == "robomate/hub/bob/671"
+    assert run["pr_url"] is None
+
+
 def test_status_summary_reports_no_gate_reading_and_only_progress_notes(store: HubStore) -> None:
     """#653: a question is never the note, and a run with no gate reading says so."""
 

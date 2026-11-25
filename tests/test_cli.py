@@ -5006,6 +5006,22 @@ def _status_hub(
     return hub_store
 
 
+def _status_hub_with_run_branch(
+    tmp_path: Path, frozen_clock: FrozenClock, issue: str = "671"
+) -> HubStore:
+    """A hub with a repository context, so its first implementer task names a branch."""
+
+    hub_store = _status_hub(
+        tmp_path,
+        frozen_clock,
+        statement=f"Address issue `RoboNater/robomate#{issue}` and deliver it.",
+    )
+    hub_store.hub_name = "hub"
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    return hub_store
+
+
 def _patch_status_hub(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5219,6 +5235,237 @@ def test_status_shows_live_gate_ci_names_and_falls_back_without_writing(
     assert "Gate:      live failed: forge unavailable" in fallback
     assert "error (code -32004)" in fallback
     assert reading_count() == before
+
+
+def test_status_default_view_shows_the_run_branch_before_a_pr_is_recorded(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#671: the hub-named branch stands in for a PR not recorded yet."""
+
+    hub_store = _status_hub_with_run_branch(tmp_path, frozen_clock)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    assert "PR:        none recorded (branch robomate/hub/bob/671)   for #671   started " in out
+    assert "none yet" not in out
+
+    cli._status(True, None)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["branch"] == "robomate/hub/bob/671"
+    assert payload["run"]["pr_url"] is None
+
+
+def test_status_live_finds_the_open_pr_by_run_branch(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#671: exactly one open PR on the run branch is used and labelled."""
+
+    hub_store = _status_hub_with_run_branch(tmp_path, frozen_clock)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+    branch = "robomate/hub/bob/671"
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/671"
+    queries: list[str] = []
+
+    def branch_prs(_status: dict[str, Any], requested: str) -> list[tuple[str, str]]:
+        queries.append(requested)
+        return [(pr, head)]
+
+    monkeypatch.setattr(cli, "_live_branch_prs", branch_prs)
+    calls: list[tuple[str, str]] = []
+
+    async def live_gate(_status: dict[str, Any], url: str, expected: str) -> Any:
+        calls.append((url, expected))
+        return _status_gate_report(url, expected)
+
+    monkeypatch.setattr(cli, "_live_gate", live_gate)
+
+    cli._status(False, None, live=True)
+    out = capsys.readouterr().out
+    assert queries == [branch]
+    assert calls == [(pr, head)]
+    assert f"PR:        #671 @ {head[:7]}   found by branch" in out
+    assert "Gate:      live " in out and "CI pending (test, windows)" in out
+    # The lookup is read-only: nothing is bound back to the run.
+    assert hub_store.status_summary()["run"]["pr_url"] is None
+
+
+@pytest.mark.parametrize(
+    ("matches", "reason"),
+    [
+        ([], "no open PR for branch robomate/hub/bob/671"),
+        (
+            [
+                ("https://github.com/RoboNater/robomate/pull/671", "a" * 40),
+                ("https://github.com/RoboNater/robomate/pull/672", "b" * 40),
+            ],
+            "2 open PRs match branch robomate/hub/bob/671",
+        ),
+    ],
+)
+def test_status_live_shows_none_when_branch_lookup_is_not_exactly_one(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    matches: list[tuple[str, str]],
+    reason: str,
+) -> None:
+    """#671: zero or several branch matches show none and say why."""
+
+    hub_store = _status_hub_with_run_branch(tmp_path, frozen_clock)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+    monkeypatch.setattr(cli, "_live_branch_prs", lambda _status, _branch: matches)
+    calls: list[tuple[str, str]] = []
+
+    async def live_gate(_status: dict[str, Any], url: str, expected: str) -> Any:
+        calls.append((url, expected))
+        raise AssertionError("no gate read without exactly one PR")
+
+    monkeypatch.setattr(cli, "_live_gate", live_gate)
+
+    cli._status(False, None, live=True)
+    out = capsys.readouterr().out
+    assert "PR:        none recorded (branch robomate/hub/bob/671)" in out
+    assert f"Gate:      live none found: {reason}" in out
+    assert calls == []
+
+
+def test_status_live_uses_a_recorded_pr_without_a_branch_query(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#671: a recorded PR is used as before, with no branch lookup."""
+
+    hub_store = _status_hub_with_run_branch(tmp_path, frozen_clock)
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/671"
+    hub_store.record_gate_reading(pr, head, report=_status_gate_report(pr, head), elapsed_s=0)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    def no_lookup(_status: dict[str, Any], _branch: str) -> list[tuple[str, str]]:
+        raise AssertionError("recorded PR must not trigger a branch query")
+
+    monkeypatch.setattr(cli, "_live_branch_prs", no_lookup)
+    calls: list[tuple[str, str]] = []
+
+    async def live_gate(_status: dict[str, Any], url: str, expected: str) -> Any:
+        calls.append((url, expected))
+        return _status_gate_report(url, expected)
+
+    monkeypatch.setattr(cli, "_live_gate", live_gate)
+
+    cli._status(False, None, live=True)
+    out = capsys.readouterr().out
+    assert calls == [(pr, head)]
+    assert f"PR:        #671 @ {head[:7]}   for #671" in out
+    assert "found by branch" not in out
+
+
+def test_status_live_labels_a_branch_lookup_failure(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#671: a failed branch lookup is labelled and never fails status."""
+
+    hub_store = _status_hub_with_run_branch(tmp_path, frozen_clock)
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    def failing_lookup(_status: dict[str, Any], _branch: str) -> list[tuple[str, str]]:
+        raise RuntimeError("gh pr list failed: HTTP 500")
+
+    monkeypatch.setattr(cli, "_live_branch_prs", failing_lookup)
+
+    cli._status(False, None, live=True)
+    out = capsys.readouterr().out
+    assert "PR:        none recorded (branch robomate/hub/bob/671)" in out
+    assert "Gate:      live failed: gh pr list failed: HTTP 500" in out
+
+
+def test_live_branch_lookup_queries_only_this_github_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#671: the GitHub lookup is pinned to the hub's own repo and head branch."""
+
+    from agent_hub import merge_gate
+
+    head = "a" * 40
+    pr = "https://github.com/RoboNater/robomate/pull/671"
+    calls: list[list[str]] = []
+
+    async def fake_gh(args: Any) -> Any:
+        calls.append(list(args))
+        return merge_gate.GhResult(0, json.dumps([{"url": pr, "headRefOid": head}]), "")
+
+    monkeypatch.setattr(merge_gate, "run_gh", fake_gh)
+    status = {"forge": "github", "origin": "git@github.com:RoboNater/robomate.git"}
+
+    assert cli._live_branch_prs(status, "robomate/hub/bob/671") == [(pr, head)]
+    assert calls == [
+        [
+            "pr",
+            "list",
+            "--repo",
+            "github.com/RoboNater/robomate",
+            "--head",
+            "robomate/hub/bob/671",
+            "--state",
+            "open",
+            "--json",
+            "url,headRefOid",
+            "--limit",
+            "2",
+        ]
+    ]
+
+    foreign = "https://github.com/Other/Repo/pull/1"
+
+    async def foreign_gh(_args: Any) -> Any:
+        return merge_gate.GhResult(0, json.dumps([{"url": foreign, "headRefOid": head}]), "")
+
+    monkeypatch.setattr(merge_gate, "run_gh", foreign_gh)
+    with pytest.raises(merge_gate.MergeGateError):
+        cli._live_branch_prs(status, "robomate/hub/bob/671")
+
+
+def test_live_branch_lookup_queries_gitlab_merge_requests_for_the_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#671: the GitLab lookup asks this project for opened MRs of the branch."""
+
+    from agent_hub import gitlab_gate
+
+    head = "d" * 40
+    mr = "https://gitlab.com/group/project/-/merge_requests/7"
+    calls: list[list[str]] = []
+
+    async def fake_glab(args: Any) -> Any:
+        calls.append(list(args))
+        return gitlab_gate.GlabResult(0, json.dumps([{"web_url": mr, "sha": head}]), "")
+
+    monkeypatch.setattr(gitlab_gate, "run_glab", fake_glab)
+    status = {"forge": "gitlab", "origin": "git@gitlab.com:group/project.git"}
+
+    assert cli._live_branch_prs(status, "robomate/hub/bob/671") == [(mr, head)]
+    assert calls == [
+        [
+            "api",
+            "projects/group%2Fproject/merge_requests?state=opened"
+            "&source_branch=robomate%2Fhub%2Fbob%2F671",
+            "--hostname=gitlab.com",
+        ]
+    ]
 
 
 def test_status_notes_escape_truncate_and_expand_only_in_the_detail(
