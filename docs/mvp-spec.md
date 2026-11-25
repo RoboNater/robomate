@@ -87,7 +87,7 @@ robomate submit sow.md     # or: robomate submit --issue 42 ; further submits qu
 robomate status            # hub name, checkout, repo, URL, agents, phase, PR/MR, gate, open questions
 robomate report            # last run: merged SHA, each finding and where it went, steps
 robomate inbox             # questions for you; answer with: robomate answer 3 "yes, file it"
-robomate log --timeline    # drill down when something looks wrong
+robomate log --timeline [--notes]  # drill down; --notes shows labelled agent text
 ```
 
 Alice's join response supplies the next steps for starting a queued run.
@@ -1117,6 +1117,12 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | `robomate inbox [--json]` | operator (CLI, not MCP) | **new** (#130): lists open questions (id, time, asking actor, question, options) from `hub.questions` |
 | `robomate answer <id> <text>` / `--option N` | operator (CLI, not MCP) | **new** (#130): answers one question through `hub.answer` with the operator credential and prints a confirmation; `robomate status` shows the open-question count |
 
+`agent_released` is a hub-only event record (#20). `release_agent` and the
+`on_done: release` sweep write one record in the same transaction for each agent whose
+status changes, attributed to the run. It is never queued, delivered or acknowledged
+through `wait_for_event`, and it is not a task source; `robomate log --timeline` shows it.
+A release with no live run is hub-scoped and labelled as such.
+
 **Bridge compatibility (#215).** The additive wire version remains 1, but a
 pre-#215 worker bridge does not understand `closeout_requested`: it interprets
 that response as an assignment with an empty task ID. Repeated waits can
@@ -1377,11 +1383,19 @@ the launcher becomes a `robomate` supervisor subcommand.
 - `robomate status`: one screen — repo, URL, forge, agents (role, harness, model, alive/listening),
   workflow phase and round, run ID and queue length, PR/MR and last gate result, close-out
   status, inbox count.
-- `robomate log [--timeline] [--follow]`: interleaved events, decisions, and results using closed-set
-  labels, never printing untrusted payload text (#20). This is the drill-down and the future
-  dashboard's feed.
+- `robomate log [--timeline] [--follow] [--notes]`: interleaved events, decisions, and results
+  using closed-set labels. By default it never prints untrusted payload text (#20). The
+  opt-in `--notes` adds only each `task_progress` note and task title at its record,
+  rendered inert: literal/control-escaped, flattened to one line, visibly labelled as
+  untrusted agent text, and capped at the default `status` note width of 160 columns with
+  an explicit truncation marker. In `--json` they appear only in a separate, clearly named
+  untrusted field, escaped, single-line and bounded the same way; raw note text is never
+  printed. Question and answer text, decision keys and summaries/rationales, result
+  bodies, withdrawal text, report prose and raw event payloads remain excluded even with
+  `--notes`. This is the drill-down and the future dashboard's feed.
 - `robomate report [run]`: the rendered run report (§7.3).
-- Summaries come from typed results and events, not from agent prose.
+- Summaries come from typed results and events, not from agent prose; `--notes` shows
+  agent text only as labelled untrusted text.
 - **Run identity:** every workflow gets a run ID and a manifest in `runs/<run_id>/manifest.json`
   in the hub's state directory (§4), written atomically when the run starts (as `active` or
   `queued`) and rewritten at its end, so a hub restart in between leaves valid JSON
@@ -1418,6 +1432,13 @@ Agents share the operator's forge identity; the hub's typed reviewer verdict rem
 approval record (PoC #37). The merge gate runs the forge CLI with that identity, so it reads
 only the hub's own repository: a change-request URL, which arrives in untrusted worker
 results, never chooses the host or project (§10). Remote-agent mode requires a trusted network path.
+
+**Untrusted operator views.** The opt-in `--notes` timeline view (§11) renders agent
+progress notes and task titles inert: literal/control-escaped, flattened to one line,
+visibly labelled, and capped at the default status note width. In `--json` they appear
+only in a separate untrusted field in that same escaped, single-line, truncated form. The
+view is for the operator's reading only and never feeds summaries, reports, decisions or
+agent context.
 
 **Credentials.** The MVP model is one shared bearer token per hub plus the separate
 operator credential beside the machine registry (§4, #128). Per-agent credentials stay a
