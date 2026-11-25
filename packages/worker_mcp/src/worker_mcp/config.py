@@ -71,6 +71,9 @@ class WorkerSettings:
     agent_name: str
     # What the launcher says this worker is; reported at check-in (§4.3).
     profile: AgentProfile = field(default_factory=AgentProfile)
+    # #526: an operator-set opt-in that lets an unbound bridge's agent choose
+    # its hub with join(hub=...). Never an agent decision.
+    allow_hub_selection: bool = False
     default_wait_s: float = DEFAULT_WAIT_S
     heartbeat_s: float = DEFAULT_HEARTBEAT_S
     max_retries: int = DEFAULT_MAX_RETRIES
@@ -122,6 +125,7 @@ class WorkerSettings:
         cwd: Path | None = None,
         profile: AgentProfile | None = None,
         default_wait_s: float | None = None,
+        allow_hub_selection: bool = False,
     ) -> WorkerSettings:
         """Settings for a worker MCP bridge before `join` names the agent and role (§5)."""
 
@@ -152,6 +156,7 @@ class WorkerSettings:
             token=raw_token,
             agent_name=raw_agent_name,
             profile=resolved_profile,
+            allow_hub_selection=allow_hub_selection,
             default_wait_s=(
                 default_wait_s
                 if default_wait_s is not None

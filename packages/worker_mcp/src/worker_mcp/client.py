@@ -549,6 +549,28 @@ class WorkerHubClient:
         if not same:
             raise DiscoveryError(HUB_OVERRIDE_MESSAGE.format(hub=hub))
 
+    def _may_select_hub(self, cwd: Path) -> bool:
+        """Whether this bridge honours an agent-chosen `join(hub=...)` (#526).
+
+        Only the operator's opt-in lets an unbound bridge pick a hub from the
+        machine registry. A bound bridge keeps the #525 behaviour: the agent is
+        the party least able to know which run it belongs to, but the operator's
+        binding already answers that, and a broken binding keeps its own cause.
+        """
+
+        if self.settings.allow_hub_selection:
+            return True
+        try:
+            discover(cwd, self.settings.environ, list_hubs=False)
+        except NoHubError:
+            return False
+        except DiscoveryError:
+            # A binding, pin or configured hub that is down, stale or
+            # misconfigured has a real diagnostic (#511 r1-1); only the
+            # genuinely unbound bridge is gated here.
+            return True
+        return True
+
     async def _bind_hub(self, hub: str | None = None) -> None:
         env = self.settings.environ or {}
         pinned_id = (env.get(HUB_ID_ENV) or "").strip()
@@ -566,6 +588,10 @@ class WorkerHubClient:
                 self._guard_hub_override(hub, pinned_id, pinned_url, env)
                 selector = None
             elif hub is not None:
+                if not self._may_select_hub(cwd):
+                    # #526: refuse with #511's fail-closed text so an agent
+                    # cannot pick its run's hub from the machine registry.
+                    raise DiscoveryError(NO_HUB_MESSAGE.format(cwd=cwd))
                 selector = hub
             else:
                 selector = None

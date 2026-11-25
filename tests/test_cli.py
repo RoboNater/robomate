@@ -3493,16 +3493,100 @@ def test_forget_one_body_registry_error_propagates(
         cli._forget_one(entry, forget_all=False, as_json=False)
 
 
+@contextmanager
+def _mcp_worker_bridge(
+    cwd: Path, env: dict[str, str], *extra_args: str
+) -> Iterator[Callable[[str, dict[str, Any]], dict[str, Any]]]:
+    """Run `robomate mcp` over stdio and yield a caller after the MCP handshake."""
+
+    worker = subprocess.Popen(
+        [CLI, "mcp", "--harness", "claude-code", *extra_args],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    stdin, stdout = worker.stdin, worker.stdout
+    assert stdin is not None and stdout is not None
+    responses: queue.Queue[dict[str, Any]] = queue.Queue()
+
+    def read() -> None:
+        try:
+            for line in stdout:
+                responses.put(json.loads(line))
+        except ValueError:
+            pass  # stdout closed during shutdown
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+
+    def send(payload: dict[str, Any]) -> None:
+        stdin.write((json.dumps(payload) + "\n").encode())
+        stdin.flush()
+
+    def wait_id(req_id: int) -> dict[str, Any]:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                response = responses.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise AssertionError(f"request {req_id} timed out") from None
+            if response.get("id") == req_id:
+                return response
+
+    next_id = 2
+
+    def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        nonlocal next_id
+        req_id = next_id
+        next_id += 1
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+        return wait_id(req_id)["result"]
+
+    send(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            },
+        }
+    )
+    wait_id(1)
+    send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    try:
+        yield call
+    finally:
+        stdin.close()
+        try:
+            worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
+        stdout.close()
+        reader.join(timeout=10)
+
+
 def test_unjoined_mcp_join_whoami_and_hub_selector(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    """#238: `robomate mcp` starts unjoined, guards tools, and binds via `join`."""
+    """#238/#526: `robomate mcp` starts unjoined, guards tools, and binds via `join`."""
 
     root, env = repository
     outside = tmp_path / "outside"
     outside.mkdir()
-    hub = start(root, env)
-    worker: subprocess.Popen[bytes] | None = None
+    hub = start(root, env, "--name", "alpha")
     try:
         info = await_hub(root, hub)
         await_registry(env, lambda found: any(e.get("hub_id") == info["hub_id"] for e in found))
@@ -3512,170 +3596,87 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
             if key
             not in {"ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE", "AGENT_NAME"}
         }
-        worker = subprocess.Popen(
-            [CLI, "mcp", "--harness", "claude-code"],
-            cwd=outside,
-            env=worker_env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        stdin, stdout = worker.stdin, worker.stdout
-        assert stdin is not None and stdout is not None
-        responses: queue.Queue[dict[str, Any]] = queue.Queue()
 
-        def read() -> None:
-            try:
-                for line in stdout:
-                    responses.put(json.loads(line))
-            except ValueError:
-                pass
+        # 1. Without the operator opt-in an unbound bridge refuses an
+        #    agent-chosen hub= with the fail-closed text and no listing (#526).
+        with _mcp_worker_bridge(outside, worker_env) as call:
+            whoami_before = call("whoami", {})
+            assert not whoami_before.get("isError"), whoami_before
+            before_body = json.loads(whoami_before["content"][0]["text"])
+            assert before_body["joined"] is False and before_body["hub"] is None
+            # An unbound bridge fails closed: no hub names, URLs or hub= hint (#511).
+            assert "this robomate bridge has no hub" in before_body["discovery_error"]
+            assert "report blocked" in before_body["discovery_error"]
+            assert str(info["url"]) not in before_body["discovery_error"]
+            assert str(info["hub_id"]) not in before_body["discovery_error"]
+            assert "Live hubs:" not in before_body["discovery_error"]
+            assert "hub=" not in before_body["discovery_error"]
 
-        reader = threading.Thread(target=read, daemon=True)
-        reader.start()
+            # 2. await_assignment before join fails naming join
+            guarded = call("await_assignment", {})
+            assert guarded.get("isError") is True
+            assert "join" in guarded["content"][0]["text"]
 
-        def send(payload: dict[str, Any]) -> None:
-            stdin.write((json.dumps(payload) + "\n").encode())
-            stdin.flush()
+            # 3. An agent-chosen registered hub is refused without the opt-in.
+            refused = call(
+                "join",
+                {"role": "implementer", "name": "bob", "hub": str(info["name"])},
+            )
+            assert refused.get("isError") is True
+            refused_text = refused["content"][0]["text"]
+            assert "this robomate bridge has no hub" in refused_text
+            assert "report blocked" in refused_text
+            assert "hub=" not in refused_text
+            assert str(info["name"]) not in refused_text
+            assert str(info["url"]) not in refused_text
+            assert str(info["hub_id"]) not in refused_text
+            assert "Live hubs:" not in refused_text
 
-        def wait_id(req_id: int) -> dict[str, Any]:
-            deadline = time.monotonic() + 30
-            while True:
-                try:
-                    response = responses.get(timeout=max(0.0, deadline - time.monotonic()))
-                except queue.Empty:
-                    raise AssertionError(f"request {req_id} timed out") from None
-                if response.get("id") == req_id:
-                    return response
+        # 4. The operator opt-in in the MCP entry keeps the hub= route.
+        with _mcp_worker_bridge(outside, worker_env, "--allow-hub-selection") as call:
+            # An unknown selector still lists live hubs for the operator.
+            bad_hub = call(
+                "join",
+                {"role": "implementer", "name": "bob", "hub": "no-such-hub"},
+            )
+            assert bad_hub.get("isError") is True
+            assert str(info["name"]) in bad_hub["content"][0]["text"]
 
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"},
+            # join with hub=<name> succeeds and records install harness source
+            joined = call(
+                "join",
+                {
+                    "role": "implementer",
+                    "name": "bob",
+                    "hub": str(info["name"]),
+                    "model": "claude-opus-4-7",
+                    "effort": "high",
                 },
-            }
-        )
-        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        wait_id(1)
+            )
+            assert not joined.get("isError"), joined
+            joined_body = json.loads(joined["content"][0]["text"])
+            assert joined_body["status"] == "registered"
+            assert joined_body["agent"] == "bob"
+            assert joined_body["role"] == "implementer"
+            assert joined_body["profile"]["harness"] == "claude-code"
+            assert joined_body["profile"]["harness_source"] == "install"
+            assert joined_body["profile"]["model"] == "claude-opus-4-7"
+            assert joined_body["profile"]["effort"] == "high"
+            assert joined_body["hub"]["name"] == info["name"]
+            assert "workspace_path" in joined_body
 
-        # 1. whoami before join
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": "whoami", "arguments": {}},
-            }
-        )
-        whoami_before = wait_id(2)["result"]
-        assert not whoami_before.get("isError"), whoami_before
-        before_body = json.loads(whoami_before["content"][0]["text"])
-        assert before_body["joined"] is False and before_body["hub"] is None
-        # An unbound bridge fails closed: no hub names, URLs or hub= hint (#511).
-        assert "this robomate bridge has no hub" in before_body["discovery_error"]
-        assert "report blocked" in before_body["discovery_error"]
-        assert str(info["url"]) not in before_body["discovery_error"]
-        assert str(info["hub_id"]) not in before_body["discovery_error"]
-        assert "Live hubs:" not in before_body["discovery_error"]
-        assert "hub=" not in before_body["discovery_error"]
+            # 5. whoami after join reflects hub state
+            whoami_after = call("whoami", {})
+            assert not whoami_after.get("isError"), whoami_after
+            after_body = json.loads(whoami_after["content"][0]["text"])
+            assert after_body["joined"] is True
+            assert after_body["name"] == info["name"]
+            assert after_body["agent_name"] == "bob"
+            assert after_body["role"] == "implementer"
+            assert after_body["hub"] == info["url"]
 
-        # 2. await_assignment before join fails naming join
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "await_assignment", "arguments": {}},
-            }
-        )
-        guarded = wait_id(3)["result"]
-        assert guarded.get("isError") is True
-        assert "join" in guarded["content"][0]["text"]
-
-        # 3. join from outside any checkout with unknown hub selector lists live hubs
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "name": "join",
-                    "arguments": {"role": "implementer", "name": "bob", "hub": "no-such-hub"},
-                },
-            }
-        )
-        bad_hub = wait_id(4)["result"]
-        assert bad_hub.get("isError") is True
-        assert str(info["name"]) in bad_hub["content"][0]["text"]
-
-        # 4. join with hub=<name> succeeds and records install harness source
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 5,
-                "method": "tools/call",
-                "params": {
-                    "name": "join",
-                    "arguments": {
-                        "role": "implementer",
-                        "name": "bob",
-                        "hub": str(info["name"]),
-                        "model": "claude-opus-4-7",
-                        "effort": "high",
-                    },
-                },
-            }
-        )
-        joined = wait_id(5)["result"]
-        assert not joined.get("isError"), joined
-        joined_body = json.loads(joined["content"][0]["text"])
-        assert joined_body["status"] == "registered"
-        assert joined_body["agent"] == "bob"
-        assert joined_body["role"] == "implementer"
-        assert joined_body["profile"]["harness"] == "claude-code"
-        assert joined_body["profile"]["harness_source"] == "install"
-        assert joined_body["profile"]["model"] == "claude-opus-4-7"
-        assert joined_body["profile"]["effort"] == "high"
-        assert joined_body["hub"]["name"] == info["name"]
-        assert "workspace_path" in joined_body
-
-        # 5. whoami after join reflects hub state
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": 6,
-                "method": "tools/call",
-                "params": {"name": "whoami", "arguments": {}},
-            }
-        )
-        whoami_after = wait_id(6)["result"]
-        assert not whoami_after.get("isError"), whoami_after
-        after_body = json.loads(whoami_after["content"][0]["text"])
-        assert after_body["joined"] is True
-        assert after_body["name"] == info["name"]
-        assert after_body["agent_name"] == "bob"
-        assert after_body["role"] == "implementer"
-        assert after_body["hub"] == info["url"]
-
-        stdin.close()
-        worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
-        stdout.close()
-        reader.join(timeout=10)
         stop(root, env, hub)
     finally:
-        if worker is not None:
-            if worker.poll() is None:
-                worker.kill()
-                worker.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
-            if worker.stdin is not None and not worker.stdin.closed:
-                worker.stdin.close()
-            if worker.stdout is not None and not worker.stdout.closed:
-                worker.stdout.close()
         if hub.poll() is None:
             hub.terminate()
             hub.wait(timeout=PROCESS_EXIT_TIMEOUT_S)
