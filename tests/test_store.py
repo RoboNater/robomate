@@ -2852,7 +2852,7 @@ def test_status_summary_includes_the_hub_named_run_branch(
     store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
 
     run = store.status_summary()["run"]
-    assert run["branch"] == "robomate/hub/bob/671"
+    assert run.get("branch") == "robomate/hub/bob/671"
     assert run["pr_url"] is None
 
 

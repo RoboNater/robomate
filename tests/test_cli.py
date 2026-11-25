@@ -5255,7 +5255,7 @@ def test_status_default_view_shows_the_run_branch_before_a_pr_is_recorded(
 
     cli._status(True, None)
     payload = json.loads(capsys.readouterr().out)
-    assert payload["run"]["branch"] == "robomate/hub/bob/671"
+    assert payload["run"].get("branch") == "robomate/hub/bob/671"
     assert payload["run"]["pr_url"] is None
 
 
