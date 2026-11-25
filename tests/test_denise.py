@@ -293,3 +293,283 @@ def test_path_references_do_not_assume_remote_windows_paths_are_local(tmp_path: 
     ref = DENISE.reference("Z:/other-host/run", "other-host", local=False)
     assert ref["path"] == "Z:/other-host/run" and ref["access"] == "unavailable"
     assert os.path.isabs(DENISE.reference(tmp_path, "local")["path"])
+
+
+def test_joined_context_indexes_agents_from_session_logs_and_persisted_logs(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git(checkout, "init", "-q")
+    state = tmp_path / "state"
+    run_id = "20261121_ec4eaf28"
+    run_dir = state / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    sessions = state / "sessions"
+    sessions.mkdir(parents=True)
+    logs_dir = tmp_path / "lane" / "logs"
+    logs_dir.mkdir(parents=True)
+    worktrees = {name: tmp_path / "wt" / name for name in ("alice", "bob", "charlie")}
+    for wt in worktrees.values():
+        wt.mkdir(parents=True)
+
+    # Active-run manifest has no agents yet; session logs provide all three including Alice.
+    saved = {
+        "run_id": run_id,
+        "workflow_id": "wf-active",
+        "status": "active",
+        "hub": {
+            "hub_id": "hub-1",
+            "name": "p1023-i592",
+            "checkout": str(checkout),
+            "origin": "https://github.com/example/repo.git",
+            "forge": "github",
+            "url": "http://127.0.0.1:8420",
+        },
+        "agents": [],
+    }
+    session_rows = {
+        "alice": {
+            "event": "start",
+            "agent": "alice",
+            "role": "orchestrator",
+            "harness": "claude-code",
+            "model": "claude-opus-5-5",
+            "effort": "high",
+            "workdir": str(worktrees["alice"]),
+            "launcher_pid": 1001,
+            "run_id": run_id,
+            "workflow_id": "wf-active",
+        },
+        "bob": {
+            "event": "start",
+            "agent": "bob",
+            "role": "implementer",
+            "harness": "codex",
+            "model": "gpt-5",
+            "effort": "medium",
+            "workdir": str(worktrees["bob"]),
+            "launcher_pid": 1002,
+            "run_id": run_id,
+            "workflow_id": "wf-active",
+        },
+        "charlie": {
+            "event": "resume",
+            "agent": "charlie",
+            "role": "reviewer",
+            "harness": "claude-code",
+            "model": "claude-opus-5-5",
+            "effort": "medium",
+            "workdir": str(worktrees["charlie"]),
+            "launcher_pid": 1003,
+            "run_id": run_id,
+            "workflow_id": "wf-active",
+        },
+    }
+    for name, row in session_rows.items():
+        (sessions / f"{name}.jsonl").write_text(
+            json.dumps({"event": "start", "agent": name, "run_id": "earlier-run", "harness": "old"})
+            + "\n"
+            + json.dumps(row)
+            + "\n",
+            encoding="utf-8",
+        )
+    # Only Alice and Bob have bridge telemetry on disk; Charlie's should appear as missing.
+    (sessions / "alice-bridge.jsonl").write_text('{"event":"joined"}\n', encoding="utf-8")
+    (sessions / "bob-bridge.jsonl").write_text('{"event":"joined"}\n', encoding="utf-8")
+    # Unrelated earlier-run agent (scoped or unscoped) should not pollute this run.
+    (sessions / "dana.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "dana", "run_id": "earlier-run", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (sessions / "dave.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "dave", "role": "worker", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    # Persisted log directory with hub and agent launcher logs.
+    for filename in ("hub.log", "alice.log", "bob.log", "charlie.log"):
+        (logs_dir / filename).write_text("log line\n", encoding="utf-8")
+    DENISE.write_joined_settings(
+        run_dir,
+        {
+            "settings_from": "charlie",
+            "harness": "claude-code",
+            "model": "claude-opus-5-5",
+            "effort": "medium",
+            "status": "ready",
+            "skip_reason": "",
+        },
+        clean_login=False,
+        logs_dir=logs_dir,
+    )
+
+    context = DENISE.build_joined_context(
+        saved,
+        run_dir=run_dir,
+        state_dir=state,
+        sessions_dir=sessions,
+        hub_checkout=checkout,
+        target=checkout,
+        target_common=DENISE.git_common_dir(checkout),
+        tooling_root=ROOT,
+        settings={"harness": "claude-code", "model": "claude-opus-5-5", "effort": "medium"},
+        remote_workers={},
+    )
+
+    by_name = {agent["name"]: agent for agent in context["agents"]}
+    assert set(by_name) == {"alice", "bob", "charlie"}
+    assert by_name["alice"]["role"] == "orchestrator"
+    assert by_name["alice"]["harness"] == "claude-code"
+    assert by_name["alice"]["model"] == "claude-opus-5-5"
+    assert by_name["alice"]["effort"] == "high"
+    assert by_name["alice"]["launcher_pid"] == 1001
+    assert by_name["alice"]["workspace"]["path"] == str(worktrees["alice"].resolve())
+    assert by_name["alice"]["workspace"]["access"] == "present"
+    assert by_name["bob"]["role"] == "implementer" and by_name["bob"]["harness"] == "codex"
+    assert by_name["charlie"]["role"] == "reviewer"
+    assert by_name["charlie"]["harness"] == "claude-code"
+    assert by_name["alice"]["launcher_log"] == {
+        "host": context["host"],
+        "path": str((logs_dir / "alice.log").resolve()),
+        "access": "present",
+    }
+    assert by_name["alice"]["sessions"]["access"] == "present"
+    assert by_name["alice"]["bridge_telemetry"]["access"] == "present"
+    assert by_name["charlie"]["bridge_telemetry"]["access"] == "missing"
+    for name in ("alice", "bob", "charlie"):
+        log_paths = {item["path"]: item["access"] for item in by_name[name]["logs"]}
+        assert log_paths[str((logs_dir / f"{name}.log").resolve())] == "present"
+        assert log_paths[str((sessions / f"{name}.jsonl").resolve())] == "present"
+        assert str((sessions / f"{name}-bridge.jsonl").resolve()) in log_paths
+
+    hub_log_paths = {item["path"]: item["access"] for item in context["hub"]["logs"]}
+    assert hub_log_paths[str((logs_dir / "hub.log").resolve())] == "present"
+    assert str((state / "hub.log").resolve()) not in hub_log_paths
+    assert context["run"]["logs_dir"]["path"] == str(logs_dir.resolve())
+
+    # If <state>/hub.log genuinely exists, it is included.
+    (state / "hub.log").write_text("legacy hub log\n", encoding="utf-8")
+    context_with_legacy = DENISE.build_joined_context(
+        saved,
+        run_dir=run_dir,
+        state_dir=state,
+        sessions_dir=sessions,
+        hub_checkout=checkout,
+        target=checkout,
+        target_common=DENISE.git_common_dir(checkout),
+        tooling_root=ROOT,
+        settings={"harness": "claude-code", "model": "", "effort": ""},
+        remote_workers={},
+    )
+    legacy_paths = {item["path"]: item["access"] for item in context_with_legacy["hub"]["logs"]}
+    assert legacy_paths[str((state / "hub.log").resolve())] == "present"
+
+
+def test_resolve_doctor_settings_precedence_and_skip_remedy() -> None:
+    persisted = {
+        "settings_from": "charlie",
+        "harness": "claude-code",
+        "model": "claude-opus-5-5",
+        "effort": "medium",
+        "clean_login": True,
+        "status": "ready",
+        "skip_reason": "",
+    }
+    inherited, used = DENISE.resolve_doctor_settings(persisted)
+    assert (inherited["harness"], inherited["model"], inherited["effort"]) == (
+        "claude-code",
+        "claude-opus-5-5",
+        "medium",
+    )
+    assert inherited["clean_login"] is True
+    assert inherited["settings_from"] == "charlie"
+    assert set(used) == {
+        "harness=claude-code",
+        "model=claude-opus-5-5",
+        "effort=medium",
+        "clean_login=true",
+    }
+
+    switched, used_switched = DENISE.resolve_doctor_settings(
+        persisted, harness="codex", clean_login=False
+    )
+    assert (switched["harness"], switched["model"], switched["effort"]) == ("codex", "", "")
+    assert switched["clean_login"] is False
+    assert used_switched == []
+
+    skipped = {
+        "settings_from": "bob",
+        "harness": "devin",
+        "model": "",
+        "effort": "",
+        "clean_login": False,
+        "status": "skipped",
+        "skip_reason": "inherited harness devin is not yet supported for Denise",
+    }
+    with pytest.raises(ValueError, match="devin.*--harness"):
+        DENISE.resolve_doctor_settings(skipped)
+    overridden, _ = DENISE.resolve_doctor_settings(skipped, harness="codex")
+    assert overridden["harness"] == "codex" and overridden["status"] == "ready"
+
+    with pytest.raises(ValueError, match="--harness"):
+        DENISE.resolve_doctor_settings(None)
+
+
+def test_unscoped_session_row_kept_only_for_known_agents_and_marked_unscoped(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    git(checkout, "init", "-q")
+    state = tmp_path / "state"
+    run_id = "20261125_unscoped"
+    run_dir = state / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    sessions = state / "sessions"
+    sessions.mkdir(parents=True)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "bob.log").write_text("bob launcher\n", encoding="utf-8")
+    (sessions / "bob.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "bob", "role": "implementer", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (sessions / "dave.jsonl").write_text(
+        json.dumps({"event": "start", "agent": "dave", "role": "worker", "harness": "codex"})
+        + "\n",
+        encoding="utf-8",
+    )
+    context = DENISE.build_joined_context(
+        {"run_id": run_id, "status": "active", "hub": {"checkout": str(checkout)}, "agents": []},
+        run_dir=run_dir,
+        state_dir=state,
+        sessions_dir=sessions,
+        hub_checkout=checkout,
+        target=checkout,
+        target_common=DENISE.git_common_dir(checkout),
+        tooling_root=ROOT,
+        settings={"harness": "codex", "model": "", "effort": ""},
+        remote_workers={},
+        logs_dir=logs_dir,
+    )
+    by_name = {agent["name"]: agent for agent in context["agents"]}
+    assert set(by_name) == {"bob"}
+    assert by_name["bob"]["harness"] == "codex"
+    assert by_name["bob"]["session_scope"] == "unscoped"
+
+
+def test_write_joined_settings_cleans_up_temp_file_on_dump_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(DENISE.json, "dump", boom)
+    with pytest.raises(OSError, match="disk full"):
+        DENISE.write_joined_settings(run_dir, {"harness": "codex"})
+    assert list((run_dir / "denise").iterdir()) == []

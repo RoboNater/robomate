@@ -52,7 +52,7 @@ SCRIPTS = Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 import agent_launcher as launcher_defaults  # noqa: E402
-from denise import resolve_settings  # noqa: E402
+from denise import joined_settings_path, resolve_settings, write_joined_settings  # noqa: E402
 from mcp_preflight import check as check_mcp_entry  # noqa: E402
 from run_common import probe_harness_version  # noqa: E402
 
@@ -689,6 +689,7 @@ class Run:
     agents: dict[str, subprocess.Popen[str]] = field(default_factory=dict)
     logs: list[IO[str]] = field(default_factory=list)
     run_id: str = ""
+    state_dir: Path | None = None
     status: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -930,6 +931,7 @@ def supervise(run: Run) -> int:
             return 1
         time.sleep(POLL_S)
     say("all agents joined")
+    print_denise_hint(run)
     worst = 0
     pending = dict(run.agents)
     while pending:
@@ -1038,6 +1040,76 @@ def stop_hub(run: Run) -> None:
     say(f"hub {run.name} stopped (exit {run.hub.returncode}); `robomate up` in {run.checkout}")
 
 
+def persist_denise_settings(run: Run, state_dir: Path | None = None) -> Path | None:
+    """Persist Denise's effective settings and this run's log directory inside the run."""
+
+    target_state = state_dir or run.state_dir
+    if target_state is None or not run.run_id:
+        return None
+    doctor = denise(run.values)
+    return write_joined_settings(
+        target_state / "runs" / run.run_id,
+        doctor,
+        clean_login=bool(run.values["denise_clean_login"]),
+        logs_dir=run.logs_dir,
+    )
+
+
+def print_denise_hint(
+    run: Run, *, run_id: str | None = None, state_dir: Path | None = None
+) -> None:
+    """Print the ready-made Denise consultation command (or skip notice)."""
+
+    effective_run_id = run_id or run.run_id
+    effective_state = state_dir or run.state_dir
+    doctor = denise(run.values)
+    if doctor["status"] != "ready":
+        say(f"Denise skipped: {doctor['skip_reason']}")
+        return
+    if not effective_run_id:
+        return
+    if note := doctor.get("effort_note"):
+        say(note)
+    words = [
+        "uv",
+        "run",
+        "--locked",
+        "--project",
+        str(ROOT),
+        "python",
+        str(SCRIPTS / "agent-launcher.py"),
+        "doctor",
+        "--hub",
+        str(run.checkout),
+    ]
+    persisted = (
+        effective_state is not None
+        and joined_settings_path(effective_state / "runs" / str(effective_run_id)).is_file()
+    )
+    if persisted:
+        assert effective_state is not None
+        runs_root = effective_state / "runs"
+        other_runs = (
+            [
+                path.name
+                for path in runs_root.iterdir()
+                if path.name != str(effective_run_id) and (path / "manifest.json").is_file()
+            ]
+            if runs_root.is_dir()
+            else []
+        )
+        if other_runs:
+            words += ["--run", str(effective_run_id)]
+    else:
+        words += ["--run", str(effective_run_id), "--harness", doctor["harness"]]
+        for key in ("model", "effort"):
+            if doctor[key]:
+                words += [f"--{key}", doctor[key]]
+        if run.values["denise_clean_login"]:
+            words += ["--clean-login"]
+    say("consult Denise about this run with: " + command_line(words))
+
+
 def report(run: Run) -> bool:
     """The run's final state, where its closeout reports are, and how to consult Denise."""
 
@@ -1049,40 +1121,14 @@ def report(run: Run) -> bool:
     if isinstance(workflow, dict):
         say(f"run {run_id}: workflow {workflow.get('status')}")
     state = status.get("state_dir") if isinstance(status, dict) else None
-    if state and run_id:
-        closeout = Path(str(state)) / "runs" / str(run_id) / "closeout"
+    state_path = Path(str(state)) if state else run.state_dir
+    if state_path and run_id:
+        closeout = state_path / "runs" / str(run_id) / "closeout"
         if closeout.is_dir():
             say(f"closeout reports: {closeout}")
     for agent in AGENTS:
         say(f"ask {agent} about this run with: " + launcher_hint(run, agent, "ask"))
-    doctor = denise(run.values)
-    if doctor["status"] != "ready":
-        say(f"Denise skipped: {doctor['skip_reason']}")
-    elif run_id:
-        if note := doctor.get("effort_note"):
-            say(note)
-        words = [
-            "uv",
-            "run",
-            "--locked",
-            "--project",
-            str(ROOT),
-            "python",
-            str(SCRIPTS / "agent-launcher.py"),
-            "doctor",
-            "--hub",
-            str(run.checkout),
-            "--run",
-            str(run_id),
-            "--harness",
-            doctor["harness"],
-        ]
-        for key in ("model", "effort"):
-            if doctor[key]:
-                words += [f"--{key}", doctor[key]]
-        if run.values["denise_clean_login"]:
-            words += ["--clean-login"]
-        say("consult Denise about this run with: " + command_line(words))
+    print_denise_hint(run, run_id=str(run_id) if run_id else None, state_dir=state_path)
     return done
 
 
@@ -1113,6 +1159,13 @@ def start(values: dict[str, Any], policy: dict[str, Any]) -> int:
             say(f"{agent}'s worktree: {path}")
         submit(run, status)
         run.status = hub_status(run.checkout) or status
+        workflow = run.status.get("workflow") if isinstance(run.status, dict) else None
+        if not run.run_id and isinstance(workflow, dict) and workflow.get("run_id"):
+            run.run_id = str(workflow["run_id"])
+        state = run.status.get("state_dir") if isinstance(run.status, dict) else None
+        if state:
+            run.state_dir = Path(str(state))
+        persist_denise_settings(run)
         if values["auto_start"]:
             start_agents(run)
             code = supervise(run)
@@ -1120,6 +1173,7 @@ def start(values: dict[str, Any], policy: dict[str, Any]) -> int:
             say("auto_start = false: start each agent in its own terminal with:")
             for agent in AGENTS:
                 print(command_line(launch_words(run, agent, interactive=True)), flush=True)
+            print_denise_hint(run)
             say("waiting until the run is done (Ctrl-C stops the hub this command started)")
             wait_for_done(run)
             code = 0

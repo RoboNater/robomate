@@ -6,7 +6,8 @@ It is deliberately outside the hub's served `guides/` directory. It grants no
 authority to joined workers and is not a role guide for `get_role_guide`.
 
 Use the consultation command printed by `scripts/start-run.py`, or call
-`agent-launcher.py doctor` with a local hub and run ID. It supports Claude Code,
+`agent-launcher.py doctor` from the hub checkout or run directory (with
+optional `--hub`, `--run` and `--harness` overrides). It supports Claude Code,
 Codex, OpenCode and AntiGravity. The joined launcher is the M2 Step 10 entry
 and carries the consultation forward into the Step 11 handoff. For diagnosis
 of older prepared runs, preserve the Step 1 `run.json` doctor metadata.
@@ -22,13 +23,18 @@ its instructions, code and [recovery documentation](../development/agent-recover
 and read target `AGENTS.md` in the actual affected checkout, including applicable
 nested instructions before edits. A missing instruction file is normal.
 
-Treat the index as captured observations, not current truth. Recheck missing,
-stale or relocated references; report when logs, sessions or a remote host are
-unavailable. Remote host/path pairs are not local grants; never translate drive
-or WSL paths by guesswork or copy credentials to workers. If tooling has moved,
-ask for an explicit replacement and validate it as robomate rather than silently
-searching other checkouts. If a manifest is missing, recommend restoring it from
-the saved run artifacts; do not invent a run or initiate a fresh workflow.
+Treat the index as captured observations, not current truth. For joined runs,
+the context lists agents from `sessions/<agent>.jsonl` launch rows (including
+Alice during an active run) as well as from `manifest.json`, and references the
+actual hub log, agent launcher logs (from the run's persisted log directory),
+`sessions/<agent>.jsonl` and `sessions/<agent>-bridge.jsonl`. A `missing`
+reference should be rechecked on disk rather than assumed absent; report when
+logs, sessions or a remote host are unavailable. Remote host/path pairs are not
+local grants; never translate drive or WSL paths by guesswork or copy
+credentials to workers. If tooling has moved, ask for an explicit replacement
+and validate it as robomate rather than silently searching other checkouts. If
+a manifest is missing, recommend restoring it from the saved run artifacts; do
+not invent a run or initiate a fresh workflow.
 
 The access inventory names selected-run repair roots and actual resolved git
 common directories, including linked worktrees and bare repositories. Installation
@@ -212,8 +218,9 @@ between runs. No user profile is copied. Claude Code needs `/login`; Codex
 needs `CODEX_HOME=<that profile> codex login`. The printed login notice names
 these commands. A clean Codex profile's config is rewritten without MCP or
 approval entries; the launch checks still apply. `start-run.py` accepts
-`--denise-clean-login` / `denise_clean_login = true` and appends `--clean-login`
-to its final consultation command. The default is false.
+`--denise-clean-login` / `denise_clean_login = true` and saves `clean_login` in
+`denise/settings.json`, which `doctor` reads by default unless overridden with
+`--clean-login` or `--no-clean-login`. The default is false.
 
 OpenCode and AntiGravity always use separate profiles under `denise/configs/`.
 Use OpenCode's `/connect` to sign in to a provider in that profile, or follow
