@@ -3549,7 +3549,7 @@ def _mcp_worker_bridge(
                 "params": {"name": name, "arguments": arguments},
             }
         )
-        return wait_id(req_id)["result"]
+        return cast(dict[str, Any], wait_id(req_id)["result"])
 
     send(
         {
