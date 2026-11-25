@@ -87,14 +87,17 @@ step and report the operation, path if applicable, and error or denial.
 2. **Take inventory.** Work out the environment: Linux, macOS, native Windows or WSL. Treat WSL as a separate machine here. Configure only the harnesses installed inside it, with a Linux path to a checkout on the WSL filesystem. Never share one checkout's `.venv` between Windows and WSL. For each harness, record whether its CLI (`claude`, `codex`, `opencode`, `agy`) is on `PATH`, and its `--version`. Skip MCP setup for absent harnesses and report them. Confirm `uv` is on `PATH`.
 3. **Prepare the checkout.** In ROBOMATE_CHECKOUT, run `uv sync --locked --all-packages` so the bridge starts quickly on first launch. Don't edit, pull or switch branches in the checkout.
 
-   If `uv` reports it cannot access its cache, create a writable temporary
-   directory and set `UV_CACHE_DIR` to its absolute path for the command. Retry
-   the same `uv sync --locked --all-packages`. If you needed the temporary cache,
-   reuse it for subsequent setup commands that invoke `uv`, including the probe,
-   client verification and baseline save as needed. Keep the override in the
-   command environment and remove the temporary cache after setup. If the
-   locked sync still fails or reports a real sync error such as a lockfile
-   mismatch, stop and report the error. Never relock or edit `uv.lock`.
+   If the error is anything other than a cache-permission failure, stop and
+   report it immediately. This includes a lockfile mismatch, a dependency
+   resolution error, or a network error. Never relock or edit `uv.lock`.
+
+   For a cache-permission failure, create a writable temporary directory, set
+   `UV_CACHE_DIR` to its absolute path for the command, and retry the same
+   `uv sync --locked --all-packages`. An empty cache may require downloads. If
+   the retry fails, including if the network blocks downloads, stop and report
+   the error. Reuse the cache for the probe and baseline save as needed. Keep
+   `UV_CACHE_DIR` in the command environment and out of the static harness
+   entry. Remove the temporary cache after setup.
 4. **List the bridge's tools.** From ROBOMATE_CHECKOUT, run:
 
    ```
@@ -110,14 +113,17 @@ step and report the operation, path if applicable, and error or denial.
    exited. If any remain, terminate only those processes and verify cleanup
    before retrying.
 
-   Check the available output and access errors. A timeout alone does not
-   establish a sandbox cause. If the evidence points to an access restriction
-   or other environmental problem, address it with permitted access and retry
-   with the same time limit and cleanup plan. Report the blocker and available
-   output if needed access is unavailable or denied, cleanup cannot be
-   confirmed, or the probe still fails or has no clear recovery path. Proceed
-   to config changes only once the probe exits successfully with the server
-   info and full tool list.
+   Check the available output. If it identifies a recoverable environmental
+   problem, address it with permitted access and retry. If a sandboxed probe
+   hangs silently or fails without a clear cause, use the harness's normal
+   permission mechanism for one diagnostic retry with additional access when
+   authorized. Confirm cleanup before retrying and use the same time limit
+   and cleanup plan. If the diagnostic retry succeeds, report that the original
+   cause remains unconfirmed. If needed access is unavailable or denied,
+   cleanup cannot be confirmed, the probe has a genuine failure, or the retry
+   fails, report the blocker and available output. Proceed to config changes
+   only once the probe exits successfully with the server info and full tool
+   list.
 
    Expect the tool list to start with `join` and `whoami`, and to include worker tools (such as `await_assignment` and `submit_result`) and orchestrator tools (such as `assign_task` and `wait_for_event`). Use the list the probe actually returns.
 5. **For each installed harness:**
@@ -125,6 +131,8 @@ step and report the operation, path if applicable, and error or denial.
    2. Back up the config file before changing it: copy it to `<file>.bak-robomate-<YYYYMMDD-HHMMSS>` next to the original. If the file doesn't exist yet, note that instead.
    3. If a `robomate` server already exists at any scope, show it. Leave exactly one user-level `robomate` entry, matching this spec. Report any project-scope `robomate` entries, but leave them alone. Don't touch other MCP servers, settings, comments or formatting: OpenCode configs may be JSONC with comments, so preserve them. Use the harness's own CLI (`claude mcp add` / `claude mcp remove`, `codex mcp add`) when it can express every setting. Otherwise, edit the file minimally.
    4. Verify. The file still parses. The harness's own listing shows the entry: `claude mcp get robomate`, `codex mcp list`, `opencode mcp list`, or the `agy` equivalent. Where a listing reports connection health, the server connects. A bridge outside a robomate worktree starts fine and only fails at `join`.
+      If the listing cannot start the bridge because of a cache permission
+      error, use the scoped permission process above to retry the listing.
    5. For Codex, also check that the launcher's override style merges into the entry. Run `codex -c 'mcp_servers.robomate.env.HUB_HARNESS="codex"' mcp list` (adjust the quoting for PowerShell). It must succeed. Without a base entry, it fails with `invalid transport in mcp_servers.robomate`.
 6. **Install the skills.**
    1. Check each user skill directory in the table for names in `SKILL_INSTALLABLE`. Process shared destinations once. In the primary directory for each installed harness, install all entries marked `True`. In the other directories, address existing installs only. Leave unrelated skills alone.
