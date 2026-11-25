@@ -1059,6 +1059,9 @@ Legacy questions and another session's questions still require an operator answe
 - **Hub restart:** `robomate up` in the owning checkout reuses the hub's state, `hub_id`, name,
   and port. Bridges reconnect with backoff under the same
   instance ID; an interrupted hold is re-issued. Agents see at most a retried call.
+  The hub reloads the last explicitly joined orchestrator's session identity from
+  its database. Ordinary calls from a superseded session receive `CONFLICT` after
+  restart. A different session must join with `takeover=true`.
 - **Agent restart:** join with `takeover` → task reattached (§5).
 - **Orchestrator restart:** join as orchestrator → re-briefing in the join response; the guide's
   "On resume" procedure (PoC skill) reconciles with the forge before acting.
@@ -1207,10 +1210,11 @@ both wait dispatch and the activity deadline, which adds a 30 s grace. Wakeups, 
 wall deadlines follow their existing rules. Close-out collection and merge gate
 use their separate limits.
 
-Takeover replaces the cap with the new join's negotiation. After a hub restart,
-a session or instance without an in-memory negotiation uses the fallback. The
-current bridge re-advertises on heartbeat and when opening a hold so the hub can
-restore the ceiling for that same session or instance.
+Takeover replaces the cap with the new join's negotiation. Orchestrator session
+ownership survives a hub restart (§7.5). A session or instance without an
+in-memory negotiation uses the fallback. The current bridge re-advertises on
+heartbeat and when opening a hold so the hub can restore the ceiling for that
+same session or instance.
 
 The [hub token controls by harness](user-guide.md#hub-token-controls-by-harness)
 record each launcher's read-deny support and its limits.
