@@ -493,7 +493,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
 
 
 async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -> None:
-    from test_cli import await_hub, hub_state, hub_token, start, stop
+    from test_cli import _hub_stderr, _hub_stdout, await_hub, hub_state, hub_token, start, stop
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -648,9 +648,15 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             env=bridge_env,
             capture_output=True,
             text=True,
-            timeout=60,
+            encoding="utf-8",
+            timeout=LIVENESS_S,
         )
-        assert joined_cli.returncode == 0, joined_cli.stderr
+        assert joined_cli.returncode == 0, (
+            f"{joined_cli.stderr}\n"
+            f"robomate up launcher pid {hub.pid}, return code {hub.poll()}\n"
+            f"--- hub stdout ---\n{_hub_stdout(hub)}\n"
+            f"--- hub stderr ---\n{_hub_stderr(hub)}"
+        )
         assert "'guide_sha256':" in joined_cli.stdout
         assert "'role': 'orchestrator'" in joined_cli.stdout
         with sqlite3.connect(hub_state(repo) / "hub.db") as connection:
