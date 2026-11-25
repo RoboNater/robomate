@@ -33,8 +33,9 @@ MR with its short head and start age, the latest stored merge-gate reading, and
 agent liveness counts. `--brief` prints only that block for `watch`;
 `--activity` adds one line per agent, `--notes` shows each latest progress note
 in full, `--inbox` shows the questions `robomate inbox` would, and `--live`
-adds one read-only forge reading labelled `live` (status otherwise makes no
-forge call). The full hub, workflow and agent detail follows the headline, and
+adds one read-only forge reading labelled `live`, finding the open PR by the
+run branch when none is recorded (status otherwise makes no forge call). The
+full hub, workflow and agent detail follows the headline, and
 `--json` carries the same facts additively for tools.
 
 **Works today (M1, M5):** `robomate up`, `down`, `status`, and `ls`, the `robomate mcp`

@@ -1755,6 +1755,9 @@ class HubStore:
                     "age_s": run_age,
                     # The bound PR, or the one the latest stored gate read.
                     "pr_url": binding["pr_url"] or gate_pr_url,
+                    # The hub-named run branch, for a read-only lookup while
+                    # the implementer has not yet submitted (#671).
+                    "branch": workflow["branch"],
                     "head_sha": self._latest_run_head(connection, workflow["id"], gate, binding),
                     "approved_sha": binding["approved_sha"],
                     "merged_sha": binding["merged_sha"],
