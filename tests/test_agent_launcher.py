@@ -1726,6 +1726,46 @@ def test_orchestrator_resume_matches_its_recorded_join(
     assert "Then call get_state" in text and "On resume" in text
 
 
+@pytest.mark.parametrize("evidence", ["current", "earlier-child", "other-run", "other-hub"])
+def test_orchestrator_uses_only_its_current_launchs_workflow_done_record(
+    tmp_path: Path, evidence: str
+) -> None:
+    def unavailable(_method: str) -> dict[str, Any]:
+        raise ConnectionRefusedError("hub shut down")
+
+    reader = FakeOrchestratorHub(unavailable)
+    args = argparse.Namespace(
+        agent="alice",
+        role="orchestrator",
+        harness="claude-code",
+        command=[sys.executable],
+        sessions=tmp_path / "alice.jsonl",
+        read_retries=1,
+    )
+    launcher = CLI.JoinedOrchestrator(args, reader)
+    launcher.hub_id = HUB
+    launcher.workflow_id = WORKFLOW
+    launcher.run_id = RUN
+    telemetry = CLI.bridge_telemetry(tmp_path, "alice")
+    row = {
+        "event": "workflow_done",
+        "agent": "alice",
+        "run_id": "other-run" if evidence == "other-run" else RUN,
+        "hub_id": "other-hub" if evidence == "other-hub" else HUB,
+    }
+    telemetry.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    launcher.join_offset = telemetry.stat().st_size if evidence == "earlier-child" else 0
+
+    if evidence == "current":
+        assert launcher.resumable(0, 0) == "done"
+        stop = json.loads(args.sessions.read_text(encoding="utf-8"))
+        assert stop["event"] == "stop" and stop["reason"] == "done" and stop["run_id"] == RUN
+    else:
+        with pytest.raises(LAUNCHER.Stop) as stopped:
+            launcher.resumable(0, 0)
+        assert stopped.value.code == LAUNCHER.EXIT_HUB_UNREADABLE
+
+
 def test_orchestrator_that_never_joins_stops(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
