@@ -86,3 +86,22 @@ Key findings that directly shape both early `scripts/prepare-run.py` support and
 2. **M3 (`robomate certify` & worker supervision, `docs/mvp-spec.md` §13):**
    - `opencode` single-shot `opencode run` works for interactive/manual runs, while unattended multi-turn worker supervision can use `opencode serve` + `opencode run --attach <url> --session <id>` (as proven in `scripts/poc/step6_launch.py`).
    - `agy` single-shot `agy -p` works for single-turn print runs, and `agy -p --input-format stream-json --output-format stream-json` provides a persistent multi-turn NDJSON streaming supervisor transport similar to Claude Code's `supervise-claude-code.sh`.
+
+---
+
+## 5. OpenCode 2.x Migration Findings (#518 / M3 Step 3)
+
+Verified live on Linux against **`opencode v2.4.1`** (`@opencode/cli@2.4.1`, upgraded from `opencode-ai@1.19.3` via `opencode upgrade --major`; native Windows live checks deferred to a follow-up issue):
+
+| Check | OpenCode 1.x (`1.19.3` / `1.19.5`) | OpenCode 2.x (`2.4.1`) |
+|---|---|---|
+| `opencode --version` | `1.19.3` | `opencode v2.4.1` (`parse_harness_version` strips `opencode` and `v`) |
+| Background service vs isolation | Per-process | Shared `opencode serve --service` ignores per-child `OPENCODE_CONFIG_CONTENT`. **Use `--standalone`** on all robomate launches (`run`, interactive, `ask`, `doctor`, `debug config`) for per-child config/XDG isolation and clean process exit. |
+| `opencode debug config` | Single merged JSON object | JSON array of config source objects (`[{"type": "document", "path": ..., "info": {...}}, ...]`) |
+| MCP config & Code Mode | `mcp.robomate`, `enabled: true`, scalar `timeout: 1900000` | `mcp.servers.robomate`, `disabled: false`, **`codemode: false`** (exposes direct `robomate_*` tools instead of the Code Mode `execute` sandbox), `timeout: {startup, catalog, execution}` (ms) |
+| Disabling MCP (`ask` / `doctor`) | `{"mcp": {"robomate": {"enabled": false}}}` | Requires full minimal entry (`{"mcp": {"servers": {"robomate": {"type": "local", "command": ["false"], "disabled": true}}}}`); partial `{disabled: true}` without `type`+`command` is dropped. |
+| Model & effort flags | Headless: `--model m --variant e`; interactive: `--model m` + `agent.build.variant` | Headless: `--model m#e` (no `--variant`); interactive: rejects `--model` and `--variant` — pass `"model": "m#e"` in `OPENCODE_CONFIG_CONTENT`. |
+| Permissions & token-dir deny | Keyed `agent.<name>.permission` object with `external_directory` + `read` denies; `permission-events.mjs` plugin | Ordered `agents.<name>.permissions` array (`{action, resource, effect}`). `external_directory` removed. Deny `/*`, `?:/*`, `..`, `../*`, `*/../*` for FS tools, allow assigned roots, then deny `read` on `token_dir` (absolute and relative). Headless `run` (without `--auto`) auto-rejects `ask` without hanging; 1.x plugins are not attached. |
+| JSON session ID & provider errors | `"sessionID": "ses_…"`, `error.name == "APIError"` + `error.data.{statusCode,isRetryable,responseBody}` | Same `"sessionID": "ses_…"`; error event uses `error.{type, status, response.body}` (both shapes handled in `provider_error()`). |
+| Skill discovery roots | `~/.config/opencode/skills`, `~/.agents/skills`, `~/.claude/skills` | Same user roots (plus singular `skill/`) and project `.opencode/skills`, `.agents/skills`, `.claude/skills` (project root resolved from `PWD`). |
+| Rollback | N/A | `opencode service stop && npm uninstall -g @opencode/cli && npm install -g opencode-ai@1.19.3` (plus restoring `~/.config/opencode` and `~/.local/share/opencode` backups). Tested live; 1.19.3 reads both the backed-up 1.x DB and the 2.4.1-migrated DB. |

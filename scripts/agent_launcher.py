@@ -137,7 +137,7 @@ ProviderSignature = tuple[str, int, str, str | None, bool]
 
 
 def provider_error(line: str, provider: str) -> tuple[str | None, ProviderSignature | None] | None:
-    """Extract only the two known permanent OpenCode provider failures."""
+    """Extract only the two known permanent OpenCode provider failures (1.x and 2.x)."""
     try:
         event = json.loads(line)
     except ValueError:
@@ -148,15 +148,26 @@ def provider_error(line: str, provider: str) -> tuple[str | None, ProviderSignat
         session = event.get("sessionID")
         session = session if isinstance(session, str) else None
         error = event["error"]
-        data = error["data"]
-        status = data["statusCode"]
-        retryable = data["isRetryable"]
-        body = json.loads(data["responseBody"])
+        if not isinstance(error, dict):
+            return session, None
+        if error.get("name") == "APIError" and isinstance(error.get("data"), dict):
+            # OpenCode 1.x: error.name == "APIError" + error.data.{statusCode,isRetryable,...}.
+            data = error["data"]
+            status = data["statusCode"]
+            retryable = data["isRetryable"]
+            raw_body = data["responseBody"]
+        elif isinstance(error.get("response"), dict) and "status" in error:
+            # OpenCode 2.x shape: error.{type,status,response.body}.
+            status = error["status"]
+            retryable = error.get("isRetryable", False)
+            raw_body = error["response"]["body"]
+        else:
+            return session, None
+        body = json.loads(raw_body)
         detail = body["error"]
         kind, code = detail["type"], detail.get("code")
         if (
-            error["name"] != "APIError"
-            or type(status) is not int
+            type(status) is not int
             or retryable is not False
             or not isinstance(kind, str)
             or (code is not None and not isinstance(code, str))

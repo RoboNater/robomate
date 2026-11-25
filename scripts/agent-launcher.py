@@ -570,7 +570,32 @@ def grants(
     ]
 
 
-def model_flags(harness: str, model: str, effort: str, *, interactive: bool) -> list[str]:
+def is_opencode_v2(
+    program: list[str],
+    environment: Mapping[str, str],
+    workdir: Path | None = None,
+    version: str = "",
+) -> bool:
+    """Return whether OpenCode is 2.x (from a recorded version or ``--version`` probe)."""
+    from opencode_headless import detect_major_version, parse_major_version
+
+    if version:
+        major = parse_major_version(version)
+        if major is not None:
+            return major >= 2
+    return detect_major_version(program, environment, workdir) >= 2
+
+
+def model_flags(
+    harness: str, model: str, effort: str, *, interactive: bool, opencode_v2: bool = False
+) -> list[str]:
+    if harness == "opencode" and opencode_v2:
+        # Interactive OpenCode 2.x rejects --model and --variant; OPENCODE_CONFIG_CONTENT
+        # carries model#variant. Headless `opencode run` uses --model provider/model#variant.
+        if interactive or not model:
+            return []
+        spec = f"{model}#{effort}" if effort and "#" not in model else model
+        return ["--model", spec]
     flags = ["--model", model] if model else []
     if not effort:
         return flags
@@ -585,8 +610,23 @@ def model_flags(harness: str, model: str, effort: str, *, interactive: bool) -> 
     return [*flags, "--effort", effort]
 
 
-def opencode_environment(effort: str, *, safe: bool, no_hub: bool = False) -> dict[str, str]:
+def opencode_environment(
+    effort: str, *, safe: bool, no_hub: bool = False, model: str = "", v2: bool = False
+) -> dict[str, str]:
     content: dict[str, Any] = {}
+    if v2:
+        if no_hub:
+            # OpenCode 2.x drops a partial mcp.servers.<name> override lacking type+command.
+            content["mcp"] = {
+                "servers": {"robomate": {"type": "local", "command": ["false"], "disabled": True}}
+            }
+        if model:
+            content["model"] = f"{model}#{effort}" if effort and "#" not in model else model
+        if safe:
+            content["agents"] = {
+                "build": {"permissions": [{"action": "*", "resource": "*", "effect": "ask"}]}
+            }
+        return {"OPENCODE_CONFIG_CONTENT": json.dumps(content)} if content else {}
     if no_hub:
         content["mcp"] = {"robomate": {"enabled": False}}
     if effort:
@@ -609,13 +649,15 @@ def headless_base(
     *,
     title: str,
     export: Path,
+    opencode_v2: bool = False,
 ) -> list[str]:
     """The harness command without prompt or conversation words; the launcher adds them."""
 
     if harness == "codex":
         return [*program, "exec", "-C", ".", *RUN_PERMISSIONS[harness], *granted, *flags, *extra]
     if harness == "opencode":
-        return [*program, "run", *flags, "--title", title, *extra]
+        standalone = ["--standalone"] if opencode_v2 else []
+        return [*program, "run", *standalone, *flags, "--title", title, *extra]
     if harness == "antigravity":
         return [*program, *flags, *RUN_PERMISSIONS[harness], *extra]
     if harness == "devin":
@@ -634,6 +676,7 @@ def interactive_start(
     *,
     prompt: str,
     session_id: str,
+    opencode_v2: bool = False,
 ) -> tuple[list[str], bool]:
     """An interactive first launch, and whether ``prompt`` is already in it.
 
@@ -647,7 +690,8 @@ def interactive_start(
     if harness == "codex":
         return [*program, "-C", ".", *perms, *granted, *flags, *extra, prompt], True
     if harness == "opencode":
-        return [*program, *perms, *flags, *extra, "--prompt", prompt], True
+        standalone = ["--standalone"] if opencode_v2 else []
+        return [*program, *standalone, *perms, *flags, *extra, "--prompt", prompt], True
     return [*program, *flags, *perms, *extra], False
 
 
@@ -662,6 +706,7 @@ def interactive_resume(
     *,
     ask: bool = False,
     fork: bool = False,
+    opencode_v2: bool = False,
 ) -> list[str]:
     """Open ``conversation`` interactively; with ``ask`` its hub tools are off."""
 
@@ -676,7 +721,8 @@ def interactive_resume(
         words += ["-c", "mcp_servers.robomate.enabled=false"] if ask else granted
         return [*words, *perms, *flags, *extra, conversation]
     if harness == "opencode":
-        words = [*program, *perms, *flags, *(["--fork"] if fork else [])]
+        standalone = ["--standalone"] if opencode_v2 else []
+        words = [*program, *standalone, *perms, *flags, *(["--fork"] if fork else [])]
         return [*words, *extra, "--session", conversation]
     if harness == "antigravity":
         return [*program, *flags, *perms, *extra, "--conversation", conversation]
@@ -1723,7 +1769,16 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     place.sessions.mkdir(parents=True, exist_ok=True)
     log = log_path(place.sessions, args.agent)
     program = program_for(tools, args.harness)
-    flags = model_flags(args.harness, args.model, args.effort, interactive=args.interactive)
+    oc_v2 = args.harness == "opencode" and is_opencode_v2(
+        program, os.environ, workdir, version=args.harness_version
+    )
+    flags = model_flags(
+        args.harness,
+        args.model,
+        args.effort,
+        interactive=args.interactive,
+        opencode_v2=oc_v2,
+    )
     identity = Identity(
         args.harness,
         args.model,
@@ -1747,14 +1802,27 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         session_id = str(uuid.uuid4()) if args.harness == "claude-code" else ""
         line = join_line(args.agent, args.role)
         argv, prompted = interactive_start(
-            args.harness, program, flags, granted, perms, extra, prompt=line, session_id=session_id
+            args.harness,
+            program,
+            flags,
+            granted,
+            perms,
+            extra,
+            prompt=line,
+            session_id=session_id,
+            opencode_v2=oc_v2,
         )
         env = identity.apply(
             common.launch_environment(
                 workdir,
                 child_environment(
                     place,
-                    opencode_environment(args.effort, safe=args.safe_mode)
+                    opencode_environment(
+                        args.effort,
+                        safe=args.safe_mode,
+                        model=args.model,
+                        v2=oc_v2,
+                    )
                     if args.harness == "opencode"
                     else {},
                 ),
@@ -1796,6 +1864,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         extra,
         title=f"{args.agent} {place.url or 'robomate'}",
         export=place.sessions / f"{args.agent}-devin-export.json",
+        opencode_v2=oc_v2,
     )
     namespace = supervision_args(
         args,
@@ -1833,7 +1902,10 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             f"{args.agent} on this host before resuming.",
         )
     program = program_for(tools, harness)
-    flags = model_flags(harness, model, effort, interactive=args.interactive)
+    oc_v2 = harness == "opencode" and is_opencode_v2(
+        program, os.environ, workdir, version=str(saved.get("harness_version") or "")
+    )
+    flags = model_flags(harness, model, effort, interactive=args.interactive, opencode_v2=oc_v2)
     identity = replace(
         saved_identity(saved, harness, model, effort),
         telemetry_log=bridge_telemetry(place.sessions, args.agent),
@@ -1886,13 +1958,14 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 permissions(harness, args.safe_mode),
                 extra,
                 conversation,
+                opencode_v2=oc_v2,
             )
             env = identity.apply(
                 common.launch_environment(
                     workdir,
                     child_environment(
                         place,
-                        opencode_environment(effort, safe=args.safe_mode)
+                        opencode_environment(effort, safe=args.safe_mode, model=model, v2=oc_v2)
                         if harness == "opencode"
                         else {},
                     ),
@@ -1924,6 +1997,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         extra,
         title=f"{args.agent} {place.url or 'robomate'}",
         export=place.sessions / f"{args.agent}-devin-export.json",
+        opencode_v2=oc_v2,
     )
     namespace = supervision_args(
         args,
@@ -1964,23 +2038,28 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         raise Usage(str(exc)) from None
     workdir = Path(saved["workdir"])
     model, effort = str(saved.get("model") or ""), str(saved.get("effort") or "")
+    start_dir = workdir if workdir.is_dir() else Path.cwd()
+    program = program_for(tools, harness)
+    oc_v2 = harness == "opencode" and is_opencode_v2(
+        program, os.environ, start_dir, version=str(saved.get("harness_version") or "")
+    )
     argv = interactive_resume(
         harness,
-        program_for(tools, harness),
-        model_flags(harness, model, effort, interactive=True),
+        program,
+        model_flags(harness, model, effort, interactive=True, opencode_v2=oc_v2),
         [],
         permissions(harness, args.safe_mode),
         extra,
         selected,
         ask=True,
         fork=args.fork,
+        opencode_v2=oc_v2,
     )
-    start_dir = workdir if workdir.is_dir() else Path.cwd()
     env = common.launch_environment(
         start_dir,
         cleared_environment()
         | (
-            opencode_environment(effort, safe=args.safe_mode, no_hub=True)
+            opencode_environment(effort, safe=args.safe_mode, no_hub=True, model=model, v2=oc_v2)
             if harness == "opencode"
             else {}
         ),
@@ -2057,7 +2136,13 @@ def doctor_codex_mcp_flags(argv: list[str], *, environment: dict[str, str], cwd:
 
 
 def doctor_opencode_environment(
-    environment: dict[str, str], profile: Path, write_roots: list[str]
+    environment: dict[str, str],
+    profile: Path,
+    write_roots: list[str],
+    *,
+    model: str = "",
+    effort: str = "",
+    v2: bool = False,
 ) -> dict[str, str]:
     environment = {
         key: value for key, value in environment.items() if not key.startswith("OPENCODE_")
@@ -2068,6 +2153,23 @@ def doctor_opencode_environment(
         environment[f"XDG_{name}_HOME"] = str(profile / name.lower())
     environment["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
     environment["OPENCODE_DISABLE_CLAUDE_CODE"] = "1"
+    if v2:
+        rules: list[dict[str, str]] = [{"action": "*", "resource": "*", "effect": "ask"}]
+        for root in write_roots:
+            pattern = Path(root).as_posix().rstrip("/")
+            if "*" in pattern or "?" in pattern:
+                raise Usage("OpenCode consultation directory grants cannot contain wildcards")
+            for tool in ("read", "glob", "grep", "list"):
+                rules.append({"action": tool, "resource": pattern, "effect": "allow"})
+                rules.append({"action": tool, "resource": f"{pattern}/*", "effect": "allow"})
+        content: dict[str, Any] = {
+            "mcp": {"servers": {}},
+            "agents": {"build": {"permissions": rules}},
+        }
+        if model:
+            content["model"] = f"{model}#{effort}" if effort and "#" not in model else model
+        environment["OPENCODE_CONFIG_CONTENT"] = json.dumps(content)
+        return environment
     external = {"*": "ask"}
     for root in write_roots:
         pattern = Path(root).as_posix().rstrip("/")
@@ -2081,20 +2183,34 @@ def doctor_opencode_environment(
 
 
 def verify_doctor_opencode_mcp(
-    program: list[str], environment: dict[str, str], workdir: Path
+    program: list[str], environment: dict[str, str], workdir: Path, *, v2: bool = False
 ) -> None:
-    from opencode_headless import OpenCodeConfigError, read_config
+    from opencode_headless import OpenCodeConfigError, read_config_with_version
 
     try:
-        servers = read_config(program, environment, workdir).get("mcp", {})
+        config, schema = read_config_with_version(program, environment, workdir, standalone=v2)
     except OpenCodeConfigError:
         raise Usage(
             "could not verify OpenCode's MCP config; check `opencode debug config` support"
         ) from None
-    if not isinstance(servers, dict) or any(
-        not isinstance(server, dict) or server.get("enabled") is not False
-        for server in servers.values()
-    ):
+    mcp = config.get("mcp", {})
+    if not isinstance(mcp, dict):
+        raise Usage(
+            "OpenCode's effective config has enabled or unknown MCP entries; check managed "
+            "or doctor profile config, or choose another doctor harness"
+        )
+    if schema >= 2 or "servers" in mcp:
+        servers = mcp.get("servers", {})
+        bad = not isinstance(servers, dict) or any(
+            not isinstance(server, dict) or server.get("disabled") is not True
+            for server in servers.values()
+        )
+    else:
+        bad = any(
+            not isinstance(server, dict) or server.get("enabled") is not False
+            for server in mcp.values()
+        )
+    if bad:
         raise Usage(
             "OpenCode's effective config has enabled or unknown MCP entries; check managed "
             "or doctor profile config, or choose another doctor harness"
@@ -2372,6 +2488,9 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         root["path"] for root in context["access_inventory"]["roots"] if root["mode"] == "write"
     ]
     login = ""
+    oc_v2 = harness == "opencode" and is_opencode_v2(
+        program, environment, Path(doctor_dir["workdir"])
+    )
     if effective_clean_login or harness in denise.ISOLATED_HARNESSES:
         # Separate homes keep authentication and MCP configuration scoped to this run.
         profile = Path(doctor_dir["configs"]) / profile_name
@@ -2389,13 +2508,23 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             environment["CLAUDE_CONFIG_DIR"] = str(profile)
             login = f"Denise's clean Claude Code profile is {profile}: use /login to log in."
         elif harness == "opencode":
-            environment = doctor_opencode_environment(environment, profile, write_roots)
+            environment = doctor_opencode_environment(
+                environment,
+                profile,
+                write_roots,
+                model=settings["model"],
+                effort=settings["effort"],
+                v2=oc_v2,
+            )
             login = (
                 f"Denise's OpenCode profile is {profile}. Use /connect if a provider needs login."
             )
             context["access_inventory"]["enforcement"] = (
-                "OpenCode external directory tool grants; shell commands require operator review "
-                "and retain OS access"
+                "OpenCode 2.x ordered tool permissions with --standalone profile isolation; "
+                "shell commands require operator review and retain OS access"
+                if oc_v2
+                else "OpenCode external directory tool grants; shell commands require operator "
+                "review and retain OS access"
             )
         else:
             write_doctor_json(agy_mcp_path(profile), {"mcpServers": {}})
@@ -2413,7 +2542,9 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             login = f"Denise's AntiGravity home is {profile}. Follow the agy sign-in prompt."
     report = denise.render_joined(context)
     prompt = f"Read {doctor_dir['startup']} and follow the instructions in it"
-    flags = model_flags(harness, settings["model"], settings["effort"], interactive=True)
+    flags = model_flags(
+        harness, settings["model"], settings["effort"], interactive=True, opencode_v2=oc_v2
+    )
     directory_flags = [word for root in write_roots for word in ("--add-dir", root)]
     if harness == "codex":
         # No MCP server at all, and write grants only on the selected run's roots.
@@ -2435,8 +2566,9 @@ def doctor(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         # another directory (#513); -- keeps the startup prompt positional.
         argv += ["--", prompt]
     elif harness == "opencode":
-        verify_doctor_opencode_mcp(program, environment, Path(doctor_dir["workdir"]))
-        argv = [*program, *flags, "--prompt", prompt]
+        verify_doctor_opencode_mcp(program, environment, Path(doctor_dir["workdir"]), v2=oc_v2)
+        standalone = ["--standalone"] if oc_v2 else []
+        argv = [*program, *standalone, *flags, "--prompt", prompt]
     else:
         argv = [*program, *flags, *directory_flags, "--prompt-interactive", prompt]
     print(

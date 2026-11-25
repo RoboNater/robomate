@@ -639,13 +639,17 @@ argv = sys.argv[1:]
 if argv == ["--help"]:
     print(os.environ.get("FAKE_CLAUDE_HELP", ""))
     sys.exit(0)
-if argv == ["debug", "config"]:
+if argv == ["--version"]:
+    print(os.environ.get("FAKE_OPENCODE_VERSION", "1.19.5"))
+    sys.exit(0)
+if argv[:2] == ["debug", "config"]:
     if os.environ.get("FAKE_OPENCODE_EXIT"):
         sys.exit(1)
     raw = os.environ.get("FAKE_OPENCODE_INVALID")
     if raw is None:
         config = json.loads(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
-        config["provider"] = {"catalog": "x" * 100_000}
+        if isinstance(config, dict):
+            config["provider"] = {"catalog": "x" * 100_000}
         raw = json.dumps(config)
     data = raw.encode("utf-8")
     if stat.S_ISFIFO(os.fstat(1).st_mode):
@@ -4455,3 +4459,276 @@ def test_start_refuses_missing_user_mcp_entry(
     assert "codex" in err and "[mcp_servers.robomate]" in err and "user-level" in err
     assert not (area["harness_dir"] / "launches.jsonl").exists()
     assert not area["sessions"].exists()
+
+
+def test_opencode_v2_headless_start_and_resume_use_standalone_and_v2_policy(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_harness("opencode", monkeypatch)
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    monkeypatch.setenv("FAKE_OPENCODE_VERSION", "opencode v2.4.1")
+    v2_sources = [
+        {
+            "type": "document",
+            "path": "/home/user/.config/opencode/opencode.jsonc",
+            "info": {
+                "agents": {
+                    "build": {
+                        "permissions": [
+                            {"action": "*", "resource": "*", "effect": "allow"},
+                        ]
+                    }
+                },
+                "mcp": {
+                    "servers": {
+                        "robomate": {
+                            "type": "local",
+                            "command": ["robomate", "mcp", "--harness", "opencode"],
+                            "disabled": False,
+                            "codemode": False,
+                        }
+                    }
+                },
+            },
+        }
+    ]
+    monkeypatch.setenv("FAKE_OPENCODE_CONFIG", json.dumps(v2_sources))
+    lane_tmp = area["root"] / "assigned tmp"
+    token_dir = area["state"].resolve()
+    detached = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released")]}
+    hub = FakeHub(after_launches(area, detached, detached, released))
+    assert (
+        invoke(
+            start_words(
+                area,
+                "bob",
+                "implementer",
+                "opencode",
+                "--model",
+                "opencode-go/glm-5.3-flash",
+                "--effort",
+                "high",
+                "--lane-tmp-dir",
+                str(lane_tmp),
+            ),
+            programs=programs(area),
+            reader=hub,
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    names = []
+    for launch in launches(area):
+        argv = launch["argv"]
+        assert "--standalone" in argv
+        assert "--auto" not in argv
+        assert "--variant" not in argv
+        assert argv[argv.index("--model") + 1] == "opencode-go/glm-5.3-flash#high"
+        name = argv[argv.index("--agent") + 1]
+        names.append(name)
+        content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
+        assert "plugin" not in content
+        assert "agent" not in content
+        rules = content["agents"][name]["permissions"]
+        assert {"action": "read", "resource": "/*", "effect": "deny"} in rules
+        assert {"action": "read", "resource": "../*", "effect": "deny"} in rules
+        assert {
+            "action": "read",
+            "resource": area["worktree"].as_posix() + "/*",
+            "effect": "allow",
+        } in rules
+        assert {
+            "action": "read",
+            "resource": lane_tmp.as_posix() + "/*",
+            "effect": "allow",
+        } in rules
+        abs_token = token_dir.as_posix().rstrip("/")
+        rel_token = "../" + token_dir.relative_to(area["root"].resolve()).as_posix().rstrip("/")
+        assert rules[-4:] == [
+            {"action": "read", "resource": abs_token, "effect": "deny"},
+            {"action": "read", "resource": f"{abs_token}/*", "effect": "deny"},
+            {"action": "read", "resource": rel_token, "effect": "deny"},
+            {"action": "read", "resource": f"{rel_token}/*", "effect": "deny"},
+        ]
+    assert len(names) == len(set(names)) == 2
+
+
+def test_opencode_v2_interactive_ask_and_safe_mode(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_harness("opencode", monkeypatch)
+    monkeypatch.setenv("FAKE_OPENCODE_VERSION", "opencode v2.4.1")
+    monkeypatch.setenv("FAKE_OPENCODE_CONFIG", json.dumps([]))
+    assert (
+        invoke(
+            [
+                "start",
+                "bob",
+                "--role",
+                "implementer",
+                "--harness",
+                "opencode",
+                "--model",
+                "opencode-go/glm-5.3-flash",
+                "--effort",
+                "low",
+                "--interactive",
+                "--safe-mode",
+                "--hub",
+                str(area["checkout"]),
+            ],
+            programs=programs(area),
+            reader=FakeHub(lambda _: {"workflow": workflow(), "agents": []}),
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    start_launch = launches(area)[0]
+    assert "--standalone" in start_launch["argv"]
+    assert "--model" not in start_launch["argv"]
+    assert "--variant" not in start_launch["argv"]
+    assert "--auto" not in start_launch["argv"]
+    start_cfg = json.loads(start_launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert start_cfg["model"] == "opencode-go/glm-5.3-flash#low"
+    assert start_cfg["agents"]["build"]["permissions"] == [
+        {"action": "*", "resource": "*", "effect": "ask"}
+    ]
+
+    # Seed a saved conversation ID and verify `ask` disables robomate in 2.x shape.
+    log_file = area["sessions"] / "bob.jsonl"
+    with log_file.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "event": "start",
+                    "agent": "bob",
+                    "harness": "opencode",
+                    "harness_version": "2.4.1",
+                    "role": "implementer",
+                    "model": "opencode-go/glm-5.3-flash",
+                    "effort": "low",
+                    "workdir": str(area["worktree"]),
+                    "conversation_id": "ses_v2ask123",
+                }
+            )
+            + "\n"
+        )
+    assert (
+        invoke(
+            ["ask", "bob", "--sessions-dir", str(area["sessions"]), "--safe-mode"],
+            programs=programs(area),
+            reader=FakeHub(lambda _: {"workflow": workflow(), "agents": []}),
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    ask_launch = launches(area)[-1]
+    assert "--standalone" in ask_launch["argv"]
+    assert "--session" in ask_launch["argv"] and "ses_v2ask123" in ask_launch["argv"]
+    assert "--model" not in ask_launch["argv"]
+    ask_cfg = json.loads(ask_launch["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert ask_cfg["mcp"]["servers"]["robomate"] == {
+        "type": "local",
+        "command": ["false"],
+        "disabled": True,
+    }
+    assert ask_cfg["model"] == "opencode-go/glm-5.3-flash#low"
+
+
+def test_opencode_v2_doctor_mcp_verification(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    program = programs(area)["opencode"]
+    env = dict(os.environ)
+    env["FAKE_OPENCODE_VERSION"] = "opencode v2.4.1"
+    # Enabled server in 2.x shape must be refused.
+    env["FAKE_OPENCODE_CONFIG"] = json.dumps(
+        [
+            {
+                "type": "document",
+                "info": {
+                    "mcp": {
+                        "servers": {
+                            "robomate": {
+                                "type": "local",
+                                "command": ["robomate", "mcp"],
+                                "disabled": False,
+                            }
+                        }
+                    }
+                },
+            }
+        ]
+    )
+    with pytest.raises(CLI.Usage, match="enabled or unknown MCP"):
+        CLI.verify_doctor_opencode_mcp(program, env, area["worktree"], v2=True)
+    # Disabled server in 2.x shape passes.
+    env["FAKE_OPENCODE_CONFIG"] = json.dumps(
+        [
+            {
+                "type": "document",
+                "info": {
+                    "mcp": {
+                        "servers": {
+                            "robomate": {
+                                "type": "local",
+                                "command": ["false"],
+                                "disabled": True,
+                            }
+                        }
+                    }
+                },
+            }
+        ]
+    )
+    CLI.verify_doctor_opencode_mcp(program, env, area["worktree"], v2=True)
+
+
+def test_opencode_v2_provider_error_recognizes_v2_shape() -> None:
+    import agent_launcher as common  # type: ignore[import-not-found]
+
+    line_401 = json.dumps(
+        {
+            "type": "error",
+            "sessionID": "ses_v2err401",
+            "error": {
+                "type": "provider.auth",
+                "message": "API key expired",
+                "status": 401,
+                "response": {
+                    "body": json.dumps(
+                        {
+                            "error": {
+                                "type": "authentication_error",
+                                "code": "api_key_expired",
+                            }
+                        }
+                    )
+                },
+            },
+        }
+    )
+    assert common.provider_error(line_401, "anthropic") == (
+        "ses_v2err401",
+        ("anthropic", 401, "authentication_error", "api_key_expired", False),
+    )
+
+    line_400 = json.dumps(
+        {
+            "type": "error",
+            "sessionID": "ses_v2err400",
+            "error": {
+                "type": "provider.request",
+                "status": 400,
+                "response": {"body": json.dumps({"error": {"type": "invalid_request_error"}})},
+            },
+        }
+    )
+    assert common.provider_error(line_400, "anthropic") == (
+        "ses_v2err400",
+        ("anthropic", 400, "invalid_request_error", None, False),
+    )

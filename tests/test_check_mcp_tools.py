@@ -458,3 +458,56 @@ def test_missing_installable_skill_is_reported_without_failing(
     out = capsys.readouterr().out
     assert f"INFO: Antigravity skill {user_home / '.gemini/config/skills/worker'}" in out
     assert "absent" in out
+
+
+def test_opencode_v2_mcp_servers_object_timeout_check(
+    user_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = user_home / ".config/opencode/opencode.jsonc"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "servers": {
+                        "robomate": {
+                            "type": "local",
+                            "command": ["robomate", "mcp", "--harness", "opencode"],
+                            "disabled": False,
+                            "codemode": False,
+                            "timeout": {
+                                "startup": 1900000,
+                                "catalog": 1900000,
+                                "execution": 1900000,
+                            },
+                            "environment": {"HUB_MCP_TIMEOUT_S": "1900"},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert check.check_json_configs() == []
+
+    # Too-short execution timeout in 2.x object form must be flagged.
+    cfg.write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "servers": {
+                        "robomate": {
+                            "type": "local",
+                            "command": ["robomate", "mcp", "--harness", "opencode"],
+                            "disabled": False,
+                            "timeout": {"execution": 60000},
+                            "environment": {"HUB_MCP_TIMEOUT_S": "1900"},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    problems = check.check_json_configs()
+    assert any("opencode:" in p and "shorter than" in p for p in problems)

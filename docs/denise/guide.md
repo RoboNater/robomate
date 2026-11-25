@@ -101,8 +101,14 @@ before proposing a repair. [Incident record](https://github.com/RoboNater/roboma
 
 This procedure uses the OpenCode 1.x SQLite schema observed in 1.18.35. Verify
 the installed version, database and schema before proposing an edit.
-[OpenCode 2 support (#325)](https://github.com/RoboNater/robomate/issues/325)
-is outside this procedure.
+OpenCode 2.x ([#518](https://github.com/RoboNater/robomate/issues/518)) adds
+`session_v2` and `session_part` tables alongside `session` and `part`, requires
+`--standalone` and a full disabled `mcp.servers.robomate` entry (`type`,
+`command`, `disabled: true`) in `OPENCODE_CONFIG_CONTENT` to suppress hub tools
+when reproducing on a fork, and uses a different JSON error shape (which the
+launcher's repeated-error stop recognizes for both 1.x and 2.x). Do not run the
+1.x `DELETE FROM part` SQL against a 2.x session without first verifying the
+2.x session tables.
 
 Denise explains the evidence, proposes the fork test and repair, and helps the
 operator identify the exact rows. Every database or process action is an

@@ -62,18 +62,26 @@ def check(harness: str) -> None:
         try:
             raw = path.read_text(encoding="utf-8")
             data = tomllib.loads(raw) if harness == "codex" else _jsonc(raw)
-            for key in keys:
-                if not isinstance(data, dict):
-                    raise ValueError(f"invalid configuration structure in {path}")
-                data = data.get(key)
-                if data is None:
+            key_paths = (
+                [("mcp", "servers", "robomate"), ("mcp", "robomate")]
+                if harness == "opencode"
+                else [keys]
+            )
+            for candidate_keys in key_paths:
+                node: object = data
+                for key in candidate_keys:
+                    if not isinstance(node, dict):
+                        raise ValueError(f"invalid configuration structure in {path}")
+                    node = node.get(key)
+                    if node is None:
+                        break
+                # Nested tool/env tables alone create an implicit TOML table, but
+                # do not register a Codex server transport.
+                if isinstance(node, dict) and (
+                    harness != "codex" or "command" in node or "url" in node
+                ):
+                    found = True
                     break
-            # Nested tool/env tables alone create an implicit TOML table, but
-            # do not register a Codex server transport.
-            if isinstance(data, dict) and (
-                harness != "codex" or "command" in data or "url" in data
-            ):
-                found = True
         except FileNotFoundError:
             continue
         except (OSError, ValueError) as exc:

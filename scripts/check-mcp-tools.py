@@ -291,6 +291,9 @@ def check_client_timeout(harness: str, entry: dict) -> list[str]:
         return [f"{harness}: no supported timeout setting"]
     timeout = profile.timeout
     raw = entry.get(timeout.field, timeout.default)
+    if harness == "opencode" and isinstance(raw, dict):
+        # OpenCode 2.x uses timeout: {startup, catalog, execution} in milliseconds.
+        raw = raw.get("execution", timeout.default)
     numeric = isinstance(raw, int | float) and not isinstance(raw, bool) and math.isfinite(raw)
     unlimited = harness == "antigravity" and numeric and raw < 0
     if harness == "antigravity" and numeric and raw == 0:
@@ -327,7 +330,12 @@ def check_json_configs() -> list[str]:
             section = config.get("mcp" if harness == "opencode" else "mcpServers", {})
             if not isinstance(section, dict):
                 raise ValueError("MCP configuration must be an object")
-            entry = section.get("robomate")
+            if harness == "opencode" and isinstance(section.get("servers"), dict):
+                entry = section["servers"].get("robomate")
+                if entry is None:
+                    entry = section.get("robomate")
+            else:
+                entry = section.get("robomate")
             if entry is None or entry is False:
                 continue
             if not isinstance(entry, dict):
