@@ -122,6 +122,12 @@ def __getattr__(name: str) -> Any:
     return value
 
 
+def __dir__() -> list[str]:
+    """Show the lazy re-exports too, so `dir()` matches the documented surface."""
+
+    return sorted(set(globals()) | set(_LAZY_MODULES))
+
+
 __all__ = [
     "AGENT_HEADER",
     "CLOSEOUT_WAIT_DEFAULT_S",
