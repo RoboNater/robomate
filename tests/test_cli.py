@@ -2329,7 +2329,8 @@ def test_status_snapshot_matches_get_state_and_changes_nothing(
                 ).fetchone()[0]
                 == 0
             )
-        after = _rpc_as_alice(url, token, "get_state")["result"]
+        # Compare persisted state directly because Alice's RPC renews live leases.
+        after = hub_store.get_state()
         assert after["unacked_delivered"] == state["unacked_delivered"]
         assert after["tasks"] == state["tasks"]
     finally:

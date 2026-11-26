@@ -920,34 +920,136 @@ async def test_wait_for_event_times_out_with_a_null_event(client: httpx.AsyncCli
     assert time.monotonic() - started >= 0.2
 
 
+async def test_active_orchestrator_keeps_delivery_through_merge_gate_and_pacing(
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+    frozen_clock: FrozenClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cast(OrchestratorOps, app.state.orchestrator).gate = DeliveredForge()
+    await check_in(client, "bob")
+    event = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+
+    frozen_clock.advance(settings.event_lease_s * 0.75)
+    assert "result" in await call(client, "check_merge_gate", pr_url=PR, expected_head_sha=HEAD)
+    frozen_clock.advance(settings.event_lease_s * 0.75)
+    assert hub_store.lease_next_event() is None
+    assert (await call(client, "wait_for_event", timeout_s=0))["result"]["event"] is None
+
+    frozen_clock.advance(settings.event_lease_s * 0.75)
+    [held] = hub_store.get_state()["unacked_delivered"]
+    assert held["delivery_id"] == event["delivery_id"]
+    assert held["delivery_attempts"] == 1
+    ack = await call(client, "wait_for_event", timeout_s=0, ack=event["delivery_id"])
+    assert ack["result"]["event"] is None
+    assert hub_store.get_state()["unacked_delivered"] == []
+    assert "Late ack" not in caplog.text
+
+
+@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+async def test_connected_pacing_wait_keeps_its_delivery_leased(
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await check_in(client, "bob")
+    first = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    half_lease = settings.event_lease_s / 2
+    tick = asyncio.Event()
+    timer_started = asyncio.Event()
+    original_wait = asyncio.wait
+
+    async def wait(
+        tasks: Sequence[asyncio.Task[Any]],
+        *,
+        timeout: float | None = None,
+        return_when: str = asyncio.ALL_COMPLETED,
+    ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+        if timeout == half_lease and not tick.is_set():
+            timer_started.set()
+            await tick.wait()
+            return set(), set(tasks)
+        return await original_wait(tasks, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(asyncio, "wait", wait)
+    held = asyncio.create_task(call(client, "wait_for_event", timeout_s=LIVENESS_S))
+    try:
+        await wait_until(lambda: hub_store.signals.waiting(EVENT_KEY), "the pacing wait to park")
+        assert timer_started.is_set()
+        frozen_clock.advance(half_lease)
+        tick.set()
+        await wait_until(
+            lambda: (
+                hub_store.get_state()["unacked_delivered"][0]["delivery_expires"]
+                > first["delivery_expires"]
+            ),
+            "the connected wait to renew the delivery",
+        )
+        frozen_clock.advance(half_lease + 1)
+        queued = hub_store.append_event(EventKind.TASK_PROGRESS, {})
+        body = await asyncio.wait_for(held, LIVENESS_S)
+        assert body["result"]["event"]["id"] == queued.id
+    finally:
+        held.cancel()
+        await asyncio.gather(held, return_exceptions=True)
+
+
 async def test_ack_of_an_expired_delivery_still_acks_it(
-    client: httpx.AsyncClient, hub_store: HubStore, settings: HubSettings
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+    frozen_clock: FrozenClock,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     # #50: an action that outlives the delivery lease is not redone.
-    clock = MonotonicClock()
-    hub_store.clock = clock
     await check_in(client, "bob")
     delivered = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
-    clock.advance(settings.event_lease_s + 1)
+    frozen_clock.advance(settings.event_lease_s + 1)
 
     body = await call(client, "wait_for_event", timeout_s=0, ack=delivered["delivery_id"])
 
     assert body["result"] == {"event": None}
     state = hub_store.get_state()
     assert state["unacked_delivered"] == [] and state["queued_events"] == 0
+    assert f"Late ack for event {delivered['id']}" in caplog.text
 
 
+@pytest.mark.hub_settings(call_accounting=True)
 async def test_an_expired_delivery_is_redelivered_without_an_ack(
-    client: httpx.AsyncClient, hub_store: HubStore, settings: HubSettings
+    client: httpx.AsyncClient, settings: HubSettings, frozen_clock: FrozenClock
 ) -> None:
-    clock = MonotonicClock()
-    hub_store.clock = clock
     await check_in(client, "bob")
     first = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
-    clock.advance(settings.event_lease_s + 1)
+    frozen_clock.advance(settings.event_lease_s * 0.75)
+    # The bridge can keep sending heartbeats and flushing rows after Alice goes silent.
+    assert "result" in await call(client, "hub.heartbeat")
+    row = {
+        "boundary": "mcp",
+        "actor": "alice",
+        "tool": "wait_for_event",
+        "outcome": "event",
+        "bytes_in": 55,
+        "bytes_out": 120,
+        "started": first["delivered_at"],
+        "finished": first["delivered_at"],
+        "status": None,
+        "content_bytes": 100,
+        "repeat_bytes": 0,
+        "task_id": None,
+    }
+    assert (await call(client, "hub.record_calls", calls=[row]))["result"] == {
+        "recorded": 1,
+        "rejected": 0,
+    }
+    frozen_clock.advance(settings.event_lease_s * 0.5)
 
     again = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
 
+    assert again is not None
     assert again["id"] == first["id"]
     assert again["delivery_attempts"] == 2
     assert again["delivery_id"] != first["delivery_id"]
@@ -982,7 +1084,11 @@ async def test_the_callers_session_is_recorded_for_orchestrator_calls(
 
 
 async def test_heartbeat_fences_old_session_and_releases_delivery(
-    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+    app: FastAPI,
+    client: httpx.AsyncClient,
+    hub_store: HubStore,
+    settings: HubSettings,
+    frozen_clock: FrozenClock,
 ) -> None:
     old = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
     new = {
@@ -993,6 +1099,9 @@ async def test_heartbeat_fences_old_session_and_releases_delivery(
     first = (await call(client, "wait_for_event", old, timeout_s=0))["result"]["event"]
     assert first is not None
     assert (await call(client, "hub.heartbeat", old))["result"] == {"ok": True}
+    frozen_clock.advance(settings.event_lease_s / 2)
+    state = (await call(client, "get_state", old))["result"]
+    assert state["unacked_delivered"][0]["delivery_expires"] > first["delivery_expires"]
     assert hub_store.lease_next_event() is None
 
     assert "result" in await call(client, "join", new, name="alice", takeover=True)
