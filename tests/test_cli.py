@@ -2345,6 +2345,60 @@ def _taken_at(text: str) -> str:
     return match.group(1)
 
 
+def test_report_cli_matches_the_terminal_file_and_headline(
+    repository: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    root, env = repository
+    process = start(root, env)
+    try:
+        info = await_hub(root, process)
+        store = HubStore(
+            hub_state(root) / "hub.db",
+            issue_url_base="https://github.com/example/repo/issues/",
+        )
+        workflow_id = store.start_workflow("Address issue `example/repo#43`", source="submit:issue")
+        run_id = store.get_workflow(workflow_id)["run_id"]
+        report = hub_state(root) / "runs" / run_id / "report.md"
+        store.check_in("charlie", profile=AgentProfile(model="Unicode ∧ report detail"))
+
+        def command(
+            *args: str, environ: dict[str, str] = env, cwd: Path = root
+        ) -> subprocess.CompletedProcess[str]:
+            return _run_cli([CLI, *args], cwd=cwd, env=environ, capture_output=True)
+
+        draft = command("report")
+        assert draft.returncode == 0, draft.stderr
+        assert draft.stdout.startswith("# Draft run report")
+        assert "https://github.com/example/repo/issues/43" in draft.stdout
+        assert "Unicode ∧ report detail" in draft.stdout and not report.exists()
+        no_token = {**env, "ROBOMATE_OPERATOR_TOKEN_FILE": str(tmp_path / "absent")}
+        refused = command("report", environ=no_token)
+        assert refused.returncode == 1 and "operator token" in refused.stderr
+
+        finish_run(store, "Done", actor="alice", session=None)
+        # Explicit selection works outside the hub checkout.
+        result = command("report", run_id, "--hub", str(info["hub_id"]), cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("# Final run report")
+        assert result.stdout == report.read_text(encoding="utf-8")
+        unknown = command("report", "19990101_deadbeef")
+        assert unknown.returncode == 1 and "unknown run" in unknown.stderr
+        path = command("report", "../report.md")
+        assert path.returncode == 1 and "invalid run ID" in path.stderr
+
+        headline = command("status", "--brief")
+        assert headline.returncode == 0, headline.stderr
+        for label, content in (
+            ("Delivery", "merged"),
+            ("Findings", "0 unresolved"),
+            ("Closeout", "steps 0 incomplete"),
+        ):
+            assert re.search(rf"^{label}: +{content}$", headline.stdout, re.MULTILINE)
+        assert "Unicode" not in headline.stdout
+    finally:
+        stop(root, env, process)
+
+
 def test_inbox_answer_and_status_serve_the_operator(
     repository: tuple[Path, dict[str, str]],
     tmp_path: Path,

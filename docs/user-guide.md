@@ -774,6 +774,9 @@ State:     ACTIVE
 Questions: 0 open operator questions
 Step:      REVIEW r1 (charlie)   approved: no
 PR:        #649 @ e04bed6   for #377   started 2026-11-23 05:21:12 (42 m ago)
+Delivery:  pending
+Findings:  0 unresolved
+Closeout:  steps not recorded
 Gate:      14:02:11 (4 m ago)  CI pending (test, windows)  head matches: yes  base behind: no  mergeable: clean (CLEAN)
 Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
 ──────────────────────────────────────────────────────────────────────
@@ -797,6 +800,9 @@ Agents:    3 alive · 0 stalled · 0 lost    Queue: 0
   binds a PR, the line names the hub's run branch instead —
   `none recorded (branch robomate/<hub>/<agent>/<label>)` — and still shows the
   issue and start.
+- `Delivery` shows the hub's recorded delivery state. `Findings` counts
+  unresolved typed finding IDs. `Closeout` counts incomplete steps when the
+  checklist or its results are recorded.
 - `Gate` is the latest stored merge-gate reading for the run: time and age, the
   CI summary with pending or failed check names, `head matches`,
   `base behind` and `mergeable` with the forge's merge-state status. With no
@@ -831,7 +837,8 @@ appear under `--brief`.
 
 `--json` carries the same facts additively: a `run` object (status, created,
 age, branch, PR/MR URL, head and approved SHAs, issue or statement source and
-SHA, review rounds used, current and last task), a `gate` object (or `null`), and
+SHA, review rounds used, current and last task, `delivery_state`,
+`unresolved_findings` and `incomplete_closeout_steps`), a `gate` object (or `null`), and
 per agent `last_call_at`, `last_progress_at`, `last_progress_age_s`,
 `current_task_role`, `latest_note`, `latest_note_escaped` and `session_log`.
 The top-level `idle_after_s` is the hub's not-listening threshold.
@@ -854,6 +861,26 @@ these are the additive `closeout.state`, `deadline`, `submitted_count`,
 export failure, so failures stay visible when a queued or newly started run
 becomes current. Each successful retry removes its run from that list.
 
+### Reading a run report
+
+Run `robomate report` for the current run or, when there is none, the most recent
+completed run. Use `robomate report RUN_ID --hub HUB` to select another run on a
+specific hub. The command needs the operator credential. During a run it prints a
+draft. After completion it prints the final report, with delivery evidence, review
+findings and their dispositions, and the close-out steps. The status headline shows
+the counts without the finding or close-out text.
+
+Find the hub's `state_dir` with `robomate status --json` before stopping it.
+You can then open `<state_dir>/runs/<run_id>/report.md` offline. A run exported
+before this command
+was added may have no `report.md`. With the hub running, the command can render
+that run from the database. Treat exported reports as sensitive. Store them under
+a private directory or per-user ACL, and review the contents before sharing.
+Deleting an exported file or run directory leaves the stored data in `hub.db`
+and the hub will respect the deletion once export completed.
+
+### Reading retrospective reports
+
 Once a run reaches done, read `<state_dir>/runs/<run_id>/closeout/index.json` for
 the expected-author list, missing reasons and submitted report receipts/filenames.
 Open the named `report-<ordinal>.md` files to read each report, even after stopping
@@ -875,7 +902,7 @@ separate closeout files. To exercise collection in an isolated scripted run, use
 `scripts/mock-alice.py --mcp --closeout` with the usual hub and worker options;
 without `--closeout` the script retains its original task/release flow.
 
-Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository, state directory and hub log path (`Log:`, normally `<state_dir>/logs/hub.log`, which holds no token values). If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
+Closing Alice's session stops only her bridge; it does not stop the HTTP hub. `down`, `status`, `report`, `inbox` and `answer` act on the hub of the checkout they run in, or the one `--hub <name | hub_id | checkout path>` selects; anywhere else they refuse and list the live hubs rather than pick one, so `down` never stops a hub you did not select. `robomate ls` lists every hub on the machine, live or stopped, with its name, owning checkout, repository and URL; `robomate status` shows one hub's name, checkout, repository, state directory and hub log path (`Log:`, normally `<state_dir>/logs/hub.log`, which holds no token values). If the hub is unreachable, inspect its `hub.json` PID and listener before taking action.
 
 A stopped hub keeps its registry entry, so its name stays taken and its port stays
 reserved for its next `up`. When you no longer need a stopped hub in the list, remove

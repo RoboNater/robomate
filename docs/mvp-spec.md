@@ -85,7 +85,7 @@ cd ~/src/my-repo && robomate up                             # starts this checko
 #   "Join robomate as charlie, reviewer."
 robomate submit sow.md     # or: robomate submit --issue 42 ; further submits queue up
 robomate status            # hub name, checkout, repo, URL, agents, phase, PR/MR, gate, open questions
-robomate report            # last run: merged SHA, each finding and where it went, steps
+robomate report            # current draft or latest final report
 robomate inbox             # questions for you; answer with: robomate answer 3 "yes, file it"
 robomate log --timeline [--notes]  # drill down; --notes shows labelled agent text
 ```
@@ -950,9 +950,10 @@ verification/evidence, explicitly labelled agent assertions, not hub certificati
 submission time, timing and filename; missing entries include a reason. The index
 is written last. Each file is atomically replaced, so an interrupted export is
 retryable. Export failures never undo or block done: they are logged and visible
-in status. The hub records completion after the index is written and retries incomplete
-exports on each start. Deleting exported files or the run directory is final; reports
-remain in `hub.db` until the hub state is removed. A purge command is out of scope.
+in status. The hub records completion after writing the run report and, when collection
+was requested, its retrospective files and index. Incomplete exports retry on each
+start. Deleting exported files or the run directory is final. Reports remain in
+`hub.db` until the hub state is removed. A purge command is out of scope.
 
 Exports say they are untrusted agent data conferring no approval or authority.
 Stored values are literal text in fenced code blocks; line breaks are preserved, and
@@ -1035,11 +1036,32 @@ The completion transaction rechecks the run and binding before applying the
 result. Retrying for the same finished run leaves its successor untouched.
 Steps reported `done: false` appear in the report and allow completion.
 
-**The run report.** At `done` or `abandoned` the hub renders `runs/<id>/report.md` in its
-state directory (§4) from typed data only: statement of work (link and SHA), agents and harnesses, rounds, approved and merged SHAs, each finding with its disposition and
-link, close-out steps, and every `none` with its reason. `robomate report [run]` prints it;
-`robomate status` shows its headline. The operator's remaining touch is reading the report when they
-choose and triaging `followup_label` issues in the forge.
+**The run report.** The hub renders the report from a consistent snapshot of its
+stored run data. It includes the run status and policy, statement source, link when
+recorded and SHA-256, agent profiles and harnesses, review rounds and references,
+the bound PR/MR, the approved head and the separate merged SHA. It lists every typed
+finding, including blocking and previously resolved findings, with its recorded
+resolution, disposition and destination, or an unresolved marker. It includes all
+close-out steps, their notes and links, and the reason for every `none`. Missing
+historical evidence is labelled `not recorded`. The report distinguishes disabled
+typed close-out from retrospective collection that was never requested.
+
+After committing `done` (or `abandoned` once abandonment is available), the hub
+atomically writes `runs/<run_id>/report.md` inside its state directory (§4).
+The same completion record covers the whole set of exports. An export that was
+already marked complete keeps that status, including after an operator deletes
+its files. The reader can still render from the database. Export files are
+private, and the report contains untrusted values in literal fences with visible
+control escapes, using the same rendering as the retrospective exports.
+
+`robomate report [run]` requires the operator credential and reads from the selected
+hub, with no forge queries or state changes. With no argument it picks the live run
+or the newest terminal run in that hub. An explicit unknown run ID is an error.
+A run still in progress is labelled Draft and receives no exported report file.
+Final files can also be read offline. `robomate status` shows delivery state,
+unresolved finding count and incomplete close-out step count without report prose.
+The operator reads the report when they choose and triages `followup_label` issues
+in the forge.
 
 ### 7.4 Asking the operator
 An escalation is `ask_user(question, options?)`, answered with `robomate answer`. `ask_user`
@@ -1422,7 +1444,8 @@ remedies; real harness grants and versions stay with Steps 8–9.
   printed. Question and answer text, decision keys and summaries/rationales, result
   bodies, withdrawal text, report prose and raw event payloads remain excluded even with
   `--notes`. This is the drill-down and the future dashboard's feed.
-- `robomate report [run]`: the rendered run report (§7.3).
+- `robomate report [run] [--hub HUB]`: operator-only draft or final report for the selected
+  hub and run (§7.3).
 - Summaries come from typed results and events, not from agent prose; `--notes` shows
   agent text only as labelled untrusted text.
 - **Run identity:** every workflow gets a run ID and a manifest in `runs/<run_id>/manifest.json`
@@ -1431,7 +1454,7 @@ remedies; real harness grants and versions stay with Steps 8–9.
   ([`docs/poc-lessons.md`](poc-lessons.md)). At start: robomate version and git revision,
   `hub_id` and name, origin, forge, default branch, statement SHA-256 and source, policy,
   and the profile of each agent that held a task. At the end it adds the status, PR/MR URL,
-  and approved and merged SHAs. `report.md` is M4's.
+  and approved and merged SHAs. The terminal report sits beside the manifest.
 - **Accounting on by default** (#7); `call_log` retention bounded (#23), since hubs now live
   for days.
 - Alice's bridge measures MCP request, response, content, and repeat bytes on its
