@@ -5697,7 +5697,7 @@ def test_status_orchestrator_idle_with_no_open_work_gets_the_same_nudge(
 
     cli._status(False, None)
     out = capsys.readouterr().out
-    assert "  not listening: nudge alice's live session with \"Continue.\"" in out
+    assert '  not listening: nudge alice\'s live session with "Continue."' in out
 
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     cli._status(False, None)
