@@ -127,11 +127,18 @@ supervision: start each agent again when the next run is active. A fresh
 earlier run's conversation, task or kickoff is never adopted. If the hub moves
 to the successor workflow while a child still runs (the pinned run finished and
 a queued run was activated), the launcher stops for the pinned workflow and
-names the successor instead of adopting it. `resume` continues only the pinned
-conversation and workflow; a different hub or workflow is refused before any
-launch, and `--confirm-stopped` or `--force` never bypass those identity
-checks. `robomate status` lists a queued run with the same per-workflow
-reminder and prints the "not listening" nudge described under
+names the successor instead of adopting it. If run A's child is still live and
+holding when the hub activates B, the hub can hand B's work to that same
+conversation under standby; stop A's launcher (`agent-launcher.py stop
+<agent>`) before starting the fresh B launcher, so supervision and the
+conversation both belong to the run being worked (the launcher's lock would
+refuse a second concurrent launcher anyway). The `robomate status` done line
+and the queue reminder say to stop an attached launcher first. `resume`
+continues only the pinned conversation and workflow; a different hub or
+workflow is refused before any launch, and `--confirm-stopped` or `--force`
+never bypass those identity checks. `robomate status` lists a queued run with
+the same per-workflow reminder and prints the "not listening" nudge described
+under
 [an agent that stops working](#an-agent-that-stops-working-but-keeps-running).
 
 ### Resuming by hand

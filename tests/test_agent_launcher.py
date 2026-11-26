@@ -2041,6 +2041,19 @@ def test_every_harness_has_a_checked_adapter_matrix() -> None:
         assert "mcp" in adapter["ask"].lower()
 
 
+def test_the_launcher_help_states_the_per_workflow_contract(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """r1-3 on #660: the acceptance command's help names the lifecycle, not only the docstring."""
+
+    with pytest.raises(SystemExit) as stopped:
+        CLI.parse(["--help"])
+    assert stopped.value.code == 0
+    out = capsys.readouterr().out
+    assert "Supervision is per workflow: done and release stops name a fresh start" in out
+    assert "a queued or new run needs new launchers" in out
+
+
 @pytest.mark.parametrize("instance", [None, "old-instance"])
 def test_a_reused_hub_row_does_not_count_as_a_worker_join(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, instance: str | None

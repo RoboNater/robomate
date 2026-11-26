@@ -5585,7 +5585,7 @@ def test_status_not_listening_appears_only_after_the_idle_threshold(
     frozen_clock.advance(2)
     cli._status(False, None)
     after = capsys.readouterr().out
-    assert "not listening: last hub call no hub call seen; no task or hold" in after
+    assert "not listening: no hub call seen; no task or hold" in after
     assert 'nudge its live session with "Continue."' in after
     assert "agent-launcher.py resume bob" in after
     assert "never --last or --continue" in after
@@ -5649,8 +5649,8 @@ def test_status_settles_released_lost_and_done_without_a_nudge(
     assert "bob: codex / gpt-6-sol  alive" in done
     assert "erin: codex / gpt-6-sol  released" in done
     assert (
-        "workflow done: supervision is per workflow; start a fresh launcher for the next "
-        "queued or new run" in done
+        "workflow done: supervision is per workflow; if a launcher is still attached, "
+        "stop it, then start a fresh launcher for the next queued or new run" in done
     )
     assert "not listening" not in done
 
@@ -5703,6 +5703,72 @@ def test_status_orchestrator_idle_with_no_open_work_gets_the_same_nudge(
     cli._status(False, None)
     with_task = capsys.readouterr().out
     assert "not listening" not in with_task
+
+
+@pytest.mark.parametrize("state", ["paused", "escalated"])
+def test_status_paused_and_escalated_hints_keep_the_exact_conversation(state: str) -> None:
+    """r1-1 on #660: these remedies must not send the operator to a fresh conversation."""
+
+    agent = {
+        "name": "bob",
+        "status": "idle",
+        "alive": True,
+        "current_task": None,
+        "activity": {"silence_s": 0, "holding": None},
+    }
+    text = "\n".join(
+        cli._listening_lines({"workflow": {"status": state}, "idle_after_s": 120.0}, agent)
+    )
+    assert "no nudge" in text
+    assert "fresh launcher" not in text
+    if state == "paused":
+        assert "agent-launcher.py resume bob" in text
+        assert "if its launcher stopped" in text
+    else:
+        assert "keeps supervising" in text
+        assert "resume" not in text
+
+
+def test_status_holding_precedes_no_workflow_and_terminal_hints() -> None:
+    """r1-2 on #660: a healthy hold is never hidden by a run-state remedy."""
+
+    agent = {
+        "name": "bob",
+        "status": "idle",
+        "alive": True,
+        "current_task": None,
+        "activity": {"silence_s": 600, "holding": "await_assignment", "hold_age_s": 30},
+    }
+    for workflow in (
+        None,
+        {"status": "active"},
+        {"status": "paused"},
+        {"status": "queued"},
+    ):
+        assert cli._listening_lines({"workflow": workflow, "idle_after_s": 120.0}, agent) == [
+            "    listening: holding await_assignment for 30s; no nudge needed"
+        ]
+    # A done run keeps the hold line first, then the per-workflow next-run step.
+    done = cli._listening_lines({"workflow": {"status": "done"}, "idle_after_s": 120.0}, agent)
+    assert done[0] == "    listening: holding await_assignment for 30s; no nudge needed"
+    assert "stop this launcher, then start a fresh launcher" in done[1]
+
+
+def test_status_not_listening_before_a_workflow_offers_a_fresh_start() -> None:
+    """r1-2 on #660: with no workflow there is nothing to resume, but a nudge still applies."""
+
+    agent = {
+        "name": "bob",
+        "status": "idle",
+        "alive": True,
+        "current_task": None,
+        "activity": {"silence_s": 600, "holding": None, "last_call": None},
+    }
+    text = "\n".join(cli._listening_lines({"workflow": None, "idle_after_s": 120.0}, agent))
+    assert "no task, hold or workflow" in text
+    assert "start a fresh launcher (agent-launcher.py start bob)" in text
+    assert "there is no workflow to resume yet" in text
+    assert "agent-launcher.py resume" not in text
 
 
 def test_status_json_is_an_additive_superset(

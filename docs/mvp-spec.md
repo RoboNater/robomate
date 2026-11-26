@@ -1288,10 +1288,12 @@ terminal state and release, then stops, and the stop message names a fresh `star
 next queued or new run. `on_done: standby` and queued runs keep hub rows but do not extend
 supervision; a fresh start never adopts an earlier workflow's conversation, task or kickoff,
 an automatic resume stops when the hub moved to a successor workflow, and a manual `resume`
-refuses a different hub or workflow. No `robomate supervisor` subcommand and no persistent
-cross-workflow supervision is added in the MVP. `robomate status` derives "not listening"
-from the hub's hold/task/activity fields (§5) and prints the operator's nudge or exact-session
-remedy. The per-harness adapter contract is:
+refuses a different hub or workflow. If a standby conversation is still live when the next
+run activates, stop its launcher before starting the fresh one, so the conversation and its
+supervision belong to the run being worked. No `robomate supervisor` subcommand and no
+persistent cross-workflow supervision is added in the MVP. `robomate status` derives "not
+listening" from the hub's hold/task/activity fields (§5) and prints the operator's nudge or
+exact-session remedy. The per-harness adapter contract is:
 
 | Harness | Interactive start and resume | Exact-ID capture | Hub-free `ask` |
 |---|---|---|---|

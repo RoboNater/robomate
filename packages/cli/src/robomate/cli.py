@@ -1361,21 +1361,21 @@ def _listening_state(status: dict[str, Any], agent: dict[str, Any]) -> str | Non
         return None
     workflow = status.get("workflow")
     run_status = workflow.get("status") if isinstance(workflow, dict) else None
+    # A held wait is healthy whenever the agent makes it, including before a
+    # workflow exists and during standby, so it precedes run-state hints.
+    if activity.get("holding"):
+        return "holding"
     if run_status in ("paused", "escalated"):
         return str(run_status)
-    if workflow is None:
-        return "no_run"
     if run_status == "queued":
         return "queued"
     if run_status == "done":
         return "done"
-    if activity.get("holding"):
-        return "holding"
     if agent.get("current_task"):
         return "working"
     silence = _seconds(activity.get("silence_s"))
     if silence is not None and silence.total_seconds() >= _idle_after_s(status):
-        return "not_listening"
+        return "not_listening_no_run" if workflow is None else "not_listening"
     return "recent"
 
 
@@ -1396,26 +1396,50 @@ def _listening_lines(status: dict[str, Any], agent: dict[str, Any]) -> list[str]
         hold = _printable(str(activity.get("holding") or "?"))
         age = _seconds(activity.get("hold_age_s"))
         waited = f" for {_age(age)}" if age is not None and age.total_seconds() >= 1 else ""
-        return [f"    listening: holding {hold}{waited}; no nudge needed"]
+        lines = [f"    listening: holding {hold}{waited}; no nudge needed"]
+        workflow = status.get("workflow")
+        if isinstance(workflow, dict) and workflow.get("status") == "done":
+            lines.append(
+                "      workflow done: stop this launcher, then start a fresh launcher for the "
+                "next queued or new run"
+            )
+        return lines
     if state == "not_listening":
+        last = activity.get("last_call")
+        shown = (
+            f"last hub call {_last_call_text(activity)}"
+            if isinstance(last, str) and last
+            else "no hub call seen"
+        )
         return [
-            f"    not listening: last hub call {_last_call_text(activity)}; no task or hold",
+            f"    not listening: {shown}; no task or hold",
             '      nudge its live session with "Continue."; if its CLI already exited, resume the '
             f"exact conversation with agent-launcher.py resume {name} (never --last or --continue)",
         ]
-    if state in ("paused", "escalated"):
+    if state == "not_listening_no_run":
         return [
-            f"    workflow {state}: no nudge; the operator resolves it, then a fresh launcher "
-            "continues the run"
+            "    not listening: no hub call seen; no task, hold or workflow",
+            '      nudge its live session with "Continue."; if its CLI already exited, wait for '
+            f"the submission, then start a fresh launcher (agent-launcher.py start {name}): "
+            "there is no workflow to resume yet",
         ]
-    if state == "no_run":
-        return ["    no workflow: wait for the submission, then start a fresh launcher"]
+    if state == "paused":
+        return [
+            "    workflow paused: no nudge; after the operator resumes the run, continue this "
+            f"exact conversation with agent-launcher.py resume {name} if its launcher stopped"
+        ]
+    if state == "escalated":
+        return [
+            "    workflow escalated: no nudge; the operator's answer ends it and the live "
+            "launcher keeps supervising this conversation"
+        ]
     if state == "queued":
         return ["    queued: this run has not started; start fresh launchers when it is active"]
     if state == "done":
         return [
-            "    workflow done: supervision is per workflow; start a fresh launcher for the "
-            "next queued or new run (this conversation is not reused)"
+            "    workflow done: supervision is per workflow; if a launcher is still attached, "
+            "stop it, then start a fresh launcher for the next queued or new run "
+            "(this conversation is not reused)"
         ]
     # `working`, `recent`, `released` and `lost` already read distinctly above.
     return []
@@ -1439,8 +1463,8 @@ def _orchestrator_nudge_lines(status: dict[str, Any]) -> list[str]:
     printable = _printable(name)
     if activity.get("state") == "finished":
         return [
-            "  workflow done: supervision is per workflow; start a fresh launcher for the next "
-            "queued or new run"
+            "  workflow done: supervision is per workflow; if a launcher is still attached, "
+            "stop it, then start a fresh launcher for the next queued or new run"
         ]
     if (
         activity.get("state") == "idle"

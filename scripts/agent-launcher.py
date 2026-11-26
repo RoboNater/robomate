@@ -59,7 +59,9 @@ Supervision is per workflow (#465, M3 Step 6): the launcher pins the workflow
 it first sees (never an earlier done one), follows it through terminal state
 and release, then stops with a message naming a fresh ``start`` for the next
 run. The hub's ``on_done: standby`` and a queued run keep agent rows; they do
-not extend supervision. A ``resume`` continues only the same saved workflow
+not extend supervision, and a standby conversation that is still live when the
+next run activates is stopped before its fresh launcher starts. A ``resume``
+continues only the same saved workflow
 and refuses a different hub or workflow, and a fresh ``start`` begins a new
 conversation, so no earlier run's conversation, task or kickoff is adopted.
 M3 keeps this a script: there is no ``robomate supervisor`` subcommand and no
@@ -2762,7 +2764,9 @@ def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(
         prog="agent-launcher.py",
         description="Start, resume or ask a joined agent; Denise's doctor entry.",
-        epilog="Except for doctor, words after --harness-args go to the harness verbatim.",
+        epilog="Supervision is per workflow: done and release stops name a fresh start for the "
+        "next run, and a queued or new run needs new launchers. Except for doctor, words after "
+        "--harness-args go to the harness verbatim.",
         allow_abbrev=False,
     )
     commands = top.add_subparsers(dest="action", required=True)

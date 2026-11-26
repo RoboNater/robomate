@@ -227,7 +227,9 @@ merged PR without further input. Nothing is rendered: no team config, prompt
 file or start script. The command runs `robomate up`, `robomate workspace`,
 `robomate submit` and `scripts/agent-launcher.py start` in order. Each launcher
 supervises one workflow: a queued run needs fresh launchers once it is active,
-and `status` prints that reminder with the queue. The same
+and `status` prints that reminder with the queue. Stop an attached standby
+launcher first, so the next run's conversation and supervision belong together.
+The same
 Python runs in Bash and PowerShell; only the line continuation differs:
 
 ```sh
