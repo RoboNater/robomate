@@ -1404,21 +1404,22 @@ def _listening_lines(status: dict[str, Any], agent: dict[str, Any]) -> list[str]
                 "next queued or new run"
             )
         return lines
-    if state == "not_listening":
+    if state in ("not_listening", "not_listening_no_run"):
         last = activity.get("last_call")
         shown = (
             f"last hub call {_last_call_text(activity)}"
             if isinstance(last, str) and last
             else "no hub call seen"
         )
+        if state == "not_listening":
+            return [
+                f"    not listening: {shown}; no task or hold",
+                '      nudge its live session with "Continue."; if its CLI already exited, '
+                "resume the exact conversation with agent-launcher.py resume "
+                f"{name} (never --last or --continue)",
+            ]
         return [
-            f"    not listening: {shown}; no task or hold",
-            '      nudge its live session with "Continue."; if its CLI already exited, resume the '
-            f"exact conversation with agent-launcher.py resume {name} (never --last or --continue)",
-        ]
-    if state == "not_listening_no_run":
-        return [
-            "    not listening: no hub call seen; no task, hold or workflow",
+            f"    not listening: {shown}; no task, hold or workflow",
             '      nudge its live session with "Continue."; if its CLI already exited, wait for '
             f"the submission, then start a fresh launcher (agent-launcher.py start {name}): "
             "there is no workflow to resume yet",

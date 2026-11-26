@@ -5754,18 +5754,34 @@ def test_status_holding_precedes_no_workflow_and_terminal_hints() -> None:
     assert "stop this launcher, then start a fresh launcher" in done[1]
 
 
-def test_status_not_listening_before_a_workflow_offers_a_fresh_start() -> None:
-    """r1-2 on #660: with no workflow there is nothing to resume, but a nudge still applies."""
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        ({}, "not listening: no hub call seen; no task, hold or workflow"),
+        (
+            {
+                "last_call": "check_in",
+                "last_call_at": "2026-11-26T12:00:00+00:00",
+                "last_call_age_s": 600,
+            },
+            "not listening: last hub call check_in 12:00:00 (10 m ago); no task, hold or workflow",
+        ),
+    ],
+)
+def test_status_not_listening_before_a_workflow_offers_a_fresh_start(
+    call: dict[str, Any], expected: str
+) -> None:
+    """r1-2/r2-1 on #660: no workflow means no resume, and the last call is still shown."""
 
     agent = {
         "name": "bob",
         "status": "idle",
         "alive": True,
         "current_task": None,
-        "activity": {"silence_s": 600, "holding": None, "last_call": None},
+        "activity": {"silence_s": 600, "holding": None} | call,
     }
     text = "\n".join(cli._listening_lines({"workflow": None, "idle_after_s": 120.0}, agent))
-    assert "no task, hold or workflow" in text
+    assert expected in text
     assert "start a fresh launcher (agent-launcher.py start bob)" in text
     assert "there is no workflow to resume yet" in text
     assert "agent-launcher.py resume" not in text
