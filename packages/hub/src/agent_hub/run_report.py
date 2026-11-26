@@ -109,14 +109,16 @@ def read_evidence(connection: Connection, workflow: Row) -> RunEvidence:
     except ValidationError:
         policy = None
     history = [TaskEvidence.from_row(row) for row in task_history(connection, workflow["id"])]
-    closeout_task = None
+    closeout_tasks = [task for task in history if task.role == TaskRole.CLOSEOUT]
+    closeout_task = max(closeout_tasks, key=lambda task: task.ordinal, default=None)
     closeout_result = None
-    for task in history:
-        if isinstance(task.result, CloseoutResult) and task.state == TaskState.COMPLETED:
-            if task.result.outcome == "completed":
-                closeout_task, closeout_result = task, task.result
-        elif task.role == TaskRole.CLOSEOUT and closeout_result is None:
-            closeout_task = task
+    for task in closeout_tasks:
+        if (
+            isinstance(task.result, CloseoutResult)
+            and task.state == TaskState.COMPLETED
+            and task.result.outcome == "completed"
+        ):
+            closeout_task, closeout_result = task, task.result
 
     reviews = []
     other_items = []
@@ -307,7 +309,7 @@ def render(report: RunReport) -> str:
     out.value("SHA-256", report.statement_sha256)
 
     out.section("## Agent profiles")
-    out.section("Stored profiles for agents associated with this run.")
+    out.section("Latest stored profiles for agents associated with this run.")
     if not report.agents:
         out.section("Agent profiles not recorded.")
     for name, agent in report.agents:

@@ -2381,6 +2381,17 @@ def test_report_cli_matches_the_terminal_file_and_headline(
         assert result.returncode == 0, result.stderr
         assert result.stdout.startswith("# Final run report")
         assert result.stdout == report.read_text(encoding="utf-8")
+        redirected = subprocess.run(
+            [CLI, "report", run_id],
+            cwd=root,
+            env={**env, "PYTHONIOENCODING": "cp1252:strict"},
+            capture_output=True,
+            encoding="cp1252",
+            timeout=CLI_COMMAND_TIMEOUT_S,
+            check=False,
+        )
+        assert redirected.returncode == 0, redirected.stderr
+        assert r"Unicode \u2227 report detail" in redirected.stdout
         unknown = command("report", "19990101_deadbeef")
         assert unknown.returncode == 1 and "unknown run" in unknown.stderr
         path = command("report", "../report.md")

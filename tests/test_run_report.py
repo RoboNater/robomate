@@ -190,6 +190,24 @@ def test_typed_snapshot_keeps_every_finding_and_step(
     assert "Private instructions" not in final
 
 
+def test_draft_uses_current_closeout_checklist_after_a_failed_attempt(
+    hub_store: HubStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = hub_store
+    store.check_in("bob")
+    config = ResolvedConfig(closeout_steps=("Replaced checklist",))
+    monkeypatch.setattr("agent_hub_common.load_config_layers", lambda **kwargs: config)
+    failed = store.assign_task("bob", "closeout", "First attempt", "")
+    store.submit_result(failed.id, "bob", {"outcome": "failed", "summary": "Retry"})
+    config = ResolvedConfig(closeout_steps=("Current step A", "Current step B"))
+    store.assign_task("bob", "closeout", "Second attempt", "")
+
+    draft = store.read_run_report()
+    assert fenced("Current step A") in draft and fenced("Current step B") in draft
+    assert "Replaced checklist" not in draft
+    assert store.status_summary()["run"]["incomplete_closeout_steps"] == 2
+
+
 def test_default_and_explicit_selection_with_live_and_queued(store: HubStore) -> None:
     first = store.get_state()["run_id"]
     finish_run(store, "First done", actor="alice", session=None)

@@ -139,8 +139,7 @@ def export_run(store: HubStore, run_id: str) -> None:
     """Best effort after commit; unmarked done rows remain the restart retry queue.
 
     Record completion after the report and any retrospective exports. Filenames
-    for retrospectives are ordinal, never
-    derived from authors, so even colliding or hostile author names stay inert.
+    for retrospectives use ordinals so author names cannot affect paths.
     Every replacement is atomic and retrying the immutable collection is safe.
     """
     from .run_report import render as render_run_report
@@ -157,10 +156,10 @@ def export_run(store: HubStore, run_id: str) -> None:
             ).fetchone()
             if run is None:
                 return
-            report = snapshot(store, connection, run)
             collected = run["collection_id"] is not None
             if collected and run["finalized_at"] is None:
                 return
+            report = snapshot(store, connection, run)
             rows = (
                 connection.execute(
                     "SELECT e.author, e.author_kind, e.missing_reason, r.* FROM closeout_expected e"
