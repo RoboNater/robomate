@@ -1819,6 +1819,241 @@ def test_an_earlier_release_and_finished_run_do_not_stop_a_new_start(
     assert log[-1]["reason"] == "released" and log[-1]["run_id"] == RUN
 
 
+def test_a_done_workflow_names_the_fresh_start_and_never_resumes(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#465/#660: per-workflow supervision stops at done and says how to relaunch."""
+
+    use_harness("claude-code", monkeypatch)
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    done = {"workflow": workflow("done"), "agents": [agent_row("idle", context="c1")]}
+    hub = FakeHub(after_launches(area, active, done))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    assert len(launches(area)) == 1
+    err = capsys.readouterr().err
+    assert f"workflow {RUN} is done; this launcher supervised that workflow only" in err
+    assert "The hub keeps the agent row joined" in err
+    assert "Start a fresh launcher (agent-launcher.py start bob ...)" in err
+    assert "never resumed for another workflow" in err
+    log = rows(area)
+    assert log[0]["workflow_id"] == WORKFLOW
+    assert log[-1]["event"] == "stop" and log[-1]["reason"] == "done"
+
+
+def test_a_successor_started_before_the_exit_ends_only_the_pinned_workflow(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#660: run A done and run B activated while A's child ran is still A's end."""
+
+    use_harness("claude-code", monkeypatch)
+    successor = {"id": "wf-2", "run_id": "run-2", "status": "active"}
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    moved = {"workflow": successor, "agents": [agent_row("idle", context="c1")]}
+    hub = FakeHub(after_launches(area, active, moved))
+
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    assert code == 0
+    assert len(launches(area)) == 1
+    err = capsys.readouterr().err
+    assert f"workflow {RUN} is no longer the hub's live workflow" in err
+    assert "moved to wf-2 run-2" in err
+    assert "never resumed for another workflow" in err
+    log = rows(area)
+    assert log[0]["workflow_id"] == WORKFLOW and log[-1]["workflow_id"] == WORKFLOW
+    assert log[-1]["reason"] == "done"
+
+
+def test_a_fresh_start_after_standby_supervises_only_the_new_workflow(
+    area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#660: the next run gets a fresh conversation, not the finished run's context."""
+
+    use_harness("claude-code", monkeypatch)
+    first_active = {"workflow": workflow(), "agents": [agent_row()]}
+    first_done = {"workflow": workflow("done"), "agents": [agent_row("idle")]}
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "claude-code"),
+            programs=programs(area),
+            reader=FakeHub(after_launches(area, first_active, first_done)),
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    (first,) = launches(area)
+    first_start = next(row for row in rows(area) if row["event"] == "start")
+    # Each start is a new conversation, so reset the fake's launch counter.
+    (area["harness_dir"] / "launches.jsonl").unlink()
+
+    successor = {"id": "wf-2", "run_id": "run-2", "status": "active"}
+    second_active = {"workflow": successor, "agents": [agent_row("idle", context="c1")]}
+    second_done = {
+        "workflow": successor | {"status": "done"},
+        "agents": [agent_row("idle", context="c1")],
+    }
+    assert (
+        invoke(
+            start_words(area, "bob", "implementer", "claude-code"),
+            programs=programs(area),
+            reader=FakeHub(after_launches(area, second_active, second_done)),
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+
+    (second,) = launches(area)
+    starts = [row for row in rows(area) if row["event"] == "start"]
+    assert len(starts) == 2
+    assert starts[1]["workflow_id"] == "wf-2" and starts[1]["run_id"] == "run-2"
+    assert starts[1]["conversation_id"] != first_start["conversation_id"]
+    # A fresh join line, never a continuation or replay of the earlier kickoff.
+    assert second["argv"][-1] == CLI.join_line("bob", "implementer")
+    assert "--resume" not in second["argv"]
+    assert first["argv"][-1] == CLI.join_line("bob", "implementer")
+
+
+@pytest.mark.parametrize("state", ["paused", "escalated"])
+def test_paused_stops_but_escalated_keeps_supervising(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    state: str,
+) -> None:
+    """#660: a pause ends supervision; escalation stays with the operator's decision."""
+
+    use_harness("claude-code", monkeypatch)
+    monkeypatch.setenv("FAKE_PLAN", json.dumps(["exit:0", "exit:0"]))
+    monkeypatch.setenv("FAKE_BRIDGE_JOIN", "success")
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    paused = {"workflow": workflow("paused"), "agents": [agent_row()]}
+    escalated = {"workflow": workflow("escalated"), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+
+    if state == "paused":
+        hub = FakeHub(after_launches(area, active, paused))
+    else:
+        hub = FakeHub(after_launches(area, active, escalated, released))
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code"),
+        programs=programs(area),
+        reader=hub,
+        workspace=workspace_of(area),
+    )
+
+    if state == "paused":
+        assert code == LAUNCHER.EXIT_PAUSED
+        assert len(launches(area)) == 1
+        assert rows(area)[-1]["reason"] == "paused"
+        assert "workflow paused" in capsys.readouterr().err
+    else:
+        assert code == 0
+        assert len(launches(area)) == 2
+        resumed = launches(area)[1]
+        assert resumed["argv"][-1] == CLI.continuation("bob", "implementer", joined=True)
+        assert rows(area)[-1]["reason"] == "released"
+
+
+@pytest.mark.parametrize("case", ["wrong-hub", "unexpected-workflow"])
+def test_a_manual_resume_refuses_a_different_hub_or_workflow(
+    area: dict[str, Path], case: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#660: manual resume keeps the strict identity guards; a new run needs a start."""
+
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00060"
+    now = datetime.now(UTC)
+    if case == "wrong-hub":
+        saved_log(
+            area,
+            conversation,
+            now - timedelta(minutes=10),
+            now - timedelta(minutes=1),
+            hub_id="another-hub",
+            workflow_id=WORKFLOW,
+        )
+        live = {"workflow": workflow(), "agents": []}
+    else:
+        saved_log(
+            area,
+            conversation,
+            now - timedelta(minutes=10),
+            now - timedelta(minutes=1),
+            workflow_id=WORKFLOW,
+        )
+        live = {"workflow": {"id": "wf-2", "run_id": "run-2", "status": "active"}, "agents": []}
+    payload = {"hub_id": HUB} | live
+    hub = snapshotting(FakeHub(lambda method: payload))
+
+    code = invoke(
+        ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"],
+        programs=programs(area),
+        reader=hub,
+    )
+
+    assert code == LAUNCHER.EXIT_CANNOT_RESUME
+    assert launches(area) == []
+    assert (
+        "The reachable hub/workflow differs from the saved run or has disappeared"
+        in capsys.readouterr().err
+    )
+
+
+def test_every_harness_has_a_checked_adapter_matrix() -> None:
+    """#465/#660: the documented adapter contract matches each code path."""
+
+    assert set(CLI.ADAPTERS) == set(CLI.PROGRAMS)
+    for harness, adapter in CLI.ADAPTERS.items():
+        _, prompted = CLI.interactive_start(
+            harness,
+            ["program", "x"],
+            [],
+            [],
+            [],
+            [],
+            prompt="Join robomate.",
+            session_id="session-id",
+        )
+        assert prompted == (harness in CLI.PROMPTED_HARNESSES)
+        resumed = CLI.interactive_resume(
+            harness, ["program", "x"], [], [], [], [], "exact-conversation"
+        )
+        assert "exact-conversation" in resumed
+        assert "start" in adapter["interactive"] and "resume" in adapter["interactive"]
+        assert adapter["capture"]
+        assert (harness in CLI.ASK_HARNESSES) == adapter["ask"].startswith("supported")
+        assert "mcp" in adapter["ask"].lower()
+
+
+def test_the_launcher_help_states_the_per_workflow_contract(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """r1-3 on #660: the acceptance command's help names the lifecycle, not only the docstring."""
+
+    with pytest.raises(SystemExit) as stopped:
+        CLI.parse(["--help"])
+    assert stopped.value.code == 0
+    out = capsys.readouterr().out
+    assert "Supervision is per workflow: done and release stops name a fresh start" in out
+    assert "a queued or new run needs new launchers" in out
+
+
 @pytest.mark.parametrize("instance", [None, "old-instance"])
 def test_a_reused_hub_row_does_not_count_as_a_worker_join(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch, instance: str | None
@@ -2016,7 +2251,8 @@ def saved_log(
             "interactive": False,
             **launch,
         },
-        common | {"event": "exit", "timestamp": exited.isoformat(), "exit_code": 1},
+        # Overrides apply to both rows, as the launcher records them on each.
+        common | {"event": "exit", "timestamp": exited.isoformat(), "exit_code": 1, **launch},
     ]
     (area["sessions"] / f"{agent}.jsonl").write_text(
         "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8"
@@ -2686,7 +2922,7 @@ def test_ask_opens_the_saved_conversation_without_hub_tools(
 
 @pytest.mark.parametrize("harness", ["antigravity", "devin"])
 def test_ask_refuses_a_harness_whose_hub_tools_cannot_be_switched_off(
-    area: dict[str, Path], harness: str
+    area: dict[str, Path], harness: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     area["sessions"].mkdir()
     row = {
@@ -2702,6 +2938,10 @@ def test_ask_refuses_a_harness_whose_hub_tools_cannot_be_switched_off(
 
     assert invoke(["ask", "bob", "--hub", str(area["checkout"])], programs=programs(area)) == 2
     assert launches(area) == []
+    err = capsys.readouterr().err
+    assert "would leave the hub tools live" in err
+    assert "separate profile" in err
+    assert "docs/development/agent-recovery.md#asking-an-agent" in err
 
 
 @pytest.mark.parametrize("interactive", [False, True])

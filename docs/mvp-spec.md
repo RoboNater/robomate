@@ -503,16 +503,23 @@ Queue and run identity enter the compact state in M2 Step 3.
 **Liveness and listening** (shown by `robomate status`):
 - `alive` / `lost` — from the bridge's background heartbeat, as in the PoC (§4.3).
 - `listening` — a hold (`await_assignment`, `wait_for_event`, `ask_orchestrator`) is in
-  flight or ended less than `max_hold_s + 30 s` ago.
+  flight; a hold that just returned counts as recent activity too.
 - `working` — has a task and is not holding.
-- **`not listening`** — alive, no task, no hold for longer than that: the harness ended its
-  turn. `robomate status` flags it for a nudge ("continue"). This is the expected failure mode of
-  IDE harnesses and the signal a supervisor would act on.
+- **`not listening`** — alive, no current task, no hold, and no substantive hub call for the
+  hub's idle threshold (`idle_after_s` in `hub.status`, 120 s): the harness ended its turn
+  without holding or asking. `robomate status` prints the agent's name, its last hub call and
+  the continuation hint: nudge the live session with "Continue.", or, when its CLI exited, use
+  the launcher's exact-session recovery (`agent-launcher.py resume <agent>`, which takes over
+  only a conversation with a recorded join). A healthy hold, an open task, a released agent, a
+  lost bridge, a paused or escalated workflow, and a done or queued run print their own state
+  instead. This is the expected failure mode of IDE harnesses and the signal a supervisor acts
+  on; it is an operator diagnostic and grants no task or workflow authority.
 - `STALLED` (#144, before M2) — an activity assessment beside `alive`/`lost`: no substantive
   hub call and no hold, no task progress on leased work, or an orchestrator event never
   delivered, for the policy's `stall_after_min`. Shown with its evidence; a worker's episode
   queues one `agent_stalled` event; nothing is failed or restarted. Episodes are kept in
-  `stall_episode` (DB schema v17).
+  `stall_episode` (DB schema v17). A stalled agent with open work keeps that evidence rather
+  than becoming a nudge.
   Optional `stall_action_after_min` (#272, default 0/disabled) must exceed
   `stall_after_min` when enabled. It measures the same eligible inactivity,
   independently per reason, and atomically opens one operator question per
@@ -1274,8 +1281,30 @@ that conversation joined the hub before, and backoff, and
 logs each launch with the hub's `run_id` to `sessions/<agent>.jsonl` in the hub's state
 directory (or `--sessions-dir` on a remote host). It holds no policy, and `robomate` gains
 no launch command in M2. Its separate `doctor` entry starts Denise (§5.1) from the selected
-run's local files, without join or MCP. M3 decides, with the harness profiles (§9.2), whether
-the launcher becomes a `robomate` supervisor subcommand.
+run's local files, without join or MCP.
+
+M3 Step 6 keeps the launcher a script and **per workflow**: it follows one workflow through
+terminal state and release, then stops, and the stop message names a fresh `start` for the
+next queued or new run. `on_done: standby` and queued runs keep hub rows but do not extend
+supervision; a fresh start never adopts an earlier workflow's conversation, task or kickoff,
+an automatic resume stops when the hub moved to a successor workflow, and a manual `resume`
+refuses a different hub or workflow. If a standby conversation is still live when the next
+run activates, stop its launcher before starting the fresh one, so the conversation and its
+supervision belong to the run being worked. No `robomate supervisor` subcommand and no
+persistent cross-workflow supervision is added in the MVP. `robomate status` derives "not
+listening" from the hub's hold/task/activity fields (§5) and prints the operator's nudge or
+exact-session remedy. The per-harness adapter contract is:
+
+| Harness | Interactive start and resume | Exact-ID capture | Hub-free `ask` |
+|---|---|---|---|
+| Claude Code | Join or continuation is the first prompt | The launcher chooses the exact UUID | Supported: `--strict-mcp-config` with no MCP config |
+| Codex | Join or continuation is the first prompt | This launch's new rollout under `CODEX_HOME/sessions`; otherwise the operator's ID | Supported: `mcp_servers.robomate.enabled=false` |
+| OpenCode | Join or continuation is the first prompt | No automatic capture; the operator supplies the exact ID (`opencode session list`) | Supported: the robomate server is disabled in `OPENCODE_CONFIG_CONTENT` (2.x proof) |
+| AntiGravity and Devin CLI | The launcher prints the join or continuation for the operator; resume opens the exact conversation | No automatic capture; the operator supplies the exact ID from the harness session list (a headless Devin launch reads its ATIF export) | Refused until a tested per-launch switch disables the effective robomate MCP entry; reopen in a separate profile |
+| Cline and Devin Local | No launcher adapter: hand-start and paste the join or continuation | — | No launcher adapter |
+
+`docs/development/agent-recovery.md#adapter-matrix` carries the operator commands and
+remedies; real harness grants and versions stay with Steps 8–9.
 
 ---
 
@@ -1665,7 +1694,7 @@ milestone shown, linking the robo-agents original for history.
 | `docs/poc-spec.md`, PoC evidence, plans for Steps 6/7 | Frozen; historical record |
 | `scripts/step5*`, `step6*`, `step7*`, `launch-step*`, `verify-step*`, `run-step6-disturbances.py`, their tests | Move to `scripts/poc/`; not maintained; tests moved out of the default CI run |
 | `scripts/prepare-run.py`, `bootstrap-workspace.*` | Kept until M2 covers their topologies (incl. remote workers) and M7's optional Denise startup/context, then removed |
-| `scripts/alice-launcher.py`, `worker-launcher.py`, `agent-recovery.py`, `agent-ask.py` and the generated `start-*`, `resume-*` and `ask-*` scripts | Replaced for joined agents by the optional `scripts/agent-launcher.py` (`start`, `resume`, `ask`, and Denise's `doctor`), outside the core (M2 Step 10, §9.4); kept for prepared runs until M2 Step 11. The supervisor command is decided in M3 |
+| `scripts/alice-launcher.py`, `worker-launcher.py`, `agent-recovery.py`, `agent-ask.py` and the generated `start-*`, `resume-*` and `ask-*` scripts | Replaced for joined agents by the optional `scripts/agent-launcher.py` (`start`, `resume`, `ask`, and Denise's `doctor`), outside the core (M2 Step 10, §9.4); kept for prepared runs until M2 Step 11. M3 Step 6 keeps it a script with per-workflow supervision; no `robomate supervisor` command is added in the MVP |
 | `scripts/mock-alice.py`, `mock-worker.py` | Kept; become the engine of `robomate certify` and the scripted E2E tests |
 | `scripts/supervise-claude-code.sh` | Kept; referenced from the Claude Code harness profile |
 | `scripts/hub-report.py` | Folded into `robomate log` / `robomate status` |

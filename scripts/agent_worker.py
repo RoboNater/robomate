@@ -118,6 +118,9 @@ class WorkerLauncher(common.Launcher):
             reason = "done"
         if reason:
             self.log("stop", reason=reason, resumes=resumes)
+            # A joined launcher overrides this with the per-workflow start or
+            # resume guidance (#660); the prepared launcher prints nothing extra.
+            self.announce_stop(reason, workflow)
             return True
         return False
 

@@ -407,6 +407,7 @@ class Launcher:
         self.resumes = 0
         self.resume_deadline: float | None = None
         self.provider_observation: list[tuple[str | None, ProviderSignature | None]] | None = None
+        self.stop_noted = False
 
     def resume_name(self) -> str:
         """How the operator resumes this agent by hand, for stop messages."""
@@ -454,6 +455,23 @@ class Launcher:
             else:
                 if self.hub_id is not None and hub_id != self.hub_id:
                     problem = f"hub {hub_id} is not the pinned hub {self.hub_id}"
+                elif (
+                    self.workflow_id is not None
+                    and workflow is not None
+                    and workflow["id"] != self.workflow_id
+                    and self.workflow_moved_on(workflow)
+                ):
+                    # This hub runs one live workflow at a time, so a different
+                    # live one means the pinned workflow ended and a queued run
+                    # was activated. Report that end; never adopt the successor.
+                    return {
+                        "id": self.workflow_id,
+                        "status": "done",
+                        "run_id": getattr(self, "run_id", None),
+                        "successor": workflow["id"],
+                        "successor_run_id": workflow.get("run_id"),
+                        "agent": workflow.get("agent"),
+                    }
                 elif (
                     self.workflow_id is not None
                     and workflow is not None
@@ -832,6 +850,7 @@ class Launcher:
         if status == "done":
             self.log("stop", reason="done", workflow_status=status, resumes=resumes)
             say(f"workflow done after {resumes} automatic resume(s)")
+            self.announce_stop("done", workflow)
             return "done"
         if self.conversation is None:
             raise Stop(
@@ -864,6 +883,23 @@ class Launcher:
         """Return False if a worker was released while waiting for its predecessor."""
         return True
 
+    def stopped_note(self, reason: str, workflow: dict[str, Any] | None) -> str | None:
+        """What the operator should do now that supervision has ended (per workflow)."""
+        return None
+
+    def workflow_moved_on(self, workflow: dict[str, Any] | None) -> bool:
+        """Whether a different live workflow means the pinned one ended (#660)."""
+        return False
+
+    def announce_stop(self, reason: str, workflow: dict[str, Any] | None) -> None:
+        """Print the stop/relaunch guidance once for a terminal outcome."""
+        if self.stop_noted:
+            return
+        note = self.stopped_note(reason, workflow)
+        if note:
+            self.stop_noted = True
+            say(note)
+
     def run(self) -> int:
         if self.args.recover:
             from agent_recovery import prepare
@@ -892,6 +928,7 @@ class Launcher:
             if workflow["status"] == "done":
                 self.log("stop", reason="done", workflow_status="done", resumes=0)
                 say("the workflow is already done; nothing to resume")
+                self.announce_stop("done", workflow)
                 return EXIT_DONE
             if self.args.recover and workflow["status"] == "paused" and not self.args.force:
                 raise Stop(

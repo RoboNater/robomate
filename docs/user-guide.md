@@ -225,7 +225,11 @@ checkout, the three agents' worktrees, the submitted work and Alice, Bob and
 Charlie headless under the launcher's supervision. The run then proceeds to a
 merged PR without further input. Nothing is rendered: no team config, prompt
 file or start script. The command runs `robomate up`, `robomate workspace`,
-`robomate submit` and `scripts/agent-launcher.py start` in order. The same
+`robomate submit` and `scripts/agent-launcher.py start` in order. Each launcher
+supervises one workflow: a queued run needs fresh launchers once it is active,
+and `status` prints that reminder with the queue. Stop an attached standby
+launcher first, so the next run's conversation and supervision belong together.
+The same
 Python runs in Bash and PowerShell; only the line continuation differs:
 
 ```sh
@@ -830,13 +834,14 @@ age, branch, PR/MR URL, head and approved SHAs, issue or statement source and
 SHA, review rounds used, current and last task), a `gate` object (or `null`), and
 per agent `last_call_at`, `last_progress_at`, `last_progress_age_s`,
 `current_task_role`, `latest_note`, `latest_note_escaped` and `session_log`.
+The top-level `idle_after_s` is the hub's not-listening threshold.
 `--live` adds `live_gate` and `live_gate_error`; a `live_gate` reading carries
 its `pr_url` and `pr_found_by_branch` so tools can tell a branch lookup from a
 recorded binding.
 Existing keys and their meaning are unchanged. A hub older than these fields
 still prints, with `not reported by this hub` where they are missing.
 
-`robomate status` marks an agent `STALLED` when its bridge still heartbeats but it has made no hub call, task progress or event consumption for `stall_after_min`, and names the evidence; it is a warning, not a lifecycle change (see [agent recovery](development/agent-recovery.md#an-agent-that-stops-working-but-keeps-running)). `robomate status --snapshot [--stopped-at UTC_TIME]` prints the before-snapshot a manual `resume-alice` prompt asks for, from read-only calls that never take over Alice's session.
+`robomate status` marks an agent `STALLED` when its bridge still heartbeats but it has made no hub call, task progress or event consumption for `stall_after_min`, and names the evidence; it is a warning, not a lifecycle change (see [agent recovery](development/agent-recovery.md#an-agent-that-stops-working-but-keeps-running)). Before that threshold, a live agent with no task, no hold and no hub call for the hub's `idle_after_s` (120 s) prints `not listening` with its last hub call: nudge that live session with `Continue.`, or, if its CLI already exited, resume the exact saved conversation with `agent-launcher.py resume <agent>` (takeover only for a conversation that joined). A healthy hold, an open task, a released agent, a lost bridge, a paused or escalated workflow and a done or queued run print their own state instead. `robomate status --snapshot [--stopped-at UTC_TIME]` prints the before-snapshot a manual `resume-alice` prompt asks for, from read-only calls that never take over Alice's session.
 
 `robomate status` also shows closeout collection for the current or most recent
 run: not requested, collecting with a deadline, or finalized; submitted/expected

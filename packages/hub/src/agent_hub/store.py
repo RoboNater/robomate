@@ -1836,6 +1836,10 @@ class HubStore:
             "operator_questions": operator_questions,
             "stall_after_min": assessment["stall_after_min"],
             "stall_action_after_min": assessment["stall_action_after_min"],
+            # Additive for the operator's "not listening" hint (#660): the same
+            # idle threshold the orchestrator state uses, so `robomate status`
+            # reads it from the hub instead of keeping its own copy.
+            "idle_after_s": IDLE_AFTER_S,
             "orchestrator_activity": assessment["orchestrator"],
             "assessed_at": to_iso(now),
         }

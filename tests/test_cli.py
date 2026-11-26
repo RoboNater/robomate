@@ -1984,6 +1984,8 @@ def test_status_shows_run_id_and_queue_length(
         assert result.returncode == 0, result.stderr
         assert f"Run ID: {first_run_id}" in result.stdout
         assert "Queue length: 1" in result.stdout
+        # #660: the next run does not inherit this workflow's supervision.
+        assert "next run: supervision is per workflow" in result.stdout
         as_json = _inproc_cli(monkeypatch, capsys, root, env, "status", "--json")
         assert as_json.returncode == 0, as_json.stderr
         payload = json.loads(as_json.stdout)
@@ -5561,6 +5563,230 @@ def test_status_activity_is_one_line_per_agent_without_payload_text(
     assert "  alice" in brief and "  bob" in brief and "Hub: " not in brief
 
 
+def test_status_not_listening_appears_only_after_the_idle_threshold(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#660: a live, taskless worker past the hub's idle threshold gets the nudge hint."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+    # The first read starts the hub's in-memory silence clock.
+    hub_store.status_summary()
+
+    frozen_clock.advance(119)
+    cli._status(False, None)
+    before = capsys.readouterr().out
+    assert "not listening" not in before
+
+    frozen_clock.advance(2)
+    cli._status(False, None)
+    after = capsys.readouterr().out
+    assert "not listening: no hub call seen; no task or hold" in after
+    assert 'nudge its live session with "Continue."' in after
+    assert "agent-launcher.py resume bob" in after
+    assert "never --last or --continue" in after
+
+
+def test_status_keeps_a_healthy_hold_distinct_from_a_stalled_task(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#660: a held wait reads 'listening'; a task with stale progress reads STALLED."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    bob = hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    with hub_store.worker_hold("bob", str(bob.worker_instance_id), "await_assignment", 100):
+        cli._status(False, None)
+        held = capsys.readouterr().out
+    assert "listening: holding await_assignment; no nudge needed" in held
+    assert "not listening" not in held
+
+    task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    frozen_clock.advance(21 * 60)
+    cli._status(False, None)
+    stalled = capsys.readouterr().out
+    assert f"bob: codex / gpt-6-sol  STALLED  task {task.id}" in stalled
+    assert f"task {task.id} no progress for" in stalled
+    assert "not listening" not in stalled
+
+
+def test_status_settles_released_lost_and_done_without_a_nudge(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#660: lifecycle and terminal cases are their own output, never 'not listening'."""
+
+    database_path = tmp_path / "hub.db"
+    initialize_database(database_path)
+    hub_store = HubStore(database_path)
+    frozen_clock.install(hub_store)
+    hub_store.initialize_workflow("Build issue #660", {"on_done": "standby"})
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.check_in("erin", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.release_agent("erin")
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+
+    cli._status(False, None)
+    released = capsys.readouterr().out
+    assert "erin: codex / gpt-6-sol  released" in released
+    assert "not listening" not in released
+
+    # Finish the run with standby: bob's row stays joined, but supervision for
+    # that workflow is over, so the hint names a fresh launcher.
+    finish_run(hub_store, "Done", actor="operator", session=None)
+    cli._status(False, None)
+    done = capsys.readouterr().out
+    assert "bob: codex / gpt-6-sol  alive" in done
+    assert "erin: codex / gpt-6-sol  released" in done
+    assert (
+        "workflow done: supervision is per workflow; if a launcher is still attached, "
+        "stop it, then start a fresh launcher for the next queued or new run" in done
+    )
+    assert "not listening" not in done
+
+
+def test_status_shows_a_lost_bridge_without_a_nudge(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#660: a lost bridge keeps its lifecycle output; the exact-session remedy is manual."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+    hub_store.status_summary()
+    frozen_clock.advance(200)
+    hub_store.sweep(lost_after_s=180)
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    assert "bob: codex / gpt-6-sol  lost" in out
+    assert "not listening" not in out
+    # The derivation itself is part of the fix; a lost bridge is its own state.
+    status = hub_store.status_summary()
+    bob = next(agent for agent in status["agents"] if agent["name"] == "bob")
+    assert cli._listening_state(status, bob) == "lost"
+
+
+def test_status_orchestrator_idle_with_no_open_work_gets_the_same_nudge(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#660: Alice's own idle state carries the nudge only with no open work."""
+
+    hub_store = _status_hub(tmp_path, frozen_clock)
+    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.note_orchestrator_session("alice", "s-1")
+    _patch_status_hub(tmp_path, monkeypatch, hub_store)
+    frozen_clock.advance(121)
+    hub_store.note_orchestrator_heartbeat("s-1")
+
+    cli._status(False, None)
+    out = capsys.readouterr().out
+    assert '  not listening: nudge alice\'s live session with "Continue."' in out
+
+    hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
+    cli._status(False, None)
+    with_task = capsys.readouterr().out
+    assert "not listening" not in with_task
+
+
+@pytest.mark.parametrize("state", ["paused", "escalated"])
+def test_status_paused_and_escalated_hints_keep_the_exact_conversation(state: str) -> None:
+    """r1-1 on #660: these remedies must not send the operator to a fresh conversation."""
+
+    agent = {
+        "name": "bob",
+        "status": "idle",
+        "alive": True,
+        "current_task": None,
+        "activity": {"silence_s": 0, "holding": None},
+    }
+    text = "\n".join(
+        cli._listening_lines({"workflow": {"status": state}, "idle_after_s": 120.0}, agent)
+    )
+    assert "no nudge" in text
+    assert "fresh launcher" not in text
+    if state == "paused":
+        assert "agent-launcher.py resume bob" in text
+        assert "if its launcher stopped" in text
+    else:
+        assert "keeps supervising" in text
+        assert "resume" not in text
+
+
+def test_status_holding_precedes_no_workflow_and_terminal_hints() -> None:
+    """r1-2 on #660: a healthy hold is never hidden by a run-state remedy."""
+
+    agent = {
+        "name": "bob",
+        "status": "idle",
+        "alive": True,
+        "current_task": None,
+        "activity": {"silence_s": 600, "holding": "await_assignment", "hold_age_s": 30},
+    }
+    for workflow in (
+        None,
+        {"status": "active"},
+        {"status": "paused"},
+        {"status": "queued"},
+    ):
+        assert cli._listening_lines({"workflow": workflow, "idle_after_s": 120.0}, agent) == [
+            "    listening: holding await_assignment for 30s; no nudge needed"
+        ]
+    # A done run keeps the hold line first, then the per-workflow next-run step.
+    done = cli._listening_lines({"workflow": {"status": "done"}, "idle_after_s": 120.0}, agent)
+    assert done[0] == "    listening: holding await_assignment for 30s; no nudge needed"
+    assert "stop this launcher, then start a fresh launcher" in done[1]
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        ({}, "not listening: no hub call seen; no task, hold or workflow"),
+        (
+            {
+                "last_call": "check_in",
+                "last_call_at": "2026-11-26T12:00:00+00:00",
+                "last_call_age_s": 600,
+            },
+            "not listening: last hub call check_in 12:00:00 (10 m ago); no task, hold or workflow",
+        ),
+    ],
+)
+def test_status_not_listening_before_a_workflow_offers_a_fresh_start(
+    call: dict[str, Any], expected: str
+) -> None:
+    """r1-2/r2-1 on #660: no workflow means no resume, and the last call is still shown."""
+
+    agent = {
+        "name": "bob",
+        "status": "idle",
+        "alive": True,
+        "current_task": None,
+        "activity": {"silence_s": 600, "holding": None} | call,
+    }
+    text = "\n".join(cli._listening_lines({"workflow": None, "idle_after_s": 120.0}, agent))
+    assert expected in text
+    assert "start a fresh launcher (agent-launcher.py start bob)" in text
+    assert "there is no workflow to resume yet" in text
+    assert "agent-launcher.py resume" not in text
+
+
 def test_status_json_is_an_additive_superset(
     tmp_path: Path,
     frozen_clock: FrozenClock,
@@ -5592,6 +5818,8 @@ def test_status_json_is_an_additive_superset(
     bob = next(agent for agent in payload["agents"] if agent["name"] == "bob")
     assert bob["latest_note"] == "a note"
     assert bob["latest_note_escaped"] == "a note"
+    # #660: the idle threshold for the "not listening" hint is additive.
+    assert payload["idle_after_s"] == 120.0
     assert payload["state_dir"] == str(tmp_path) and payload["token_file"].endswith("token")
 
 
