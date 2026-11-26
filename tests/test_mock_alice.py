@@ -431,8 +431,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         token=TOKEN,
         token_file=tmp_path / "token",
         guides_dir=tmp_path / "guides",
-        default_wait_s=0.1,
-        max_wait_s=1.0,
+        max_wait_s=LIVENESS_S,
         lost_after_s=ENDURANCE_LOST_AFTER_S,
         # The long-work path sweeps at each frozen-clock step below. Keep the
         # periodic loop parked so it adds no incidental transactions to the
@@ -473,27 +472,30 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         token=TOKEN,
         agent_name="bob",
         profile=AgentProfile(harness="codex"),
-        default_wait_s=0.1,
         heartbeat_s=ENDURANCE_HEARTBEAT_S,
         max_retries=2,
         backoff_factor_s=0.01,
     )
-    observed = {"assignment_timeouts": 0, "question_timeouts": 0, "cycles": 0}
+    cycles = 0
     assignment_timed_out = asyncio.Event()
     question_timed_out = asyncio.Event()
     wait_for_event = HubStore.wait_for_event
 
-    async def deliver_after_timeout(
+    async def wait_for_endurance_event(
         self: HubStore, timeout_s: float, ack: str | None = None, lease_s: float | None = None
     ) -> EventRecord | None:
-        event = await wait_for_event(self, timeout_s, ack=ack, lease_s=lease_s)
-        if self is store and event is not None and event.kind is EventKind.WORKER_QUESTION:
-            # #264 r1-1: Alice observes the question after the worker has
-            # received a real timeout. Timer ordering under load is immaterial.
+        if self is not store:
+            return await wait_for_event(self, timeout_s, ack=ack, lease_s=lease_s)
+        # The short inbox poll in drive_endurance can exhaust its timeout in
+        # synchronous SQLite reads, then retry without yielding to the worker.
+        event = await wait_for_event(self, LIVENESS_S, ack=ack, lease_s=lease_s)
+        if event is not None and event.kind is EventKind.WORKER_QUESTION:
+            # Alice observes the question only after the worker has received
+            # the timeout response (#264 r1-1).
             await question_timed_out.wait()
         return event
 
-    monkeypatch.setattr(HubStore, "wait_for_event", deliver_after_timeout)
+    monkeypatch.setattr(HubStore, "wait_for_event", wait_for_endurance_event)
 
     async with (
         app.router.lifespan_context(app),
@@ -505,30 +507,30 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
     ):
 
         async def run_worker() -> None:
+            nonlocal cycles
             async with WorkerHubClient(worker_settings, http_client=http_client) as worker:
                 await worker.check_in()
+                # Alice starts only after this empty poll returns a timeout.
+                assert await worker.await_assignment(timeout_s=0) == {"timeout": True}
+                assignment_timed_out.set()
                 while True:
-                    assignment = await worker.await_assignment(timeout_s=0.1)
-                    if assignment.get("timeout"):
-                        observed["assignment_timeouts"] += 1
-                        assignment_timed_out.set()
-                        continue
+                    assignment = await worker.await_assignment(timeout_s=LIVENESS_S)
                     if assignment.get("release"):
                         return
 
-                    observed["cycles"] += 1
+                    assert assignment.get("task_id"), assignment
+                    cycles += 1
                     task_id = assignment["task_id"]
-                    if observed["cycles"] == 1:
-                        while True:
-                            reply = await worker.ask_alice(
-                                task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=0.1
-                            )
-                            if not reply.get("timeout"):
-                                break
-                            observed["question_timeouts"] += 1
-                            question_timed_out.set()
+                    if cycles == 1:
+                        assert await worker.ask_alice(
+                            task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=0
+                        ) == {"timeout": True}
+                        question_timed_out.set()
+                        reply = await worker.ask_alice(
+                            task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=LIVENESS_S
+                        )
                         assert "Approved" in reply.get("reply", "")
-                    elif observed["cycles"] == 2:
+                    elif cycles == 2:
                         # Establish a sweep baseline, then cross the loss
                         # deadline in small steps without triggering pause
                         # grace. A missing heartbeat must lose the worker.
@@ -550,7 +552,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
                         task_id,
                         {
                             "outcome": "completed",
-                            "summary": f"Completed cycle {observed['cycles']}",
+                            "summary": f"Completed cycle {cycles}",
                             "pr_url": "https://github.com/RoboNater/robo-agents/pull/30",
                             "head_sha": "0123456789abcdef0123456789abcdef01234567",
                         },
@@ -569,10 +571,12 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
                         expected_harness="codex",
                         cycles=3,
                         min_elapsed_s=1.5,
+                        # Keep the script's pacing delays. The events above
+                        # determine when the first assignment and reply can run.
                         assignment_delay_s=0.2,
                         cycle_gap_s=0.1,
-                        worker_hold_s=0.1,
-                        question_hold_s=0.1,
+                        worker_hold_s=0,
+                        question_hold_s=0,
                         question_reply_delay_s=0.2,
                         long_work_s=ENDURANCE_LONG_WORK_S,
                         lost_after_s=ENDURANCE_LOST_AFTER_S,
@@ -594,9 +598,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         "replies": 1,
         "results": 3,
     }
-    assert observed["assignment_timeouts"] >= 1
-    assert observed["question_timeouts"] >= 1
-    assert observed["cycles"] == 3
+    assert cycles == 3
 
 
 def test_endurance_gives_claude_code_a_supported_blocking_wait() -> None:
