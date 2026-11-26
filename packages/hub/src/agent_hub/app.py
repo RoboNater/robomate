@@ -111,6 +111,14 @@ def select_gate(hub_info: Mapping[str, Any] | None) -> ForgeGate:
     return MergeGate()
 
 
+def _issue_url_base(gate: ForgeGate) -> str | None:
+    if isinstance(gate, MergeGate) and gate.project is not None:
+        return f"{gate.project.web_url}/issues/"
+    if isinstance(gate, GitLabGate):
+        return f"{gate.project.web_url}/-/issues/"
+    return None
+
+
 def create_app(
     settings: HubSettings | None = None,
     *,
@@ -134,6 +142,7 @@ def create_app(
     hub_name_for_branches = (
         str(hub_info.get("name") or hub_info.get("hub_name") or "") if hub_info is not None else ""
     ) or None
+    gate = select_gate(hub_info)
     store = HubStore(
         path=resolved.database_path,
         signals=Signals(),
@@ -142,6 +151,7 @@ def create_app(
         hub_name=hub_name_for_branches,
         git_common_dir=common_dir,
         detect_host_pauses=resolved.detect_host_pauses,
+        issue_url_base=_issue_url_base(gate),
     )
     from .worktrees import WorktreeManager
 
@@ -152,7 +162,7 @@ def create_app(
         worktree_root=config_layers.worktree_root,
     )
     protocol = A2AProtocol(store=store, settings=resolved, worktree_manager=worktree_manager)
-    orchestrator = OrchestratorOps(store, select_gate(hub_info), settings=resolved)
+    orchestrator = OrchestratorOps(store, gate, settings=resolved)
     accounting = CallAccounting(
         resolved.database_path,
         enabled=resolved.call_accounting,

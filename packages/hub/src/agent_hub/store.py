@@ -59,7 +59,7 @@ from agent_hub_common import (
     utcnow,
     validate_agent_name,
 )
-from pydantic import ValidationError, model_validator
+from pydantic import ValidationError
 
 from .activity import (
     ACTIVE,
@@ -81,6 +81,7 @@ from .activity import (
 from .database import database
 from .merge_gate import CiStatus, GateReport, Mergeable, PrState
 from .signals import EVENT_KEY, Signals, context_key, task_key
+from .stored_results import read_result, task_history
 
 logger = logging.getLogger(__name__)
 
@@ -719,84 +720,54 @@ def _closeout_context(
     """Capture typed obligations and effective repository settings at assignment."""
     from agent_hub_common import load_config_layers
 
-    # #478 rejects duplicate IDs on new results. Historical typed results may
-    # contain them, so override only that validator when reading this snapshot.
-    class StoredReviewerResult(ReviewerResult):
-        @model_validator(mode="after")
-        def validate_finding_ids_unique(self) -> StoredReviewerResult:
-            return self
-
-    class StoredImplementerResult(ImplementerResult):
-        @model_validator(mode="after")
-        def validate_finding_ids_unique(self) -> StoredImplementerResult:
-            return self
-
     config = load_config_layers(state_dir=store._state_dir(), git_common_dir=store.git_common_dir)
     pending: dict[str, dict[str, Any]] = {}
     history: dict[str, dict[str, Any]] = {}
     contradictions: dict[str, list[dict[str, str]]] = {}
     pr_url = None
-    rows = connection.execute(
-        "SELECT task.id, task.role, task.result_json FROM task "
-        "LEFT JOIN event ON event.kind IN ('task_completed', 'task_failed') "
-        "AND json_extract(event.payload_json, '$.task_id') = task.id "
-        "WHERE task.workflow_id = ? AND task.result_json IS NOT NULL "
-        "ORDER BY event.id, task.rowid",
-        (workflow_id,),
-    )
-    for row in rows:
-        raw = _json_object(row["result_json"])
-        if raw is None:
-            continue
-        try:
-            if row["role"] == TaskRole.REVIEWER:
-                result = StoredReviewerResult.model_validate(raw)
-                if result.pr_url:
-                    pr_url = result.pr_url
-                for finding in result.nonblocking_findings:
-                    entry = history.setdefault(
-                        finding.id,
-                        {
-                            "id": finding.id,
-                            "summary": finding.text,
-                            "provenance": [],
-                            "contradictions": contradictions.setdefault(finding.id, []),
-                        },
-                    )
+    for row in task_history(connection, workflow_id):
+        result = read_result(row)
+        if isinstance(result, ReviewerResult):
+            if result.pr_url:
+                pr_url = result.pr_url
+            for finding in result.nonblocking_findings:
+                entry = history.setdefault(
+                    finding.id,
+                    {
+                        "id": finding.id,
+                        "summary": finding.text,
+                        "provenance": [],
+                        "contradictions": contradictions.setdefault(finding.id, []),
+                    },
+                )
+                entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
+                pending[finding.id] = entry
+            nonblocking_ids = {finding.id for finding in result.nonblocking_findings}
+            flagged: set[str] = set()
+            for finding in result.blocking_findings:
+                if finding.id in nonblocking_ids:
+                    entry = history[finding.id]
                     entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
-                    pending[finding.id] = entry
-                nonblocking_ids = {finding.id for finding in result.nonblocking_findings}
-                flagged: set[str] = set()
-                for finding in result.blocking_findings:
-                    if finding.id in nonblocking_ids:
-                        entry = history[finding.id]
-                        entry["provenance"].append({"task_id": row["id"], "summary": finding.text})
-                        if finding.id not in flagged:
-                            entry["contradictions"].append(
-                                {"task_id": row["id"], "kind": "blocking_and_nonblocking"}
-                            )
-                            flagged.add(finding.id)
-            elif row["role"] == TaskRole.IMPLEMENTER:
-                impl = StoredImplementerResult.model_validate(raw)
-                if impl.pr_url:
-                    pr_url = impl.pr_url
-                disputed = set(impl.disputed_finding_ids or [])
-                for finding_id in set(impl.resolved_finding_ids or []):
-                    if finding_id in disputed:
-                        contradictions.setdefault(finding_id, []).append(
-                            {"task_id": row["id"], "kind": "resolved_and_disputed"}
+                    if finding.id not in flagged:
+                        entry["contradictions"].append(
+                            {"task_id": row["id"], "kind": "blocking_and_nonblocking"}
                         )
-                        if finding_id in history:
-                            pending[finding_id] = history[finding_id]
-                    else:
-                        pending.pop(finding_id, None)
-            elif row["role"] == TaskRole.REBASE:
-                rebase = RebaseResult.model_validate(raw)
-                if rebase.pr_url:
-                    pr_url = rebase.pr_url
-        except ValidationError:
-            # Legacy raw results are readable, but cannot establish typed coverage.
-            continue
+                        flagged.add(finding.id)
+        elif isinstance(result, ImplementerResult):
+            if result.pr_url:
+                pr_url = result.pr_url
+            disputed = set(result.disputed_finding_ids or [])
+            for finding_id in set(result.resolved_finding_ids or []):
+                if finding_id in disputed:
+                    contradictions.setdefault(finding_id, []).append(
+                        {"task_id": row["id"], "kind": "resolved_and_disputed"}
+                    )
+                    if finding_id in history:
+                        pending[finding_id] = history[finding_id]
+                else:
+                    pending.pop(finding_id, None)
+        elif isinstance(result, RebaseResult) and result.pr_url:
+            pr_url = result.pr_url
     workflow = connection.execute("SELECT * FROM workflow WHERE id = ?", (workflow_id,)).fetchone()
     binding = _delivery_binding(connection, workflow)
     return CloseoutContext.model_validate(
@@ -900,6 +871,7 @@ class HubStore:
     hub_name: str | None = None
     git_common_dir: Path | None = None
     detect_host_pauses: bool = True
+    issue_url_base: str | None = field(default=None, kw_only=True)
     _sweep_sample: tuple[datetime, float] | None = field(default=None, init=False)
     _sweep_lost_after_s: float | None = field(default=None, init=False)
     _resume_grace_until: float = field(default=0.0, init=False)
@@ -1625,6 +1597,24 @@ class HubStore:
             result["run_id"] = workflow.get("run_id")
         return result
 
+    def read_run_report(self, run_id: str | None = None) -> str:
+        from .run_report import render, snapshot, validate_run_id
+
+        with database(self.path) as connection:
+            connection.execute("BEGIN")
+            if run_id is None:
+                workflow = self._live_row(connection) or self._most_recent_done_row(connection)
+                if workflow is None:
+                    raise NotFoundError("no current or completed run")
+            else:
+                workflow = connection.execute(
+                    "SELECT * FROM workflow WHERE run_id = ?", (validate_run_id(run_id),)
+                ).fetchone()
+                if workflow is None:
+                    raise NotFoundError(f"unknown run {run_id}")
+            report = snapshot(self, connection, workflow)
+        return render(report)
+
     def status_summary(self) -> dict[str, Any]:
         """Return the small operator view without instructions or result bodies.
 
@@ -1643,6 +1633,7 @@ class HubStore:
             connection.execute("BEGIN")
             workflow = self._require_live_or_recent(connection)
             from .closeout_export import single_line, status_projection
+            from .run_report import read_evidence
 
             closeout = status_projection(self, connection, workflow, now)
             queue = self._queued_summaries(connection)
@@ -1764,6 +1755,7 @@ class HubStore:
                     # Legacy fixtures can hold a non-ISO sentinel; show no age.
                     run_age = None
                 run = {
+                    **read_evidence(connection, workflow).headline,
                     "status": workflow["status"],
                     "created": str(workflow["created"]),
                     "age_s": run_age,

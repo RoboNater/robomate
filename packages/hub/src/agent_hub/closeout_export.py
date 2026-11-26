@@ -60,12 +60,12 @@ def status_projection(
     collection = connection.execute(
         "SELECT * FROM closeout_collection WHERE workflow_id = ?", (workflow["id"],)
     ).fetchone()
+    result["export_error"] = store.closeout_export_errors.get(str(workflow["run_id"]))
     if collection is None:
         return result
     result.update(
         state="finalized" if collection["finalized_at"] else "collecting",
         deadline=collection["deadline"],
-        export_error=store.closeout_export_errors.get(str(workflow["run_id"])),
     )
     rows = connection.execute(
         "SELECT e.author, e.author_kind, e.missing_reason, r.timing, a.status"
@@ -138,65 +138,44 @@ def atomic_write(path: Path, text: str) -> None:
 def export_run(store: HubStore, run_id: str) -> None:
     """Best effort after commit; unmarked done rows remain the restart retry queue.
 
-    Write the index last as the completion marker. Filenames are ordinal, never
-    derived from authors, so even colliding or hostile author names stay inert.
+    Record completion after the report and any retrospective exports. Filenames
+    for retrospectives use ordinals so author names cannot affect paths.
     Every replacement is atomic and retrying the immutable collection is safe.
     """
+    from .run_report import render as render_run_report
+    from .run_report import snapshot
+
     try:
         with database(store.path) as connection:
             connection.execute("BEGIN")
             run = connection.execute(
-                "SELECT w.id, c.workflow_id AS collection_id, c.finalized_at FROM workflow w"
+                "SELECT w.*, c.workflow_id AS collection_id, c.finalized_at FROM workflow w"
                 " LEFT JOIN closeout_collection c ON c.workflow_id = w.id"
                 " WHERE w.run_id = ? AND w.status = 'done' AND w.exported_at IS NULL",
                 (run_id,),
             ).fetchone()
             if run is None:
                 return
-            if run["collection_id"] is None:
+            collected = run["collection_id"] is not None
+            if collected and run["finalized_at"] is None:
+                return
+            report = snapshot(store, connection, run)
+            rows = (
                 connection.execute(
-                    "UPDATE workflow SET exported_at = ? WHERE id = ?",
-                    (store._now_iso(), run["id"]),
-                )
-                store.closeout_export_errors.pop(run_id, None)
-                return
-            if run["finalized_at"] is None:
-                return
-            rows = connection.execute(
-                "SELECT e.author, e.author_kind, e.missing_reason, r.* FROM closeout_expected e"
-                " LEFT JOIN agent_closeout_report r USING (workflow_id, author)"
-                " WHERE e.workflow_id = ? ORDER BY e.author",
-                (run["id"],),
-            ).fetchall()
-        directory = store._state_dir() / "runs" / run_id / "closeout"
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if os.name == "posix":
-            directory.chmod(0o700)
-        entries = []
-        for ordinal, row in enumerate(rows, 1):
-            entry = {"author": single_line(row["author"]), "author_kind": row["author_kind"]}
-            if row["report_id"] is None:
-                entry.update(status="missing", reason=row["missing_reason"] or "run_finalized")
-            else:
-                filename = f"report-{ordinal:04d}.md"
-                atomic_write(directory / filename, render(row))
-                entry.update(
-                    status="submitted",
-                    report_id=row["report_id"],
-                    submitted_at=row["submitted_at"],
-                    timing=row["timing"],
-                    filename=filename,
-                )
-            entries.append(entry)
-        atomic_write(
-            directory / "index.json",
-            json.dumps(
-                {"notice": HEADER, "run_id": run_id, "authors": entries},
-                indent=2,
-                ensure_ascii=True,
+                    "SELECT e.author, e.author_kind, e.missing_reason, r.* FROM closeout_expected e"
+                    " LEFT JOIN agent_closeout_report r USING (workflow_id, author)"
+                    " WHERE e.workflow_id = ? ORDER BY e.author",
+                    (run["id"],),
+                ).fetchall()
+                if collected
+                else []
             )
-            + "\n",
-        )
+
+        run_directory = store._state_dir() / "runs" / report.run_id
+        _private_directory(run_directory)
+        atomic_write(run_directory / "report.md", render_run_report(report))
+        if collected:
+            _export_retrospectives(run_directory / "closeout", run_id, rows)
         with database(store.path) as connection:
             connection.execute(
                 "UPDATE workflow SET exported_at = ? WHERE id = ?", (store._now_iso(), run["id"])
@@ -206,3 +185,38 @@ def export_run(store: HubStore, run_id: str) -> None:
         # Keep filesystem paths and report contents out of the status error field.
         store.closeout_export_errors[run_id] = type(exc).__name__
         logger.exception("Closeout export failed for run %s; retry on hub restart", run_id)
+
+
+def _private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == "posix":
+        path.chmod(0o700)
+
+
+def _export_retrospectives(directory: Path, run_id: str, rows: list[Row]) -> None:
+    _private_directory(directory)
+    entries = []
+    for ordinal, row in enumerate(rows, 1):
+        entry = {"author": single_line(row["author"]), "author_kind": row["author_kind"]}
+        if row["report_id"] is None:
+            entry.update(status="missing", reason=row["missing_reason"] or "run_finalized")
+        else:
+            filename = f"report-{ordinal:04d}.md"
+            atomic_write(directory / filename, render(row))
+            entry.update(
+                status="submitted",
+                report_id=row["report_id"],
+                submitted_at=row["submitted_at"],
+                timing=row["timing"],
+                filename=filename,
+            )
+        entries.append(entry)
+    atomic_write(
+        directory / "index.json",
+        json.dumps(
+            {"notice": HEADER, "run_id": run_id, "authors": entries},
+            indent=2,
+            ensure_ascii=True,
+        )
+        + "\n",
+    )

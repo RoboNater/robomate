@@ -1814,6 +1814,14 @@ def _headline_lines(
             )
         else:
             lines.append(_status_field("PR", f"none yet   {target}   {started}"))
+    if run is not None and "delivery_state" in run:
+        delivery = _printable(str(run["delivery_state"]))
+        unresolved = run.get("unresolved_findings")
+        incomplete = run.get("incomplete_closeout_steps")
+        steps = "not recorded" if incomplete is None else f"{incomplete} incomplete"
+        lines.append(_status_field("Delivery", delivery))
+        lines.append(_status_field("Findings", f"{unresolved} unresolved"))
+        lines.append(_status_field("Closeout", f"steps {steps}"))
     if live is not None:
         lines.append(_gate_line(live, live=True))
     elif live_error is not None:
@@ -2157,6 +2165,24 @@ def _inbox_lines(questions: list[dict[str, Any]]) -> list[str]:
             lines.append(f"    --option {number}: {_printable(option)}")
     lines.append('Answer with: robomate answer <id> "<text>"  or  robomate answer <id> --option N')
     return lines
+
+
+def _report(run_id: str | None, selector: str | None) -> None:
+    """Read the selected run's Markdown through the operator-only hub route."""
+    escape_unencodable_output()
+    operator_token = read_token_file(operator_token_path(), "operator token")
+    endpoint, _ = _connect(selector)
+    result = _rpc(
+        endpoint.url,
+        endpoint.token,
+        "hub.report",
+        operator_token=operator_token,
+        params={} if run_id is None else {"run_id": run_id},
+    )
+    markdown = result.get("markdown")
+    if not isinstance(markdown, str):
+        raise RuntimeError("invalid hub report response")
+    print(markdown, end="")
 
 
 def _inbox(as_json: bool, selector: str | None) -> None:
@@ -2645,6 +2671,10 @@ def main() -> None:
         metavar="UTC_TIME",
         help="with --snapshot: when the old harness process was seen to stop",
     )
+    report = commands.add_parser("report", help="print the selected hub's operator run report")
+    report.add_argument(
+        "run_id", nargs="?", metavar="run", help="run ID (default: current or latest done)"
+    )
     inbox = commands.add_parser("inbox", help="list the questions waiting for you")
     inbox.add_argument("--json", action="store_true")
     answer = commands.add_parser("answer", help="answer a question from robomate inbox")
@@ -2695,7 +2725,7 @@ def main() -> None:
             "remote-tracking refs to check for unpushed work."
         ),
     )
-    for command in (down, status, inbox, answer, submit, relocate, workspace, clean):
+    for command in (down, status, report, inbox, answer, submit, relocate, workspace, clean):
         command.add_argument(
             "--hub",
             metavar="NAME|HUB_ID|CHECKOUT",
@@ -2771,6 +2801,8 @@ def main() -> None:
                     notes=args.notes,
                     live=args.live,
                 )
+        elif args.command == "report":
+            _report(args.run_id, args.hub)
         elif args.command == "inbox":
             _inbox(args.json, args.hub)
         elif args.command == "answer":

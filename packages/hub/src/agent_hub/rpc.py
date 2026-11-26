@@ -65,6 +65,7 @@ UNAUDITED_METHODS = frozenset(
         "wait_for_event",
         "hub.info",
         "hub.status",
+        "hub.report",
         "hub.snapshot",
         "hub.heartbeat",
         "hub.record_calls",
@@ -282,6 +283,15 @@ class RpcDispatcher:
                 },
                 **summary,
             }
+        if method == "hub.report":
+            require_operator(headers, self.operator_token)
+            params = payload.get("params", {})
+            if not isinstance(params, dict) or params.keys() - {"run_id"}:
+                raise RpcError(INVALID_PARAMS, "hub.report takes an optional run_id")
+            from .run_report import validate_run_id
+
+            run_id = validate_run_id(params["run_id"]) if "run_id" in params else None
+            return {"markdown": self.ops.store.read_run_report(run_id)}
         # The operator's before-snapshot (#146): bearer-only and read-only. It
         # names the current session without accepting or superseding any.
         if method == "hub.snapshot":

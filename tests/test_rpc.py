@@ -1217,6 +1217,27 @@ OPERATOR_TOKEN = "operator-secret-for-tests"
 OPERATOR = {OPERATOR_HEADER: OPERATOR_TOKEN}
 
 
+async def test_hub_report_requires_operator_and_has_no_read_side_effects(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    run_id = hub_store.get_state()["run_id"]
+    assert error_of(await bare_call(app, "hub.report", OPERATOR))[0] == OPERATOR_REQUIRED
+    cast(RpcDispatcher, app.state.rpc).operator_token = OPERATOR_TOKEN
+    with database(hub_store.path) as connection:
+        before = list(connection.iterdump())
+    for headers in (None, CALLER_HEADERS, {OPERATOR_HEADER: "wrong"}):
+        assert error_of(await bare_call(app, "hub.report", headers))[0] == OPERATOR_REQUIRED
+    for params in ({"run_id": None}, {"run_id": 1}, {"run_id": "../report.md"}, {"extra": True}):
+        assert error_of(await bare_call(app, "hub.report", OPERATOR, **params))[0] == INVALID_PARAMS
+    response = await bare_call(app, "hub.report", OPERATOR, run_id="19990101_deadbeef")
+    assert error_of(response)[0] == NOT_FOUND
+    result = (await bare_call(app, "hub.report", OPERATOR, run_id=run_id))["result"]
+    assert result["markdown"].startswith("# Draft run report")
+    assert run_id in result["markdown"]
+    with database(hub_store.path) as connection:
+        assert list(connection.iterdump()) == before
+
+
 async def test_hub_answer_needs_the_operator_and_answers_once(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
