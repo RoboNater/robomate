@@ -65,13 +65,17 @@ argv = sys.argv[1:]
 if argv == ["--help"]:
     print(os.environ.get("FAKE_CLAUDE_HELP", ""))
     sys.exit(0)
-if argv == ["debug", "config"]:
+if argv == ["--version"]:
+    print(os.environ.get("FAKE_OPENCODE_VERSION", "1.19.5"))
+    sys.exit(0)
+if argv[:2] == ["debug", "config"]:
     if os.environ.get("FAKE_OPENCODE_EXIT"):
         sys.exit(1)
     raw = os.environ.get("FAKE_OPENCODE_INVALID")
     if raw is None:
         config = json.loads(os.environ.get("FAKE_OPENCODE_CONFIG", "{}"))
-        config["provider"] = {"catalog": "x" * 100_000}
+        if isinstance(config, dict):
+            config["provider"] = {"catalog": "x" * 100_000}
         raw = json.dumps(config)
     data = raw.encode("utf-8")
     if stat.S_ISFIFO(os.fstat(1).st_mode):

@@ -37,7 +37,7 @@ Settings that unattended runs need. Harness config formats change, so confirm th
 |---|---|---|---|
 | Claude Code | `claude mcp add --scope user …` (stored in `~/.claude.json`) | None. The static entry keeps the 100 s interactive or unknown-mode hold. | Unset. |
 | Codex CLI | `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows; `$CODEX_HOME/config.toml` if `CODEX_HOME` is set), table `[mcp_servers.robomate]` | `command`, `args`, `startup_timeout_sec = 120`, `tool_timeout_sec = 1900` (an idle call holds 1800 s plus 15 s HTTP margin). Approve every bridge tool, because unattended runs can't answer approval prompts: one `[mcp_servers.robomate.tools.<tool>]` table with `approval_mode = "approve"` for each tool name from step 4. | `"1900"` in `env`. |
-| OpenCode | Global config: `~/.config/opencode/opencode.json` or `opencode.jsonc` (confirm the Windows location), key `mcp.robomate` | `"type": "local"`, `"command": ["uv", "run", …]` (the whole command as one array), `"enabled": true`, `"timeout": 1900000` (milliseconds). | `"1900"` in `environment`. |
+| OpenCode | Global config: `~/.config/opencode/opencode.json` or `opencode.jsonc` (confirm the Windows location). **2.x:** key `mcp.servers.robomate`. **1.x:** key `mcp.robomate`. | **2.x (recommended):** `"type": "local"`, `"command": ["uv", "run", …]` (the whole command as one array), `"disabled": false`, `"codemode": false` (exposes direct `robomate_*` tools instead of Code Mode), `"timeout": {"startup": 1900000, "catalog": 1900000, "execution": 1900000}` (milliseconds). **1.x:** `"enabled": true`, scalar `"timeout": 1900000`. | `"1900"` in `environment`. |
 | Antigravity (`agy`) | The user-level MCP config `agy` reads. robomate's launcher has used `<home>/.gemini/config/mcp_config.json`; confirm against current docs. Key `mcpServers.robomate` | `command`, `args`, `"timeoutSeconds": 1900`. If `agy` requires an `enabledTools` allow-list, list every tool from step 4. | `"1900"` in `env`. |
 
 `HUB_MCP_TIMEOUT_S` advertises the configured client budget to the bridge in
@@ -47,9 +47,12 @@ measured 1500 s print profile requires a launcher-supplied budget and
 `HUB_HARNESS_MODE="print"`. Keep both out of the static Claude Code entry and
 interactive sessions.
 
-OpenCode 1.19.5 converts the documented V2 `mcp.servers` layout to the flat
-form and drops its object timeout; use the flat form above and revisit when
-OpenCode follows the V2 documentation. Codex documentation has moved to
+OpenCode 2.x (verified on `2.4.1` on Linux) uses the `mcp.servers.<name>`
+layout, object timeouts (`startup`, `catalog`, `execution` in milliseconds),
+and `"codemode": false` to expose `robomate_*` tools directly rather than
+through the Code Mode `execute` sandbox. OpenCode 1.19.x converts the V2 layout
+to the flat `mcp.robomate` form and drops its object timeout; use the flat form
+above only on 1.x hosts. Codex documentation has moved to
 learn.chatgpt.com; its keys remain unchanged, and a running app-server daemon
 may need a restart to load changes. Antigravity uses the path above; its
 `timeoutSeconds` covers both connection and tool calls, and `enabledTools` is

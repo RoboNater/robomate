@@ -1061,10 +1061,12 @@ def test_reported_doctor_command_runs_in_the_native_shell_with_the_hub_down(
         tmp_path / "fake doctor harness.py",
         "import json, os, sys\n"
         "words = sys.argv[1:]\n"
-        "if words[-3:] == ['mcp', 'list', '--json']:\n"
+        "if words == ['--version']:\n"
+        "    print(os.environ.get('FAKE_OPENCODE_VERSION', '1.19.5'))\n"
+        "elif words[-3:] == ['mcp', 'list', '--json']:\n"
         "    enabled = 'mcp_servers.robomate.enabled=false' not in words\n"
         "    print(json.dumps([{'name': 'robomate', 'enabled': enabled}]))\n"
-        "elif words == ['debug', 'config']:\n"
+        "elif words[:2] == ['debug', 'config']:\n"
         "    print(os.environ['OPENCODE_CONFIG_CONTENT'])\n"
         "else:\n"
         "    with open(os.environ['FAKE_DOCTOR_LOG'], 'w', encoding='utf-8') as log:\n"
@@ -1521,3 +1523,34 @@ def test_supervise_does_not_count_orchestrator_from_previous_run(
     output = capsys.readouterr().out
     assert "alice did not join" in output and "alice.log" in output
     assert "all agents joined" not in output
+
+
+def test_opencode_v2_mcp_preflight_and_version_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import run_common  # type: ignore[import-not-found]
+
+    assert run_common.parse_harness_version("opencode", "opencode v2.4.1") == "2.4.1"
+    assert run_common.parse_harness_version("opencode", "1.19.5") == "1.19.5"
+
+    cfg_dir = tmp_path / "opencode"
+    cfg_dir.mkdir()
+    (cfg_dir / "opencode.jsonc").write_text(
+        json.dumps(
+            {
+                "mcp": {
+                    "servers": {
+                        "robomate": {
+                            "type": "local",
+                            "command": ["robomate", "mcp", "--harness", "opencode"],
+                            "disabled": False,
+                            "codemode": False,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    START.check_mcp_entry("opencode")

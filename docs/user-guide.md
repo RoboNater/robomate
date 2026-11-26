@@ -310,7 +310,8 @@ Hub tools are switched off for the conversation, so ask Bob to read the
 closeout reports from `<state>/runs/<run_id>/closeout/` (the report prints the
 full path; the state is `<run_dir>/<hub_name>.robomate/<hub_name>/state`).
 `--fork` keeps the original transcript: Claude Code uses `--fork-session`,
-Codex `codex fork`, OpenCode `--fork`. The per-harness suppression and
+Codex `codex fork`, OpenCode 1.x `--fork` (OpenCode 2.x's interactive CLI does
+not support `--fork`, so `ask --fork` refuses it on 2.x). The per-harness suppression and
 transcript rules are in [Ask an agent after the run](#ask-an-agent-after-the-run);
 for the launcher's own behavior see
 [agent recovery](development/agent-recovery.md#asking-an-agent).
@@ -351,7 +352,7 @@ separate checkout.
 | Claude Code and Codex | Use the operator's login by default. Choose `--clean-login` for a separate per-run profile. The launcher passes selected directories, disables MCP and requests interactive permissions. Actual Claude Code shell containment on Windows depends on the installation. |
 | OpenCode 1.x | Uses a separate per-run profile. Use `/connect` if the provider needs login. The launcher checks `opencode debug config` for enabled MCP, approves the selected external directories at the tool layer and asks for other external access. Shell commands retain OS access. Use on a trusted host. |
 | AntiGravity (`agy`) | Uses a separate per-run home; follow the sign-in prompt there. The launcher configures an empty MCP profile, review prompts and scoped workspace directories. Terminal containment depends on the installed CLI and host. Treat it as trusted-only where the terminal sandbox is unavailable. |
-| OpenCode 2.x | Compatibility is unverified. OpenCode 2.x migration is tracked in [#518](https://github.com/RoboNater/robomate/issues/518). |
+| OpenCode 2.x | Supported on Linux (verified on `2.4.1`; native Windows live checks are deferred). Uses a separate per-run profile with `--standalone` so the shared background service cannot leak global config or MCP servers. Use `/connect` if the provider needs login. The launcher verifies `opencode debug config --standalone` has no enabled `mcp.servers` entries, sets ordered tool permissions asking by default with read-only access on the selected roots, and passes `model` (with `#variant` when set) via `OPENCODE_CONFIG_CONTENT`. Shell commands retain OS access. Use on a trusted host. |
 | Devin and a doctor terminal on a worker-only host | Deferred. Run the doctor on the hub host with a supported harness. |
 
 With OpenCode, a team effort setting is printed in a note and omitted from the
@@ -714,7 +715,7 @@ the state or token directory, regardless of the harness controls below.
 | --- | --- |
 | Claude Code | Sandbox `denyRead` hides the token directory from sandboxed shell commands. The bridge runs outside that sandbox. Native Windows sandbox availability varies. |
 | Codex | The token boundary is guide-only with the launcher's `workspace-write` settings, whose roots control writes. [Codex 0.170.0 configuration schema](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/core/config.schema.json) |
-| OpenCode | Headless starts and resumes add `read` and `external_directory` denies for the token directory after the inherited read rules and launcher directory allows. These are tool permissions. Shell path checks are best effort and shell processes retain OS access. Interactive launches use the harness's configured permissions. Native Windows enforcement still needs a live check. [OpenCode 1.19.5 read tool](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/tool/read.ts) |
+| OpenCode | **2.x (Linux, verified on `2.4.1`):** headless starts and resumes launch with `--standalone` and an ordered `agents.<name>.permissions` array that denies `external_directory` (`*`) and outside/traversal paths for filesystem tools (`read`, `edit`, `write`, `glob`, `grep`, `list`), allows the assigned roots, re-appends inherited filesystem `deny`/`ask` rules after the root allows while dropping broad, leading-wildcard, and outside-root allows, and appends `external_directory` and `read` denies for the token directory (both absolute and relative to the worktree; verified live on Linux, including when the token directory is inside an allowed root). On 2.x, `external_directory` applies to the shell's working directory and parsed directories, not to file arguments such as `cat /path` (verified live on `2.4.1`), and robomate's 2.x policy configures no `shell` path check — shell commands retain OS access. Built-in outside-path reads (such as tool-output files outside assigned roots) are intentionally denied by `read /*`, matching 1.x's boundary, while the `skill` tool itself remains allowed. **1.x:** adds `read` and `external_directory` denies for the token directory after inherited read rules and launcher directory allows (shell path checks are best effort and shell processes retain OS access). Interactive launches use the harness's configured permissions. Native Windows enforcement is tracked in [#711](https://github.com/RoboNater/robomate/issues/711). |
 | AntiGravity | The launcher uses the run's `--dangerously-skip-permissions` mode and supplies no per-launch token-directory deny. Antigravity documents user-configured `read_file` deny rules. [Antigravity CLI permissions](https://antigravity.google/docs/cli-permissions) |
 | Devin CLI | The launcher uses the run's `dangerous` mode and supplies no per-launch token-directory deny. The guide supplies the boundary for this mode. [Devin CLI investigation](harness-investigation-devin-cli.md) |
 
@@ -976,7 +977,9 @@ original conversation, so questions become part of that harness transcript.
 Forking is opt-in to keep the default a direct reopening and behave consistently
 with AntiGravity, which has no CLI fork option. **Use `--fork` when preserving
 the original transcript matters**: Claude Code uses `--fork-session`, Codex uses
-`codex fork ID`, and OpenCode uses `--fork`. AntiGravity and Devin CLI reject
+`codex fork ID`, and OpenCode 1.x uses `--fork` (OpenCode 2.x rejects `--fork`
+on interactive `opencode`, so `ask --fork` refuses it on 2.x; only non-interactive
+`opencode run --fork` supports forking). AntiGravity and Devin CLI reject
 `--fork` before launching; retain a transcript copy before asking there if
 needed.
 
@@ -986,7 +989,7 @@ Hub MCP suppression is specific to the harness:
 |---|---|
 | Claude Code | `--permission-mode auto`, with `--strict-mcp-config` without `--mcp-config`. |
 | Codex | Same `CODEX_HOME`, with `-c mcp_servers.robomate.enabled=false` and `--approve-for-me`. See the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). |
-| OpenCode | Same `OPENCODE_CONFIG`, with an [inline override](https://docs.opencode.ai/docs/config/#precedence-order) disabling `mcp.robomate`, with no permission override and `--auto` so the run config's `external_directory: allow` applies. Effort is preserved as the build agent's `variant`, since the interactive CLI has no `--variant` flag. |
+| OpenCode | **2.x:** launches with `--standalone` and an `OPENCODE_CONFIG_CONTENT` override setting `mcp.servers.robomate` with `type`, `command` and `"disabled": true` (a partial entry without `type` and `command` is ignored by 2.x), and carries `model` / `model#variant` in `OPENCODE_CONFIG_CONTENT` since interactive 2.x rejects `--model` and `--variant`. **1.x:** same `OPENCODE_CONFIG`, with an [inline override](https://docs.opencode.ai/docs/config/#precedence-order) disabling `mcp.robomate`, with no permission override and `--auto` so the run config's `external_directory: allow` applies; effort is preserved as the build agent's `variant`. |
 | AntiGravity | `--dangerously-skip-permissions`, same `HOME`/`USERPROFILE`; temporarily replaces the run home's `.gemini/config/mcp_config.json` with an empty server map and restores the original bytes on exit, including harness errors and ordinary interrupts. |
 | Devin CLI (prototype, #224) | Same working directory, `devin --permission-mode dangerous --respect-workspace-trust=false --resume ID`; temporarily replaces the agent's `.devin/mcp_config.local.json` with a disabled `robomate` entry, which also masks a `robomate` server inherited from project or user scope (an empty map would not), restored as for AntiGravity. |
 
@@ -1003,8 +1006,10 @@ All of these interactive scripts (`ask-<agent>`, `start-<agent>` and
 - `--safe-mode` restores prompting defaults for this launch. Claude Code,
   AntiGravity and Devin omit the run's permission flags (Devin also omits the
   trust bypass). Codex uses `-a on-request`. OpenCode omits `--auto` and overrides
-  permissions with `{"*": "ask", "external_directory": "ask"}` while retaining
-  ask's MCP disable and effort variant. Other installed harness settings still
+  permissions (1.x: `{"*": "ask", "external_directory": "ask"}`; 2.x:
+  `agents.build.permissions: [{"action": "*", "resource": "*", "effect": "ask"}]`
+  with `--standalone`) while retaining ask's MCP disable and effort/model settings.
+  Other installed harness settings still
   apply. This wrapper option is distinct from Claude Code's own `--safe-mode`.
 - `--harness-args` marks the end of wrapper controls. Every subsequent word goes
   to the harness unchanged, in order; put the ID, `--fork`, recovery controls and
@@ -1030,7 +1035,8 @@ Existing run scripts must be regenerated to acquire these controls.
 
 Harness support was checked against local Claude Code, Codex, OpenCode and
 AntiGravity CLI help. Claude's `--permission-mode auto` applies to interactive
-`--resume`; OpenCode's TUI supports `--auto`, `--session` and `--fork` together
+`--resume`; OpenCode 1.x's TUI supports `--auto`, `--session` and `--fork` together,
+while OpenCode 2.x's TUI supports `--standalone`, `--auto` and `--session` (no `--fork` or `--model`)
 ([CLI reference](https://opencode.ai/docs/cli/)). Devin's
 [command reference](https://docs.devin.ai/cli/reference/commands.md) lists
 `--permission-mode` and `--respect-workspace-trust` as general flags, including

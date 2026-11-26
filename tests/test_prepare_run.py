@@ -3516,7 +3516,10 @@ def test_opencode_run_records_title_and_resume_artifacts(
 FAKE_ALICE = """\
 import json, os, sys
 argv = sys.argv[1:]
-if argv == ["debug", "config"]:
+if argv == ["--version"]:
+    print(os.environ.get("FAKE_OPENCODE_VERSION", "1.19.5"))
+    sys.exit(0)
+if argv[:2] == ["debug", "config"]:
     print("{}")
     sys.exit(0)
 stdin = sys.stdin.read() if argv and argv[-1] == "-" else None

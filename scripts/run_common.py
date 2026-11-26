@@ -414,6 +414,10 @@ def parse_harness_version(harness: str, output: str) -> str:
     # ``devin 3000.11.3 (9c803229faa4)``: the version follows the program name.
     if harness == "devin" and len(words) > 1 and words[0] == "devin":
         return words[1]
+    # OpenCode 1.x prints ``1.19.5``; 2.x prints ``opencode v2.4.1``.
+    if harness == "opencode":
+        token = words[1] if len(words) > 1 and words[0].lower() == "opencode" else words[0]
+        return token.lstrip("vV")
     return words[0]
 
 

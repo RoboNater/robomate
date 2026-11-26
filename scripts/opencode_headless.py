@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import subprocess
+import sys
 import tempfile
 import uuid
 from collections.abc import Mapping
@@ -16,6 +18,64 @@ from typing import Any
 
 class OpenCodeConfigError(ValueError):
     """The OpenCode configuration probe failed or returned invalid data."""
+
+
+_VERSION_MAJOR = re.compile(r"^v?(\d+)(?:\.\d+)*")
+_V2_FS_TOOLS = ("read", "edit", "write", "glob", "grep", "list")
+
+
+def parse_major_version(output: str) -> int | None:
+    """Parse OpenCode's major version from ``--version`` output (1.x or 2.x)."""
+    words = output.split()
+    if not words:
+        return None
+    token = words[1] if len(words) > 1 and words[0].lower() == "opencode" else words[0]
+    match = _VERSION_MAJOR.match(token)
+    return int(match.group(1)) if match else None
+
+
+def detect_major_version(
+    program: list[str], environment: Mapping[str, str], workdir: Path | None = None
+) -> int:
+    """Return OpenCode's major version (2 for 2.x, 1 for 1.x or minimal fake harnesses)."""
+    cwd = workdir if workdir is not None and workdir.is_dir() else None
+    try:
+        probe = subprocess.run(
+            [*program, "--version"],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1
+    if probe.returncode != 0:
+        return 1
+    major = parse_major_version(probe.stdout)
+    return major if major is not None else 1
+
+
+def _deep_merge(base: dict[str, Any], incoming: Mapping[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in incoming.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _merge_v2_sources(sources: list[Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for entry in sources:
+        if not isinstance(entry, Mapping):
+            continue
+        info = entry.get("info")
+        if isinstance(info, Mapping):
+            merged = _deep_merge(merged, info)
+    return merged
 
 
 def allowed_roots(worktree: Path, hub: Path | None, lane_tmp: Path | None) -> list[Path]:
@@ -65,18 +125,223 @@ def _deny_token_reads(permissions: dict[str, Any], token_dir: Path, worktree: Pa
     permissions["read"] = reads
 
 
+def _token_read_paths(token_dir: Path, worktree: Path) -> list[str]:
+    paths = [token_dir.as_posix().rstrip("/")]
+    if os.path.normcase(token_dir.drive) == os.path.normcase(worktree.drive):
+        rel = Path(os.path.relpath(token_dir, worktree)).as_posix().rstrip("/")
+        if rel not in paths:
+            paths.append(rel)
+    return paths
+
+
+def _matches_fs_tool(action: object) -> bool:
+    if not isinstance(action, str):
+        return False
+    if action in ("*", "external_directory"):
+        return True
+    return any(fnmatchcase(tool, action) for tool in _V2_FS_TOOLS)
+
+
+def _is_broad_or_outside_resource(resource: object, roots: list[Path]) -> bool:
+    if not isinstance(resource, str) or resource == "*":
+        return True
+    # Leading wildcards match across '/' in OpenCode's glob matcher and could
+    # re-allow paths outside the assigned roots.
+    if resource.startswith(("*", "?")):
+        return True
+    if resource.startswith("/") or (len(resource) >= 2 and resource[1] == ":"):
+        norm = resource.rstrip("/")
+        return not any(
+            norm == r.as_posix().rstrip("/") or norm.startswith(r.as_posix().rstrip("/") + "/")
+            for r in roots
+        )
+    return False
+
+
+def _narrows_readded_restriction(
+    rule: Mapping[str, Any], readded: list[dict[str, Any]], roots: list[Path]
+) -> bool:
+    """Return whether an inherited allow only narrows an earlier re-added deny/ask."""
+    resource = rule.get("resource")
+    action = rule.get("action")
+    if not isinstance(action, str) or not isinstance(resource, str):
+        return False
+    if _is_broad_or_outside_resource(resource, roots):
+        return False
+    for earlier in readded:
+        if earlier.get("effect") not in ("deny", "ask"):
+            continue
+        earlier_action = earlier.get("action")
+        earlier_resource = earlier.get("resource")
+        if not isinstance(earlier_action, str) or not isinstance(earlier_resource, str):
+            continue
+        action_matches = (
+            earlier_action == "*" or earlier_action == action or fnmatchcase(action, earlier_action)
+        )
+        if action_matches and fnmatchcase(resource, earlier_resource):
+            return True
+    return False
+
+
+def read_build_permissions_v2(
+    program: list[str], environment: Mapping[str, str], worktree: Path
+) -> list[dict[str, Any]] | None:
+    """Read resolved ``build`` permissions from ``opencode debug agents --standalone``.
+
+    Warns on stderr and returns None if ``debug agents`` fails or is not
+    implemented by a minimal test shim, so callers can fall back to
+    ``config["permissions"]`` and ``config["agents"]["build"]``.
+    """
+    try:
+        probe = subprocess.run(
+            [*program, "debug", "agents", "--standalone"],
+            cwd=worktree,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        print(
+            "agent-launcher: warning: `opencode debug agents --standalone` failed or timed out; "
+            "falling back to `debug config` permissions",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    if probe.returncode != 0:
+        print(
+            "agent-launcher: warning: `opencode debug agents --standalone` returned non-zero; "
+            "falling back to `debug config` permissions",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    try:
+        agents = json.loads(probe.stdout)
+    except ValueError:
+        return None
+    if not isinstance(agents, list):
+        return None
+    for item in agents:
+        if isinstance(item, dict) and item.get("id") == "build":
+            perms = item.get("permissions")
+            if isinstance(perms, list) and all(isinstance(r, dict) for r in perms):
+                return copy.deepcopy(perms)
+    return None
+
+
+def policy_v2(
+    config: Mapping[str, Any],
+    roots: list[Path],
+    name: str,
+    *,
+    token_dir: Path | None = None,
+    resolved_build_permissions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build an OpenCode 2.x agent entry with ordered ``permissions`` rules.
+
+    OpenCode 2.x prepends its built-in defaults (e.g. ``read *.env ask``) and
+    the operator's global ``permissions`` before the agent's ``permissions``
+    array (last-match-wins). To preserve narrow worktree grants without
+    cancelling global denies or reopening outside paths via inherited allows:
+      - never inject a blanket ``* * allow`` rule;
+      - deny ``external_directory`` and outside/traversal paths for filesystem
+        tools, then allow each assigned root (``<root>`` and ``<root>/*``);
+      - re-append inherited filesystem-matching ``deny`` and ``ask`` rules, plus
+        any narrower non-wildcard-leading relative ``allow`` that only carves
+        out an exception to an earlier re-added ``deny``/``ask`` (e.g.
+        ``src/*.env.example`` under ``*.env.*``), while dropping broad,
+        leading-wildcard, or outside-root allows (e.g. ``read *``,
+        ``*.env.example``, ``edit *.md``, ``edit /home/*``);
+      - append ``read`` and ``external_directory`` denies for ``token_dir`` last.
+    """
+    build = copy.deepcopy(config.get("agents", {}).get("build", {}))
+    if not isinstance(build, dict):
+        build = {}
+    build_perms = build.pop("permissions", None)
+
+    inherited: list[dict[str, Any]] = []
+    if resolved_build_permissions is not None:
+        inherited.extend(copy.deepcopy(resolved_build_permissions))
+    else:
+        global_perms = config.get("permissions")
+        if isinstance(global_perms, list):
+            inherited.extend(copy.deepcopy(r) for r in global_perms if isinstance(r, dict))
+        if isinstance(build_perms, list):
+            inherited.extend(copy.deepcopy(r) for r in build_perms if isinstance(r, dict))
+
+    permissions: list[dict[str, Any]] = [
+        {"action": "external_directory", "resource": "*", "effect": "deny"},
+    ]
+    for root in roots:
+        root_posix = root.as_posix().rstrip("/")
+        permissions.append(
+            {"action": "external_directory", "resource": root_posix, "effect": "allow"}
+        )
+        permissions.append(
+            {"action": "external_directory", "resource": f"{root_posix}/*", "effect": "allow"}
+        )
+
+    for tool in _V2_FS_TOOLS:
+        for deny_pattern in ("/*", "?:/*", "..", "../*", "*/../*"):
+            permissions.append({"action": tool, "resource": deny_pattern, "effect": "deny"})
+        for root in roots:
+            root_posix = root.as_posix().rstrip("/")
+            permissions.append({"action": tool, "resource": root_posix, "effect": "allow"})
+            permissions.append({"action": tool, "resource": f"{root_posix}/*", "effect": "allow"})
+
+    # Re-append inherited filesystem-matching deny/ask rules, plus any narrow
+    # relative allow without a leading wildcard that only relaxes a preceding
+    # re-added deny/ask (e.g. `src/*.env.example`). Broad, leading-wildcard, and
+    # outside-root allows (e.g. `read *`, `*.env.example`, `edit *.md`,
+    # `edit /home/*`) are intentionally dropped so they cannot reopen the narrow
+    # worktree boundary.
+    readded: list[dict[str, Any]] = []
+    for rule in inherited:
+        if not _matches_fs_tool(rule.get("action")):
+            continue
+        effect = rule.get("effect")
+        if effect in ("deny", "ask") or (
+            effect == "allow" and _narrows_readded_restriction(rule, readded, roots)
+        ):
+            readded.append(rule)
+    permissions.extend(readded)
+
+    if token_dir is not None:
+        if "*" in str(token_dir) or "?" in str(token_dir):
+            raise ValueError("OpenCode token directory cannot contain wildcard characters")
+        abs_token = token_dir.as_posix().rstrip("/")
+        permissions.append(
+            {"action": "external_directory", "resource": abs_token, "effect": "deny"}
+        )
+        permissions.append(
+            {"action": "external_directory", "resource": f"{abs_token}/*", "effect": "deny"}
+        )
+        for path in _token_read_paths(token_dir, roots[0]):
+            permissions.append({"action": "read", "resource": path, "effect": "deny"})
+            permissions.append({"action": "read", "resource": f"{path}/*", "effect": "deny"})
+
+    build.update(permissions=permissions, mode="primary")
+    return {"agents": {name: build}}
+
+
 def policy(
-    config: Mapping[str, Any], roots: list[Path], name: str, *, token_dir: Path | None = None
+    config: Mapping[str, Any],
+    roots: list[Path],
+    name: str,
+    *,
+    token_dir: Path | None = None,
+    version: int = 1,
 ) -> dict[str, Any]:
     """Copy build into a fresh agent so inherited dictionary key order cannot win.
 
-    Global permissions still precede this agent. Other build settings and tool
-    denials survive; external_directory is deliberately the last permission.
-    OpenCode additionally permits its own tool-output directory. Other built-in
-    external allows (temporary tool paths and discovered skill directories) are
-    intentionally denied unless they are inside one of the assigned roots.
-    Native Windows OpenCode path matching still requires a live platform check.
+    When ``version >= 2``, emits OpenCode 2.x's ``agents.<name>.permissions``
+    ordered array instead of 1.x's ``agent.<name>.permission`` keyed object.
     """
+    if version >= 2:
+        return policy_v2(config, roots, name, token_dir=token_dir)
     build = copy.deepcopy(config.get("agent", {}).get("build", {}))
     permissions = build.pop("permission", {})
     if isinstance(permissions, str):
@@ -96,14 +361,19 @@ def policy(
     return {"agent": {name: build}}
 
 
-def read_config(
-    program: list[str], environment: Mapping[str, str], worktree: Path
-) -> dict[str, Any]:
-    """Read effective OpenCode config without reporting the raw output."""
+def read_config_with_version(
+    program: list[str],
+    environment: Mapping[str, str],
+    worktree: Path,
+    *,
+    standalone: bool = False,
+) -> tuple[dict[str, Any], int]:
+    """Read effective OpenCode config and detect whether it uses 1.x or 2.x shape."""
+    command = [*program, "debug", "config", *(["--standalone"] if standalone else [])]
     with tempfile.TemporaryFile() as output:
         try:
             probe = subprocess.run(
-                [*program, "debug", "config"],
+                command,
                 cwd=worktree,
                 env=environment,
                 stdout=output,
@@ -127,9 +397,60 @@ def read_config(
         raise OpenCodeConfigError(
             f"OpenCode `debug config` returned invalid JSON ({len(data)} bytes)"
         ) from exc
-    if not isinstance(config, dict):
-        raise OpenCodeConfigError("OpenCode `debug config` did not return a configuration object")
-    return config
+    if isinstance(config, list):
+        return _merge_v2_sources(config), 2
+    if isinstance(config, dict):
+        return config, 1
+    raise OpenCodeConfigError("OpenCode `debug config` did not return a configuration object")
+
+
+def read_config(
+    program: list[str],
+    environment: Mapping[str, str],
+    worktree: Path,
+    *,
+    standalone: bool = False,
+) -> dict[str, Any]:
+    """Read effective OpenCode config without reporting the raw output."""
+    return read_config_with_version(program, environment, worktree, standalone=standalone)[0]
+
+
+def _fold_v2_variant(command: list[str]) -> list[str]:
+    """Convert 1.x ``--variant <v>`` into 2.x ``--model <m>#<v>`` and drop ``--variant``."""
+    variant: str | None = None
+    cleaned: list[str] = []
+    i = 0
+    while i < len(command):
+        word = command[i]
+        if word == "--variant" and i + 1 < len(command):
+            variant = command[i + 1]
+            i += 2
+            continue
+        if word.startswith("--variant="):
+            variant = word.split("=", 1)[1]
+            i += 1
+            continue
+        cleaned.append(word)
+        i += 1
+    if variant:
+        attached = False
+        for idx, word in enumerate(cleaned):
+            if word == "--model" and idx + 1 < len(cleaned) and "#" not in cleaned[idx + 1]:
+                cleaned[idx + 1] = f"{cleaned[idx + 1]}#{variant}"
+                attached = True
+                break
+            if word.startswith("--model=") and "#" not in word:
+                cleaned[idx] = f"{word}#{variant}"
+                attached = True
+                break
+        if not attached:
+            print(
+                f"agent-launcher: OpenCode 2.x requires --model to attach #{variant}; "
+                f"omitting effort {variant!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return cleaned
 
 
 def prepare(
@@ -146,7 +467,12 @@ def prepare(
     env = dict(environment)
     # Preserve wrappers used by operators (and fake harnesses in tests).
     run_index = argv.index("run")
-    config = read_config(argv[:run_index], env, worktree)
+    program = argv[:run_index]
+    major = detect_major_version(program, env, worktree)
+    config, schema_version = read_config_with_version(
+        program, env, worktree, standalone=(major >= 2)
+    )
+    is_v2 = major >= 2 or schema_version >= 2
     hub = env.get("ROBOMATE_LAUNCH_HUB_CHECKOUT")
     # Only explicit launcher/run metadata establishes a temporary root. An
     # ambient UV_CACHE_DIR=/tmp/uv-cache must never grant all of /tmp.
@@ -171,14 +497,26 @@ def prepare(
     name = "robomate_headless_" + uuid.uuid4().hex
     overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))
     token_dir = token_file.resolve().parent if token_file is not None else None
-    overlay.setdefault("agent", {}).update(
-        policy(config, roots, name, token_dir=token_dir)["agent"]
-    )
-    plugins = list(overlay.get("plugin", []))
-    plugin = Path(__file__).with_name("permission-events.mjs").resolve().as_uri()
-    if plugin not in plugins:
-        plugins.append(plugin)
-    overlay["plugin"] = plugins
+    if is_v2:
+        resolved_build = read_build_permissions_v2(program, env, worktree)
+        overlay.setdefault("agents", {}).update(
+            policy_v2(
+                config,
+                roots,
+                name,
+                token_dir=token_dir,
+                resolved_build_permissions=resolved_build,
+            )["agents"]
+        )
+    else:
+        overlay.setdefault("agent", {}).update(
+            policy(config, roots, name, token_dir=token_dir, version=1)["agent"]
+        )
+        plugins = list(overlay.get("plugin", []))
+        plugin = Path(__file__).with_name("permission-events.mjs").resolve().as_uri()
+        if plugin not in plugins:
+            plugins.append(plugin)
+        overlay["plugin"] = plugins
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
     command = [
         word for word in argv if word != "--auto" and not word.startswith(("--auto=", "--agent="))
@@ -188,5 +526,14 @@ def prepare(
         if index + 1 >= len(command):
             raise ValueError("OpenCode --agent requires a value")
         del command[index : index + 2]
-    command[run_index + 1 : run_index + 1] = ["--agent", name]
+    if is_v2:
+        command = _fold_v2_variant(command)
+        insert_flags = (
+            ["--standalone", "--agent", name]
+            if "--standalone" not in command
+            else ["--agent", name]
+        )
+        command[run_index + 1 : run_index + 1] = insert_flags
+    else:
+        command[run_index + 1 : run_index + 1] = ["--agent", name]
     return command, env
