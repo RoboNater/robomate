@@ -54,7 +54,7 @@ from the hub's checkout, or name the hub with `--hub <name | hub_id | checkout>`
 uv run --project <robomate checkout> python scripts/agent-launcher.py start alice \
     --role orchestrator --harness claude-code
 uv run --project <robomate checkout> python scripts/agent-launcher.py start bob \
-    --role implementer --harness codex --model MODEL --effort EFFORT
+    --role implementer --harness codex --model MODEL --effort EFFORT [--allow-unsandboxed]
 ```
 
 `start` creates or reuses the worktree with `robomate workspace <agent>` (the
@@ -70,7 +70,13 @@ for every harness it starts. The sandbox grants measured in the
 Claude Code's sandbox (`--settings` with the forge hosts and a read-deny on
 the hub's token directory) and Codex's `workspace-write` with network and the
 linked worktree's own git roots plus the uv cache. Other harnesses get no
-grants until M3 measures them (§9.2). The run's permission flags are those of
+grants until M3 measures them (§9.2). On Linux, `start` runs the sandbox
+preflight for Claude Code and Codex and refuses to launch on failure; passing
+`--allow-unsandboxed` overrides a failure for that one agent only, still runs
+the verifier, prints a loud warning that the agent will not run with proper
+sandboxing and may not work at all (Claude Code keeps `failIfUnavailable: true`
+and may stop at startup), and records `sandbox_check: "overridden"` and
+`sandbox_check_failure` on its launch rows. The run's permission flags are those of
 the prepared runs; extra harness words go after `--harness-args`.
 
 The session log is the operator's data, which agents never read. Each launch,
@@ -144,7 +150,7 @@ under
 ### Resuming by hand
 
 ```sh
-uv run --project <robomate checkout> python scripts/agent-launcher.py resume bob
+uv run --project <robomate checkout> python scripts/agent-launcher.py resume bob [--allow-unsandboxed]
 ```
 
 `resume` takes the harness, role, model, effort and worktree from the newest
@@ -156,7 +162,10 @@ surviving recorded PID, a detached predecessor, and pause and open-question
 advisories that `--force` overrides. A log written before the workflow
 existed takes the workflow from the hub only with #223's evidence. The same
 options apply: `--resume-session`, `--hub-id`, `--workflow-id`,
-`--stopped-at`, `--confirm-stopped`, `--force`. What recovery captured is
+`--stopped-at`, `--confirm-stopped`, `--force`, plus `--allow-unsandboxed` on
+Linux. A sandbox override is never inherited from the saved start row: `resume`
+re-runs the sandbox preflight for Claude Code and Codex and refuses on failure
+unless `--allow-unsandboxed` is passed again explicitly. What recovery captured is
 kept for the operator in `sessions/<agent>-resume.md`; the agent receives
 only the fixed continuation, never a path into the hub's state. After the
 first launch, supervision continues with a fresh backoff budget.

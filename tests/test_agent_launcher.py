@@ -62,9 +62,12 @@ WORKFLOW = "wf-1"
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
 
 
+REAL_SANDBOX_PREFLIGHT = CLI.sandbox_preflight
+
+
 @pytest.fixture(autouse=True)
 def stub_sandbox_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(CLI, "sandbox_preflight", lambda harness: None)
+    monkeypatch.setattr(CLI, "sandbox_preflight", lambda *args, **kwargs: None)
 
 
 def test_sandbox_preflight_runs_required_probe(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4164,7 +4167,7 @@ class Reader:
         )
 
 
-cli.sandbox_preflight = lambda harness: None
+cli.sandbox_preflight = lambda *args, **kwargs: None
 cli.check_mcp_entry = lambda harness: None
 # The Windows venv python.exe is a trampoline, not the fake harness process.
 # Stopping that wrapper alone leaves its interpreter running. Use the base
@@ -5156,3 +5159,249 @@ def test_opencode_v2_effort_without_model_prints_note(
 
     assert _fold_v2_variant(["opencode", "run", "--variant", "high"]) == ["opencode", "run"]
     assert "requires --model" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("harness", ["claude-code", "codex"])
+def test_sandbox_preflight_override_start_warns_records_and_keeps_claude_fail_if_unavailable(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+) -> None:
+    """#554: failing verifier still refuses by default, warns and records under override."""
+
+    monkeypatch.setattr(CLI, "sandbox_preflight", REAL_SANDBOX_PREFLIGHT)
+    use_harness(harness, monkeypatch)
+    monkeypatch.setattr(CLI.sys, "platform", "linux")
+    failure = "Sandbox check failed: nested user namespace"
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def stub_run(argv: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[Any]:
+        if isinstance(argv, list) and argv and str(argv[0]).endswith("verify-sandboxes.sh"):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", failure)
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(CLI.subprocess, "run", stub_run)
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+
+    # Without --allow-unsandboxed, start refuses with the existing message and launches nothing.
+    refused = invoke(
+        start_words(area, "bob", "implementer", harness),
+        programs=programs(area),
+        reader=FakeHub(after_launches(area, active, released)),
+        workspace=workspace_of(area),
+    )
+    err = capsys.readouterr().err
+    assert refused == 2
+    assert failure in err and "docs/user-guide.md#linux-sandbox-grants" in err
+    assert launches(area) == []
+
+    # With --allow-unsandboxed, start still runs the check, warns loudly, records override.
+    code = invoke(
+        [*start_words(area, "bob", "implementer", harness), "--allow-unsandboxed"],
+        programs=programs(area),
+        reader=FakeHub(after_launches(area, active, released)),
+        workspace=workspace_of(area),
+    )
+    err = capsys.readouterr().err
+    assert code == 0
+    expected_mode = "--codex" if harness == "codex" else "--claude"
+    assert [call[-1] for call in calls] == [expected_mode, expected_mode]
+    assert "bob" in err and failure in err
+    assert "will not run with proper sandboxing" in err
+    assert "may not work at all" in err
+    assert "docs/user-guide.md#linux-sandbox-grants" in err
+    assert "install-bwrap-apparmor.sh" in err
+    if harness == "claude-code":
+        assert "failIfUnavailable: true" in err
+    launched = launches(area)
+    assert len(launched) == 1
+    if harness == "claude-code":
+        argv = launched[0]["argv"]
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["sandbox"]["failIfUnavailable"] is True
+    starts = [row for row in rows(area) if row["event"] == "start"]
+    assert len(starts) == 1
+    assert starts[0]["sandbox_check"] == "overridden"
+    assert starts[0]["sandbox_check_failure"] == failure
+
+    # Interactive start also enforces refusal without the flag and records override with it.
+    int_base = [*start_words(area, "charlie", "reviewer", harness), "--interactive"]
+    assert (
+        invoke(
+            int_base,
+            programs=programs(area),
+            reader=FakeHub(after_launches(area, active, released)),
+            workspace=workspace_of(area),
+        )
+        == 2
+    )
+    capsys.readouterr()
+    assert (
+        invoke(
+            [*int_base, "--allow-unsandboxed"],
+            programs=programs(area),
+            reader=FakeHub(after_launches(area, active, released)),
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    int_err = capsys.readouterr().err
+    assert "charlie" in int_err and "will not run with proper sandboxing" in int_err
+    charlie_starts = [row for row in rows(area, "charlie") if row["event"] == "start"]
+    assert charlie_starts[-1]["sandbox_check"] == "overridden"
+    assert charlie_starts[-1]["sandbox_check_failure"] == failure
+
+
+@pytest.mark.parametrize("interactive", [False, True], ids=["headless", "interactive"])
+def test_sandbox_preflight_override_is_not_inherited_on_resume(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    interactive: bool,
+) -> None:
+    """#554: a later resume re-checks and refuses unless --allow-unsandboxed is given again."""
+
+    monkeypatch.setattr(CLI, "sandbox_preflight", REAL_SANDBOX_PREFLIGHT)
+    use_harness("claude-code", monkeypatch)
+    monkeypatch.setattr(CLI.sys, "platform", "linux")
+    failure = "Sandbox check failed: nested user namespace"
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def stub_run(argv: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[Any]:
+        if isinstance(argv, list) and argv and str(argv[0]).endswith("verify-sandboxes.sh"):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", failure)
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(CLI.subprocess, "run", stub_run)
+    conversation = "0b8a51c4-6a7e-4b6f-9c55-0c0ffee00554"
+    now = datetime.now(UTC)
+    saved_log(
+        area,
+        conversation,
+        now - timedelta(minutes=10),
+        now - timedelta(minutes=1),
+        sandbox_check="overridden",
+        sandbox_check_failure=failure,
+    )
+    live = workflow(created=(now - timedelta(minutes=5)).isoformat())
+    status = after_launches(
+        area,
+        {"workflow": live, "agents": [agent_row()]},
+        {"workflow": live, "agents": [agent_row("released", context="c2")]},
+    )
+
+    def answer(method: str) -> dict[str, Any]:
+        if method == "hub.snapshot":
+            return {"hub_id": HUB, "workflow": live, "tasks": [], "taken_at": now.isoformat()}
+        if method == "hub.questions":
+            return {"questions": []}
+        return status(method)
+
+    base = ["resume", "bob", "--hub", str(area["checkout"]), "--read-retry-delay-s", "0"]
+    if interactive:
+        base.append("--interactive")
+
+    # Resume without --allow-unsandboxed must NOT inherit the start row's override.
+    refused = invoke(base, programs=programs(area), reader=FakeHub(answer))
+    err = capsys.readouterr().err
+    assert refused == 2
+    assert failure in err and "docs/user-guide.md#linux-sandbox-grants" in err
+    assert launches(area) == []
+
+    # Resume WITH --allow-unsandboxed runs the check, warns, launches, and records override.
+    code = invoke([*base, "--allow-unsandboxed"], programs=programs(area), reader=FakeHub(answer))
+    err = capsys.readouterr().err
+    assert code == 0
+    assert len(calls) == 2
+    assert "bob" in err and failure in err
+    assert "will not run with proper sandboxing" in err
+    assert "may not work at all" in err
+    assert len(launches(area)) == 1
+    resumed = [row for row in rows(area) if row["event"] == "manual_resume"]
+    assert len(resumed) == 1
+    assert resumed[0]["sandbox_check"] == "overridden"
+    assert resumed[0]["sandbox_check_failure"] == failure
+
+
+def test_sandbox_preflight_override_records_passed_when_check_succeeds(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(CLI, "sandbox_preflight", REAL_SANDBOX_PREFLIGHT)
+    use_harness("codex", monkeypatch)
+    monkeypatch.setattr(CLI.sys, "platform", "linux")
+    real_run = subprocess.run
+
+    def stub_run(argv: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[Any]:
+        if isinstance(argv, list) and argv and str(argv[0]).endswith("verify-sandboxes.sh"):
+            return subprocess.CompletedProcess(argv, 0, "Sandbox checks passed.\n", "")
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(CLI.subprocess, "run", stub_run)
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+
+    code = invoke(
+        [*start_words(area, "bob", "implementer", "codex"), "--allow-unsandboxed"],
+        programs=programs(area),
+        reader=FakeHub(after_launches(area, active, released)),
+        workspace=workspace_of(area),
+    )
+    err = capsys.readouterr().err
+    assert code == 0
+    assert "will not run with proper sandboxing" not in err
+    assert "--allow-unsandboxed was not needed" in err
+    starts = [row for row in rows(area) if row["event"] == "start"]
+    assert starts[0]["sandbox_check"] == "passed"
+    assert "sandbox_check_failure" not in starts[0]
+
+
+def test_sandbox_override_diagnostic_reads_only_latest_matching_launch(tmp_path: Path) -> None:
+    from agent_hub_common.launcher_observations import sandbox_override_diagnostic
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    log = sessions / "charlie.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "event": "start",
+                "agent": "charlie",
+                "hub_id": HUB,
+                "workflow_id": WORKFLOW,
+                "sandbox_check": "overridden",
+                "sandbox_check_failure": "nested userns\x1b[31m denied",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    diag = sandbox_override_diagnostic(sessions, "charlie", HUB, WORKFLOW)
+    assert diag is not None
+    assert "sandbox preflight overridden" in diag and "nested userns" in diag
+    assert "\x1b" not in diag
+    # Different workflow or hub must not see this override.
+    assert sandbox_override_diagnostic(sessions, "charlie", HUB, "other-wf") is None
+    assert sandbox_override_diagnostic(sessions, "charlie", "other-hub", WORKFLOW) is None
+    # A subsequent clean resume clears the diagnostic.
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "event": "manual_resume",
+                    "agent": "charlie",
+                    "hub_id": HUB,
+                    "workflow_id": WORKFLOW,
+                    "sandbox_check": "passed",
+                }
+            )
+            + "\n"
+        )
+    assert sandbox_override_diagnostic(sessions, "charlie", HUB, WORKFLOW) is None

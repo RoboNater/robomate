@@ -1245,7 +1245,8 @@ class Joined(common.Launcher):
         self.continue_prompt = continuation(args.agent, args.role, joined=False)
 
     def resume_name(self) -> str:
-        return f"agent-launcher.py resume {self.agent}"
+        flag = " --allow-unsandboxed" if getattr(self.args, "allow_unsandboxed", False) else ""
+        return f"agent-launcher.py resume {self.agent}{flag}"
 
     def start_name(self) -> str:
         return f"agent-launcher.py start {self.agent}"
@@ -1404,6 +1405,9 @@ class Joined(common.Launcher):
                 "interactive": False,
                 **self.args.identity.row(),
             }
+            sandbox_check = getattr(self.args, "sandbox_check", None)
+            if sandbox_check is not None:
+                extra |= sandbox_check.row()
         super().log(event, **extra, **fields)
 
     def launch_fields(self, action: str, resumes: int, launch_id: str) -> dict[str, Any]:
@@ -1610,6 +1614,8 @@ def supervision_args(args: argparse.Namespace, place: Place, **fields: Any) -> a
         "stopped_at": None,
         "confirm_stopped": False,
         "force": False,
+        "allow_unsandboxed": False,
+        "sandbox_check": None,
     }
     for key in (
         "max_resumes",
@@ -1827,23 +1833,56 @@ def supplied_conversation(log: Path, saved: Mapping[str, Any], supplied: str | N
     )
 
 
-def sandbox_preflight(harness: str) -> None:
-    """Refuse Linux launches when the harness sandbox cannot be established."""
-    if not sys.platform.startswith("linux") or harness not in ("codex", "claude-code"):
-        return
-    script = SCRIPTS / "host-setup/ubuntu-24.04/verify-sandboxes.sh"
+@dataclass(frozen=True)
+class SandboxCheck:
+    """Result of the Linux sandbox preflight, recorded on launch rows (#554)."""
+
+    status: str
+    failure: str | None = None
+
+    def row(self) -> dict[str, object]:
+        fields: dict[str, object] = {"sandbox_check": self.status}
+        if self.failure is not None:
+            fields["sandbox_check_failure"] = self.failure
+        return fields
+
+
+def sandbox_preflight(
+    harness: str, *, agent: str = "", allow_unsandboxed: bool = False
+) -> SandboxCheck | None:
+    """Check the Linux sandbox; refuse on failure unless explicitly overridden (#498, #554)."""
+    if not sys.platform.startswith("linux") or harness not in common.SANDBOX_CHECK_HARNESSES:
+        return None
+    script = SCRIPTS / common.VERIFY_SANDBOXES_REL
     mode = "--codex" if harness == "codex" else "--claude"
+    failure: str | None = None
     try:
-        result = subprocess.run([str(script), mode], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Usage(
-            f"sandbox preflight failed: {exc}; see docs/user-guide.md#linux-sandbox-grants"
-        ) from exc
-    if result.returncode:
-        raise Usage(
-            f"sandbox preflight failed: {result.stderr.strip() or result.stdout.strip()}; "
-            "see docs/user-guide.md#linux-sandbox-grants"
+        result = subprocess.run(
+            [str(script), mode],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
         )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        failure = str(exc)
+    else:
+        if result.returncode:
+            failure = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+    if failure is None:
+        if allow_unsandboxed:
+            say(
+                f"sandbox preflight passed for {agent or harness} ({harness}); "
+                "--allow-unsandboxed was not needed"
+            )
+        return SandboxCheck(status="passed")
+    if not allow_unsandboxed:
+        raise Usage(
+            f"sandbox preflight failed: {failure}; see docs/user-guide.md#linux-sandbox-grants"
+        )
+    say(common.sandbox_override_warning({agent or harness: (harness, failure)}))
+    return SandboxCheck(status="overridden", failure=failure)
 
 
 def warn_windows_sandbox(agent: str, harness: str) -> None:
@@ -1890,7 +1929,9 @@ def setup_workspace(setting: str, workdir: Path, env: Mapping[str, str]) -> None
 
 
 def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
-    sandbox_preflight(args.harness)
+    preflight = sandbox_preflight(
+        args.harness, agent=args.agent, allow_unsandboxed=args.allow_unsandboxed
+    )
     try:
         check_mcp_entry(args.harness)
     except ValueError as exc:
@@ -1987,6 +2028,7 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
             "workdir": str(workdir),
             "conversation_id": session_id or None,
             **identity.row(),
+            **(preflight.row() if preflight is not None else {}),
             **best_effort_hub(place, tools, args.agent, args.role),
         }
         with agent_lock(log):
@@ -2015,6 +2057,8 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         cwd=workdir,
         env=identity.apply(common.launch_environment(workdir, child_environment(place))),
         identity=identity,
+        allow_unsandboxed=args.allow_unsandboxed,
+        sandbox_check=preflight,
     )
     reader = make_reader(tools, place, args.agent, args.role)
     kind = JoinedOrchestrator if args.role == "orchestrator" else JoinedWorker
@@ -2026,7 +2070,9 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     log = log_path(place.sessions, args.agent)
     saved = saved_settings(log, args.agent)
     harness, role = str(saved["harness"]), str(saved["role"])
-    sandbox_preflight(harness)
+    preflight = sandbox_preflight(
+        harness, agent=args.agent, allow_unsandboxed=args.allow_unsandboxed
+    )
     place = resolve_hub_id(place, tools, args.agent, role)
     model, effort = str(saved.get("model") or ""), str(saved.get("effort") or "")
     workdir = Path(saved["workdir"])
@@ -2118,6 +2164,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 "workdir": str(workdir),
                 "conversation_id": conversation,
                 **identity.row(),
+                **(preflight.row() if preflight is not None else {}),
                 **best_effort_hub(place, tools, args.agent, role),
             }
             return run_interactive(
@@ -2146,6 +2193,8 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
         cwd=workdir,
         env=identity.apply(common.launch_environment(workdir, child_environment(place))),
         identity=identity,
+        allow_unsandboxed=args.allow_unsandboxed,
+        sandbox_check=preflight,
         **recovery,
     )
     kind = JoinedOrchestrator if role == "orchestrator" else JoinedWorker
@@ -2797,6 +2846,12 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         help="the agent's PYTEST_XDIST_AUTO_NUM_WORKERS; 0 clears an inherited one",
     )
+    begin.add_argument(
+        "--allow-unsandboxed",
+        action="store_true",
+        help="Linux only: continue if sandbox preflight fails for this agent only "
+        "(runs without proper sandboxing and may not work at all; not inherited by resume)",
+    )
     hub_options(begin)
     interactive_options(begin)
     backoff_options(begin)
@@ -2808,6 +2863,12 @@ def parser() -> argparse.ArgumentParser:
     again.add_argument("--stopped-at", help="known old process stop time, ISO 8601 with timezone")
     again.add_argument("--confirm-stopped", action="store_true")
     again.add_argument("--force", action="store_true", help="override advisories only")
+    again.add_argument(
+        "--allow-unsandboxed",
+        action="store_true",
+        help="Linux only: continue if sandbox preflight fails for this agent only "
+        "(runs without proper sandboxing and may not work at all; not inherited across resumes)",
+    )
     hub_options(again)
     interactive_options(again)
     backoff_options(again)

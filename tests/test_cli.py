@@ -6006,3 +6006,84 @@ def test_status_headline_escapes_legacy_names_ids_and_state() -> None:
     assert "\\x1b" in text
     assert "State:     ACTIVE" in text
     assert "Step:      REVIEWER r1 (eve" in text
+
+
+def test_status_surfaces_sandbox_preflight_override_from_session_log(
+    store: HubStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#554: robomate status shows when a local agent launched with sandbox preflight overridden."""
+
+    store.check_in("bob", AgentProfile(harness="claude-code"))
+    store.check_in("charlie", AgentProfile(harness="codex"))
+    status = store.status_summary() | {
+        "repo_root": str(tmp_path),
+        "url": "http://hub.test",
+        "origin": "o/r",
+        "forge": "github",
+        "default_branch": "main",
+        "orchestrator": None,
+        "hub_id": "hub-1",
+        "workflow": {"id": "wf-1", "status": "active", "headline": "work"},
+    }
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "charlie.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "start",
+                "agent": "charlie",
+                "hub_id": "hub-1",
+                "workflow_id": "wf-1",
+                "sandbox_check": "overridden",
+                "sandbox_check_failure": "Sandbox check failed: nested user namespace",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (sessions / "bob.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "start",
+                "agent": "bob",
+                "hub_id": "hub-1",
+                "workflow_id": "wf-1",
+                "sandbox_check": "passed",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "find_hub", lambda *a, **kw: HubEndpoint("http://hub.test", "t"))
+    monkeypatch.setattr(cli, "_rpc", lambda *a, **kw: status)
+    monkeypatch.setattr(cli, "_hub_location", lambda *a: (tmp_path, tmp_path / "token"))
+
+    cli._status(False, None)
+    output = capsys.readouterr().out
+    assert "WARNING: sandbox preflight overridden (running without proper sandboxing)" in output
+    assert "nested user namespace" in output
+    assert output.count("sandbox preflight overridden") == 1
+
+    # Orchestrator override is surfaced too.
+    status["orchestrator"] = {"name": "alice", "session": "s1", "alive": True}
+    (sessions / "alice.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "start",
+                "agent": "alice",
+                "hub_id": "hub-1",
+                "workflow_id": "wf-1",
+                "sandbox_check": "overridden",
+                "sandbox_check_failure": "bwrap missing",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cli._status(False, None)
+    orch_out = capsys.readouterr().out
+    assert "bwrap missing" in orch_out
+    assert orch_out.count("sandbox preflight overridden") == 2

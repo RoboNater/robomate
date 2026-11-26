@@ -72,7 +72,7 @@ class ObservationPublisher:
 def permission_diagnostic(
     directory: Path | None, agent: str, hub_id: str, workflow_id: str | None
 ) -> str | None:
-    if directory is None:
+    if directory is None or not agent or "/" in agent or "\\" in agent or agent in (".", ".."):
         return None
     try:
         with (directory / f"{agent}.permission.json").open("rb") as stream:
@@ -137,5 +137,51 @@ def permission_diagnostic(
             text = f"opencode permission ask pending: {permission} {' '.join(patterns)}"
             return "".join(c for c in text if c.isprintable())[:4096]
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        pass
+    return None
+
+
+def sandbox_override_diagnostic(
+    directory: Path | None, agent: str, hub_id: str, workflow_id: str | None
+) -> str | None:
+    """Return a warning when ``agent``'s latest launch for this run overrode sandbox preflight."""
+
+    if directory is None or not agent or "/" in agent or "\\" in agent or agent in (".", ".."):
+        return None
+    try:
+        with (directory / f"{agent}.jsonl").open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            end = stream.tell()
+            stream.seek(max(0, end - 262144))
+            lines = stream.read(262144).splitlines()
+        seen_hub: str | None = None
+        seen_workflow: str | None = None
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            event = entry.get("event")
+            if event not in {"start", "resume", "manual_resume"}:
+                if seen_hub is None and isinstance(entry.get("hub_id"), str):
+                    seen_hub = entry["hub_id"]
+                if seen_workflow is None and isinstance(entry.get("workflow_id"), str):
+                    seen_workflow = entry["workflow_id"]
+                continue
+            row_hub = entry.get("hub_id") or seen_hub
+            row_workflow = entry.get("workflow_id") or seen_workflow
+            if hub_id and row_hub != hub_id:
+                return None
+            if workflow_id is not None and row_workflow != workflow_id:
+                return None
+            if entry.get("sandbox_check") != "overridden":
+                return None
+            failure = entry.get("sandbox_check_failure")
+            detail = f": {failure.strip()}" if isinstance(failure, str) and failure.strip() else ""
+            text = f"sandbox preflight overridden (running without proper sandboxing){detail}"
+            return "".join(c for c in text if c.isprintable())[:4096]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         pass
     return None
