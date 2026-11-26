@@ -5674,6 +5674,10 @@ def test_status_shows_a_lost_bridge_without_a_nudge(
     out = capsys.readouterr().out
     assert "bob: codex / gpt-6-sol  lost" in out
     assert "not listening" not in out
+    # The derivation itself is part of the fix; a lost bridge is its own state.
+    status = hub_store.status_summary()
+    bob = next(agent for agent in status["agents"] if agent["name"] == "bob")
+    assert cli._listening_state(status, bob) == "lost"
 
 
 def test_status_orchestrator_idle_with_no_open_work_gets_the_same_nudge(
