@@ -1353,12 +1353,12 @@ def _listening_state(status: dict[str, Any], agent: dict[str, Any]) -> str | Non
     """
 
     activity = agent.get("activity")
-    if not isinstance(activity, dict) or "silence_s" not in activity:
-        return None
     if agent.get("status") == "released":
         return "released"
     if agent.get("status") == "lost" or not agent.get("alive", True):
         return "lost"
+    if not isinstance(activity, dict) or "silence_s" not in activity:
+        return None
     workflow = status.get("workflow")
     run_status = workflow.get("status") if isinstance(workflow, dict) else None
     if run_status in ("paused", "escalated"):
