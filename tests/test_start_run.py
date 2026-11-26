@@ -1554,3 +1554,248 @@ def test_opencode_v2_mcp_preflight_and_version_parsing(
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     START.check_mcp_entry("opencode")
+
+
+def test_allow_unsandboxed_config_cli_validation_and_hints(tmp_path: Path) -> None:
+    """#554: per-agent allow_unsandboxed config, CLI, validation, launch_words, resume_hint."""
+
+    # Default is empty and never silently applies to any agent.
+    default_values, _ = settings()
+    assert default_values["allow_unsandboxed"] == []
+
+    # Config file round-trip and CLI override (repeatable, normalized, deduplicated).
+    cfg = write(tmp_path / "run.toml", 'allow_unsandboxed = ["charlie"]\n')
+    from_file, _ = settings("--config", str(cfg))
+    assert from_file["allow_unsandboxed"] == ["charlie"]
+    from_cli, _ = settings(
+        "--config",
+        str(cfg),
+        "--allow-unsandboxed",
+        "Bob",
+        "--allow-unsandboxed",
+        "charlie",
+        "--allow-unsandboxed",
+        "bob",
+    )
+    assert from_cli["allow_unsandboxed"] == ["bob", "charlie"]
+
+    saved = tmp_path / "merged.toml"
+    assert (
+        START.main(
+            [
+                "--config",
+                str(cfg),
+                "--allow-unsandboxed",
+                "charlie",
+                "--generate-config",
+                str(saved),
+            ]
+        )
+        == 0
+    )
+    reloaded, _ = START.load_config(saved)
+    assert reloaded["allow_unsandboxed"] == ["charlie"]
+
+    # Invalid types and non-agent / wildcard names are refused.
+    bad_str = write(tmp_path / "bad_str.toml", 'allow_unsandboxed = "charlie"\n')
+    with pytest.raises(ValueError, match="list of agent names"):
+        settings("--config", str(bad_str))
+    bad_int = write(tmp_path / "bad_int.toml", "allow_unsandboxed = [1]\n")
+    with pytest.raises(ValueError, match="list of agent names"):
+        settings("--config", str(bad_int))
+    for bogus in ("all", "*", "dave", ""):
+        with pytest.raises(ValueError, match="invalid allow_unsandboxed agent"):
+            settings("--allow-unsandboxed", bogus)
+
+    # launch_words and resume_hint carry --allow-unsandboxed ONLY for the named agent(s).
+    values, policy = settings("--run-dir", str(tmp_path / "run"), "--allow-unsandboxed", "charlie")
+    run_dir = Path(values["run_dir"])
+    run = START.Run(values, policy, run_dir, run_dir / "run", "run")
+    run.versions = {"claude-code": "2.1.999", "codex": "0.999.0"}
+    for agent in START.AGENTS:
+        headless = START.launch_words(run, agent, interactive=False)
+        interactive = START.launch_words(run, agent, interactive=True)
+        hint = START.resume_hint(run, agent)
+        ask = START.launcher_hint(run, agent, "ask")
+        expected = agent == "charlie"
+        assert ("--allow-unsandboxed" in headless) is expected
+        assert ("--allow-unsandboxed" in interactive) is expected
+        assert interactive[-1] == "--interactive"
+        assert ("--allow-unsandboxed" in hint) is expected
+        assert "--allow-unsandboxed" not in ask
+
+
+def test_start_run_sandbox_override_warns_at_startup_and_in_final_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#554: startup check and final report both warn loudly with agent name and failure."""
+
+    failure = "Sandbox check failed: nested user namespace"
+    monkeypatch.setattr(START.sys, "platform", "linux")
+    monkeypatch.setattr(
+        START.subprocess,
+        "run",
+        lambda argv, *a, **kw: subprocess.CompletedProcess(argv, 1, "", failure),
+    )
+    values, policy = settings("--run-dir", str(tmp_path / "run"), "--allow-unsandboxed", "charlie")
+    run = START.Run(values, policy, tmp_path / "run", tmp_path / "run" / "run", "run")
+
+    START.check_sandbox_overrides(run)
+    startup_out = capsys.readouterr().out
+    assert "charlie" in startup_out and failure in startup_out
+    assert "will not run with proper sandboxing" in startup_out
+    assert "may not work at all" in startup_out
+    assert "docs/user-guide.md#linux-sandbox-grants" in startup_out
+    assert "install-bwrap-apparmor.sh" in startup_out
+
+    monkeypatch.setattr(
+        START,
+        "hub_status",
+        lambda _: {"workflow": {"id": "wf-1", "status": "done", "run_id": "r-1"}},
+    )
+    assert START.report(run)
+    report_out = capsys.readouterr().out
+    assert "charlie" in report_out and failure in report_out
+    assert "will not run with proper sandboxing" in report_out
+    assert "may not work at all" in report_out
+
+    # Final report also surfaces overrides recorded in session logs (e.g. from hand resume).
+    state = tmp_path / "state"
+    sessions = state / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "bob.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "manual_resume",
+                "agent": "bob",
+                "harness": "claude-code",
+                "run_id": "r-1",
+                "workflow_id": "wf-1",
+                "sandbox_check": "overridden",
+                "sandbox_check_failure": failure,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    clean_values, clean_policy = settings("--run-dir", str(tmp_path / "run2"))
+    resumed_run = START.Run(
+        clean_values,
+        clean_policy,
+        tmp_path / "run2",
+        tmp_path / "run2" / "run2",
+        "run2",
+        run_id="r-1",
+        state_dir=state,
+    )
+    assert START.report(resumed_run)
+    resumed_out = capsys.readouterr().out
+    assert "bob" in resumed_out and "failIfUnavailable: true" in resumed_out
+    assert "will not run with proper sandboxing" in resumed_out
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="sandbox preflight is Linux-only")
+def test_start_run_smoke_allow_unsandboxed_per_agent_and_refuses_others(
+    smoke: dict[str, Any],
+) -> None:
+    """#554 end-to-end: override applies only to named agent; others still refuse."""
+
+    root: Path = smoke["root"]
+    hooks = root / "hooks"
+    site = (hooks / "sitecustomize.py").read_text(encoding="utf-8")
+    failure = "Sandbox check failed: nested user namespace"
+    patched = site.replace(
+        "        return subprocess.CompletedProcess(args, 0, '', '')\n",
+        "        fail_modes = set(os.environ.get('MOCK_FAIL_SANDBOX_MODES', '').split())\n"
+        "        mode = args[1] if len(args) > 1 else ''\n"
+        "        if mode in fail_modes:\n"
+        f"            return subprocess.CompletedProcess(args, 1, '', {failure!r})\n"
+        "        return subprocess.CompletedProcess(args, 0, 'Sandbox checks passed.\\n', '')\n",
+    )
+    assert patched != site
+    write(hooks / "sitecustomize.py", patched)
+
+    # 1. Fail only --codex (charlie), pass --claude (alice, bob), override only charlie.
+    env_codex_fail = smoke["env"] | {"MOCK_FAIL_SANDBOX_MODES": "--codex"}
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/start-run.py"),
+            "--config",
+            str(smoke["config"]),
+            "--issue",
+            "7",
+            "--allow-unsandboxed",
+            "charlie",
+        ],
+        cwd=root,
+        env=env_codex_fail,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5 * LIVENESS_S,
+    )
+    run_dir = root / "runs" / "scripted"
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    # Startup warning before "all agents joined" and repeated in final report after "workflow done".
+    joined_pos = done.stdout.index("all agents joined")
+    done_pos = done.stdout.index("workflow done")
+    startup_part = done.stdout[:joined_pos]
+    report_part = done.stdout[done_pos:]
+    for section in (startup_part, report_part):
+        assert "charlie" in section and failure in section
+        assert "will not run with proper sandboxing" in section
+        assert "may not work at all" in section
+        assert "install-bwrap-apparmor.sh" in section
+    # charlie's launcher log has the warning; its session-log start row records override+failure.
+    charlie_log = (run_dir / "logs" / "charlie.log").read_text(encoding="utf-8", errors="replace")
+    assert "charlie" in charlie_log and "will not run with proper sandboxing" in charlie_log
+    sessions = run_dir / "scripted.robomate" / "scripted" / "state" / "sessions"
+    charlie_starts = [
+        json.loads(line)
+        for line in (sessions / "charlie.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("event") == "start"
+    ]
+    assert charlie_starts[-1]["sandbox_check"] == "overridden"
+    assert charlie_starts[-1]["sandbox_check_failure"] == failure
+    for other in ("alice", "bob"):
+        other_starts = [
+            json.loads(line)
+            for line in (sessions / f"{other}.jsonl").read_text(encoding="utf-8").splitlines()
+            if json.loads(line).get("event") == "start"
+        ]
+        assert other_starts[-1]["sandbox_check"] == "passed"
+        assert "sandbox_check_failure" not in other_starts[-1]
+
+    # 2. Fail BOTH --claude and --codex with override only for charlie: alice/bob still refused.
+    env_all_fail = smoke["env"] | {"MOCK_FAIL_SANDBOX_MODES": "--claude --codex"}
+    refused = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/start-run.py"),
+            "--config",
+            str(smoke["config"]),
+            "--run-dir",
+            "refused-others",
+            "--issue",
+            "7",
+            "--allow-unsandboxed",
+            "charlie",
+        ],
+        cwd=root,
+        env=env_all_fail,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=5 * LIVENESS_S,
+    )
+    assert refused.returncode == 2, f"{refused.stdout}\n{refused.stderr}"
+    refused_dir = root / "runs" / "refused-others"
+    alice_log = (refused_dir / "logs" / "alice.log").read_text(encoding="utf-8", errors="replace")
+    bob_log = (refused_dir / "logs" / "bob.log").read_text(encoding="utf-8", errors="replace")
+    assert "sandbox preflight failed:" in alice_log or "sandbox preflight failed:" in bob_log
+    assert "docs/user-guide.md#linux-sandbox-grants" in (alice_log + bob_log)

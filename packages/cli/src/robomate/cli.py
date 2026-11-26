@@ -2046,18 +2046,25 @@ def _status(
         print(line)
     # Absent from a hub older than #144, which may still be running.
     stalled = False
-    from agent_hub_common.launcher_observations import permission_diagnostic
+    from agent_hub_common.launcher_observations import (
+        permission_diagnostic,
+        sandbox_override_diagnostic,
+    )
+
+    sessions_dir = location[0] / "sessions" if location else None
+    hub_id = status.get("hub_id", "")
+    workflow_id = workflow.get("id") if workflow else None
 
     def permission_line(agent_name: str) -> None:
-        diagnostic = permission_diagnostic(
-            location[0] / "sessions" if location else None,
-            agent_name,
-            status.get("hub_id", ""),
-            workflow.get("id") if workflow else None,
-        )
+        diagnostic = permission_diagnostic(sessions_dir, agent_name, hub_id, workflow_id)
         if diagnostic:
             print(f"  STALLED — {diagnostic}")
 
+    orch_name = (status.get("orchestrator") or {}).get("name")
+    if isinstance(orch_name, str) and orch_name:
+        sandbox_warning = sandbox_override_diagnostic(sessions_dir, orch_name, hub_id, workflow_id)
+        if sandbox_warning:
+            print(f"  WARNING: {sandbox_warning}")
     alice = status.get("orchestrator_activity")
     if alice and alice.get("stalled"):
         stalled = True
@@ -2075,6 +2082,11 @@ def _status(
             f"  {agent['name']}: {agent['harness']} / {agent['model']}  {life}"
             f"  task {agent['current_task'] or '-'}"
         )
+        sandbox_warning = sandbox_override_diagnostic(
+            sessions_dir, agent["name"], hub_id, workflow_id
+        )
+        if sandbox_warning:
+            print(f"    WARNING: {sandbox_warning}")
         if "last_call_at" in agent:
             # Additive for #653: an older hub omits these and keeps today's line.
             details: list[str] = []

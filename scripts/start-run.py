@@ -68,7 +68,7 @@ HARNESS_NAMES = {
     "agy": "antigravity",
     "devin": "devin",
 }
-DEFAULTS: dict[str, str | int | float | bool] = {
+DEFAULTS: dict[str, str | int | float | bool | list[str]] = {
     "repository": "",
     "run_parent_dir": "~/working",
     "run_dir": "",
@@ -94,6 +94,7 @@ DEFAULTS: dict[str, str | int | float | bool] = {
     "denise_effort": "",
     "denise_clean_login": False,
     "auto_start": True,
+    "allow_unsandboxed": [],
     "pytest_workers": 0,
     "workspace_setup": launcher_defaults.WORKSPACE_SETUP_AUTO,
     "max_resumes": -1,
@@ -126,6 +127,8 @@ COMMENTS = {
     "denise_clean_login": "Use a separate per-run login for Claude Code or Codex. "
     "OpenCode and AntiGravity always use separate profiles.",
     "auto_start": "false prints each agent's interactive start command instead.",
+    "allow_unsandboxed": "Linux only: agent names (alice, bob, charlie) allowed to continue if "
+    "sandbox preflight fails. Named agents run without proper sandboxing and may not work at all.",
     "pytest_workers": "Workers per pytest -n auto run; 0 uses the CPU count.",
     "workspace_setup": "Shell command to prepare each agent worktree before launch: auto "
     "syncs a uv project, none disables setup.",
@@ -213,6 +216,10 @@ def parser() -> argparse.ArgumentParser:
         if isinstance(default, bool):
             group.add_argument(
                 flag, action=argparse.BooleanOptionalAction, default=None, help=COMMENTS.get(key)
+            )
+        elif isinstance(default, list):
+            group.add_argument(
+                flag, action="append", default=None, metavar="AGENT", help=COMMENTS.get(key)
             )
         else:
             kind = float if key in SECONDS_KEYS else int if isinstance(default, int) else str
@@ -329,6 +336,10 @@ def load_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             if type(value) not in (int, float):
                 raise ValueError(f"{key} must be a number of seconds")
             value = float(value)
+        elif isinstance(expected, list):
+            if not isinstance(value, list) or any(type(item) is not str for item in value):
+                raise ValueError(f"{key} must be a list of agent names")
+            value = list(value)
         elif type(value) is not type(expected):
             raise ValueError(f"{key} must be a {type(expected).__name__}")
         if key in PATH_KEYS and value:
@@ -345,7 +356,9 @@ def load_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
     """Defaults, then the config file, then the command line; validated."""
 
-    values: dict[str, Any] = dict(DEFAULTS)
+    values: dict[str, Any] = {
+        key: list(value) if isinstance(value, list) else value for key, value in DEFAULTS.items()
+    }
     policy: dict[str, Any] = {}
     if args.config:
         loaded, policy = load_config(args.config)
@@ -353,7 +366,7 @@ def settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
     for key in DEFAULTS:
         value = getattr(args, key)
         if value is not None:
-            values[key] = value
+            values[key] = list(value) if isinstance(value, list) else value
     for key in POLICY_SHORTHANDS:
         if getattr(args, key) is not None:
             policy[key] = getattr(args, key)
@@ -374,6 +387,9 @@ def settings(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
     if not str(values["workspace_setup"]).strip():
         values["workspace_setup"] = launcher_defaults.WORKSPACE_SETUP_AUTO
     validate(values, policy, starting=False)
+    values["allow_unsandboxed"] = list(
+        dict.fromkeys(item.strip().lower() for item in values["allow_unsandboxed"])
+    )
     return values, policy
 
 
@@ -461,6 +477,16 @@ def validate(values: Mapping[str, Any], policy: Mapping[str, Any], *, starting: 
             raise ValueError(f"invalid {name}_harness {values[f'{name}_harness']!r}")
         if harness_of(values, name) == "devin" and values[f"{name}_effort"]:
             raise ValueError(f"devin has no reasoning-effort flag; leave {name}_effort empty")
+    raw_unsandboxed = values.get("allow_unsandboxed", [])
+    if not isinstance(raw_unsandboxed, list) or any(
+        type(item) is not str for item in raw_unsandboxed
+    ):
+        raise ValueError("allow_unsandboxed must be a list of agent names")
+    for item in raw_unsandboxed:
+        if item.strip().lower() not in AGENTS:
+            raise ValueError(
+                f"invalid allow_unsandboxed agent {item!r}; choose from {', '.join(AGENTS)}"
+            )
     denise(values)
     validate_policy(policy)
     if not starting:
@@ -691,6 +717,7 @@ class Run:
     run_id: str = ""
     state_dir: Path | None = None
     status: dict[str, Any] = field(default_factory=dict)
+    sandbox_overrides: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     @property
     def logs_dir(self) -> Path:
@@ -827,6 +854,8 @@ def launch_words(run: Run, agent: str, *, interactive: bool) -> list[str]:
     for key in ("model", "effort"):
         if values[f"{agent}_{key}"]:
             words += [f"--{key}", str(values[f"{agent}_{key}"])]
+    if agent in values["allow_unsandboxed"]:
+        words += ["--allow-unsandboxed"]
     if interactive:
         return [*words, "--interactive"]
     if values["max_resumes"] >= 0:
@@ -854,7 +883,7 @@ def start_agents(run: Run) -> None:
         )
 
 
-def launcher_hint(run: Run, agent: str, command: str) -> str:
+def launcher_hint(run: Run, agent: str, command: str, *extra: str) -> str:
     words = [
         "uv",
         "run",
@@ -867,12 +896,105 @@ def launcher_hint(run: Run, agent: str, command: str) -> str:
         agent,
         "--hub",
         str(run.checkout),
+        *extra,
     ]
     return command_line(words)
 
 
 def resume_hint(run: Run, agent: str) -> str:
+    if agent in run.values["allow_unsandboxed"]:
+        return launcher_hint(run, agent, "resume", "--allow-unsandboxed")
     return launcher_hint(run, agent, "resume")
+
+
+def check_sandbox_overrides(run: Run) -> None:
+    """Run Linux sandbox preflight for overridden agents and warn loudly on failure (#554)."""
+
+    if not sys.platform.startswith("linux"):
+        return
+    allowed = list(run.values["allow_unsandboxed"])
+    if not allowed:
+        return
+    script = SCRIPTS / launcher_defaults.VERIFY_SANDBOXES_REL
+    results: dict[str, str | None] = {}
+    overrides: dict[str, tuple[str, str]] = {}
+    for agent in allowed:
+        harness = harness_of(run.values, agent)
+        if harness not in launcher_defaults.SANDBOX_CHECK_HARNESSES:
+            continue
+        mode = "--codex" if harness == "codex" else "--claude"
+        if mode not in results:
+            try:
+                done = subprocess.run(
+                    [str(script), mode],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                results[mode] = str(exc)
+            else:
+                results[mode] = (
+                    (done.stderr.strip() or done.stdout.strip() or f"exit {done.returncode}")
+                    if done.returncode
+                    else None
+                )
+        failure = results[mode]
+        if failure is not None:
+            overrides[agent] = (harness, failure)
+        else:
+            say(
+                f"sandbox preflight passed for {agent} ({harness}); "
+                "--allow-unsandboxed override was not needed"
+            )
+    run.sandbox_overrides = overrides
+    if overrides:
+        say(launcher_defaults.sandbox_override_warning(overrides))
+
+
+def recorded_sandbox_overrides(
+    run: Run, state_path: Path | None, run_id: str | None, workflow_id: str | None
+) -> dict[str, tuple[str, str]]:
+    """Overridden sandbox checks from startup or this run's session logs (#554)."""
+
+    overrides = dict(run.sandbox_overrides)
+    sessions = state_path / "sessions" if state_path is not None else None
+    if sessions is None or not sessions.is_dir():
+        return overrides
+    for agent in AGENTS:
+        path = sessions / f"{agent}.jsonl"
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("event") not in (
+                "start",
+                "resume",
+                "manual_resume",
+            ):
+                continue
+            if row.get("sandbox_check") != "overridden":
+                continue
+            row_run = row.get("run_id")
+            row_workflow = row.get("workflow_id")
+            if run_id or workflow_id:
+                matched_run = bool(run_id and row_run == run_id)
+                matched_workflow = bool(workflow_id and row_workflow == workflow_id)
+                if not (matched_run or matched_workflow):
+                    continue
+            harness = str(row.get("harness") or harness_of(run.values, agent))
+            failure = str(row.get("sandbox_check_failure") or "sandbox preflight failed")
+            overrides[agent] = (harness, failure)
+    return overrides
 
 
 def supervise(run: Run) -> int:
@@ -1122,6 +1244,15 @@ def report(run: Run) -> bool:
         say(f"run {run_id}: workflow {workflow.get('status')}")
     state = status.get("state_dir") if isinstance(status, dict) else None
     state_path = Path(str(state)) if state else run.state_dir
+    workflow_id = (workflow or {}).get("id") if isinstance(workflow, dict) else None
+    overrides = recorded_sandbox_overrides(
+        run,
+        state_path,
+        str(run_id) if run_id else None,
+        str(workflow_id) if workflow_id else None,
+    )
+    if overrides:
+        say(launcher_defaults.sandbox_override_warning(overrides))
     if state_path and run_id:
         closeout = state_path / "runs" / str(run_id) / "closeout"
         if closeout.is_dir():
@@ -1166,6 +1297,7 @@ def start(values: dict[str, Any], policy: dict[str, Any]) -> int:
         if state:
             run.state_dir = Path(str(state))
         persist_denise_settings(run)
+        check_sandbox_overrides(run)
         if values["auto_start"]:
             start_agents(run)
             code = supervise(run)

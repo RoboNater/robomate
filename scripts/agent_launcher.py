@@ -63,6 +63,36 @@ EXIT_PROVIDER_ERROR = 7
 EXIT_INTERRUPTED = 130
 
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
+#: Harnesses checked by Linux sandbox preflight (#498, #554).
+SANDBOX_CHECK_HARNESSES = ("codex", "claude-code")
+#: Verifier script relative to ``scripts/`` (#498, #554).
+VERIFY_SANDBOXES_REL = Path("host-setup/ubuntu-24.04/verify-sandboxes.sh")
+
+
+def sandbox_override_warning(overrides: Mapping[str, tuple[str, str]]) -> str:
+    """Loud, specific warning when sandbox preflight fails under --allow-unsandboxed (#554)."""
+
+    who = ", ".join(overrides)
+    details = "; ".join(
+        f"{agent} ({harness}): {failure}" for agent, (harness, failure) in overrides.items()
+    )
+    uses_claude = any(harness == "claude-code" for harness, _ in overrides.values())
+    claude_note = (
+        " Claude Code keeps failIfUnavailable: true by default and may refuse to start."
+        if uses_claude
+        else ""
+    )
+    return (
+        "WARNING: sandbox preflight failed and was overridden with --allow-unsandboxed "
+        f"for {who}: {details}\n"
+        f"  {who} will not run with proper sandboxing: commands may run outside the harness "
+        "sandbox, behind only the harness permission gate, or not at all.\n"
+        f"  {who} may not work at all: if the harness cannot run commands without its sandbox, "
+        f"the agent cannot complete the run.{claude_note}\n"
+        "  Fix the host instead: see docs/user-guide.md#linux-sandbox-grants and "
+        "scripts/host-setup/ubuntu-24.04/install-bwrap-apparmor.sh."
+    )
+
 
 # Duplicated in worker_mcp.client because this launcher is standard-library only;
 # test_worker_tools checks the bridge copy against this constant.
