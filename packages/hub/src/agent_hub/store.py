@@ -4130,6 +4130,23 @@ class HubStore:
             ).fetchone()
             return _event(updated_row)
 
+    def renew_event_leases(self) -> bool:
+        """Extend live deliveries for the attached orchestrator, if any.
+
+        There is only one attached session, and takeover expires its deliveries.
+        Expired deliveries remain eligible for redelivery or a late ack.
+        """
+
+        now = self._now()
+        expires = to_iso(now + timedelta(seconds=self.default_event_lease_s))
+        with database(self.path) as connection:
+            cursor = connection.execute(
+                "UPDATE event SET delivery_expires = MAX(delivery_expires, ?)"
+                " WHERE state = 'delivered' AND delivery_expires > ?",
+                (expires, to_iso(now)),
+            )
+            return cursor.rowcount > 0
+
     def expire_event_leases(self, delivery_id: str | None = None) -> int:
         """Make outstanding event deliveries eligible for immediate redelivery.
 

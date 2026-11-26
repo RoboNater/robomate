@@ -555,6 +555,7 @@ class RpcDispatcher:
                     profile,
                 ),
             )
+            self.ops.store.renew_event_leases()
             unchanged = self._guide_hashes.get(caller[1]) == digest
             self._guide_hashes[caller[1]] = digest
             state = self.ops.store.get_state()
@@ -702,7 +703,25 @@ class RpcDispatcher:
 
         disconnected = asyncio.create_task(watch_disconnect())
         try:
-            done, _ = await asyncio.wait((disconnected, work), return_when=asyncio.FIRST_COMPLETED)
+            # Only substantive RPCs reach here. The bridge's automatic
+            # heartbeat and accounting calls must let a silent holder expire.
+            renew_after = self.ops.store.default_event_lease_s / 2
+            renew = self.ops.store.renew_event_leases()
+            while True:
+                done, _ = await asyncio.wait(
+                    (disconnected, work),
+                    timeout=renew_after if renew else None,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if done:
+                    break
+                # A connected pacing wait can itself outlast the lease. A
+                # superseded or detached call cannot renew another session's lease.
+                renew = (
+                    not held.detached
+                    and session not in self._superseded_sessions
+                    and self.ops.store.renew_event_leases()
+                )
             disconnected.cancel()
             await asyncio.gather(disconnected, return_exceptions=True)
             if disconnected in done or held.detached:

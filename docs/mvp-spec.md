@@ -441,7 +441,10 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   bridge may attach on its first operation, but no subsequent new session implicitly
   replaces it. A different session must join with `takeover=true` (otherwise -32002),
   fencing the old session's operations and heartbeats and releasing outstanding event
-  leases for redelivery. Worker tasks, leases and heartbeats remain unaffected. The
+  leases for redelivery. Orchestrator operations renew unexpired event delivery leases
+  at the start of the call and while the request stays open. Bridge heartbeats and
+  accounting calls do not renew them, so a silent holder's events remain eligible for
+  redelivery after expiry. Worker tasks, leases and heartbeats remain unaffected. The
   bridge sends a heartbeat every 30 s. The joined name, standing role and profile use
   existing agent columns; this step adds no DB schema version.
 
