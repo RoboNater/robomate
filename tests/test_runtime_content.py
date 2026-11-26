@@ -1356,6 +1356,17 @@ def test_windows_step_log_doc_reaches_the_green_job_check() -> None:
     assert "- *changed-tests" in ci
 
 
+def test_linux_ci_logs_pwsh_version_once() -> None:
+    """#643: the Linux test job logs pwsh --version once before pytest runs."""
+    ci = read(".github/workflows/ci.yml")
+    test_job = section(ci, "  test:\n", "  windows:\n")
+    pwsh_lines = [line for line in ci.splitlines() if "pwsh --version" in line]
+    assert len(pwsh_lines) == 1
+    assert pwsh_lines[0] in test_job
+    assert test_job.index("pwsh --version") < test_job.index("&changed-tests")
+    assert test_job.index("pwsh --version") < test_job.index("pytest -n auto")
+
+
 def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
     """#88: the orchestrator runs the process; the implementer and reviewer decide the work."""
     readme_how = section(read("README.md"), "## How it works", "## Guarantees")
