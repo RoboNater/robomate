@@ -367,8 +367,7 @@ class CloseoutResult(BaseModel):
     blocker: str | None = None
 
 
-# The bridge uses this order for submit_result. RebaseResult stays last so
-# ambiguous bodies retain their existing validation order.
+# The bridge advertises these result schemas for submit_result.
 TaskResult = CloseoutResult | ImplementerResult | ReviewerResult | RebaseResult
 
 IMPLEMENTER_RESULT_SCHEMA: dict[str, Any] = ImplementerResult.model_json_schema()

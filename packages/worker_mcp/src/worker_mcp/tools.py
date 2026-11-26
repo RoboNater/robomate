@@ -10,12 +10,17 @@ from typing import Annotated, Any, TypeVar
 from agent_hub_common import StandingRole, TaskResult
 from agent_hub_common.orchestrator_tools import OPERATIONS, OrchestratorTools
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from .client import WorkerHubClient
 from .telemetry import HttpIO, current_http_io
 
 Timeout = Annotated[float, Field(ge=0, le=1800, allow_inf_nan=False)]
+# Advertise the typed result schemas while forwarding the original fields.
+# The hub selects the validator from the assigned task's role.
+ResultPayload = Annotated[
+    dict[str, Any], BeforeValidator(lambda payload: payload, json_schema_input_type=TaskResult)
+]
 T = TypeVar("T")
 
 
@@ -318,7 +323,7 @@ def create_worker_mcp(
     @server.tool()
     async def submit_result(
         task_id: str,
-        result: TaskResult,
+        result: ResultPayload,
     ) -> dict[str, Any]:
         """Submit the final result for a task, validated against the role's schema."""
         resolved = await resolve()

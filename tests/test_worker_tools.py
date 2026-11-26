@@ -3,18 +3,23 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from agent_hub_common import ImplementerResult, RebaseResult
+from agent_hub.store import HubStore
+from agent_hub_common import TaskState
 from agent_hub_common.orchestrator_tools import OPERATIONS
 from conftest import BASE_URL, TOKEN
 from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.types import TextContent
+from timing import LIVENESS_S
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
 from worker_mcp.tools import create_worker_mcp
@@ -305,11 +310,10 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 @pytest.mark.parametrize(
-    ("body", "expected"),
+    "body",
     [
         pytest.param(
             {"outcome": "completed", "head_sha": SHA, "summary": "Rebased"},
-            RebaseResult,
             id="clean-rebase-without-pr-url",
         ),
         pytest.param(
@@ -321,7 +325,6 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
                 "resolution_summary": "Kept both",
                 "summary": "Rebased",
             },
-            RebaseResult,
             id="rebase-that-also-names-its-pr",
         ),
         pytest.param(
@@ -331,14 +334,30 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
                 "head_sha": SHA,
                 "summary": "Done",
             },
-            ImplementerResult,
             id="implementer",
+        ),
+        pytest.param(
+            {
+                "outcome": "completed",
+                "pr_url": "https://github.com/org/repo/pull/1",
+                "head_sha": SHA,
+                "commits": [SHA[:7]],
+                "resolved_finding_ids": ["r1-1"],
+                "summary": "Done",
+            },
+            id="invalid-implementer-that-fits-rebase-schema",
+        ),
+        pytest.param(
+            {"verdict": "approved", "reviewed_head_sha": SHA, "summary": "Approved"},
+            id="reviewer",
+        ),
+        pytest.param(
+            {"outcome": "completed", "items": [], "steps": [], "summary": "Closed out"},
+            id="closeout",
         ),
     ],
 )
-async def test_submit_result_keeps_a_rebase_body_whole(
-    body: dict[str, Any], expected: type[Any]
-) -> None:
+async def test_submit_result_passes_the_supplied_body_through(body: dict[str, Any]) -> None:
     settings = WorkerSettings(hub_url="http://hub.example", token="t", agent_name="b")
     client = WorkerHubClient(settings)
     client.submit_result = AsyncMock(return_value={"status": "completed"})  # type: ignore[method-assign]
@@ -346,9 +365,59 @@ async def test_submit_result_keeps_a_rebase_body_whole(
 
     await server.call_tool("submit_result", {"task_id": "t1", "result": body})
 
-    submitted = client.submit_result.call_args.args[1]
-    assert type(submitted) is expected
-    assert submitted.model_dump(exclude_unset=True) == body
+    client.submit_result.assert_awaited_once_with("t1", body)
+
+
+@pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+async def test_submit_result_rejects_short_commit_and_accepts_retry(
+    client: httpx.AsyncClient, hub_store: HubStore
+) -> None:
+    worker = WorkerHubClient(WorkerSettings.unjoined(environ={}), client)
+    server = create_worker_mcp(worker)
+    try:
+        async with create_connected_server_and_client_session(
+            server, read_timeout_seconds=timedelta(seconds=LIVENESS_S)
+        ) as session:
+            joined = await session.call_tool("join", {"name": "bob", "role": "implementer"})
+            assert not joined.isError, joined.content
+            task = hub_store.assign_task("bob", "implementer", "Address review", "Fix r1-1")
+            assignment = await session.call_tool("await_assignment", {"timeout_s": 0})
+            assert assignment.structuredContent is not None
+            assert assignment.structuredContent["task_id"] == task.id
+            result = {
+                "outcome": "completed",
+                "summary": "Addressed review",
+                "pr_url": "https://github.com/org/repo/pull/1",
+                "head_sha": SHA,
+                "commits": [SHA[:7]],
+                "resolved_finding_ids": ["r1-1"],
+                "disputed_finding_ids": ["r1-2"],
+            }
+
+            rejected = await session.call_tool(
+                "submit_result", {"task_id": task.id, "result": result}
+            )
+            assert rejected.isError, rejected.structuredContent
+            error = rejected.content[0]
+            assert isinstance(error, TextContent)
+            assert "commits.0" in error.text
+            still_open = hub_store.get_task(task.id)
+            assert still_open is not None and still_open.state is TaskState.WORKING
+            assert still_open.result is None
+
+            result["commits"] = [SHA]
+            accepted = await session.call_tool(
+                "submit_result", {"task_id": task.id, "result": result}
+            )
+            assert not accepted.isError, accepted.content
+            assert accepted.structuredContent is not None
+            assert accepted.structuredContent["result"] == result
+            stored = hub_store.get_task(task.id)
+            assert stored is not None and stored.state is TaskState.COMPLETED
+            assert stored.result is not None
+            assert {key: stored.result[key] for key in result} == result
+    finally:
+        await worker.close()
 
 
 async def test_submit_result_telemetry_identifies_task_on_error(tmp_path: Path) -> None:
