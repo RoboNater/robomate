@@ -217,6 +217,31 @@ class Agent:
             await self.call("submit_result", task_id=task_id, result=result)
             say(f"{self.name} submitted {role} task {task_id}")
 
+    async def assign_when_available(
+        self, joined: dict[str, int], agent: str, **arguments: Any
+    ) -> dict[str, Any] | None:
+        """Assign to a worker, waiting for a fresh check-in if its old seat is gone.
+
+        A hand-resumed Alice reads its predecessor's queued check-in events. If
+        the hand recovery takes longer than the hub's loss grace, that worker
+        has been declared lost by the time the stale event is handled, and the
+        hub refuses the assignment until the worker checks in again. The real
+        resume guide waits for that re-check-in rather than treating the stale
+        event as a live worker (#556).
+        """
+
+        if agent not in joined:
+            return None
+        try:
+            return await self.call("assign_task", agent=agent, **arguments)
+        except RuntimeError as exc:
+            if "must check in again" not in str(exc):
+                raise
+            # Drop the stale seat and wait for the resumed worker's own check-in.
+            say(f"{agent} must check in again before it can be assigned: {exc}")
+            del joined[agent]
+            return None
+
     async def orchestrate(self) -> None:
         """Alice: one implementation, one review, closeout, release, done."""
 
@@ -265,27 +290,29 @@ class Agent:
                     elif payload.get("task_id") == review:
                         reviewed = True
                         review_event = int(event["id"])
-            if not implementation and "bob" in joined:
-                task = await self.call(
-                    "assign_task",
-                    agent="bob",
+            if not implementation:
+                task = await self.assign_when_available(
+                    joined,
+                    "bob",
                     role="implementer",
                     title=f"IMPLEMENT for run {run_id}",
                     instructions="Address the statement of work (scripted).",
-                    event_id=joined["bob"],
+                    event_id=joined.get("bob"),
                 )
-                implementation = str(task["id"])
-            if implemented and not review and "charlie" in joined:
-                task = await self.call(
-                    "assign_task",
-                    agent="charlie",
+                if task is not None:
+                    implementation = str(task["id"])
+            if implemented and not review:
+                task = await self.assign_when_available(
+                    joined,
+                    "charlie",
                     role="reviewer",
                     title=f"REVIEW for run {run_id}",
                     instructions="Review the change (scripted).",
                     event_id=implemented[0],
                     pr_head_sha=implemented[1],
                 )
-                review = str(task["id"])
+                if task is not None:
+                    review = str(task["id"])
         if ack:
             await self.call("wait_for_event", timeout_s=0, ack=ack)
         await self.closeout(run_id)
