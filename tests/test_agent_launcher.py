@@ -4538,6 +4538,24 @@ def test_opencode_v2_headless_start_and_resume_use_standalone_and_v2_policy(
         assert "plugin" not in content
         assert "agent" not in content
         rules = content["agents"][name]["permissions"]
+        ext_deny_idx = rules.index(
+            {"action": "external_directory", "resource": "*", "effect": "deny"}
+        )
+        ext_worktree_idx = rules.index(
+            {
+                "action": "external_directory",
+                "resource": area["worktree"].as_posix() + "/*",
+                "effect": "allow",
+            }
+        )
+        ext_lane_tmp_idx = rules.index(
+            {
+                "action": "external_directory",
+                "resource": lane_tmp.as_posix() + "/*",
+                "effect": "allow",
+            }
+        )
+        assert ext_deny_idx < ext_worktree_idx < ext_lane_tmp_idx
         assert {"action": "read", "resource": "/*", "effect": "deny"} in rules
         assert {"action": "read", "resource": "../*", "effect": "deny"} in rules
         assert {
@@ -4552,7 +4570,9 @@ def test_opencode_v2_headless_start_and_resume_use_standalone_and_v2_policy(
         } in rules
         abs_token = token_dir.as_posix().rstrip("/")
         rel_token = "../" + token_dir.relative_to(area["root"].resolve()).as_posix().rstrip("/")
-        assert rules[-4:] == [
+        assert rules[-6:] == [
+            {"action": "external_directory", "resource": abs_token, "effect": "deny"},
+            {"action": "external_directory", "resource": f"{abs_token}/*", "effect": "deny"},
             {"action": "read", "resource": abs_token, "effect": "deny"},
             {"action": "read", "resource": f"{abs_token}/*", "effect": "deny"},
             {"action": "read", "resource": rel_token, "effect": "deny"},
@@ -4773,6 +4793,8 @@ def test_opencode_v2_policy_preserves_global_denies_and_default_env_asks(
                 {"action": "read", "resource": "*.env.*", "effect": "ask"},
                 {"action": "read", "resource": "*.env.example", "effect": "allow"},
                 {"action": "read", "resource": "*", "effect": "allow"},
+                {"action": "edit", "resource": "*", "effect": "ask"},
+                {"action": "edit", "resource": "*.md", "effect": "allow"},
                 {"action": "edit", "resource": "/home/*", "effect": "allow"},
                 {"action": "shell", "resource": "rm *", "effect": "deny"},
                 {"action": "read", "resource": "*secret*", "effect": "deny"},
@@ -4795,21 +4817,34 @@ def test_opencode_v2_policy_preserves_global_denies_and_default_env_asks(
     launch = launches(area)[0]
     name = launch["argv"][launch["argv"].index("--agent") + 1]
     rules = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])["agents"][name]["permissions"]
-    # Never inject a blanket allow-all or re-add broad/outside global allows.
+    # Never inject a blanket allow-all or re-add broad, leading-wildcard, or outside allows.
     assert {"action": "*", "resource": "*", "effect": "allow"} not in rules
     assert {"action": "read", "resource": "*", "effect": "allow"} not in rules
+    assert {"action": "read", "resource": "*.env.example", "effect": "allow"} not in rules
+    assert {"action": "edit", "resource": "*.md", "effect": "allow"} not in rules
     assert {"action": "edit", "resource": "/home/*", "effect": "allow"} not in rules
-    assert {"action": "external_directory", "resource": "*", "effect": "deny"} in rules
+    ext_deny_idx = rules.index({"action": "external_directory", "resource": "*", "effect": "deny"})
+    ext_allow_idx = rules.index(
+        {
+            "action": "external_directory",
+            "resource": area["worktree"].as_posix() + "/*",
+            "effect": "allow",
+        }
+    )
     worktree_allow_idx = rules.index(
         {"action": "read", "resource": area["worktree"].as_posix() + "/*", "effect": "allow"}
     )
     env_ask_idx = rules.index({"action": "read", "resource": "*.env", "effect": "ask"})
-    env_example_idx = rules.index(
-        {"action": "read", "resource": "*.env.example", "effect": "allow"}
-    )
     secret_deny_idx = rules.index({"action": "read", "resource": "*secret*", "effect": "deny"})
     token_deny_idx = len(rules) - 6
-    assert worktree_allow_idx < env_ask_idx < env_example_idx < secret_deny_idx < token_deny_idx
+    assert (
+        ext_deny_idx
+        < ext_allow_idx
+        < worktree_allow_idx
+        < env_ask_idx
+        < secret_deny_idx
+        < token_deny_idx
+    )
 
 
 def test_opencode_v2_saved_1x_session_uses_installed_2x_binary_and_refuses_ask_fork(

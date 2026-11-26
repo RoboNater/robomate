@@ -145,6 +145,10 @@ def _matches_fs_tool(action: object) -> bool:
 def _is_broad_or_outside_resource(resource: object, roots: list[Path]) -> bool:
     if not isinstance(resource, str) or resource == "*":
         return True
+    # Leading wildcards match across '/' in OpenCode's glob matcher and could
+    # re-allow paths outside the assigned roots.
+    if resource.startswith(("*", "?")):
+        return True
     if resource.startswith("/") or (len(resource) >= 2 and resource[1] == ":"):
         norm = resource.rstrip("/")
         return not any(
