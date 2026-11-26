@@ -1172,13 +1172,23 @@ def stop_orphaned(log: Path, agent: str) -> int:
     return 0
 
 
-def stop_note(agent: str) -> str:
+def latest_launch_overridden(rows: Sequence[Mapping[str, Any]], agent: str) -> bool:
+    """Whether ``agent``'s newest launch row overrode sandbox preflight (#554)."""
+
+    for row in reversed(rows):
+        if row.get("event") in LAUNCH_EVENTS and row.get("agent") == agent:
+            return row.get("sandbox_check") == "overridden"
+    return False
+
+
+def stop_note(agent: str, *, allow_unsandboxed: bool = False) -> str:
     """What stays true after a local stop, and how the operator relaunches (#660)."""
 
+    flag = " --allow-unsandboxed" if allow_unsandboxed else ""
     return (
         "The hub's workflow and agent rows were left as they are, and nothing supervises the "
         f"agent until you relaunch: {agent} uses a fresh `agent-launcher.py start` for a new "
-        f"workflow, or `agent-launcher.py resume {agent}` only to continue the same one."
+        f"workflow, or `agent-launcher.py resume {agent}{flag}` only to continue the same one."
     )
 
 
@@ -1209,7 +1219,8 @@ def stop_agent(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     else:
         code = stop_orphaned(log, args.agent)
     if code == 0:
-        say(stop_note(args.agent))
+        latest = live_rows(log) if attached else saved_rows(log)
+        say(stop_note(args.agent, allow_unsandboxed=latest_launch_overridden(latest, args.agent)))
     return code
 
 
@@ -1748,15 +1759,18 @@ def codex_conversation(home: Path, before: set[Path], workdir: Path) -> str | No
     return found.pop() if len(found) == 1 else None
 
 
-def capture_remedy(harness: str, agent: str, workdir: Path) -> str:
+def capture_remedy(
+    harness: str, agent: str, workdir: Path, *, allow_unsandboxed: bool = False
+) -> str:
     """What the operator does when an interactive harness's conversation ID is not captured."""
     where = {
         "codex": f"run `codex resume` in {workdir} to list its sessions",
         "opencode": f"run `opencode session list` in {workdir}",
     }.get(harness, f"use {harness}'s own session list for {workdir}")
+    flag = " --allow-unsandboxed" if allow_unsandboxed else ""
     return (
         f"To resume or ask later, find the exact ID ({where}) and pass it: "
-        f"agent-launcher.py resume {agent} --resume-session ID, or agent-launcher.py ask "
+        f"agent-launcher.py resume {agent} --resume-session ID{flag}, or agent-launcher.py ask "
         f"{agent} ID. Never use --last or --continue: they may pick another agent's."
     )
 
@@ -1798,7 +1812,12 @@ def run_interactive(
         else:
             say(
                 "no conversation ID was captured. "
-                + capture_remedy(row["harness"], row["agent"], cwd)
+                + capture_remedy(
+                    row["harness"],
+                    row["agent"],
+                    cwd,
+                    allow_unsandboxed=row.get("sandbox_check") == "overridden",
+                )
             )
     common.log_session(log, event="exit", exit_code=code, interactive=True, **row)
     return code
@@ -2016,7 +2035,12 @@ def start(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                     if args.harness == "codex"
                     else "ID. "
                 )
-                + capture_remedy(args.harness, args.agent, workdir),
+                + capture_remedy(
+                    args.harness,
+                    args.agent,
+                    workdir,
+                    allow_unsandboxed=preflight is not None and preflight.status == "overridden",
+                ),
                 flush=True,
             )
         row = {

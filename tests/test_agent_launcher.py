@@ -5405,3 +5405,77 @@ def test_sandbox_override_diagnostic_reads_only_latest_matching_launch(tmp_path:
             + "\n"
         )
     assert sandbox_override_diagnostic(sessions, "charlie", HUB, WORKFLOW) is None
+
+
+def test_capture_remedy_and_stop_note_include_allow_unsandboxed_only_when_overridden(
+    area: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#554 r1-1: interactive capture_remedy() and stop_note() include flag only when overridden."""
+
+    monkeypatch.setattr(CLI, "sandbox_preflight", REAL_SANDBOX_PREFLIGHT)
+    use_harness("codex", monkeypatch)
+    monkeypatch.setattr(CLI.sys, "platform", "linux")
+    failure = "Sandbox check failed: nested user namespace"
+    real_run = subprocess.run
+
+    def stub_run(argv: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[Any]:
+        if isinstance(argv, list) and argv and str(argv[0]).endswith("verify-sandboxes.sh"):
+            return subprocess.CompletedProcess(argv, 1, "", failure)
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(CLI.subprocess, "run", stub_run)
+    active = {"workflow": workflow(), "agents": [agent_row()]}
+    released = {"workflow": workflow(), "agents": [agent_row("released", context="c2")]}
+
+    # Overridden interactive codex start: stdout pre-note and stderr post-exit remedy carry flag.
+    code = invoke(
+        [
+            *start_words(area, "charlie", "reviewer", "codex"),
+            "--interactive",
+            "--allow-unsandboxed",
+        ],
+        programs=programs(area),
+        reader=FakeHub(after_launches(area, active, released)),
+        workspace=workspace_of(area),
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    expected_remedy = "agent-launcher.py resume charlie --resume-session ID --allow-unsandboxed"
+    assert expected_remedy in captured.out
+    assert expected_remedy in captured.err
+
+    # stop_agent reads charlie's overridden launch row and adds --allow-unsandboxed to stop_note.
+    assert invoke(["stop", "charlie", "--hub", str(area["checkout"])]) == 0
+    stop_err = capsys.readouterr().err
+    assert "`agent-launcher.py resume charlie --allow-unsandboxed`" in stop_err
+
+    # Non-overridden interactive start and stop omit --allow-unsandboxed.
+    monkeypatch.setattr(
+        CLI.subprocess,
+        "run",
+        lambda argv, *a, **kw: (
+            subprocess.CompletedProcess(argv, 0, "Sandbox checks passed.\n", "")
+            if isinstance(argv, list) and argv and str(argv[0]).endswith("verify-sandboxes.sh")
+            else real_run(argv, *a, **kw)
+        ),
+    )
+    assert (
+        invoke(
+            [*start_words(area, "bob", "implementer", "codex"), "--interactive"],
+            programs=programs(area),
+            reader=FakeHub(after_launches(area, active, released)),
+            workspace=workspace_of(area),
+        )
+        == 0
+    )
+    clean_cap = capsys.readouterr()
+    assert "agent-launcher.py resume bob --resume-session ID," in clean_cap.out
+    assert "--allow-unsandboxed" not in clean_cap.out
+    assert "--allow-unsandboxed" not in clean_cap.err
+
+    assert invoke(["stop", "bob", "--hub", str(area["checkout"])]) == 0
+    clean_stop_err = capsys.readouterr().err
+    assert "`agent-launcher.py resume bob`" in clean_stop_err
+    assert "--allow-unsandboxed" not in clean_stop_err
