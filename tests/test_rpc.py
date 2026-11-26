@@ -1018,18 +1018,38 @@ async def test_ack_of_an_expired_delivery_still_acks_it(
     assert f"Late ack for event {delivered['id']}" in caplog.text
 
 
+@pytest.mark.hub_settings(call_accounting=True)
 async def test_an_expired_delivery_is_redelivered_without_an_ack(
     client: httpx.AsyncClient, settings: HubSettings, frozen_clock: FrozenClock
 ) -> None:
     await check_in(client, "bob")
     first = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
     frozen_clock.advance(settings.event_lease_s * 0.75)
-    # A bridge can keep sending heartbeats even after Alice goes silent.
+    # The bridge can keep sending heartbeats and flushing rows after Alice goes silent.
     assert "result" in await call(client, "hub.heartbeat")
+    row = {
+        "boundary": "mcp",
+        "actor": "alice",
+        "tool": "wait_for_event",
+        "outcome": "event",
+        "bytes_in": 55,
+        "bytes_out": 120,
+        "started": first["delivered_at"],
+        "finished": first["delivered_at"],
+        "status": None,
+        "content_bytes": 100,
+        "repeat_bytes": 0,
+        "task_id": None,
+    }
+    assert (await call(client, "hub.record_calls", calls=[row]))["result"] == {
+        "recorded": 1,
+        "rejected": 0,
+    }
     frozen_clock.advance(settings.event_lease_s * 0.5)
 
     again = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
 
+    assert again is not None
     assert again["id"] == first["id"]
     assert again["delivery_attempts"] == 2
     assert again["delivery_id"] != first["delivery_id"]
