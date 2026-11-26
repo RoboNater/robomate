@@ -534,7 +534,12 @@ their lifetime (`protocol.py:974-1020,1134-1138` checks the instance on entry,
 not after the assignment wait). These are audit findings, not claims that
 the normal serial worker loop performs concurrent calls.
 
-**Event leases.** `HUB_EVENT_LEASE_S` defaults to 600 s
+**Event leases.** This investigation predates #565. Orchestrator RPCs now
+renew live event leases, including during a connected pacing wait. The
+underlying store expiry and redelivery described below still apply when
+renewal stops.
+
+`HUB_EVENT_LEASE_S` defaults to 600 s
 (`agent_hub_common/config.py:192,319`). `wait_for_event(ack=...)` acks the
 previous delivery **before** opening the hold (`store.py:3706-3707`), so a
 properly acknowledged event is not left leased throughout that idle wait.
