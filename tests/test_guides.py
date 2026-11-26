@@ -905,7 +905,7 @@ def test_served_issue_read_recipe_returns_body_and_full_discussion(role: str, fo
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
 def test_served_reviewer_guide_carries_comment_items_deferrals_and_mutations(forge: str) -> None:
-    """#588: comment-stated scope, tracked deferrals and isolated negative cases."""
+    """#588/#600: comment scope, isolated negative cases and the producers search."""
 
     text = " ".join(
         bytes(guide_response(CHECKED_IN_GUIDES, "reviewer", forge=forge).body)
@@ -921,6 +921,8 @@ def test_served_reviewer_guide_carries_comment_items_deferrals_and_mutations(for
         "FOLLOW-UP route before merge",
         "operator-run",
         "suggestions nobody agreed to pursue can stay in the thread",
+        "re-run the search for that set's producers",
+        "report any producer the check misses as a finding",
     ):
         assert fragment in text
 

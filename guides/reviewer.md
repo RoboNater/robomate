@@ -36,7 +36,9 @@ merge the change request, or rely on the implementer's summary as evidence.
    excludes other in-flight claims, and the change request states the claim. A
    hub log or a read of the next value alone is insufficient. Ordinary runs need
    no roadmap decision or completion edit; a supplied reservations target alone
-   adds no review task.
+   adds no review task. When the change adds or extends a check or test over a
+   set, re-run the search for that set's producers and report any producer the
+   check misses as a finding.
 4. Run tests for the changed code, the issue's acceptance commands, relevant
    repository validation, and touched entry points. CI supplies the full suite
    on the reviewed head on Linux and Windows; run it locally with
