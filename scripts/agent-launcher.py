@@ -55,6 +55,21 @@ records the session. ``doctor`` is Denise's optional entry, separate from all
 of this: it reads the selected run locally, works with the hub stopped, and
 never joins.
 
+Supervision is per workflow (#465, M3 Step 6): the launcher pins the workflow
+it first sees (never an earlier done one), follows it through terminal state
+and release, then stops with a message naming a fresh ``start`` for the next
+run. The hub's ``on_done: standby`` and a queued run keep agent rows; they do
+not extend supervision. A ``resume`` continues only the same saved workflow
+and refuses a different hub or workflow, and a fresh ``start`` begins a new
+conversation, so no earlier run's conversation, task or kickoff is adopted.
+M3 keeps this a script: there is no ``robomate supervisor`` subcommand and no
+persistent standby supervision across workflows. The per-harness interactive
+start/resume, exact-ID capture and hub-free ask contract is ``ADAPTERS`` in
+this script, rendered for the operator in
+``docs/development/agent-recovery.md#adapter-matrix``. Use ``robomate status``
+for the operator's "not listening" hint and its ``Continue.`` or
+exact-session-resume remedy.
+
 Every start and resume gives the harness, and so its ``robomate mcp`` bridge,
 the agent's declared identity (#402): ``HUB_HARNESS``, ``HUB_HARNESS_VERSION``
 (``--harness-version``, the CLI's own ``--version``), ``HUB_PROVIDER`` (from the
@@ -139,6 +154,49 @@ RUN_PERMISSIONS = {
 SAFE_PERMISSIONS = {"codex": ["-a", "on-request"]}
 #: Harnesses whose hub tools a flag or variable can switch off for ``ask``.
 ASK_HARNESSES = ("claude-code", "codex", "opencode")
+#: The joined launcher's per-harness adapter contract (#465, M3 Step 6).
+#:
+#: This table is the checked statement of what each adapter supports; the
+#: tests compare it with the real code paths, and
+#: docs/development/agent-recovery.md#adapter-matrix renders it for the
+#: operator. A harness absent from ``PROMPTED_HARNESSES`` prints the join line
+#: for the operator instead of passing it as the first prompt, and a missing
+#: automatic capture always has the operator-supplied-ID remedy.
+ADAPTERS: dict[str, dict[str, str]] = {
+    "claude-code": {
+        "interactive": "start and resume carry the join or continuation prompt",
+        "capture": "the launcher chooses the exact UUID for a new conversation",
+        "ask": "supported: --strict-mcp-config with no MCP config",
+    },
+    "codex": {
+        "interactive": "start and resume carry the join or continuation prompt",
+        "capture": "exact ID from this launch's new rollout under CODEX_HOME/sessions, "
+        "else the operator-supplied ID",
+        "ask": "supported: -c mcp_servers.robomate.enabled=false",
+    },
+    "opencode": {
+        "interactive": "start and resume carry the join or continuation prompt",
+        "capture": "no automatic capture; the operator supplies the exact ID "
+        "(`opencode session list`)",
+        "ask": "supported: the robomate MCP server is disabled in OPENCODE_CONFIG_CONTENT",
+    },
+    "antigravity": {
+        "interactive": "start prints the join line for the operator; resume opens the exact "
+        "conversation",
+        "capture": "no automatic capture; the operator supplies the exact ID from the "
+        "harness's session list",
+        "ask": "refused: no tested per-launch switch disables the effective robomate MCP entry",
+    },
+    "devin": {
+        "interactive": "start prints the join line for the operator; resume opens the exact "
+        "conversation",
+        "capture": "interactive has no automatic capture (operator ID); a headless launch "
+        "reads the ATIF export",
+        "ask": "refused: no tested per-launch switch disables the effective robomate MCP entry",
+    },
+}
+#: Harnesses that accept the join or continuation as the first interactive prompt.
+PROMPTED_HARNESSES = ("claude-code", "codex", "opencode")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 #: The xdist budget a scripted run gives each agent (prepare-run's ``pytest_workers``).
 PYTEST_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
@@ -1112,6 +1170,16 @@ def stop_orphaned(log: Path, agent: str) -> int:
     return 0
 
 
+def stop_note(agent: str) -> str:
+    """What stays true after a local stop, and how the operator relaunches (#660)."""
+
+    return (
+        "The hub's workflow and agent rows were left as they are, and nothing supervises the "
+        f"agent until you relaunch: {agent} uses a fresh `agent-launcher.py start` for a new "
+        f"workflow, or `agent-launcher.py resume {agent}` only to continue the same one."
+    )
+
+
 def stop_agent(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     """Stop the agent's launcher, or its recorded harness, without touching the hub."""
 
@@ -1135,8 +1203,12 @@ def stop_agent(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
                 f"A launcher holds {args.agent}'s lock but recorded no PID. Inspect that "
                 "process yourself; nothing was changed.",
             )
-        return stop_launcher(log, args.agent, pid)
-    return stop_orphaned(log, args.agent)
+        code = stop_launcher(log, args.agent, pid)
+    else:
+        code = stop_orphaned(log, args.agent)
+    if code == 0:
+        say(stop_note(args.agent))
+    return code
 
 
 # -- supervised launchers -------------------------------------------------------------
@@ -1175,6 +1247,58 @@ class Joined(common.Launcher):
 
     def start_name(self) -> str:
         return f"agent-launcher.py start {self.agent}"
+
+    def stopped_note(self, reason: str, workflow: dict[str, Any] | None) -> str | None:
+        """The per-workflow contract in the operator's words (#465, M3 Step 6).
+
+        The hub's standby policy keeps agent rows for a queued or next run, but
+        this launcher supervises one workflow: the next run needs a fresh
+        launcher and must never inherit this conversation as its supervisor.
+        """
+        if reason == "released":
+            return (
+                f"{self.agent} was released by the hub, so this supervisor is finished. "
+                "Supervision is per workflow: start a fresh launcher when the agent is next "
+                "needed."
+            )
+        run = (workflow or {}).get("run_id")
+        where = f" {run}" if isinstance(run, str) and run else ""
+        successor = (workflow or {}).get("successor")
+        if isinstance(successor, str) and successor:
+            successor_run = (workflow or {}).get("successor_run_id")
+            following = (
+                f" {successor_run}" if isinstance(successor_run, str) and successor_run else ""
+            )
+            head = (
+                f"workflow{where} is no longer the hub's live workflow: it ended and the hub "
+                f"moved to {successor}{following}"
+            )
+        else:
+            head = f"workflow{where} is done"
+        agent = (workflow or {}).get("agent")
+        kept = (
+            " The hub keeps the agent row joined (on_done standby or a queued run), but "
+            "supervision does not follow it."
+            if isinstance(agent, dict) and agent.get("status") != "released"
+            else ""
+        )
+        return (
+            f"{head}; this launcher supervised that workflow only and is stopping.{kept} "
+            f"Start a fresh launcher ({self.start_name()} ...) for the next queued or new "
+            "workflow; this conversation is never resumed for another workflow."
+        )
+
+    def workflow_moved_on(self, workflow: dict[str, Any] | None) -> bool:
+        """A pinned workflow replaced by a live one ended, not an identity error (#660).
+
+        One workflow runs at a time, so a different live workflow after this
+        launcher pinned one can only mean the pinned workflow ended and a
+        queued run was activated. Stop for the pinned workflow and name the
+        successor; never adopt it. A manual resume keeps the strict identity
+        refusal, because it names the conversation and workflow to continue.
+        """
+
+        return not getattr(self.args, "resume_session", None)
 
     def ask_hint(self) -> str:
         """The full ask command, runnable from any directory and naming the hub (#491)."""
@@ -1317,6 +1441,11 @@ class Joined(common.Launcher):
             # An earlier run, finished before this start: not this agent's (#223).
             self.workflow_id = None
             return None
+        if pinned is None and workflow is not None and self.workflow_id is not None:
+            say(
+                f"supervising workflow {workflow['id']} ({workflow['status']}); this launcher "
+                "follows one workflow and stops when it is done"
+            )
         if workflow is not None and workflow.get("run_id"):
             self.run_id = str(workflow["run_id"])
         return workflow
@@ -1345,6 +1474,7 @@ class JoinedOrchestrator(Joined):
         if self.pending_stop is None and self.bridge_completed_run():
             self.log("stop", reason="done", workflow_status="done", resumes=resumes)
             say(f"workflow done after {resumes} automatic resume(s) (confirmed by the bridge)")
+            self.announce_stop("done", {"id": self.workflow_id, "run_id": self.run_id})
             return "done"
         workflow = self.read_hub()
         if (
@@ -2029,9 +2159,11 @@ def ask(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     harness = str(saved["harness"])
     if harness not in ASK_HARNESSES:
         raise Usage(
-            f"{harness} has no flag or variable that switches its robomate server off, so "
-            "asking would leave the hub tools live; open the conversation by hand with that "
-            "server disabled in its configuration"
+            f"{harness} has no tested flag or variable that switches its robomate MCP server "
+            "off for one launch, so asking would leave the hub tools live. Open the recorded "
+            "conversation by hand with the robomate server absent from a separate profile, or "
+            "stop the agent and use `resume` for hub work; see "
+            "docs/development/agent-recovery.md#asking-an-agent"
         )
     try:
         # One harness per log: start sets an earlier harness's log aside.

@@ -1332,6 +1332,130 @@ def _last_call_text(activity: dict[str, Any]) -> str:
     return f"{_printable(kind)} {when}"
 
 
+def _idle_after_s(status: dict[str, Any]) -> float:
+    """The hub's idle threshold, or the shipped default for an older hub (#660)."""
+
+    value = status.get("idle_after_s")
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    from agent_hub.activity import IDLE_AFTER_S
+
+    return IDLE_AFTER_S
+
+
+def _listening_state(status: dict[str, Any], agent: dict[str, Any]) -> str | None:
+    """Derive one agent's operator listening state from existing status fields (#660).
+
+    ``None`` means the hub predates the activity assessment (#144), so there
+    is nothing to derive. The states keep the healthy hold, an open task, the
+    terminal run, a queued run and the released/lost lifecycle separate; only
+    ``not_listening`` warrants a nudge.
+    """
+
+    activity = agent.get("activity")
+    if not isinstance(activity, dict) or "silence_s" not in activity:
+        return None
+    if agent.get("status") == "released":
+        return "released"
+    if agent.get("status") == "lost" or not agent.get("alive", True):
+        return "lost"
+    workflow = status.get("workflow")
+    run_status = workflow.get("status") if isinstance(workflow, dict) else None
+    if run_status in ("paused", "escalated"):
+        return str(run_status)
+    if workflow is None:
+        return "no_run"
+    if run_status == "queued":
+        return "queued"
+    if run_status == "done":
+        return "done"
+    if activity.get("holding"):
+        return "holding"
+    if agent.get("current_task"):
+        return "working"
+    silence = _seconds(activity.get("silence_s"))
+    if silence is not None and silence.total_seconds() >= _idle_after_s(status):
+        return "not_listening"
+    return "recent"
+
+
+def _listening_lines(status: dict[str, Any], agent: dict[str, Any]) -> list[str]:
+    """The operator's continuation hint below one agent line (#660).
+
+    The nudge in a live session is the primary remedy; the exact-session
+    resume is for a CLI that already exited. Both are prompts to the operator:
+    neither grants workflow, task or role authority.
+    """
+
+    state = _listening_state(status, agent)
+    activity = agent.get("activity")
+    if state is None or not isinstance(activity, dict):
+        return []
+    name = _printable(str(agent.get("name") or "-"))
+    if state == "holding":
+        hold = _printable(str(activity.get("holding") or "?"))
+        age = _seconds(activity.get("hold_age_s"))
+        waited = f" for {_age(age)}" if age is not None and age.total_seconds() >= 1 else ""
+        return [f"    listening: holding {hold}{waited}; no nudge needed"]
+    if state == "not_listening":
+        return [
+            f"    not listening: last hub call {_last_call_text(activity)}; no task or hold",
+            '      nudge its live session with "Continue."; if its CLI already exited, resume the '
+            f"exact conversation with agent-launcher.py resume {name} (never --last or --continue)",
+        ]
+    if state in ("paused", "escalated"):
+        return [
+            f"    workflow {state}: no nudge; the operator resolves it, then a fresh launcher "
+            "continues the run"
+        ]
+    if state == "no_run":
+        return ["    no workflow: wait for the submission, then start a fresh launcher"]
+    if state == "queued":
+        return ["    queued: this run has not started; start fresh launchers when it is active"]
+    if state == "done":
+        return [
+            "    workflow done: supervision is per workflow; start a fresh launcher for the "
+            "next queued or new run (this conversation is not reused)"
+        ]
+    # `working`, `recent`, `released` and `lost` already read distinctly above.
+    return []
+
+
+def _orchestrator_nudge_lines(status: dict[str, Any]) -> list[str]:
+    """Alice's continuation hint, kept apart from her bridge liveness (#660)."""
+
+    activity = status.get("orchestrator_activity")
+    workflow = status.get("workflow")
+    if not isinstance(activity, dict) or not isinstance(workflow, dict):
+        return []
+    orchestrator = status.get("orchestrator") or {}
+    name = (
+        (orchestrator.get("name") if isinstance(orchestrator, dict) else None)
+        or activity.get("last_call_actor")
+        or activity.get("actor")
+    )
+    if not isinstance(name, str) or not name:
+        return []
+    printable = _printable(name)
+    if activity.get("state") == "finished":
+        return [
+            "  workflow done: supervision is per workflow; start a fresh launcher for the next "
+            "queued or new run"
+        ]
+    if (
+        activity.get("state") == "idle"
+        and activity.get("bridge") == "connected"
+        and workflow.get("status") == "active"
+        and not status.get("tasks")
+    ):
+        return [
+            f'  not listening: nudge {printable}\'s live session with "Continue."; if its CLI '
+            "already exited, resume the exact conversation with agent-launcher.py resume "
+            f"{printable}"
+        ]
+    return []
+
+
 def _activity_lines(status: dict[str, Any]) -> list[str]:
     """One headline line per agent, orchestrator included (#653).
 
@@ -1878,7 +2002,14 @@ def _status(
     print(f"Queue length: {queue_length}")
     for entry in queue:
         print(f"  queued {entry.get('run_id', '-')}: {entry.get('statement_sha256', '-')}")
+    if queue:
+        print(
+            "  next run: supervision is per workflow; start a fresh launcher for each agent "
+            "once it is active"
+        )
     for line in _orchestrator_lines(status):
+        print(line)
+    for line in _orchestrator_nudge_lines(status):
         print(line)
     # Absent from a hub older than #144, which may still be running.
     stalled = False
@@ -1935,6 +2066,8 @@ def _status(
             print(f"    {_stall_evidence(agent['activity'])}")
             if agent["harness"] == "opencode":
                 permission_line(agent["name"])
+        for listening_line in _listening_lines(status, agent):
+            print(listening_line)
         agent_activity = agent.get("activity") or {}
         if agent_activity.get("redelivery_count", 0) >= 2:
             print(

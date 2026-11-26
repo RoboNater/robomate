@@ -746,6 +746,14 @@ def test_status_lists_workers_that_checked_in_before_the_workflow(
     assert store.sweep_stalls() == [] and store.stall_episodes() == []
 
 
+def test_status_names_the_idle_threshold_for_the_not_listening_hint(hub: HubStore) -> None:
+    """#660: status carries the same idle threshold the orchestrator state uses."""
+
+    status = hub.status_summary()
+    assert status["idle_after_s"] == 120.0
+    assert isinstance(status["idle_after_s"], float)
+
+
 @pytest.mark.parametrize("recover", [False, True])
 def test_host_pause_grace_suppresses_worker_and_orchestrator_stalls(
     hub: HubStore, clock: FakeClock, recover: bool

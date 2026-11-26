@@ -116,6 +116,24 @@ handler as SIGTERM, so the loop records the child's `exit` and the bridge's
 `--confirm-stopped` (#534). Windows keeps the `KeyboardInterrupt` fallback,
 which records the child's `exit` row before the stop.
 
+### Per-workflow supervision and the next run
+
+The launcher supervises one workflow (#465, M3 Step 6). It pins the workflow it
+first sees, follows it through `done` or a worker's release, then stops with a
+message naming a fresh `start` for the next run. `on_done: standby` and a
+queued run keep the hub's agent rows joined, but they do not extend
+supervision: start each agent again when the next run is active. A fresh
+`start` always begins a new conversation and sends only the join line, so an
+earlier run's conversation, task or kickoff is never adopted. If the hub moves
+to the successor workflow while a child still runs (the pinned run finished and
+a queued run was activated), the launcher stops for the pinned workflow and
+names the successor instead of adopting it. `resume` continues only the pinned
+conversation and workflow; a different hub or workflow is refused before any
+launch, and `--confirm-stopped` or `--force` never bypass those identity
+checks. `robomate status` lists a queued run with the same per-workflow
+reminder and prints the "not listening" nudge described under
+[an agent that stops working](#an-agent-that-stops-working-but-keeps-running).
+
 ### Resuming by hand
 
 ```sh
@@ -171,7 +189,9 @@ SIGKILLed launcher with no stop afterwards, a host crash where the harness is
 gone too, or a log written before this change. On Windows the launcher cannot
 receive a console-safe per-process SIGTERM, so `stop` terminates it and then
 terminates its orphaned harness with the same reuse check, recording the
-`exit` row on the launcher's behalf.
+`exit` row on the launcher's behalf. A stop never changes hub state and never
+replaces the stopped supervisor: `start` again for the next workflow, and use
+`resume` only inside the same one.
 
 ### Asking an agent
 
@@ -183,8 +203,10 @@ uv run --project <robomate checkout> python scripts/agent-launcher.py ask bob [I
 interactively in its worktree with its hub tools switched off, and needs no
 hub and changes no run file: Claude Code with `--strict-mcp-config` and no
 MCP config, Codex with `mcp_servers.robomate.enabled=false`, OpenCode through
-`OPENCODE_CONFIG_CONTENT`. AntiGravity and Devin have no flag or variable for
-it, so `ask` refuses them rather than leave the hub tools live.
+`OPENCODE_CONFIG_CONTENT`. AntiGravity and Devin have no tested per-launch
+switch for it, so `ask` refuses them rather than leave the hub tools live;
+reopen the conversation by hand with the robomate server absent from a
+separate profile (see the [adapter matrix](#adapter-matrix)).
 
 ### Interactive starts and resumes
 
@@ -211,6 +233,28 @@ and pass it to `resume <agent> --resume-session ID`, which records it with
 `conversation_source: operator` before the usual guards, or to
 `ask <agent> ID`. Recovery refuses to guess an ID, and never uses `--last` or
 `--continue`.
+
+### Adapter matrix
+
+The joined launcher's contract per harness (#465, M3 Step 6). The `ADAPTERS`
+table in `agent-launcher.py` is the checked source; `test_agent_launcher.py`
+compares it with each code path. An interactive start for Claude Code, Codex or
+OpenCode carries the join line as its first prompt, and a continuation on
+resume. For AntiGravity and Devin the launcher prints the line for you to type.
+
+| Harness | Interactive start / resume | Exact-ID capture, or fallback | Hub-free `ask` |
+|---|---|---|---|
+| Claude Code | Join or continuation is the first prompt; resume opens the exact UUID | The launcher chooses the exact UUID for a new conversation | Supported: `--strict-mcp-config` with no MCP config |
+| Codex | Join or continuation is the first prompt; resume opens the exact ID | This launch's new rollout under `CODEX_HOME/sessions`; otherwise the operator's exact ID | Supported: `-c mcp_servers.robomate.enabled=false` |
+| OpenCode | Join or continuation is the first prompt; resume opens the exact session | No automatic capture; supply the ID from `opencode session list` | Supported: the robomate server is disabled in `OPENCODE_CONFIG_CONTENT` (2.x proof; 1.x `mcp.robomate` off) |
+| AntiGravity | Start prints the join line; resume opens `--conversation ID` | No automatic capture; supply the ID from the harness's session list | **Refused:** no tested per-launch switch disables the effective robomate MCP entry. Reopen the conversation by hand with that server absent from a separate profile/home. |
+| Devin CLI | Start prints the join line; resume opens `--resume ID` | Interactive has no automatic capture; a headless launch reads its ATIF export (`--export`) | **Refused:** same limit and separate-profile remedy as AntiGravity. |
+| Cline, Devin Local | No launcher adapter: hand-start in the worktree and paste the join or continuation | Use the original IDE conversation | No launcher adapter |
+
+Without automatic capture, `resume <agent> --resume-session ID` records the
+operator's exact ID with `conversation_source: operator` before the usual
+guards, and `ask <agent> ID` opens it without the hub. Never use `--last` or
+`--continue`: they may pick another agent's conversation.
 
 ### Remote hosts
 
@@ -268,10 +312,14 @@ MCP isolation and decisions during recovery.
 
 ### Limits
 
-- A worker whose workflow ends with `on_done: standby` stays joined, but its
-  launcher is pinned to the finished workflow: once that harness exits, the
-  launcher stops instead of following the next run. Start it again for the
-  next run; M3 decides on a supervisor command (§9.4).
+- Supervision is per workflow (#465, M3 Step 6). `on_done: standby` and a queued
+  run keep hub rows, but each next run needs a fresh `start`; an earlier run's
+  conversation is never reused as its supervisor. There is no persistent
+  cross-run supervision and no `robomate supervisor` subcommand in the MVP
+  (§9.4).
+- Interactive capture and hub-free `ask` follow the [adapter
+  matrix](#adapter-matrix); AntiGravity and Devin keep an explicit ask refusal
+  until a tested per-launch MCP-off switch exists.
 - Grants for OpenCode, AntiGravity and Devin, and all grants on Windows and
   macOS, are not measured; M3's `robomate certify` measures them.
 - Codex `-c` values reach a Windows npm `.cmd` shim through `cmd.exe`, which
@@ -591,6 +639,17 @@ the agent is still healthy, and the headline's `--activity` view condenses one
 line per agent for `watch`. Use the log path to read the harness's own log
 before acting; a long non-hub command still explains a silence without being a
 provider fault, and the stall evidence keeps its own wording.
+
+Before `STALLED`, a live agent with no task, no hold and no substantive hub
+call for the hub's `idle_after_s` (120 s) is **not listening**: its harness
+ended the turn. `robomate status` prints that agent's last hub call and the
+remedy: send `Continue.` in the live session, or, when its CLI already exited,
+resume the exact saved conversation with `agent-launcher.py resume <agent>`
+(takeover only for a conversation with a recorded join). A healthy hold, an
+open task, a released agent, a lost bridge, a paused or escalated workflow and
+a done or queued run print their own line instead, so a worker stalled with
+open work keeps its stall evidence rather than showing a nudge. The hint is an
+operator prompt; it grants no task or workflow authority and changes no state.
 A held `await_assignment`, `ask_alice` or `wait_for_event` is never a stall,
 however long the waiting goes on; an open operator question is not by itself
 an exemption, because Alice should be holding `wait_for_event` for its answer.
