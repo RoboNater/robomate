@@ -236,6 +236,9 @@ field, constant, query or validator), search the repository for its copies
 (guides, `prompts/`, scripts, docs, tests) and trace its callers and any readers
 of persisted data. Fix copies within the task's scope and report the rest
 separately. A reviewer reports every instance of the same defect as one finding.
+When a check or test covers a set (every place that sets an environment
+variable, every role guide), build the set by searching for its producers, not
+from a hand-kept list, and say in the PR how it was found.
 
 Keep work scoped to the assigned task and report unrelated findings
 separately. An issue that changes behaviour names, under Tests, the commands a

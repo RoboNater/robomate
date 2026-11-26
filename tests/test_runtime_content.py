@@ -1168,7 +1168,7 @@ def test_agent_stalled_with_pushed_head_inspects_pr_and_state() -> None:
 
 
 def test_agents_md_searches_copies_and_consumers_of_shared_changes() -> None:
-    """#588: a shared-behaviour change searches its copies and consumers first."""
+    """#588/#600: a shared change searches copies, and a set is found by its producers."""
 
     assert_fragments(
         read("AGENTS.md"),
@@ -1178,6 +1178,9 @@ def test_agents_md_searches_copies_and_consumers_of_shared_changes() -> None:
             "trace its callers and any readers of persisted data",
             "Fix copies within the task's scope and report the rest separately",
             "A reviewer reports every instance of the same defect as one finding",
+            "When a check or test covers a set (every place that sets an environment variable, "
+            "every role guide), build the set by searching for its producers, not from a "
+            "hand-kept list, and say in the PR how it was found",
         ),
     )
 
