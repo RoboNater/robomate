@@ -250,10 +250,11 @@ def policy_v2(
       - deny ``external_directory`` and outside/traversal paths for filesystem
         tools, then allow each assigned root (``<root>`` and ``<root>/*``);
       - re-append inherited filesystem-matching ``deny`` and ``ask`` rules, plus
-        any narrower ``allow`` that only carves out an exception to an earlier
-        re-added ``deny``/``ask`` (e.g. ``*.env.example`` under ``*.env.*``),
-        while dropping broad or outside-root allows (e.g. ``read *``,
-        ``edit /home/*``);
+        any narrower non-wildcard-leading relative ``allow`` that only carves
+        out an exception to an earlier re-added ``deny``/``ask`` (e.g.
+        ``src/*.env.example`` under ``*.env.*``), while dropping broad,
+        leading-wildcard, or outside-root allows (e.g. ``read *``,
+        ``*.env.example``, ``edit *.md``, ``edit /home/*``);
       - append ``read`` and ``external_directory`` denies for ``token_dir`` last.
     """
     build = copy.deepcopy(config.get("agents", {}).get("build", {}))
@@ -292,9 +293,11 @@ def policy_v2(
             permissions.append({"action": tool, "resource": f"{root_posix}/*", "effect": "allow"})
 
     # Re-append inherited filesystem-matching deny/ask rules, plus any narrow
-    # allow that only relaxes a preceding re-added deny/ask (e.g. *.env.example).
-    # Broad/outside allows (e.g. `read *`, `edit /home/*`) are intentionally dropped
-    # so they cannot reopen the narrow worktree boundary.
+    # relative allow without a leading wildcard that only relaxes a preceding
+    # re-added deny/ask (e.g. `src/*.env.example`). Broad, leading-wildcard, and
+    # outside-root allows (e.g. `read *`, `*.env.example`, `edit *.md`,
+    # `edit /home/*`) are intentionally dropped so they cannot reopen the narrow
+    # worktree boundary.
     readded: list[dict[str, Any]] = []
     for rule in inherited:
         if not _matches_fs_tool(rule.get("action")):
