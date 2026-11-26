@@ -74,11 +74,25 @@ FindingState = Literal[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class FindingObservation:
+    task_id: str
+    severity: str
+    text: str
+    review_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class FindingResponse:
+    task_id: str
+    detail: str
+    head_sha: str | None
+    pr_url: str | None
+
+
 @dataclass(slots=True)
 class FindingHistory:
-    observations: list[tuple[TaskEvidence, str, str]] = field(default_factory=list)
-    responses: list[tuple[TaskEvidence, str]] = field(default_factory=list)
-    dispositions: list[CloseoutItem] = field(default_factory=list)
+    events: list[FindingObservation | FindingResponse | CloseoutItem] = field(default_factory=list)
     state: FindingState = "unresolved"
 
 
@@ -134,7 +148,9 @@ def read_evidence(connection: Connection, workflow: Row) -> RunEvidence:
             ):
                 for finding in group:
                     entry = findings.setdefault(finding.id, FindingHistory())
-                    entry.observations.append((task, severity, finding.text))
+                    entry.events.append(
+                        FindingObservation(task.id, severity, finding.text, result.review_url)
+                    )
                     entry.state = "unresolved"
         elif isinstance(result, ImplementerResult):
             resolved = set(result.resolved_finding_ids or [])
@@ -151,12 +167,14 @@ def read_evidence(connection: Connection, workflow: Row) -> RunEvidence:
                 else:
                     entry.state = "resolved by implementer"
                     detail = "resolved"
-                entry.responses.append((task, detail))
+                entry.events.append(
+                    FindingResponse(task.id, detail, result.head_sha, result.pr_url)
+                )
         elif task is closeout_task and closeout_result is not None:
             for item in closeout_result.items:
                 if item.source in findings:
                     entry = findings[item.source]
-                    entry.dispositions.append(item)
+                    entry.events.append(item)
                     entry.state = "disposition recorded"
                 else:
                     other_items.append(item)
@@ -357,25 +375,31 @@ def render(report: RunReport) -> str:
         # Finding IDs are validated by the typed reviewer result.
         out.section(f"### {finding_id}")
         out.field("Finding status", entry.state)
-        blocking = {task.id for task, severity, _ in entry.observations if severity == "blocking"}
+        blocking = {
+            event.task_id
+            for event in entry.events
+            if isinstance(event, FindingObservation) and event.severity == "blocking"
+        }
         if any(
-            task.id in blocking and severity == "nonblocking"
-            for task, severity, _ in entry.observations
+            isinstance(event, FindingObservation)
+            and event.severity == "nonblocking"
+            and event.task_id in blocking
+            for event in entry.events
         ):
             out.section("A review recorded this ID as both blocking and nonblocking.")
-        for task, severity, text in entry.observations:
-            out.value(f"{severity.capitalize()} finding", text)
-            out.value("Review task ID", task.id)
-            if isinstance(task.result, ReviewerResult) and task.result.review_url is not None:
-                out.value("Review URL", task.result.review_url)
-        for task, detail in entry.responses:
-            out.field("Implementer response", detail)
-            out.value("Implementer task ID", task.id)
-            if isinstance(task.result, ImplementerResult):
-                out.value("Response head SHA", task.result.head_sha)
-                out.value("Response PR/MR", task.result.pr_url)
-        for item in entry.dispositions:
-            _render_disposition(out, item)
+        for event in entry.events:
+            if isinstance(event, FindingObservation):
+                out.value(f"{event.severity.capitalize()} finding", event.text)
+                out.value("Review task ID", event.task_id)
+                if event.review_url is not None:
+                    out.value("Review URL", event.review_url)
+            elif isinstance(event, FindingResponse):
+                out.field("Implementer response", event.detail)
+                out.value("Implementer task ID", event.task_id)
+                out.value("Response head SHA", event.head_sha)
+                out.value("Response PR/MR", event.pr_url)
+            else:
+                _render_disposition(out, event)
 
     _render_closeout(out, report)
     return out.text()
@@ -393,6 +417,16 @@ def _render_closeout(out: ReportMarkdown, report: RunReport) -> None:
     task, result = evidence.closeout_task, evidence.closeout_result
     if result is None:
         out.section("Completed typed closeout result not recorded.")
+        if (
+            task is not None
+            and isinstance(task.result, CloseoutResult)
+            and task.result.outcome in ("blocked", "failed")
+        ):
+            out.value("Closeout task ID", task.id)
+            out.field("Closeout attempt", task.result.outcome)
+            out.value("Closeout summary", task.result.summary)
+            if task.result.blocker is not None:
+                out.value("Closeout blocker", task.result.blocker)
     else:
         out.value("Closeout task ID", task.id if task else None)
         out.value("Closeout summary", result.summary)

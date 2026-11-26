@@ -169,7 +169,12 @@ def test_typed_snapshot_keeps_every_finding_and_step(
     assert "Finding status · unresolved" in finding_section(final, "r1-2")
     declined = finding_section(final, "r1-4")
     assert "Disposition · none" in declined and fenced("Out of scope") in declined
-    assert fenced("Disputed ID seen again") in declined
+    assert (
+        declined.index("Disputed nonblocking finding")
+        < declined.index("Implementer response · disputed")
+        < declined.index("Disputed ID seen again")
+        < declined.index("Disposition · none")
+    )
     assert "Disposition · issue" in finding_section(final, "r2-1")
     assert issue_url in finding_section(final, "r2-1")
     assert "Disposition · nit" in finding_section(final, "r2-2")
@@ -190,21 +195,29 @@ def test_typed_snapshot_keeps_every_finding_and_step(
     assert "Private instructions" not in final
 
 
-def test_draft_uses_current_closeout_checklist_after_a_failed_attempt(
-    hub_store: HubStore, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("outcome", ["blocked", "failed"])
+def test_draft_keeps_failed_or_blocked_closeout_until_retry(
+    hub_store: HubStore, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     store = hub_store
     store.check_in("bob")
     config = ResolvedConfig(closeout_steps=("Replaced checklist",))
     monkeypatch.setattr("agent_hub_common.load_config_layers", lambda **kwargs: config)
     failed = store.assign_task("bob", "closeout", "First attempt", "")
-    store.submit_result(failed.id, "bob", {"outcome": "failed", "summary": "Retry"})
+    store.submit_result(
+        failed.id,
+        "bob",
+        {"outcome": outcome, "summary": "Retry", "blocker": "Temporary failure"},
+    )
+    previous = store.read_run_report()
+    assert f"Closeout attempt · {outcome}" in previous
+    assert fenced("Retry") in previous and fenced("Temporary failure") in previous
     config = ResolvedConfig(closeout_steps=("Current step A", "Current step B"))
     store.assign_task("bob", "closeout", "Second attempt", "")
 
     draft = store.read_run_report()
     assert fenced("Current step A") in draft and fenced("Current step B") in draft
-    assert "Replaced checklist" not in draft
+    assert "Replaced checklist" not in draft and "Temporary failure" not in draft
     assert store.status_summary()["run"]["incomplete_closeout_steps"] == 2
 
 

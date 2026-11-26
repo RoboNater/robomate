@@ -53,7 +53,7 @@ from agent_hub_common.registry import (
 )
 from agent_hub_common.startup import PREFIX as STAGE_PREFIX
 from conftest import reserve_port_block
-from delivery_support import finish_run
+from delivery_support import finish_run, seed_delivery
 from robomate.cli import _bind
 from timing import LIVENESS_S, FrozenClock, wait_until_sync
 
@@ -1995,10 +1995,10 @@ def test_status_shows_run_id_and_queue_length(
         stop(root, env, process)
 
 
-def _rpc_as_alice(url: str, token: str, method: str) -> dict[str, Any]:
+def _rpc_as_alice(url: str, token: str, method: str, **params: Any) -> dict[str, Any]:
     request = urllib.request.Request(
         f"{url}/rpc",
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}).encode(),
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -2006,7 +2006,7 @@ def _rpc_as_alice(url: str, token: str, method: str) -> dict[str, Any]:
             "X-Robomate-Session": "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a",
         },
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=LIVENESS_S) as response:
         body: dict[str, Any] = json.load(response)
     return body
 
@@ -2349,13 +2349,25 @@ def test_report_cli_matches_the_terminal_file_and_headline(
     repository: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     root, env = repository
-    process = start(root, env)
+    # Stub only the forge read in the child hub. The RPC and terminal export
+    # run in that process through the usual CLI and done entry points.
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "sitecustomize.py").write_text(
+        "from agent_hub.merge_gate import MergeGate\n"
+        "from delivery_support import DeliveredForge\n"
+        "async def delivered(self, pr_url, expected_head_sha):\n"
+        "    return DeliveredForge().reading(pr_url, expected_head_sha)\n"
+        "MergeGate.check = delivered\n",
+        encoding="utf-8",
+    )
+    child_pythonpath = os.pathsep.join(
+        filter(None, (str(shim), str(Path(__file__).resolve().parent), env.get("PYTHONPATH")))
+    )
+    process = start(root, {**env, "PYTHONPATH": child_pythonpath})
     try:
         info = await_hub(root, process)
-        store = HubStore(
-            hub_state(root) / "hub.db",
-            issue_url_base="https://github.com/example/repo/issues/",
-        )
+        store = HubStore(hub_state(root) / "hub.db")
         workflow_id = store.start_workflow("Address issue `example/repo#43`", source="submit:issue")
         run_id = store.get_workflow(workflow_id)["run_id"]
         report = hub_state(root) / "runs" / run_id / "report.md"
@@ -2375,11 +2387,21 @@ def test_report_cli_matches_the_terminal_file_and_headline(
         refused = command("report", environ=no_token)
         assert refused.returncode == 1 and "operator token" in refused.stderr
 
-        finish_run(store, "Done", actor="alice", session=None)
+        assert seed_delivery(store) == run_id
+        finished = _rpc_as_alice(
+            str(info["url"]),
+            hub_token(root).read_text(encoding="utf-8").strip(),
+            "set_workflow_status",
+            status="done",
+            summary="Done",
+            run_id=run_id,
+        )
+        assert "result" in finished, finished
         # Explicit selection works outside the hub checkout.
         result = command("report", run_id, "--hub", str(info["hub_id"]), cwd=tmp_path)
         assert result.returncode == 0, result.stderr
         assert result.stdout.startswith("# Final run report")
+        assert report.is_file(), "the hub subprocess must export the completed run"
         assert result.stdout == report.read_text(encoding="utf-8")
         redirected = subprocess.run(
             [CLI, "report", run_id],
