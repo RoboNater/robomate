@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS workflow (
     approved_sha TEXT,
     delivery_merged_sha TEXT,
     delivery_verified_at TEXT,
+    activated_at TEXT,
+    ci_watch_expired_at TEXT,
     FOREIGN KEY (statement_sha256) REFERENCES statement(sha256)
 );
 
@@ -212,8 +214,8 @@ CREATE TABLE IF NOT EXISTS ci_watch (
     workflow_id TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
     pr_url TEXT NOT NULL,
     head_sha TEXT NOT NULL,
-    deadline TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'settled', 'expired')),
+    deadline TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'settled')),
     active INTEGER NOT NULL CHECK (active IN (0, 1)),
     UNIQUE (workflow_id, pr_url)
 );
@@ -490,7 +492,14 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
             connection.execute(_canonical_tables()[table])
         _migrate_export_completion(connection, state_dir if state_dir is not None else path.parent)
         workflow_columns = _columns(connection, "workflow")
-        for column in ("pr_url", "approved_sha", "delivery_merged_sha", "delivery_verified_at"):
+        for column in (
+            "pr_url",
+            "approved_sha",
+            "delivery_merged_sha",
+            "delivery_verified_at",
+            "activated_at",
+            "ci_watch_expired_at",
+        ):
             if column not in workflow_columns:
                 connection.execute(f"ALTER TABLE workflow ADD COLUMN {column} TEXT")
 

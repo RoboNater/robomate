@@ -55,7 +55,7 @@ async def poll_ci_watches(store: HubStore, gate: ForgeGate) -> None:
 
     async def poll(watch: CiWatch) -> None:
         report = None
-        if store.clock() < watch.deadline:
+        if watch.deadline is None or store.clock() < watch.deadline:
             try:
                 async with asyncio.timeout(CI_WATCH_INTERVAL_S):
                     report = await gate.check(watch.pr_url, watch.head_sha, wait=False)

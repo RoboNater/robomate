@@ -1139,7 +1139,7 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | `get_statement(sha)` | worker, orchestrator | **new** (#9) |
 | `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
-| `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129); waits use the joined session’s hold cap (§9.2) |
+| `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129), `ci_settled` (payload `workflow_id`, `pr_url`, `head_sha`, `ci`, `checks`; #621), and `ci_watch_expired` (payload `workflow_id`, `pr_url`, `head_sha`, `deadline`; #621); waits use the joined session’s hold cap (§9.2) |
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub snapshots and appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` requires `run_id`, fresh delivery evidence and typed close-out (§7.3); `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
@@ -1352,8 +1352,12 @@ remedies; real harness grants and versions stay with Steps 8–9.
     A new head replaces the watched head. A merged or closed change request
     or a completed workflow ends the watch. The hub queues `ci_settled` once
     when CI leaves pending, including immediately when CI is already settled
-    at registration. `ci_watch_expired` reports that the workflow's
-    `max_wall_minutes` elapsed first, measured from its recorded creation time.
+    at registration. This includes `cancelled` and `no_checks` readings. A
+    subsequent foreground gate still gives those readings its usual bounded
+    polling window. `ci_watch_expired` reports once per workflow that
+    `max_wall_minutes` elapsed first. The deadline starts at activation, or
+    at creation for a workflow without a recorded activation time. A fresh
+    gate after expiry can start a watch for settlement again.
     For pending CI, wait in `wait_for_event()` while retaining the unacknowledged
     MERGE-source delivery. The connected hold renews that lease (#565). A
     settlement event prompts a fresh gate check with the approved head. A fresh

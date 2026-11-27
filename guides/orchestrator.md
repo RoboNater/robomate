@@ -358,9 +358,11 @@ Handle events as follows:
   `check_merge_gate` again with the approved head. A different event head can
   indicate a push, so use the fresh gate to route it. The MERGE-source delivery
   stays unacknowledged until its action finishes.
-- `ci_watch_expired`: if it refers to the change request in the current MERGE
-  action, escalate the elapsed wall-time rail. For either CI event, handle it
-  as stale if its workflow or change request does not match the current action.
+- `ci_watch_expired`: for the current workflow, escalate the elapsed wall-time
+  rail. If the operator has already authorized continuation past that rail,
+  acknowledge the event and continue. Acknowledge either CI event as stale
+  when its workflow no longer matches, or when a settlement concerns a
+  change request outside the current MERGE action.
 - `agent_lost` or `lease_expired`: inspect all prior tasks and worker state.
   Reassign only when no matching replacement task exists and the remaining work
   and qualified worker are unambiguous; otherwise escalate. Never infer
@@ -623,9 +625,10 @@ Route every failed term rather than weakening the invariant:
   lease. Handle other inbox events as usual, keeping that source delivery out
   of their acknowledgements. On `ci_settled` for the gated head, call the gate
   again with the approved head and acknowledge the CI event after that read.
-  A same-PR event for another head calls for a fresh gate reading. On a wait
-  timeout, check the wall-time rail and recheck the gate if time remains.
-  Escalate when the rail expires or `ci_watch_expired` arrives.
+  A same-PR event for another head or a wait timeout calls for a fresh gate
+  reading. Escalate on `ci_watch_expired`. If the operator authorizes
+  continuation, resume and recheck the gate. A fresh pending reading
+  re-arms the watch for settlement.
 - `mergeable == unknown` with CI already settled: call the gate again until
   mergeability is known or the wall-time rail expires.
 - `ci == fail`: before assigning a repair, read the failed step and compare its

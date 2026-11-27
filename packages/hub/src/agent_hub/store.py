@@ -114,7 +114,7 @@ class CiWatch:
     id: int
     pr_url: str
     head_sha: str
-    deadline: datetime
+    deadline: datetime | None
 
 
 def _live_placeholders() -> str:
@@ -1127,8 +1127,8 @@ class HubStore:
                 stored_policy = _json_object(oldest["policy_json"]) or {}
                 if oldest["goal"] == goal and stored_policy == requested_policy:
                     connection.execute(
-                        "UPDATE workflow SET status = ? WHERE id = ?",
-                        (WorkflowStatus.ACTIVE.value, oldest["id"]),
+                        "UPDATE workflow SET status = ?, activated_at = ? WHERE id = ?",
+                        (WorkflowStatus.ACTIVE.value, now_iso, oldest["id"]),
                     )
                     self._clear_stale_releases(connection)
                     workflow_id = str(oldest["id"])
@@ -1217,8 +1217,8 @@ class HubStore:
                     )
                 oldest = queued[0]
                 connection.execute(
-                    "UPDATE workflow SET status = ? WHERE id = ?",
-                    (WorkflowStatus.ACTIVE.value, oldest["id"]),
+                    "UPDATE workflow SET status = ?, activated_at = ? WHERE id = ?",
+                    (WorkflowStatus.ACTIVE.value, now_iso, oldest["id"]),
                 )
                 self._clear_stale_releases(connection)
                 workflow_id = str(oldest["id"])
@@ -2338,8 +2338,8 @@ class HubStore:
                 if queued:
                     oldest = queued[0]
                     connection.execute(
-                        "UPDATE workflow SET status = ? WHERE id = ?",
-                        (WorkflowStatus.ACTIVE.value, oldest["id"]),
+                        "UPDATE workflow SET status = ?, activated_at = ? WHERE id = ?",
+                        (WorkflowStatus.ACTIVE.value, self._now_iso(), oldest["id"]),
                     )
                     self._clear_stale_releases(connection)
                     activated_row = connection.execute(
@@ -2725,10 +2725,11 @@ class HubStore:
                         "SELECT * FROM ci_watch WHERE workflow_id = ? AND pr_url = ?",
                         (workflow_id, report.pr_url),
                     ).fetchone()
-                    policy = WorkflowPolicy.model_validate_json(live["policy_json"])
-                    deadline = _parse_timestamp(live["created"]) + timedelta(
-                        minutes=policy.max_wall_minutes
-                    )
+                    deadline = None
+                    if live["ci_watch_expired_at"] is None:
+                        policy = WorkflowPolicy.model_validate_json(live["policy_json"])
+                        activation = _parse_timestamp(live["activated_at"] or live["created"])
+                        deadline = activation + timedelta(minutes=policy.max_wall_minutes)
                     event_queued = self._update_ci_watch(
                         connection, workflow_id, previous, report, deadline
                     )
@@ -2740,7 +2741,10 @@ class HubStore:
         with database(self.path) as connection:
             return [
                 CiWatch(
-                    row["id"], row["pr_url"], row["head_sha"], _parse_timestamp(row["deadline"])
+                    row["id"],
+                    row["pr_url"],
+                    row["head_sha"],
+                    _parse_timestamp(row["deadline"]) if row["deadline"] is not None else None,
                 )
                 for row in connection.execute("SELECT * FROM ci_watch WHERE active = 1")
             ]
@@ -2758,7 +2762,7 @@ class HubStore:
                 event_queued = self._update_ci_watch(
                     connection, previous["workflow_id"], previous, report, watch.deadline
                 )
-            elif self._now() >= watch.deadline:
+            elif watch.deadline is not None and self._now() >= watch.deadline:
                 self._expire_ci_watch(
                     connection,
                     previous["workflow_id"],
@@ -2778,7 +2782,7 @@ class HubStore:
         workflow_id: str,
         previous: Row | None,
         report: GateReport,
-        deadline: datetime,
+        deadline: datetime | None,
     ) -> bool:
         pr_url, head_sha = report.pr_url, report.current_head_sha
         if report.pr_state is not PrState.OPEN:
@@ -2792,13 +2796,11 @@ class HubStore:
         same_head = previous is not None and previous["head_sha"] == head_sha
         previous_state = previous["state"] if same_head and previous is not None else None
         was_active = previous is not None and previous["active"]
-        if previous_state == "expired":
-            return False
         if not active and not was_active:
             if previous is not None and not same_head:
                 connection.execute("DELETE FROM ci_watch WHERE id = ?", (previous["id"],))
             return False
-        if self._now() >= deadline:
+        if deadline is not None and self._now() >= deadline:
             self._expire_ci_watch(connection, workflow_id, pr_url, head_sha, deadline)
             return True
 
@@ -2811,7 +2813,7 @@ class HubStore:
                 workflow_id,
                 pr_url,
                 head_sha,
-                to_iso(deadline),
+                to_iso(deadline) if deadline is not None else None,
                 "pending" if pending else "settled",
                 active,
             ),
@@ -2839,11 +2841,14 @@ class HubStore:
         head_sha: str,
         deadline: datetime,
     ) -> None:
+        # The rail applies once to the workflow. Any pending gate after the
+        # escalation can watch settlement again without this expired deadline.
         connection.execute(
-            "INSERT OR REPLACE INTO ci_watch"
-            " (workflow_id, pr_url, head_sha, deadline, state, active)"
-            " VALUES (?, ?, ?, ?, 'expired', 0)",
-            (workflow_id, pr_url, head_sha, to_iso(deadline)),
+            "UPDATE workflow SET ci_watch_expired_at = ? WHERE id = ?",
+            (self._now_iso(), workflow_id),
+        )
+        connection.execute(
+            "DELETE FROM ci_watch WHERE workflow_id = ? AND active = 1", (workflow_id,)
         )
         self._add_event(
             connection,
