@@ -1,7 +1,8 @@
 """Shared headless launcher mechanics for Alice and workers (#165).
 
 Standard library only: exact per-harness start/resume and conversation IDs,
-pinned hub reads, child supervision, session logs and #158 backoff.
+pinned hub reads, child supervision, session logs, #158 backoff and the #169
+warning/cap for a long-run failure loop.
 """
 
 from __future__ import annotations
@@ -37,6 +38,11 @@ DEFAULT_RESUME_DELAY_S = 5.0
 DEFAULT_RESUME_MAX_DELAY_S = 30 * 60.0
 DEFAULT_RESUME_TOTAL_S = 12 * 60 * 60.0
 DEFAULT_RESUME_SERIES_RESET_S = 5 * 60.0
+#: A long run that exits non-zero is a failed series reset (#169). Warn after
+#: this many in a row, and stop after ``DEFAULT_MAX_SERIES_RESETS``; a shorter
+#: run or a clean exit clears the count.
+DEFAULT_WARN_SERIES_RESETS = 3
+DEFAULT_MAX_SERIES_RESETS = 6
 DEFAULT_READ_RETRIES = 5
 #: ``workspace_setup``'s sentinel: prepare a uv project, do nothing elsewhere (#603).
 WORKSPACE_SETUP_AUTO = "auto"
@@ -60,6 +66,7 @@ EXIT_CANNOT_RESUME = 4
 EXIT_PAUSED = 5
 EXIT_NEVER_JOINED = 6
 EXIT_PROVIDER_ERROR = 7
+EXIT_SERIES_RESETS_SPENT = 8
 EXIT_INTERRUPTED = 130
 
 HARNESSES = ("claude-code", "codex", "opencode", "antigravity", "devin")
@@ -984,6 +991,10 @@ class Launcher:
             action = "start"
         resumes = 0
         failures_in_series = 0
+        # #169: consecutive runs that lasted the series-reset interval and then
+        # failed. A clean exit or a shorter run clears it, so a worker making
+        # progress in long runs is never counted as a crash loop.
+        consecutive_failed_resets = 0
         previous_error: ProviderSignature | None = None
         # The budget anchor: the first exit of the current series. Healthy
         # running time before it never spends the budget, and a series reset
@@ -1004,20 +1015,74 @@ class Launcher:
                 raise Stop(EXIT_INTERRUPTED, "interrupted", "interrupted")
             if self.resumable(exit_code, resumes) == "done":
                 return EXIT_DONE
-            if run_duration >= self.args.resume_series_reset_s and (failures_in_series or resumes):
+            long_run = run_duration >= self.args.resume_series_reset_s
+            if long_run and exit_code != 0:
+                consecutive_failed_resets += 1
+            else:
+                consecutive_failed_resets = 0
+            if long_run and (failures_in_series or resumes):
                 failures_in_series = 0
                 series_start = time.monotonic()
                 self.log(
                     "series_reset",
                     resumes=resumes,
                     run_duration_s=round(run_duration, 3),
+                    consecutive_failed_resets=consecutive_failed_resets,
                 )
                 say(
                     f"ran {run_duration:.0f} s, starting a new backoff series "
                     f"at {self.args.resume_delay_s:g} s"
                 )
-            if run_duration >= self.args.resume_series_reset_s:
+            if long_run:
                 previous_error = None
+            # #169: make a stuck long-run failure loop visible before it goes on
+            # forever, then stop it with the manual-resume instructions.
+            if (
+                self.args.max_series_resets
+                and consecutive_failed_resets >= self.args.max_series_resets
+            ):
+                self.log(
+                    "series_reset_cap",
+                    resumes=resumes,
+                    exit_code=exit_code,
+                    consecutive_failed_resets=consecutive_failed_resets,
+                )
+                raise Stop(
+                    EXIT_SERIES_RESETS_SPENT,
+                    "series_resets_spent",
+                    f"the harness exited (code {exit_code}) after running at least "
+                    f"{self.args.resume_series_reset_s:g} s for "
+                    f"{consecutive_failed_resets} consecutive runs, so automatic "
+                    "resumes are stuck in a long-run failure loop and have stopped. Run "
+                    f"{self.resume_name()} with no arguments to capture the snapshot and "
+                    "prepare recovery automatically; follow its prerequisite "
+                    "recommendations. (docs/development/agent-recovery.md).",
+                )
+            if (
+                self.args.warn_series_resets
+                and consecutive_failed_resets
+                and consecutive_failed_resets % self.args.warn_series_resets == 0
+            ):
+                self.log(
+                    "series_reset_warning",
+                    resumes=resumes,
+                    exit_code=exit_code,
+                    consecutive_failed_resets=consecutive_failed_resets,
+                    max_series_resets=self.args.max_series_resets or None,
+                )
+                say(
+                    f"WARNING: the harness exited (code {exit_code}) after running at "
+                    f"least {self.args.resume_series_reset_s:g} s "
+                    f"{consecutive_failed_resets} times in a row, so this may be a stuck "
+                    "long-run failure loop."
+                    + (
+                        f" Automatic resumes stop after {self.args.max_series_resets}."
+                        if self.args.max_series_resets
+                        else ""
+                    )
+                    + f" If it does not recover, run {self.resume_name()} after fixing "
+                    "the cause."
+                )
             observations = self.provider_observation
             signature: ProviderSignature | None = None
             if exit_code != 0 and observations and self.conversation:
@@ -1253,6 +1318,22 @@ def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Name
         f"(default {DEFAULT_RESUME_SERIES_RESET_S:g})",
     )
     parser.add_argument(
+        "--warn-series-resets",
+        type=int,
+        default=DEFAULT_WARN_SERIES_RESETS,
+        help="warn after this many consecutive runs that last at least "
+        "--resume-series-reset-s and exit non-zero "
+        f"(default {DEFAULT_WARN_SERIES_RESETS}; 0 disables the warning)",
+    )
+    parser.add_argument(
+        "--max-series-resets",
+        type=int,
+        default=DEFAULT_MAX_SERIES_RESETS,
+        help="stop automatic resumes after this many consecutive runs that last at "
+        "least --resume-series-reset-s and exit non-zero "
+        f"(default {DEFAULT_MAX_SERIES_RESETS}; 0 disables the cap)",
+    )
+    parser.add_argument(
         "--read-retries",
         type=int,
         default=DEFAULT_WORKER_READ_RETRIES if worker else DEFAULT_READ_RETRIES,
@@ -1277,6 +1358,19 @@ def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Name
         parser.error("--resume-total-s must not be negative")
     if not args.resume_series_reset_s >= 0:
         parser.error("--resume-series-reset-s must not be negative")
+    if args.warn_series_resets < 0:
+        parser.error("--warn-series-resets must not be negative")
+    if args.max_series_resets < 0:
+        parser.error("--max-series-resets must not be negative")
+    if (
+        args.max_series_resets > 0
+        and args.warn_series_resets
+        and args.warn_series_resets >= args.max_series_resets
+    ):
+        parser.error(
+            "--warn-series-resets must be less than --max-series-resets "
+            "(use 0 to disable the warning)"
+        )
     if args.read_retries < 1:
         parser.error("--read-retries must be at least 1")
     if not args.read_retry_delay_s >= 0:

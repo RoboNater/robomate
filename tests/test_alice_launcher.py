@@ -652,6 +652,8 @@ def test_a_manual_resume_of_a_done_or_missing_workflow_launches_nothing(
         ["--resume-max-delay-s", "-1"],
         ["--resume-total-s", "-1"],
         ["--resume-series-reset-s", "-1"],
+        ["--warn-series-resets", "-1"],
+        ["--max-series-resets", "-1"],
         ["--read-retries", "0"],
         ["--resume-session", "c-1"],
         ["--harness-typo"],
@@ -661,6 +663,25 @@ def test_invalid_options_are_refused(run_dir: Path, fake: Path, extra: list[str]
     with pytest.raises(SystemExit) as raised:
         LAUNCHER.parse_args(start_args(run_dir, fake, "claude-code", *extra))
     assert raised.value.code == 2
+
+
+def test_a_series_warning_threshold_at_or_above_the_cap_is_refused(
+    run_dir: Path, fake: Path
+) -> None:
+    for warn, cap in (("6", "6"), ("7", "6")):
+        with pytest.raises(SystemExit) as raised:
+            LAUNCHER.parse_args(
+                start_args(
+                    run_dir,
+                    fake,
+                    "claude-code",
+                    "--warn-series-resets",
+                    warn,
+                    "--max-series-resets",
+                    cap,
+                )
+            )
+        assert raised.value.code == 2
 
 
 def test_a_prompt_is_required_for_a_start(run_dir: Path, fake: Path) -> None:
@@ -1035,6 +1056,181 @@ def test_a_long_run_starts_a_new_series_at_the_short_delay(
     # 5 s, then the long run resets the series back to 5 s, then 10 s.
     assert delays == [5.0, 5.0, 10.0]
     assert [r["delay_s"] for r in records if r["event"] == "wait"] == [5.0, 5.0, 10.0]
+
+
+def long_runs(monkeypatch: pytest.MonkeyPatch, clock: FakeClock, codes: list[int]) -> None:
+    """Each child run lasts 60 s of launcher time and exits with ``codes`` in turn."""
+    real_run_child = LAUNCHER.Launcher.run_child
+    calls = 0
+
+    def run_child(launcher: Any, launch: Any, action: str, resumes: int) -> Any:
+        nonlocal calls
+        monkeypatch.setenv("FAKE_EXIT", str(codes[min(calls, len(codes) - 1)]))
+        code = real_run_child(launcher, launch, action, resumes)
+        # The fake clock is frozen while the child runs, so advance it here.
+        clock.now += 60.0
+        calls += 1
+        return code
+
+    monkeypatch.setattr(LAUNCHER.Launcher, "run_child", run_child)
+
+
+def test_a_long_run_failure_loop_warns_then_stops_with_manual_recovery(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#169: runs past the reset interval then fail every cycle; the cap stops it."""
+    clock = FakeClock(monkeypatch)
+    long_runs(monkeypatch, clock, [1])
+    result = LAUNCHER.main(
+        start_args(
+            run_dir,
+            fake,
+            "claude-code",
+            "--max-resumes",
+            "9",
+            "--resume-series-reset-s",
+            "30",
+            "--warn-series-resets",
+            "2",
+            "--max-series-resets",
+            "4",
+        ),
+        ScriptedReader(wf("active")),
+    )
+    assert result == LAUNCHER.EXIT_SERIES_RESETS_SPENT == 8
+    assert len(launches(run_dir)) == 4
+    records = sessions(run_dir)
+    warnings = [r for r in records if r["event"] == "series_reset_warning"]
+    assert [r["consecutive_failed_resets"] for r in warnings] == [2]
+    assert [r["max_series_resets"] for r in warnings] == [4]
+    cap = [r for r in records if r["event"] == "series_reset_cap"]
+    assert [r["consecutive_failed_resets"] for r in cap] == [4]
+    assert records[-1]["event"] == "stop"
+    assert records[-1]["reason"] == "series_resets_spent"
+    assert records[-1]["exit_code"] == LAUNCHER.EXIT_SERIES_RESETS_SPENT
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "Automatic resumes stop after 4" in err
+    assert "consecutive runs" in err and "resume-alice" in err
+    assert "docs/development/agent-recovery.md" in err
+    # Each 60 s run clears the backoff and refills the budget, as in #158.
+    assert [r["delay_s"] for r in records if r["event"] == "wait"] == [0.0, 0.0, 0.0]
+
+
+def test_a_clean_long_run_clears_the_failed_series_count(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#169: a long run that exits 0 is progress and keeps being resumed (#115)."""
+    clock = FakeClock(monkeypatch)
+    long_runs(monkeypatch, clock, [1, 1, 0, 1, 1])
+    result = LAUNCHER.main(
+        start_args(
+            run_dir,
+            fake,
+            "claude-code",
+            "--max-resumes",
+            "5",
+            "--resume-series-reset-s",
+            "30",
+            "--warn-series-resets",
+            "2",
+            "--max-series-resets",
+            "4",
+        ),
+        ScriptedReader(wf("active")),
+    )
+    assert result == LAUNCHER.EXIT_RESUMES_SPENT
+    assert len(launches(run_dir)) == 6
+    records = sessions(run_dir)
+    # Two warnings, one per two-failure streak; the clean exit in between resets.
+    warnings = [r for r in records if r["event"] == "series_reset_warning"]
+    assert [r["consecutive_failed_resets"] for r in warnings] == [2, 2]
+    assert not [r for r in records if r["event"] == "series_reset_cap"]
+    assert records[-1]["reason"] == "resumes_spent"
+    assert "automatic resumes are stuck" not in capsys.readouterr().err
+
+
+def test_short_failures_keep_todays_backoff_without_the_series_signal(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#169: ordinary crashes shorter than the reset interval are unchanged."""
+    clock = FakeClock(monkeypatch)
+    launcher = LAUNCHER.Launcher(
+        LAUNCHER.parse_args(
+            start_args(
+                run_dir,
+                fake,
+                "claude-code",
+                "--max-resumes",
+                "3",
+                "--resume-delay-s",
+                "5",
+                "--resume-series-reset-s",
+                "30",
+                "--warn-series-resets",
+                "1",
+                "--max-series-resets",
+                "2",
+            )
+        ),
+        ScriptedReader(wf("active")),
+    )
+    real_run_child = launcher.run_child
+
+    def run_child(launch: Any, action: str, resumes: int) -> Any:
+        monkeypatch.setenv("FAKE_EXIT", "1")
+        code = real_run_child(launch, action, resumes)
+        clock.now += 10.0  # shorter than --resume-series-reset-s
+        return code
+
+    delays: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        delays.append(seconds)
+        clock.now += seconds
+
+    launcher.run_child = run_child
+    launcher.sleep = sleep
+    with pytest.raises(LAUNCHER.Stop) as stopped:
+        launcher.run()
+    assert stopped.value.code == LAUNCHER.EXIT_RESUMES_SPENT
+    assert stopped.value.reason == "resumes_spent"
+    assert len(launches(run_dir)) == 4
+    records = sessions(run_dir)
+    assert not [r for r in records if r["event"] == "series_reset_warning"]
+    assert not [r for r in records if r["event"] == "series_reset_cap"]
+    assert delays == [5.0, 10.0, 20.0]
+    assert [r["delay_s"] for r in records if r["event"] == "wait"] == [5.0, 10.0, 20.0]
+
+
+def test_the_series_warning_can_run_without_the_cap(
+    run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#169: --max-series-resets 0 keeps resuming but warns at every threshold."""
+    clock = FakeClock(monkeypatch)
+    long_runs(monkeypatch, clock, [1])
+    result = LAUNCHER.main(
+        start_args(
+            run_dir,
+            fake,
+            "claude-code",
+            "--max-resumes",
+            "4",
+            "--resume-series-reset-s",
+            "30",
+            "--warn-series-resets",
+            "2",
+            "--max-series-resets",
+            "0",
+        ),
+        ScriptedReader(wf("active")),
+    )
+    assert result == LAUNCHER.EXIT_RESUMES_SPENT
+    assert len(launches(run_dir)) == 5
+    records = sessions(run_dir)
+    warned = [r for r in records if r["event"] == "series_reset_warning"]
+    assert [r["consecutive_failed_resets"] for r in warned] == [2, 4]
+    assert not [r for r in records if r["event"] == "series_reset_cap"]
+    assert "Automatic resumes stop" not in capsys.readouterr().err
 
 
 def test_an_interrupted_backoff_wait_stops_without_another_launch(

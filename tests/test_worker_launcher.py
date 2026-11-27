@@ -269,6 +269,55 @@ def test_worker_backoff_doubles_and_caps(
     assert len(launches(run_dir)) == 5
 
 
+def test_a_worker_long_run_failure_loop_warns_then_stops(
+    run_dir: Path,
+    fake: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#169: the shared warning/cap applies to workers and names resume-bob."""
+    clock = alice_tests.FakeClock(monkeypatch)
+    real_run_child = WORKER.common.Launcher.run_child
+    monkeypatch.setenv("FAKE_EXIT", "1")
+
+    def run_child(launcher: Any, launch: Any, action: str, resumes: int) -> Any:
+        code = real_run_child(launcher, launch, action, resumes)
+        clock.now += 60.0  # each run lasts the 30 s series-reset interval
+        return code
+
+    monkeypatch.setattr(WORKER.common.Launcher, "run_child", run_child)
+    result = WORKER.main(
+        worker_args(
+            run_dir,
+            fake,
+            "claude-code",
+            "--prompt",
+            str(run_dir / "alice.prompt.md"),
+            "--max-resumes",
+            "9",
+            "--resume-series-reset-s",
+            "30",
+            "--warn-series-resets",
+            "2",
+            "--max-series-resets",
+            "3",
+        ),
+        ScriptedReader(wf()),
+    )
+    assert result == WORKER.common.EXIT_SERIES_RESETS_SPENT == 8
+    assert len(launches(run_dir)) == 3
+    rows = sessions(run_dir)
+    assert [
+        r["consecutive_failed_resets"] for r in rows if r["event"] == "series_reset_warning"
+    ] == [2]
+    assert rows[-1]["event"] == "stop"
+    assert rows[-1]["reason"] == "series_resets_spent"
+    assert rows[-1]["exit_code"] == WORKER.common.EXIT_SERIES_RESETS_SPENT
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "resume-bob" in err
+    assert "docs/development/agent-recovery.md" in err
+
+
 def test_predecessor_wait_cannot_outlast_the_resume_budget(
     run_dir: Path, fake: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -173,7 +173,7 @@ and policy. Do not rerun `prepare-run.py` to resume: even the same issue or work
 file can render a different goal after a generator update. This also applies
 to older manifests containing `work.roadmap`; keep their saved goal unchanged.
 
-The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and the enabled tools listed in `ALICE_TOOLS` in `scripts/prepare-run.py`; a Codex worker gets the worker tools listed in `TOOLS` in `scripts/run_common.py`. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`.
+The run directory contains `configs/`, `alice-runtime/`, the worker clones, `*.prompt.md`, `start-*.sh` (or `*.ps1`), telemetry files, and `run.json`. Agent launch scripts use their own working directories. Start Alice, then each worker, in separate terminals. A Codex Alice gets a run-local `CODEX_HOME` with the orchestrator skill and the enabled tools listed in `ALICE_TOOLS` in `scripts/prepare-run.py`; a Codex worker gets the worker tools listed in `TOOLS` in `scripts/run_common.py`. Generated prompts ask each agent to keep working until released and then write its own closeout report. Every auto-started worker, on any harness and on either a local or remote host, runs under `scripts/worker-launcher.py`, which waits for an attached predecessor to detach or become lost and resumes the same conversation with a doubling backoff if the harness exits before Alice releases the worker and logs each wait and conversation ID to `<worker>-sessions.jsonl`; see [agent recovery](development/agent-recovery.md). An auto-started Alice, on any harness, runs under `scripts/alice-launcher.py`, which resumes her same conversation with the same backoff if she exits before the workflow is `done` and logs each launch and wait to `alice-sessions.jsonl`. A run that lasts the series-reset interval and then exits non-zero on every cycle is a long-run failure loop: the launcher warns after 3 in a row and stops after 6 with exit 8 and the manual-resume steps; a shorter run or a clean long run clears the count (#169).
 
 When automatic recovery stops, run `"$RUN_DIR/resume-alice.sh"`,
 `resume-bob.sh`, or `resume-charlie.sh` on that agent's host with no arguments
@@ -195,6 +195,8 @@ Preparation accepts a clone URL or a bare `owner/repo` slug. A slug uses `gh`'s 
 | `--merge-method`, `--allow-no-ci` | Set the workflow policy according to the repository's merge settings and CI. |
 | `--stall-after-min` | Set the policy's `stall_after_min`: minutes without agent activity before `robomate status` reports a stall (default 20). |
 | `--max-resumes`, `--resume-delay-s`, `--resume-max-delay-s`, `--resume-total-s`, `--resume-series-reset-s` | Bound both launchers' automatic resumes after an early exit: an optional count (`--max-resumes N`; 0 disables; default: no count limit), the first wait (default 5 s) doubling up to the cap (default 1800 s, about 30 minutes), the time since the current series' first exit after which resumes stop (default 43200 s, about 12 hours), and the run length that restarts the series at the short delay and refills the budget (default 300 s). |
+
+Both launchers also treat a long run that then fails on every cycle as a stuck loop: after 3 consecutive runs of at least `--resume-series-reset-s` that exit non-zero they warn on stderr and log `series_reset_warning`, and after 6 they stop with `series_resets_spent` and exit 8 plus the manual-resume steps. A shorter run or a clean long run clears the count, so ordinary crashes and healthy long runs keep resuming. Change the counts with the launcher options `--warn-series-resets` and `--max-series-resets` (0 disables either; preparation does not expose them, so add them before `--` in a generated start or resume script).
 
 For a Codex Alice, the generated `start-alice.sh` uses `codex exec -C . --skip-git-repo-check` because `alice-runtime/` is outside a git checkout. Interactive `--no-auto-start` launches omit that exec-only flag. `--bob-provider`, `--charlie-provider`, and capability flags override the worker profiles used by Alice's pairing policy.
 
@@ -452,7 +454,10 @@ policy model before anything starts. Rules that compare two fields, such as
 `stall_action_after_min` above `stall_after_min`, are left to `submit`, because
 a layer may set the other field. The launcher's resume bounds are top-level
 keys: `max_resumes` (-1, the default, is unlimited), `resume_delay_s`,
-`resume_max_delay_s`, `resume_total_s` and `resume_series_reset_s`.
+`resume_max_delay_s`, `resume_total_s` and `resume_series_reset_s`. The #169
+warning and cap keep their defaults (3 and 6 consecutive long failing runs); to
+change them, add `--warn-series-resets` or `--max-series-resets` before `--` in
+a generated start or resume script (0 disables either).
 
 Two prepared-run features have new homes. Per-agent `RUN_DIR/closeout/<agent>.md`
 reports are collected by the hub before release (#215). It exports them to
