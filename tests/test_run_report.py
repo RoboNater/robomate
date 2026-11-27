@@ -195,6 +195,51 @@ def test_typed_snapshot_keeps_every_finding_and_step(
     assert "Private instructions" not in final
 
 
+def test_merge_record_comment_and_run_report_read_the_same_delivery_facts(
+    store: HubStore,
+) -> None:
+    """#707/#452: the comment's four delivery facts equal the run report's."""
+
+    store.check_in("charlie")
+    review = store.assign_task("charlie", "reviewer", "Review", "", pr_head_sha=HEAD)
+    store.submit_result(
+        review.id,
+        "charlie",
+        ReviewerResult(
+            verdict=ReviewerVerdict.APPROVED,
+            pr_url=PR,
+            reviewed_head_sha=HEAD,
+            review_url=REVIEW_ONE,
+            summary="Approve",
+        ),
+    )
+    finish_run(store, "Done", actor="alice", session=None)
+
+    state = store.get_state()
+    workflow = state["workflow"]
+    review_url = next(
+        task["result"]["review_url"]
+        for task in state["tasks"]
+        if task["role"] == "reviewer" and task["result"]["verdict"] == ReviewerVerdict.APPROVED
+    )
+    facts = {
+        "PR/MR": workflow["pr_url"],
+        "Approved head SHA": workflow["approved_sha"],
+        "Merged SHA": workflow["delivery_merged_sha"],
+        "Review URL": review_url,
+    }
+    comment = (
+        "Merge record from the orchestrator: "
+        f"PR {facts['PR/MR']}; approved head {facts['Approved head SHA']} "
+        f"({facts['Review URL']}); merged {facts['Merged SHA']}."
+    )
+    report = store.read_run_report()
+    for label, value in facts.items():
+        assert value is not None
+        assert value in comment
+        assert f"{label}\n\n{fenced(value)}" in report, f"report disagrees on {label}"
+
+
 @pytest.mark.parametrize("outcome", ["blocked", "failed"])
 def test_draft_keeps_failed_or_blocked_closeout_until_retry(
     hub_store: HubStore, monkeypatch: pytest.MonkeyPatch, outcome: str

@@ -1116,6 +1116,88 @@ def test_orchestrator_appendices_read_back_the_merge_with_the_gate(appendix: str
         assert required in text, f"{appendix} missing {required!r}"
 
 
+def test_orchestrator_guide_posts_the_merge_record_comment_on_the_pr() -> None:
+    """#707: the PR, not only the hub log, carries the path from approval to merge."""
+
+    orchestrator = " ".join(
+        (CHECKED_IN_GUIDES / "orchestrator.md").read_text(encoding="utf-8").split()
+    )
+    merge = orchestrator.split("## MERGE", 1)[1].split("## Escalation", 1)[0]
+    for fragment in (
+        "After the merged read-back succeeds",
+        "agent-identified comment on the PR",
+        "`Orchestrator agent <name> on behalf of <account>`",
+        "orchestrator's merge record",
+        "`workflow.pr_url`",
+        "`workflow.approved_sha`",
+        "`workflow.delivery_merged_sha`",
+        "`ReviewerResult.review_url`",
+        "`robomate report <run>`",
+        "full 40-character SHA",
+        "approving review-comment URL",
+        "any CI failure on the approved head",
+        "pre-existing flake",
+        "matching failure on main at",
+        "any repair or re-run",
+        "the PR or issue that fixed it",
+        "any rebase: the base before and after",
+        "the new head",
+        "`conflict_files: []`",
+        "clean-rebase rule",
+        "focused re-review URL",
+        "any operator decision that changed the path",
+        "`question_id`",
+        "without speaking for the operator",
+        "the final check names and results",
+        "the merged SHA",
+        "one or two lines",
+    ):
+        assert fragment in merge, f"MERGE missing {fragment!r}"
+
+    wrap_up = orchestrator.split("## WRAP-UP", 1)[1]
+    for fragment in (
+        "`deliver: pr`",
+        "same agent-identified PR record comment",
+        "unmerged by policy",
+        "no merged SHA",
+    ):
+        assert fragment in wrap_up, f"WRAP-UP missing {fragment!r}"
+
+
+@pytest.mark.parametrize(
+    ("appendix", "command"),
+    [
+        ("orchestrator-github.md", "gh pr comment <pr_url> --body-file <file>"),
+        (
+            "orchestrator-gitlab.md",
+            "glab api --hostname <host> --method POST "
+            "projects/<group%2Fproject>/merge_requests/<iid>/notes -F body=@<file>",
+        ),
+    ],
+)
+def test_orchestrator_appendices_post_the_merge_record_comment(appendix: str, command: str) -> None:
+    """#707: each orchestrator appendix carries the merge-record comment command."""
+
+    text = " ".join((CHECKED_IN_GUIDES / "forge" / appendix).read_text(encoding="utf-8").split())
+    assert command in text, f"{appendix} missing the comment command"
+    for fragment in (
+        "merge-record comment",
+        "`Orchestrator agent <name> on behalf of <account>`",
+        "approved head (full SHA)",
+        "approving review-comment URL",
+        "CI-failure diagnosis",
+        "rebase",
+        "`conflict_files`",
+        "operator decision",
+        "`question_id`",
+        "final check names and results",
+        "merged SHA",
+        "`deliver: pr`",
+        "unmerged by policy",
+    ):
+        assert fragment in text, f"{appendix} missing {fragment!r}"
+
+
 @pytest.mark.parametrize(
     "appendix",
     ["github.md", "gitlab.md", "orchestrator-github.md", "orchestrator-gitlab.md"],

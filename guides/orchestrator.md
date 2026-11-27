@@ -655,9 +655,37 @@ escalate before WRAP-UP (also on the already-merged recovery path).
 Log the reviewed SHA, any rebase head, and merged SHA as full 40-character SHAs, plus the review-comment URL and every
 check name/bucket. Never merge from a stale or unreadable gate.
 
+After the merged read-back succeeds, post one short, agent-identified comment on
+the PR as `Orchestrator agent <name> on behalf of <account>`, saying it is the
+orchestrator's merge record. Take its PR/MR, approved head, merged SHA and
+review URL from the same stored hub facts the run report reads, so a later
+`robomate report <run>` reports the same four values: `workflow.pr_url`,
+`workflow.approved_sha`, `workflow.delivery_merged_sha` (until the run is done,
+the merge gate reading's `merged_sha`, which is the report's recorded-merge
+fallback), and the approving task's typed `ReviewerResult.review_url` from
+`get_state.tasks`. Do not restate them from separate prose. Summarize with
+links:
+
+- the approved head as a full 40-character SHA and the approving
+  review-comment URL;
+- any CI failure on the approved head: its diagnosis (for example "pre-existing
+  flake, #666; matching failure on main at `<sha>`"), any repair or re-run, and
+  the PR or issue that fixed it;
+- any rebase: the base before and after, the new head, and `conflict_files: []`
+  (approval was retained under the clean-rebase rule) or the focused re-review
+  URL if there were conflicts;
+- any operator decision that changed the path, such as authorizing a wait, a
+  rebase or a scope change, cited as its recorded operator-answer `question_id`
+  plus a brief neutral summary, without speaking for the operator;
+- the final check names and results, and the merged SHA.
+
+When the path was simple — approved, green, merged — one or two lines with the
+approved head, the review URL and the merged SHA are enough.
+
 For an explicit `deliver: pr` run, leave the PR open once the same review,
 head, CI, base and mergeability checks pass. Proceed to WRAP-UP at that head
-and record that the PR remains unmerged by policy.
+and record that the PR remains unmerged by policy; WRAP-UP posts the same record
+comment there.
 
 ## Escalation
 
@@ -791,6 +819,12 @@ quote it as a task requirement, not as operator authorization.
 ## WRAP-UP
 
 Use the [shared-body procedure](https://github.com/RoboNater/robomate/blob/main/docs/development/editing-shared-bodies.md) when editing shared issue or PR bodies.
+
+For an explicit `deliver: pr` run, post the same agent-identified PR record
+comment described in MERGE at WRAP-UP, at the approved head, saying the merge
+record is from the orchestrator and the PR remains unmerged by policy. Include
+the same approval, CI-failure, rebase, operator-decision and final-check facts,
+with no merged SHA. Keep it to one or two lines when the path was simple.
 
 <!-- Ownership and closure: spec §5 WRAP-UP, #42; counter-only target: #408. -->
 
