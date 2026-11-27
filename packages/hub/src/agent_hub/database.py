@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -23,6 +24,9 @@ from agent_hub_common import (
 )
 from agent_hub_common.startup import stage
 
+# v33 is #723's run attribution (workflow_id on event/decision/message),
+# `agent_released` event kind and `recorded` event state for hub-only records.
+# v32 is #621's (PR #727) schema.
 # v31 is #451's durable workflow PR, head and delivery evidence.
 # v30 is #450's stored closeout task context.
 # v29 is #423's durable workflow export completion marker.
@@ -54,7 +58,7 @@ from agent_hub_common.startup import stage
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 
 class DatabaseVersionError(RuntimeError):
@@ -188,25 +192,29 @@ CREATE TABLE IF NOT EXISTS task (
 CREATE TABLE IF NOT EXISTS message (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT,
+    workflow_id TEXT,
     context_id TEXT NOT NULL,
     sender TEXT NOT NULL,
     direction TEXT NOT NULL CHECK (direction IN ('to_alice', 'from_alice')),
     parts_json TEXT NOT NULL,
     ts TEXT NOT NULL,
-    FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE
+    FOREIGN KEY (task_id) REFERENCES task(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS event (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL CHECK (kind IN ({_sql_values(EventKind)})),
     payload_json TEXT NOT NULL,
+    workflow_id TEXT,
     state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ({_sql_values(EventState)})),
     delivery_id TEXT,
     delivery_attempts INTEGER NOT NULL DEFAULT 0,
     delivered_at TEXT,
     delivery_expires TEXT,
     acked_at TEXT,
-    ts TEXT NOT NULL
+    ts TEXT NOT NULL,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS ci_watch (
@@ -227,7 +235,9 @@ CREATE TABLE IF NOT EXISTS decision (
     rationale TEXT NOT NULL,
     key TEXT,
     actor TEXT,
-    session TEXT
+    session TEXT,
+    workflow_id TEXT,
+    FOREIGN KEY (workflow_id) REFERENCES workflow(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS operation (
@@ -368,9 +378,12 @@ CREATE INDEX IF NOT EXISTS idx_task_assignee ON task(assignee);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_source_event_id
     ON task(source_event_id) WHERE source_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_message_context_ts ON message(context_id, ts);
+CREATE INDEX IF NOT EXISTS idx_message_workflow ON message(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_event_state_id ON event(state, id);
 CREATE INDEX IF NOT EXISTS idx_event_delivery_id ON event(delivery_id);
+CREATE INDEX IF NOT EXISTS idx_event_workflow ON event(workflow_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_decision_key ON decision(key) WHERE key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_decision_workflow ON decision(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_call_log_actor ON call_log(actor, tool);
 CREATE INDEX IF NOT EXISTS idx_stall_episode_open ON stall_episode(cleared, role, actor);
 """
@@ -385,7 +398,7 @@ CREATE INDEX IF NOT EXISTS idx_stall_episode_open ON stall_episode(cleared, role
 # arrival order rather than the order `SCHEMA` declares. These are the tables
 # that drift (#59); v8 rebuilds them into the declared shape. `workflow` drifts
 # at v22 (new `run_id` UNIQUE, `statement_sha256`, and the `queued` CHECK).
-REBUILT_TABLES = ("agent", "task", "event", "decision", "operator_question", "workflow")
+REBUILT_TABLES = ("agent", "task", "event", "decision", "operator_question", "workflow", "message")
 
 _CREATE_TABLE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\(", re.IGNORECASE)
 
@@ -491,6 +504,7 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
         ):
             connection.execute(_canonical_tables()[table])
         _migrate_export_completion(connection, state_dir if state_dir is not None else path.parent)
+        _migrate_run_attribution(connection)
         workflow_columns = _columns(connection, "workflow")
         for column in (
             "pr_url",
@@ -622,6 +636,84 @@ def _migrate_workflow_branch(connection: sqlite3.Connection) -> None:
 
     if "branch" not in _columns(connection, "workflow"):
         connection.execute("ALTER TABLE workflow ADD COLUMN branch TEXT")
+
+
+def _migrate_run_attribution(connection: sqlite3.Connection) -> None:
+    """Add nullable run attribution to event/decision/message (M4 Step 6a, #723).
+
+    Every writer takes explicit attribution after this; the backfill here is
+    authoritative-only: messages from their task, events only where a valid
+    stored task/question/run reference establishes one workflow. Old decisions
+    with no authoritative reference stay NULL: prose, decision keys and
+    timestamp ranges are never parsed to invent an owner. True hub-level
+    records (for example host-pause diagnostics with no run) remain NULL.
+    """
+
+    for table in ("event", "decision", "message"):
+        if "workflow_id" not in _columns(connection, table):
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN workflow_id TEXT")
+
+    # Messages: authoritative task reference only.
+    connection.execute(
+        "UPDATE message SET workflow_id = (SELECT workflow_id FROM task"
+        " WHERE task.id = message.task_id)"
+        " WHERE task_id IS NOT NULL AND workflow_id IS NULL"
+        " AND EXISTS (SELECT 1 FROM task WHERE task.id = message.task_id)"
+    )
+
+    # Events: one workflow only when every valid stored reference agrees.
+    rows = connection.execute(
+        "SELECT id, payload_json FROM event WHERE workflow_id IS NULL"
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidates: set[str] = set()
+        has_conflict = False
+        task_id = payload.get("task_id")
+        if isinstance(task_id, str) and task_id:
+            task_row = connection.execute(
+                "SELECT workflow_id FROM task WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task_row is not None and task_row["workflow_id"] is not None:
+                candidates.add(str(task_row["workflow_id"]))
+        question_id = payload.get("question_id")
+        if isinstance(question_id, int):
+            question_row = connection.execute(
+                "SELECT workflow_id FROM operator_question WHERE id = ?", (question_id,)
+            ).fetchone()
+            if question_row is not None:
+                candidates.add(str(question_row["workflow_id"]))
+        payload_workflow_id = payload.get("workflow_id")
+        if isinstance(payload_workflow_id, str) and payload_workflow_id:
+            workflow_row = connection.execute(
+                "SELECT id FROM workflow WHERE id = ?", (payload_workflow_id,)
+            ).fetchone()
+            if workflow_row is not None:
+                candidates.add(str(payload_workflow_id))
+            # An unknown workflow_id reference establishes nothing.
+        run_id = payload.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            run_row = connection.execute(
+                "SELECT id FROM workflow WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run_row is not None:
+                candidates.add(str(run_row["id"]))
+        if len(candidates) == 1 and not has_conflict:
+            connection.execute(
+                "UPDATE event SET workflow_id = ? WHERE id = ?", (next(iter(candidates)), row["id"])
+            )
+
+    # Decisions stay NULL for legacy rows: no authoritative reference exists in
+    # the row itself, and prose/keys/timestamps must not invent one.
+
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_event_workflow ON event(workflow_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_workflow ON decision(workflow_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_message_workflow ON message(workflow_id)")
 
 
 def _migrate_lease_clock_shift(connection: sqlite3.Connection) -> None:

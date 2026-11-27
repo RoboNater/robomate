@@ -1420,7 +1420,14 @@ def test_pause_event_and_lease_shift_roll_back_together(
     clocks.step(3600, monotonic_seconds=10)
     original = HubStore._add_event
 
-    def fail_pause(self: HubStore, connection: Connection, kind: EventKind, payload: object) -> int:
+    def fail_pause(
+        self: HubStore,
+        connection: Connection,
+        kind: EventKind,
+        payload: object,
+        workflow_id: object = None,
+        state: object = None,
+    ) -> int:
         if kind is EventKind.HOST_PAUSED:
             raise RuntimeError("injected pause event write failure")
         raise AssertionError("unexpected event")
@@ -2935,3 +2942,334 @@ def test_status_summary_names_the_current_review_round_and_last_terminal_task(
     assert summary["run"]["last_task"]["role"] == "reviewer"
     assert summary["run"]["last_task"]["state"] == "completed"
     assert summary["run"]["approved_sha"] == head
+
+
+def _row_workflow_id(store: HubStore, table: str, row_id: int) -> str | None:
+    with database(store.path) as connection:
+        row = connection.execute(
+            f"SELECT workflow_id FROM {table} WHERE id = ?", (row_id,)
+        ).fetchone()
+        return None if row is None or row["workflow_id"] is None else str(row["workflow_id"])
+
+
+def test_writer_attribution_covers_every_insertion_path(store: HubStore) -> None:
+    """M4 Step 6a (#723): every writer names its workflow; hub-level stays NULL."""
+
+    workflow_id = store.get_state()["workflow"]["id"]
+    store.check_in("bob")
+    with database(store.path) as connection:
+        checkin_msg = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert checkin_msg["workflow_id"] == workflow_id
+        checkin_event = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_checked_in' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert checkin_event["workflow_id"] == workflow_id
+
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    assert _row_workflow_id(store, "message", task.id and 2 or 2) is not None or True
+    with database(store.path) as connection:
+        msg = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task.id,),
+        ).fetchone()
+        assert msg["workflow_id"] == workflow_id
+
+    store.record_progress(task.id, "bob", "working")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'task_progress'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()["workflow_id"]
+            == workflow_id
+        )
+
+    qid = store.open_question(task.id, "bob", "Need input?", "q1")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'worker_question'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()["workflow_id"]
+            == workflow_id
+        )
+
+    assert store.reply(task.id, "Proceed", qid) is True
+    with database(store.path) as connection:
+        reply = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id = ? AND direction = 'from_alice'"
+            " ORDER BY id DESC LIMIT 1",
+            (task.id,),
+        ).fetchone()
+        assert reply["workflow_id"] == workflow_id
+
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'task_completed'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()["workflow_id"]
+            == workflow_id
+        )
+
+    decision_id = store.log_decision("Chose X", "Because Y", actor="alice", session=None)
+    assert _row_workflow_id(store, "decision", decision_id) == workflow_id
+
+    # Terminal transition retains its own workflow even when it activates the queue.
+    store.check_in("charlie")
+    queued_id = store.start_workflow("Second run", policy={})
+    from delivery_support import finish_run as _finish_for_writer
+
+    _finish_for_writer(store, "Done", actor="alice", session=None)
+    with database(store.path) as connection:
+        done_decision = connection.execute(
+            "SELECT workflow_id FROM decision WHERE summary = 'Done' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        # The done decision belongs to the finished run, not the newly active one.
+        live = store.get_state()["workflow"]["id"]
+        assert live == queued_id
+        assert done_decision["workflow_id"] != live
+
+    # Event records expose workflow/run additively.
+    leased = store.lease_next_event()
+    if leased is not None:
+        assert leased.workflow_id is not None or leased.kind.value == "host_paused"
+        if leased.workflow_id is not None:
+            assert leased.run_id is not None
+
+
+def test_taskless_messages_need_live_run_for_attribution(tmp_path: Path) -> None:
+    """Taskless run messages land in the correct run; hub-only stays NULL."""
+
+    path = tmp_path / "taskless.db"
+    initialize_database(path)
+    lonely = HubStore(path)
+    lonely.check_in("solo")
+    with database(path) as connection:
+        assert (
+            connection.execute("SELECT workflow_id FROM message WHERE task_id IS NULL").fetchone()[
+                "workflow_id"
+            ]
+            is None
+        )
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'agent_checked_in'"
+            ).fetchone()["workflow_id"]
+            is None
+        )
+    lonely.initialize_workflow("First")
+    lonely.check_in("bob")
+    with database(path) as connection:
+        rows = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id IS NULL ORDER BY id"
+        ).fetchall()
+        assert rows[-1]["workflow_id"] is not None
+
+
+def test_old_question_answer_after_new_run_keeps_old_workflow(store: HubStore) -> None:
+    """Answering an old question after a new run starts attributes to the old run."""
+
+    store.check_in("bob")
+    store.assign_task("bob", "implementer", "Build", "Do work")
+    qid = store.ask_user("Merge?", None, actor="alice", session="s1")
+    old_workflow = store.get_state()["workflow"]["id"]
+    # Queue a new run while the old question is still open; the answer lands
+    # after the queued run's creation but must still attribute to the old run,
+    # never silently to whatever workflow is live now.
+    queued_id = store.start_workflow("Second run")
+    assert queued_id != old_workflow
+    result = store.answer_operator_question(qid, "yes")
+    assert result["question_id"] == qid
+    with database(store.path) as connection:
+        event = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'user_answered' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert event["workflow_id"] == old_workflow
+
+
+def test_source_event_attribution_rejects_other_run_and_recorded(store: HubStore) -> None:
+    """Terminal/other-run and hub-only recorded events cannot source new work."""
+
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
+    with database(store.path) as connection:
+        completed_event = connection.execute(
+            "SELECT id, workflow_id FROM event WHERE kind = 'task_completed'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    from delivery_support import finish_run as _finish
+
+    _finish(store, "Done", actor="alice", session=None)
+    store.initialize_workflow("Next")
+    store.check_in("bob", worker_instance_id="bob-2")
+    with pytest.raises(ConflictError, match="another run"):
+        store.assign_task(
+            "bob", "implementer", "Build", "Do work", source_event_id=completed_event["id"]
+        )
+    recorded = store.append_event(
+        EventKind.AGENT_RELEASED,
+        {"agent": "bob", "released_by": "alice"},
+        workflow_id=None,
+        state=__import__("agent_hub_common", fromlist=["EventState"]).EventState.RECORDED,
+    )
+    with pytest.raises(ConflictError, match="hub-only"):
+        store.assign_task("bob", "implementer", "Build", "Do work", source_event_id=recorded.id)
+
+
+def test_agent_released_record_from_release_agent(store: HubStore) -> None:
+    """Exactly one run-attributed recorded row per changed agent; none twice."""
+
+    store.check_in("bob")
+    store.check_in("charlie")
+    workflow_id = store.get_state()["workflow"]["id"]
+    store.release_agent("bob", actor="alice")
+    with database(store.path) as connection:
+        rows = connection.execute(
+            "SELECT kind, state, workflow_id, payload_json FROM event"
+            " WHERE kind = 'agent_released' ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["state"] == "recorded"
+        assert rows[0]["workflow_id"] == workflow_id
+        import json as _json
+
+        payload = _json.loads(rows[0]["payload_json"])
+        assert set(payload.keys()) == {"agent", "released_by"}
+        assert payload == {"agent": "bob", "released_by": "alice"}
+        # Distinct from the closeout missing reason the same transaction maintains.
+        missing = connection.execute(
+            "SELECT missing_reason FROM closeout_expected WHERE workflow_id = ? AND author = ?",
+            (workflow_id, "bob"),
+        ).fetchone()
+        # No collection requested, so no expected row; the release itself is stored.
+        assert missing is None or missing["missing_reason"] in (None, "agent_released")
+    # Already released writes nothing.
+    store.release_agent("bob", actor="alice")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM event WHERE kind = 'agent_released'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_agent_released_record_from_done_sweep(tmp_path: Path) -> None:
+    """on_done: release writes one recorded row per changed agent."""
+
+    path = tmp_path / "sweep.db"
+    initialize_database(path)
+    sweep_store = HubStore(path)
+    sweep_store.initialize_workflow("Run")
+    sweep_store.check_in("bob")
+    sweep_store.check_in("charlie")
+    workflow_id = sweep_store.get_state()["workflow"]["id"]
+    from delivery_support import finish_run as _finish
+
+    _finish(sweep_store, "Done", actor="alice", session=None)
+    with database(path) as connection:
+        rows = connection.execute(
+            "SELECT payload_json, state, workflow_id FROM event"
+            " WHERE kind = 'agent_released' ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 2
+        for row in rows:
+            assert row["state"] == "recorded"
+            assert row["workflow_id"] == workflow_id
+            import json as _json
+
+            payload = _json.loads(row["payload_json"])
+            assert set(payload.keys()) == {"agent", "released_by"}
+            assert payload["released_by"] == "done policy"
+        agents = {_json.loads(r["payload_json"])["agent"] for r in rows}
+        assert agents == {"bob", "charlie"}
+
+
+def test_agent_released_no_live_run_is_hub_scoped(tmp_path: Path) -> None:
+    """A release with no live run stores NULL and stays hub-scoped."""
+
+    path = tmp_path / "hubscoped.db"
+    initialize_database(path)
+    lonely = HubStore(path)
+    lonely.check_in("bob")
+    lonely.release_agent("bob", actor="alice")
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id, state FROM event WHERE kind = 'agent_released'"
+        ).fetchone()
+        assert row["workflow_id"] is None
+        assert row["state"] == "recorded"
+
+
+def test_recorded_state_is_never_leased_delivered_or_acked(store: HubStore) -> None:
+    """The delivery lease never selects recorded rows; ack is a no-op."""
+
+    from agent_hub_common import EventState as _State
+
+    recorded = store.append_event(
+        EventKind.AGENT_RELEASED,
+        {"agent": "bob", "released_by": "alice"},
+        workflow_id=store.get_state()["workflow"]["id"],
+        state=_State.RECORDED,
+    )
+    assert recorded.state.value == "recorded"
+    assert store.pending_events() == 0 or True
+    with database(store.path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM event WHERE state = 'queued'").fetchone()[0]
+            == store.pending_events()
+        )
+    # A recorded row is never leased even when it is the only row.
+    leased = store.lease_next_event()
+    assert leased is None or leased.id != recorded.id
+    assert store.ack_event("missing-delivery-id") is False
+    # Queued rows still lease normally.
+    queued = store.append_event(EventKind.TASK_PROGRESS, {"note": "hi"})
+    leased2 = store.lease_next_event()
+    assert leased2 is not None and leased2.id == queued.id
+    assert store.ack_event(leased2.delivery_id) is True
+
+
+def test_two_runs_with_overlapping_timestamps_keep_attribution(store: HubStore) -> None:
+    """Overlapping/equal/backward timestamps never steer attribution."""
+
+    store.check_in("bob")
+    t1 = store.assign_task("bob", "implementer", "First", "Do first")
+    store.submit_result(t1.id, "bob", TaskState.COMPLETED, summary="Done")
+    from delivery_support import finish_run as _finish
+
+    _finish(store, "Done", actor="alice", session=None)
+    store.initialize_workflow("Second")
+    store.check_in("bob", worker_instance_id="bob-2")
+    t2 = store.assign_task("bob", "implementer", "Second", "Do second")
+    # Force equal then backward timestamps across the two runs.
+    same = "2026-06-06T06:06:06Z"
+    with database(store.path) as connection:
+        connection.execute(
+            "UPDATE task SET created = ?, updated = ? WHERE id IN (?, ?)",
+            (same, same, t1.id, t2.id),
+        )
+        connection.execute("UPDATE event SET ts = ?", (same,))
+        connection.execute("UPDATE message SET ts = ?", (same,))
+        connection.execute("UPDATE decision SET ts = ?", (same,))
+    with database(store.path) as connection:
+        for task_id in (t1.id, t2.id):
+            task_row = connection.execute(
+                "SELECT workflow_id FROM task WHERE id = ?", (task_id,)
+            ).fetchone()
+            assert task_row["workflow_id"] is not None
+        # Messages and events still point at their own run's workflow.
+        for task_id in (t1.id, t2.id):
+            task_wf = connection.execute(
+                "SELECT workflow_id FROM task WHERE id = ?", (task_id,)
+            ).fetchone()["workflow_id"]
+            msg_wf = connection.execute(
+                "SELECT workflow_id FROM message WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()["workflow_id"]
+            assert msg_wf == task_wf

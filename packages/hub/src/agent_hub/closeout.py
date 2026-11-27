@@ -353,6 +353,7 @@ def submit(
                 connection,
                 EventKind.CLOSEOUT_REPORT_SUBMITTED,
                 {"run_id": run_id, "author": author, "report_id": report_id},
+                str(run["id"]),
             )
         receipt = {
             "report_id": report_id,

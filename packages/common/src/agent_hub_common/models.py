@@ -109,6 +109,10 @@ class EventKind(StrEnum):
     CLOSEOUT_REPORT_SUBMITTED = "closeout_report_submitted"
     CI_SETTLED = "ci_settled"
     CI_WATCH_EXPIRED = "ci_watch_expired"
+    # Hub-only release record for the timeline (M4 Step 6a, #723): one per
+    # agent whose status changes, in the same transaction as that update,
+    # attributed to the run being released. Never leased, delivered or acked.
+    AGENT_RELEASED = "agent_released"
 
 
 class TaskRole(StrEnum):
@@ -157,6 +161,10 @@ class EventState(StrEnum):
     QUEUED = "queued"
     DELIVERED = "delivered"
     ACKED = "acked"
+    # Hub-only terminal state for audit/timeline records (M4 Step 6a, #723):
+    # the delivery lease never selects it and it implies no delivery or
+    # acknowledgement.
+    RECORDED = "recorded"
 
 
 SCHEMA_VERSION: int = 1

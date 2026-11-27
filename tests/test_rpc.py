@@ -2258,10 +2258,42 @@ async def test_new_run_refuses_stale_released_worker_until_check_in(
     assert "result" in await call(client, entry, **params)
     state = (await call(client, "get_state"))["result"]
     assert next(a for a in state["agents"] if a["name"] == "bob")["status"] == "lost"
-    event = hub_store.lease_next_event()
-    assert event is not None
+    new_workflow_id = state["workflow"]["id"]
+    # Old queued events belong to the previous run and can never source new
+    # work (M4 Step 6a, #723).
+    old_event = hub_store.lease_next_event()
+    assert old_event is not None
+    assert old_event.workflow_id is None or old_event.workflow_id != new_workflow_id
+    old_assign: dict[str, Any] = dict(
+        agent="bob",
+        role="implementer",
+        title="Build",
+        instructions="Do work",
+        event_id=old_event.id,
+    )
+    code, message = error_of(await call(client, "assign_task", **old_assign))
+    assert code == CONFLICT and "belongs to another run" in message
+    # A current-run source still refuses the stale worker until it checks in.
+    from agent_hub_common import EventKind as _EventKind
+
+    hub_store.append_event(
+        _EventKind.TASK_PROGRESS, {"note": "new-run"}, workflow_id=new_workflow_id
+    )
+    # The append above wakes the inbox; lease it back so the source is queued.
+    hub_store.ack_event(old_event.delivery_id)
+    fresh_leased = hub_store.lease_next_event()
+    assert fresh_leased is not None
+    # Skip any remaining old-run queued rows until the fresh current-run event.
+    while fresh_leased.workflow_id != new_workflow_id:
+        hub_store.ack_event(fresh_leased.delivery_id)
+        fresh_leased = hub_store.lease_next_event()
+        assert fresh_leased is not None
     assign: dict[str, Any] = dict(
-        agent="bob", role="implementer", title="Build", instructions="Do work", event_id=event.id
+        agent="bob",
+        role="implementer",
+        title="Build",
+        instructions="Do work",
+        event_id=fresh_leased.id,
     )
     code, message = error_of(await call(client, "assign_task", **assign))
     assert code == CONFLICT and "must check in again before it can be given work" in message

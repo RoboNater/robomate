@@ -216,11 +216,16 @@ def test_action_transaction_rolls_back_without_partial_question(
     original = HubStore._add_event
 
     def fail_action(
-        self: HubStore, connection: Connection, kind: EventKind, payload: Mapping[str, Any]
+        self: HubStore,
+        connection: Connection,
+        kind: EventKind,
+        payload: Mapping[str, Any],
+        workflow_id: object = None,
+        state: object = None,
     ) -> int:
         if kind == EventKind.STALL_ACTION:
             raise RuntimeError("event write failed")
-        return original(self, connection, kind, payload)
+        return original(self, connection, kind, payload, workflow_id, state)  # type: ignore[arg-type]
 
     with monkeypatch.context() as patch:
         patch.setattr(HubStore, "_add_event", fail_action)
