@@ -4539,7 +4539,7 @@ def test_up_with_agents_creates_worktrees_ahead_of_join(
             },
         }
         with httpx.Client(
-            base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=10.0
+            base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=LIVENESS_S
         ) as live:
             response = live.post("/a2a", json=payload)
         assert response.status_code == 200, response.text
@@ -4698,7 +4698,7 @@ def test_up_with_agents_partway_failure_leaves_reusable_worktrees(
         with httpx.Client(
             base_url=str(info["url"]),
             headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0,
+            timeout=LIVENESS_S,
         ) as live:
             response = live.post("/a2a", json=payload)
         assert response.status_code == 200, response.text
