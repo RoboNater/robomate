@@ -3564,6 +3564,8 @@ def test_attribution_stall_events_and_decisions(tmp_path: Path, frozen_clock: Fr
     store.heartbeat("bob", instance, task.id)
     # Make progress stale but keep heartbeat fresh: advance past stall threshold.
     frozen_clock.advance(70)
+    with database(path) as connection:
+        decisions_before = connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0]
     stalled = store.sweep_stalls()
     assert any(e.kind == EventKind.AGENT_STALLED for e in stalled)
     with database(path) as connection:
@@ -3572,7 +3574,7 @@ def test_attribution_stall_events_and_decisions(tmp_path: Path, frozen_clock: Fr
         ).fetchone()
         assert row["workflow_id"] == wid
         # No decision is written for agent_stalled itself.
-        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] >= 0
+        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == decisions_before
     # Stall action: advance past action threshold to ask the operator.
     frozen_clock.advance(4 * 60)
     second = store.sweep_stalls()
@@ -3591,6 +3593,29 @@ def test_attribution_stall_events_and_decisions(tmp_path: Path, frozen_clock: Fr
             "SELECT workflow_id FROM decision ORDER BY id DESC LIMIT 1"
         ).fetchone()
         assert drow["workflow_id"] == wid
+    # Recovery: worker makes progress, next sweep withdraws the hub question.
+    store.record_progress(task.id, "bob", "recovered-progress")
+    store.note_worker_call("bob", instance, "progress")
+    third = store.sweep_stalls()
+    with database(path) as connection:
+        withdrawn = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'stall_action'"
+            " AND payload_json LIKE '%question_withdrawn%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert withdrawn is not None and withdrawn["workflow_id"] == wid
+        wdecision = connection.execute(
+            "SELECT workflow_id FROM decision WHERE summary LIKE 'Withdrew operator question%'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert wdecision is not None and wdecision["workflow_id"] == wid
+        qcheck = connection.execute(
+            "SELECT withdrawn FROM operator_question WHERE id = ?", (qrow["id"],)
+        ).fetchone()
+        assert qcheck["withdrawn"] is not None
+    assert any(
+        e.kind == EventKind.STALL_ACTION and e.payload.get("action") == "question_withdrawn"
+        for e in third
+    )
 
 
 def test_attribution_ask_withdraw_and_superseded(tmp_path: Path) -> None:
