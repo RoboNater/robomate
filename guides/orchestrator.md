@@ -674,7 +674,8 @@ restate these from separate prose. Summarize with links:
 - the reviewed head as a full 40-character SHA with the approving
   review-comment URL, and the approved head when it differs, saying it is the
   rebased head that retained approval;
-- any CI failure on the reviewed head: its diagnosis (for example "pre-existing
+- any CI failure on a reviewed or approved head along the path (for example
+  after a CI repair or a rebase): its diagnosis (for example "pre-existing
   flake, #666; matching failure on main at `<sha>`"), any repair or re-run, and
   the PR or issue that fixed it;
 - any rebase: the head before -> after, the base before and after, the new
