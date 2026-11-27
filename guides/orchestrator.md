@@ -657,23 +657,29 @@ check name/bucket. Never merge from a stale or unreadable gate.
 
 After the merged read-back succeeds, post one short, agent-identified comment on
 the PR as `Orchestrator agent <name> on behalf of <account>`, saying it is the
-orchestrator's merge record. Take its PR/MR, approved head, merged SHA and
-review URL from the same stored hub facts the run report reads, so a later
-`robomate report <run>` reports the same four values: `workflow.pr_url`,
-`workflow.approved_sha`, `workflow.delivery_merged_sha` (until the run is done,
-the merge gate reading's `merged_sha`, which is the report's recorded-merge
-fallback), and the approving task's typed `ReviewerResult.review_url` from
-`get_state.tasks`. Do not restate them from separate prose. Summarize with
-links:
+orchestrator's merge record. Take its values from the same stored hub facts the
+run report reads, so a later `robomate report <run>` reports the same values:
+the PR/MR (`workflow.pr_url`; report `PR/MR`), the approved head
+(`workflow.approved_sha`; report `Approved head SHA`), the merged SHA
+(`workflow.delivery_merged_sha`, or until the run is done the merge gate
+reading's `merged_sha`, which is the report's recorded-merge fallback), and the
+final approving review — the last approving `ReviewerResult` before merge,
+whose approval the merge carried; a clean rebase adds no review — with its
+`reviewed_head_sha` (report `Reviewed head`) and `review_url` (report
+`Review URL`) from `get_state.tasks`. After a clean rebase,
+`workflow.approved_sha` is the rebased head that kept approval, so the reviewed
+head and the approved head differ; report both with those meanings. Do not
+restate these from separate prose. Summarize with links:
 
-- the approved head as a full 40-character SHA and the approving
-  review-comment URL;
-- any CI failure on the approved head: its diagnosis (for example "pre-existing
+- the reviewed head as a full 40-character SHA with the approving
+  review-comment URL, and the approved head when it differs, saying it is the
+  rebased head that retained approval;
+- any CI failure on the reviewed head: its diagnosis (for example "pre-existing
   flake, #666; matching failure on main at `<sha>`"), any repair or re-run, and
   the PR or issue that fixed it;
-- any rebase: the base before and after, the new head, and `conflict_files: []`
-  (approval was retained under the clean-rebase rule) or the focused re-review
-  URL if there were conflicts;
+- any rebase: the head before -> after, the base before and after, the new
+  head, and `conflict_files: []` (approval was retained under the clean-rebase
+  rule) or the focused re-review URL if there were conflicts;
 - any operator decision that changed the path, such as authorizing a wait, a
   rebase or a scope change, cited as its recorded operator-answer `question_id`
   plus a brief neutral summary, without speaking for the operator;

@@ -15,6 +15,7 @@ from agent_hub_common import (
     HubSettings,
     ImplementerOutcome,
     ImplementerResult,
+    RebaseResult,
     ResolvedConfig,
     ReviewerResult,
     ReviewerVerdict,
@@ -24,6 +25,7 @@ from delivery_support import HEAD, MERGED, PR, finish_run
 from fastapi import FastAPI
 
 EARLY_HEAD = "a" * 40
+REBASED_HEAD = "3" * 40
 HOSTILE = "before\n``````\n<img src=x onerror=alert(1)>\n[link](javascript:alert(1))\x1b[2J\u202e"
 REVIEW_ONE = f"{PR}#discussion_r17"
 REVIEW_TWO = f"{PR}#pullrequestreview-18"
@@ -198,9 +200,10 @@ def test_typed_snapshot_keeps_every_finding_and_step(
 def test_merge_record_comment_and_run_report_read_the_same_delivery_facts(
     store: HubStore,
 ) -> None:
-    """#707/#452: the comment's four delivery facts equal the run report's."""
+    """#707/#452: the comment's delivery facts equal the report's, including a clean rebase."""
 
     store.check_in("charlie")
+    store.check_in("bob")
     review = store.assign_task("charlie", "reviewer", "Review", "", pr_head_sha=HEAD)
     store.submit_result(
         review.id,
@@ -213,25 +216,43 @@ def test_merge_record_comment_and_run_report_read_the_same_delivery_facts(
             summary="Approve",
         ),
     )
+    rebase = store.assign_task("bob", "rebase", "Rebase", "", pr_head_sha=HEAD)
+    store.submit_result(
+        rebase.id,
+        "bob",
+        RebaseResult(
+            outcome=ImplementerOutcome.COMPLETED,
+            pr_url=PR,
+            head_sha=REBASED_HEAD,
+            conflict_files=[],
+            summary="Clean rebase",
+        ),
+    )
     finish_run(store, "Done", actor="alice", session=None)
 
     state = store.get_state()
-    workflow = state["workflow"]
-    review_url = next(
-        task["result"]["review_url"]
+    final_approval = [
+        task["result"]
         for task in state["tasks"]
-        if task["role"] == "reviewer" and task["result"]["verdict"] == ReviewerVerdict.APPROVED
-    )
+        if task["role"] == "reviewer"
+        and task["result"] is not None
+        and task["result"].get("verdict") == ReviewerVerdict.APPROVED
+    ][-1]
     facts = {
-        "PR/MR": workflow["pr_url"],
-        "Approved head SHA": workflow["approved_sha"],
-        "Merged SHA": workflow["delivery_merged_sha"],
-        "Review URL": review_url,
+        "PR/MR": state["workflow"]["pr_url"],
+        "Approved head SHA": state["workflow"]["approved_sha"],
+        "Merged SHA": state["workflow"]["delivery_merged_sha"],
+        "Reviewed head": final_approval["reviewed_head_sha"],
+        "Review URL": final_approval["review_url"],
     }
+    assert facts["Reviewed head"] == HEAD
+    assert facts["Approved head SHA"] == REBASED_HEAD
+    assert facts["Reviewed head"] != facts["Approved head SHA"]
     comment = (
         "Merge record from the orchestrator: "
-        f"PR {facts['PR/MR']}; approved head {facts['Approved head SHA']} "
-        f"({facts['Review URL']}); merged {facts['Merged SHA']}."
+        f"reviewed head {facts['Reviewed head']} ({facts['Review URL']}); "
+        f"approved head {facts['Approved head SHA']} after a clean rebase; "
+        f"merged {facts['Merged SHA']} in {facts['PR/MR']}."
     )
     report = store.read_run_report()
     for label, value in facts.items():
