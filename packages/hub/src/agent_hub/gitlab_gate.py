@@ -363,7 +363,7 @@ class GitLabGate:
     clock: Callable[[], float] = monotonic
     sleep: Callable[[float], Awaitable[Any]] = field(default=asyncio.sleep)
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         """Report head, CI, base freshness and mergeability for a GitLab MR."""
 
         if not SHA_HEX_40_RE.fullmatch(expected_head_sha):
@@ -377,7 +377,7 @@ class GitLabGate:
         while True:
             report = await self._snapshot(ref, expected)
             remaining = deadline - self.clock()
-            if _settled(report) or remaining <= 0:
+            if not wait or _settled(report) or remaining <= 0:
                 return replace(report, elapsed_s=round(self.clock() - start, 3))
             await self.sleep(min(self.poll_interval_s, remaining))
 
@@ -588,7 +588,7 @@ class UnboundGitLabGate:
 
     reason: str
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         raise GitLabGateError(f"the GitLab merge gate is unavailable: {self.reason}")
 
 

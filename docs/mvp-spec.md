@@ -1143,7 +1143,7 @@ tools and supported operator CLI commands, without consuming events or taking a 
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub snapshots and appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `reply`, `set_task_state`, `release_agent`, `log_decision` | orchestrator | unchanged |
 | `set_workflow_status` | orchestrator | `done` requires `run_id`, fresh delivery evidence and typed close-out (§7.3); `escalated` refused (-32602), since only `ask_user` escalates; leaving `escalated` refused (-32002) while any operator question is open, and its decision row distinguishes answered and withdrawn questions, each tied to it by `operator_question.resumed_by` (DB schema v16); with none open, a legacy escalation resumes (#132) |
-| `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
+| `check_merge_gate` | orchestrator | forge-dispatched by the hub's forge in `hub.json` (§10): `gitlab` → `GitLabGate`, anything else → GitHub; persists a CI watch for an open change request with pending CI or unknown mergeability (#621); same report shape; refused (-32002) while `escalated`, naming the open question ids (#132) |
 | `ask_user(question, options?, waiting_on_task_id?)` | orchestrator | Holds the question, sets `escalated` with an attributed decision row, returns `question_id`; optional task-wait binding allows withdrawal on later completion (#171) |
 | `withdraw_question(question_id, reason, event_id)` | orchestrator | Closes the asking session's bound task-wait question on a later matching completion event, preserving withdrawal provenance without operator authority; resume remains explicit (#171) |
 | `robomate inbox [--json]` | operator (CLI, not MCP) | **new** (#130): lists open questions (id, time, asking actor, question, options) from `hub.questions` |
@@ -1338,7 +1338,7 @@ remedies; real harness grants and versions stay with Steps 8–9.
 - **Detection** at `robomate up`: `github.com` → GitHub; a host in `config.toml: forge.gitlab_hosts`
   or known to `glab` → GitLab; otherwise `--forge`. Recorded in `hub.json`.
 - **Agents use the CLIs** (`gh`, `glab`) with their own authentication, as in the PoC.
-- **Merge gate** (`check_merge_gate`, read-only facts): a `ForgeGate` interface with
+- **Merge gate** (`check_merge_gate`, forge facts): a `ForgeGate` interface with
   `GitHubGate` (the PoC implementation, now bound) and `GitLabGate`, chosen at hub start from
   the forge `up` recorded in `hub.json` (`gitlab` → `GitLabGate` bound to the origin project,
   `github` → `GitHubGate` bound to the origin repository, anything else → unbound GitHub; a
@@ -1346,6 +1346,18 @@ remedies; real harness grants and versions stay with Steps 8–9.
   point; restarts choose the same). It maps GitLab pipelines, `detailed_merge_status`, and
   diverged-commit counts to the same report shape, following
   [the GitLab feasibility study](feasibility-and-impact-of-supporting-gitlab-centric-workflows.md) §4.
+  - **CI watch (#621):** a pending CI or unknown mergeability reading for an open
+    change request in a live workflow creates a durable watch. The hub polls
+    through the same forge adapter every 30 s and resumes watches on restart.
+    A new head replaces the watched head. A merged or closed change request
+    or a completed workflow ends the watch. The hub queues `ci_settled` once
+    when CI leaves pending, including immediately when CI is already settled
+    at registration. `ci_watch_expired` reports that the workflow's
+    `max_wall_minutes` elapsed first, measured from its recorded creation time.
+    For pending CI, wait in `wait_for_event()` while retaining the unacknowledged
+    MERGE-source delivery. The connected hold renews that lease (#565). A
+    settlement event prompts a fresh gate check with the approved head. A fresh
+    successful gate reading immediately before merging remains mandatory.
   - **Transport:** `gh` (`pr view`, `pr checks`, `api --hostname`) and `glab api`, run with
     the environment of the operator who ran `robomate up`.
     The hub holds no forge token and makes no HTTP calls to the forge.

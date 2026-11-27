@@ -20,6 +20,9 @@ from agent_hub.gitlab_gate import (
 from agent_hub.merge_gate import CiStatus, Mergeable, MergeGateError, PrState
 from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import HubStore
+from agent_hub.sweeper import CI_WATCH_INTERVAL_S, poll_ci_watches
+from agent_hub_common import EventKind
+from timing import FrozenClock
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "gitlab"
 
@@ -405,6 +408,31 @@ def test_preflight_checks_unsupported_settings() -> None:
 
 
 # --- Gate Check Tests ---
+
+
+async def test_ci_watch_polls_gitlab_once_per_pass(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    running = pipeline(10, "running")
+    passed = pipeline(10, "success")
+    runner = routes(mr(running), [running], [])
+    gate, clock = make_gate(runner)
+    report = await OrchestratorOps(store, gate).check_merge_gate(MR_URL, HEAD_SHA)
+    assert report["ci"] == "pending"
+
+    before = clock.now
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, gate)
+    assert clock.now == before
+    assert store.next_event() is None
+
+    runner.routes.update(routes(mr(passed), [passed], []).routes)
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, gate)
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.CI_SETTLED
+    assert (event.payload["head_sha"], event.payload["ci"]) == (HEAD_SHA, "pass")
+    assert clock.now == before
 
 
 async def test_clean_green_mr_passes() -> None:

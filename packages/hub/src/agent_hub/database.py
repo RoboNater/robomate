@@ -54,7 +54,7 @@ from agent_hub_common.startup import stage
 # `uv run python scripts/dump-schema.py` writes tests/fixtures/schema_v<N>.sql,
 # which is what the migration tests replay instead of a fixture written from
 # memory (#54).
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 class DatabaseVersionError(RuntimeError):
@@ -205,6 +205,17 @@ CREATE TABLE IF NOT EXISTS event (
     delivery_expires TEXT,
     acked_at TEXT,
     ts TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ci_watch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id TEXT NOT NULL REFERENCES workflow(id) ON DELETE CASCADE,
+    pr_url TEXT NOT NULL,
+    head_sha TEXT NOT NULL,
+    deadline TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'settled', 'expired')),
+    active INTEGER NOT NULL CHECK (active IN (0, 1)),
+    UNIQUE (workflow_id, pr_url)
 );
 
 CREATE TABLE IF NOT EXISTS decision (
@@ -470,7 +481,12 @@ def initialize_database(path: Path, state_dir: Path | None = None) -> None:
         _migrate_run_identity_and_queue(connection)
         _migrate_workspace_path_and_kind(connection)
         _migrate_workflow_branch(connection)
-        for table in ("closeout_collection", "closeout_expected", "agent_closeout_report"):
+        for table in (
+            "closeout_collection",
+            "closeout_expected",
+            "agent_closeout_report",
+            "ci_watch",
+        ):
             connection.execute(_canonical_tables()[table])
         _migrate_export_completion(connection, state_dir if state_dir is not None else path.parent)
         workflow_columns = _columns(connection, "workflow")

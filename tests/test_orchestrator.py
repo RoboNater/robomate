@@ -41,7 +41,9 @@ async def test_recording_caps_check_names_without_changing_response(store: HubSt
     name = "x" * (MAX_CHECK_NAME_CHARS + 100)
 
     class LongNameGate(StubGate):
-        async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+        async def check(
+            self, pr_url: str, expected_head_sha: str, *, wait: bool = True
+        ) -> GateReport:
             report = await super().check(pr_url, expected_head_sha)
             return replace(report, checks=[Check(name, "pass", "https://example.com")])
 
@@ -61,7 +63,9 @@ async def test_other_gate_errors_are_recorded(
     code: int,
 ) -> None:
     class BrokenGate(StubGate):
-        async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+        async def check(
+            self, pr_url: str, expected_head_sha: str, *, wait: bool = True
+        ) -> GateReport:
             raise error
 
     with pytest.raises(type(error)) as raised:
@@ -75,7 +79,7 @@ async def test_other_gate_errors_are_recorded(
 class StubGate:
     """A merge gate that answers without `gh`, identically on every call."""
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         return GateReport(
             pr_url=pr_url,
             pr_state=PrState.OPEN,

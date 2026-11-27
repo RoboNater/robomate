@@ -28,9 +28,11 @@ from agent_hub.merge_gate import (
 )
 from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import HubStore
+from agent_hub.sweeper import CI_WATCH_INTERVAL_S, poll_ci_watches
+from agent_hub_common import EventKind
 from conftest import MonotonicClock
 from delivery_support import finish_run
-from timing import LIVENESS_S
+from timing import LIVENESS_S, FrozenClock
 
 PR = "https://github.com/octo/sandbox/pull/7"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -182,6 +184,158 @@ class FakeClock:
 def gate(gh: FakeGh) -> tuple[MergeGate, FakeClock]:
     clock = FakeClock()
     return MergeGate(runner=gh, clock=clock, sleep=clock.sleep), clock
+
+
+async def test_pending_gate_watch_emits_one_event_when_ci_settles(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    gh = FakeGh(checks=checks("pending"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    ops = OrchestratorOps(store, merge_gate)
+    pending = await ops.check_merge_gate(PR, HEAD)
+
+    assert pending["ci"] == "pending"
+    [watch] = store.active_ci_watches()
+    assert (watch.pr_url, watch.head_sha) == (PR, HEAD)
+    assert store.next_event() is None
+
+    gh.responses["checks"] = checks("pass")
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, merge_gate)
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.CI_SETTLED
+    assert event.payload == {
+        "workflow_id": store.get_state()["workflow"]["id"],
+        "pr_url": PR,
+        "head_sha": HEAD,
+        "ci": "pass",
+        "checks": [{"name": "check-0", "bucket": "pass", "link": "https://ci.example/0"}],
+    }
+    assert store.active_ci_watches() == []
+    await ops.check_merge_gate(PR, HEAD)
+    await poll_ci_watches(store, merge_gate)
+    assert store.next_event() is None
+
+
+async def test_replacing_watch_drops_in_flight_old_head_result(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    gh = FakeGh(checks=checks("pending"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    ops = OrchestratorOps(store, merge_gate)
+    await ops.check_merge_gate(PR, HEAD)
+    [old_watch] = store.active_ci_watches()
+    gh.responses["checks"] = checks("pass")
+    old_reading = await merge_gate.check(PR, HEAD, wait=False)
+
+    gh.responses.update(view=view(PUSHED), checks=checks("pending"))
+    await ops.check_merge_gate(PR, PUSHED)
+    store.record_ci_watch_poll(old_watch, old_reading)
+
+    [watch] = store.active_ci_watches()
+    assert watch.head_sha == PUSHED
+    assert store.next_event() is None
+    gh.responses["checks"] = checks("fail")
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, merge_gate)
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.CI_SETTLED
+    assert (event.payload["head_sha"], event.payload["ci"]) == (PUSHED, "fail")
+    assert store.next_event() is None
+
+
+async def test_watch_discovers_pushed_head_before_reporting_settlement(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    gh = FakeGh(checks=checks("pending"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    await OrchestratorOps(store, merge_gate).check_merge_gate(PR, HEAD)
+    gh.responses["view"] = view(PUSHED)
+
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, merge_gate)
+    [watch] = store.active_ci_watches()
+    assert watch.head_sha == PUSHED
+    assert store.next_event() is None
+
+    gh.responses["checks"] = checks("pass")
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, merge_gate)
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.CI_SETTLED
+    assert event.payload["head_sha"] == PUSHED
+    assert store.next_event() is None
+
+
+async def test_initial_unknown_mergeability_emits_already_settled_ci_once(
+    store: HubStore,
+) -> None:
+    gh = FakeGh(view=view(mergeable="UNKNOWN", state="UNKNOWN"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    ops = OrchestratorOps(store, merge_gate)
+    await ops.check_merge_gate(PR, HEAD)
+
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.CI_SETTLED
+    assert event.payload["ci"] == "pass"
+    assert len(store.active_ci_watches()) == 1
+
+    await ops.check_merge_gate(PR, HEAD)
+    gh.responses["view"] = view()
+    await poll_ci_watches(store, merge_gate)
+    assert store.active_ci_watches() == []
+    assert store.next_event() is None
+
+
+@pytest.mark.parametrize("terminal_state", ["CLOSED", "MERGED"])
+async def test_watch_ends_when_change_request_closes(
+    store: HubStore, frozen_clock: FrozenClock, terminal_state: str
+) -> None:
+    gh = FakeGh(checks=checks("pending"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    await OrchestratorOps(store, merge_gate).check_merge_gate(PR, HEAD)
+
+    gh.responses.update(view=view(pr_state=terminal_state), checks=checks("pass"))
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    await poll_ci_watches(store, merge_gate)
+    assert store.active_ci_watches() == []
+    assert store.next_event() is None
+
+
+async def test_expired_ci_watch_wakes_inbox_without_a_forge_read(
+    store: HubStore, frozen_clock: FrozenClock
+) -> None:
+    gh = FakeGh(checks=checks("pending"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    ops = OrchestratorOps(store, merge_gate)
+    await ops.check_merge_gate(PR, HEAD)
+    [watch] = store.active_ci_watches()
+
+    frozen_clock.advance((watch.deadline - frozen_clock()).total_seconds())
+    await poll_ci_watches(store, merge_gate)
+    event = store.next_event()
+    assert event is not None and event.kind is EventKind.CI_WATCH_EXPIRED
+    assert event.payload["head_sha"] == HEAD
+    assert gh.count("view") == 1
+    assert store.active_ci_watches() == []
+    await ops.check_merge_gate(PR, HEAD)
+    assert store.next_event() is None
+    assert store.active_ci_watches() == []
+
+
+async def test_done_workflow_discards_watch_and_late_poll(store: HubStore) -> None:
+    gh = FakeGh(checks=checks("pending"))
+    merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
+    ops = OrchestratorOps(store, merge_gate)
+    await ops.check_merge_gate(PR, HEAD)
+    [watch] = store.active_ci_watches()
+
+    finish_run(store, "done", actor="alice", session=None)
+    gh.responses["checks"] = checks("pass")
+    report = await merge_gate.check(PR, HEAD, wait=False)
+    store.record_ci_watch_poll(watch, report)
+    assert store.active_ci_watches() == []
+    assert store.next_event() is None
 
 
 # -- the four #41 fixture cases ----------------------------------------------

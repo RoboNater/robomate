@@ -1,16 +1,48 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
+from agent_hub import create_app
+from agent_hub.merge_gate import CiStatus, GateReport, PrState
+from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.store import EventRecord, HubStore
-from agent_hub.sweeper import start_sweeper, stop_sweeper
-from agent_hub_common import EventKind
-from timing import LIVENESS_S, wait_until
+from agent_hub.sweeper import CI_WATCH_INTERVAL_S, start_sweeper, stop_sweeper
+from agent_hub_common import EventKind, HubSettings
+from delivery_support import HEAD, PR, DeliveredForge
+from timing import LIVENESS_S, FrozenClock, wait_until
 
 
 async def drain(store: HubStore) -> None:
     while store.next_event():
         pass
+
+
+async def test_app_start_resumes_persisted_ci_watch(
+    store: HubStore,
+    settings: HubSettings,
+    frozen_clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PendingForge(DeliveredForge):
+        async def check(
+            self, pr_url: str, expected_head_sha: str, *, wait: bool = True
+        ) -> GateReport:
+            return replace(self.reading(pr_url, expected_head_sha), ci=CiStatus.PENDING)
+
+    await OrchestratorOps(store, PendingForge(PrState.OPEN)).check_merge_gate(PR, HEAD)
+    assert len(store.active_ci_watches()) == 1
+    frozen_clock.advance(CI_WATCH_INTERVAL_S)
+    monkeypatch.setattr("agent_hub.app.select_gate", lambda _: DeliveredForge(PrState.OPEN))
+    restarted_app = create_app(settings)
+    restarted_store = cast(HubStore, restarted_app.state.store)
+    frozen_clock.install(restarted_store)
+    async with restarted_app.router.lifespan_context(restarted_app):
+        event = await restarted_store.wait_for_event(LIVENESS_S)
+        assert event is not None and event.kind is EventKind.CI_SETTLED
+        assert event.payload["head_sha"] == HEAD
+        assert restarted_store.active_ci_watches() == []
+        assert restarted_store.next_event() is None
 
 
 async def test_the_loop_reports_an_overdue_lease_without_being_asked(

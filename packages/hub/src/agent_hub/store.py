@@ -109,6 +109,14 @@ LIVE_STATUS_VALUES = tuple(status.value for status in LIVE_STATUSES)
 FAILED_TASK_CALL_WINDOW = timedelta(minutes=20)
 
 
+@dataclass(frozen=True, slots=True)
+class CiWatch:
+    id: int
+    pr_url: str
+    head_sha: str
+    deadline: datetime
+
+
 def _live_placeholders() -> str:
     return ", ".join("?" * len(LIVE_STATUSES))
 
@@ -2272,6 +2280,7 @@ class HubStore:
 
             if status == WorkflowStatus.DONE:
                 finalize(connection, workflow_id, self._now_iso())
+                connection.execute("DELETE FROM ci_watch WHERE workflow_id = ?", (workflow_id,))
                 # Nothing waits to ack after done, so settle deliveries now:
                 # a finished run must not redeliver its last event into a
                 # fresh wait (#610).
@@ -2691,13 +2700,16 @@ class HubStore:
         A gate can be called before workflow initialization; its workflow ID is
         then NULL. Check names are external labels, capped here and sanitized by
         display consumers. Links are not needed to reconstruct the CI reading.
+        A reading for a live workflow also updates its CI watch in this transaction.
         """
+        event_queued = False
         with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             if workflow_id is _CURRENT_WORKFLOW:
                 workflow = self._require_live_or_recent(connection)
                 workflow_id = workflow["id"] if workflow else None
             assert workflow_id is None or isinstance(workflow_id, str)
-            return self._insert_gate_reading(
+            reading_id = self._insert_gate_reading(
                 connection,
                 workflow_id,
                 pr_url,
@@ -2706,6 +2718,143 @@ class HubStore:
                 error_code=error_code,
                 elapsed_s=elapsed_s,
             )
+            if report is not None and workflow_id is not None:
+                live = self._live_row(connection)
+                if live is not None and live["id"] == workflow_id:
+                    previous = connection.execute(
+                        "SELECT * FROM ci_watch WHERE workflow_id = ? AND pr_url = ?",
+                        (workflow_id, report.pr_url),
+                    ).fetchone()
+                    policy = WorkflowPolicy.model_validate_json(live["policy_json"])
+                    deadline = _parse_timestamp(live["created"]) + timedelta(
+                        minutes=policy.max_wall_minutes
+                    )
+                    event_queued = self._update_ci_watch(
+                        connection, workflow_id, previous, report, deadline
+                    )
+        if event_queued:
+            self.signals.notify(EVENT_KEY)
+        return reading_id
+
+    def active_ci_watches(self) -> list[CiWatch]:
+        with database(self.path) as connection:
+            return [
+                CiWatch(
+                    row["id"], row["pr_url"], row["head_sha"], _parse_timestamp(row["deadline"])
+                )
+                for row in connection.execute("SELECT * FROM ci_watch WHERE active = 1")
+            ]
+
+    def record_ci_watch_poll(self, watch: CiWatch, report: GateReport | None) -> None:
+        """Apply a forge reading only while the watch being polled is current."""
+        with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                "SELECT * FROM ci_watch WHERE id = ? AND active = 1", (watch.id,)
+            ).fetchone()
+            if previous is None:
+                return
+            if report is not None:
+                event_queued = self._update_ci_watch(
+                    connection, previous["workflow_id"], previous, report, watch.deadline
+                )
+            elif self._now() >= watch.deadline:
+                self._expire_ci_watch(
+                    connection,
+                    previous["workflow_id"],
+                    watch.pr_url,
+                    watch.head_sha,
+                    watch.deadline,
+                )
+                event_queued = True
+            else:
+                event_queued = False
+        if event_queued:
+            self.signals.notify(EVENT_KEY)
+
+    def _update_ci_watch(
+        self,
+        connection: Connection,
+        workflow_id: str,
+        previous: Row | None,
+        report: GateReport,
+        deadline: datetime,
+    ) -> bool:
+        pr_url, head_sha = report.pr_url, report.current_head_sha
+        if report.pr_state is not PrState.OPEN:
+            connection.execute(
+                "DELETE FROM ci_watch WHERE workflow_id = ? AND pr_url = ?", (workflow_id, pr_url)
+            )
+            return False
+
+        pending = report.ci is CiStatus.PENDING
+        active = pending or report.mergeable is Mergeable.UNKNOWN
+        same_head = previous is not None and previous["head_sha"] == head_sha
+        previous_state = previous["state"] if same_head and previous is not None else None
+        was_active = previous is not None and previous["active"]
+        if previous_state == "expired":
+            return False
+        if not active and not was_active:
+            if previous is not None and not same_head:
+                connection.execute("DELETE FROM ci_watch WHERE id = ?", (previous["id"],))
+            return False
+        if self._now() >= deadline:
+            self._expire_ci_watch(connection, workflow_id, pr_url, head_sha, deadline)
+            return True
+
+        # A fresh row ID invalidates an in-flight poll, including one that
+        # finished after a newer foreground gate reading of the very same head.
+        connection.execute(
+            "INSERT OR REPLACE INTO ci_watch"
+            " (workflow_id, pr_url, head_sha, deadline, state, active) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                workflow_id,
+                pr_url,
+                head_sha,
+                to_iso(deadline),
+                "pending" if pending else "settled",
+                active,
+            ),
+        )
+        if pending or previous_state == "settled":
+            return False
+        self._add_event(
+            connection,
+            EventKind.CI_SETTLED,
+            {
+                "workflow_id": workflow_id,
+                "pr_url": pr_url,
+                "head_sha": head_sha,
+                "ci": report.ci.value,
+                "checks": [asdict(check) for check in report.checks],
+            },
+        )
+        return True
+
+    def _expire_ci_watch(
+        self,
+        connection: Connection,
+        workflow_id: str,
+        pr_url: str,
+        head_sha: str,
+        deadline: datetime,
+    ) -> None:
+        connection.execute(
+            "INSERT OR REPLACE INTO ci_watch"
+            " (workflow_id, pr_url, head_sha, deadline, state, active)"
+            " VALUES (?, ?, ?, ?, 'expired', 0)",
+            (workflow_id, pr_url, head_sha, to_iso(deadline)),
+        )
+        self._add_event(
+            connection,
+            EventKind.CI_WATCH_EXPIRED,
+            {
+                "workflow_id": workflow_id,
+                "pr_url": pr_url,
+                "head_sha": head_sha,
+                "deadline": to_iso(deadline),
+            },
+        )
 
     def _insert_gate_reading(
         self,

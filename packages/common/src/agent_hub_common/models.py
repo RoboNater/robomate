@@ -107,6 +107,8 @@ class EventKind(StrEnum):
     # The operator submitted a statement of work; the hub queued a workflow (#241).
     WORK_SUBMITTED = "work_submitted"
     CLOSEOUT_REPORT_SUBMITTED = "closeout_report_submitted"
+    CI_SETTLED = "ci_settled"
+    CI_WATCH_EXPIRED = "ci_watch_expired"
 
 
 class TaskRole(StrEnum):

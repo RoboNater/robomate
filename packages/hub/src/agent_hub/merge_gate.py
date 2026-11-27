@@ -404,8 +404,11 @@ def _settled(report: GateReport) -> bool:
 class ForgeGate(Protocol):
     """Protocol for forge-specific merge gate evaluations (spec §10)."""
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
-        """Report head, CI, base freshness and mergeability for a change request."""
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
+        """Report head, CI, base freshness and mergeability for a change request.
+
+        With `wait=False`, take one snapshot for the background CI watcher.
+        """
         ...
 
 
@@ -420,7 +423,7 @@ class MergeGate:
     sleep: Callable[[float], Awaitable[Any]] = field(default=asyncio.sleep)
     project: GitHubProject | None = None
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         """Report head, CI, base freshness and mergeability for a PR.
 
         While CI is pending, cancelled or not yet reported, or GitHub has not
@@ -445,7 +448,7 @@ class MergeGate:
         while True:
             report = await self._snapshot(ref, expected)
             remaining = deadline - self.clock()
-            if _settled(report) or remaining <= 0:
+            if not wait or _settled(report) or remaining <= 0:
                 return replace(report, elapsed_s=round(self.clock() - start, 3))
             await self.sleep(min(self.poll_interval_s, remaining))
 
@@ -591,7 +594,7 @@ class UnboundGitHubGate:
 
     reason: str
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         raise MergeGateError(f"the GitHub merge gate is unavailable: {self.reason}")
 
 
