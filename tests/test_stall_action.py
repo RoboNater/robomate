@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from agent_hub.database import SCHEMA_VERSION, database, initialize_database
 from agent_hub.store import EventRecord, HubStore
-from agent_hub_common import AgentStatus, EventKind, TaskState, WorkflowPolicy
+from agent_hub_common import AgentStatus, EventKind, EventState, TaskState, WorkflowPolicy
 from pydantic import ValidationError
 from timing import FrozenClock
 
@@ -216,11 +216,16 @@ def test_action_transaction_rolls_back_without_partial_question(
     original = HubStore._add_event
 
     def fail_action(
-        self: HubStore, connection: Connection, kind: EventKind, payload: Mapping[str, Any]
+        self: HubStore,
+        connection: Connection,
+        kind: EventKind,
+        payload: Mapping[str, Any],
+        workflow_id: str | None = None,
+        state: EventState = EventState.QUEUED,
     ) -> int:
         if kind == EventKind.STALL_ACTION:
             raise RuntimeError("event write failed")
-        return original(self, connection, kind, payload)
+        return original(self, connection, kind, payload, workflow_id, state)
 
     with monkeypatch.context() as patch:
         patch.setattr(HubStore, "_add_event", fail_action)

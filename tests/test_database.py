@@ -1070,11 +1070,15 @@ def test_v18_migration_preserves_delivery_and_admits_host_pause(tmp_path: Path) 
             " delivered_at, delivery_expires) VALUES ('agent_lost', '{}', '2026-10-01',"
             " 'delivered', 'delivery-1', 2, '2026-10-01', '2026-10-02')"
         )
-        before = tuple(connection.execute("SELECT * FROM event").fetchone())
+        before = dict(connection.execute("SELECT * FROM event").fetchone())
     initialize_database(path)
     initialize_database(path)
     with database(path) as connection:
-        assert tuple(connection.execute("SELECT * FROM event").fetchone()) == before
+        after = dict(connection.execute("SELECT * FROM event").fetchone())
+        for key in before:
+            assert after[key] == before[key]
+        # M4 Step 6a (#723): new attribution stays NULL for hub-level legacy rows.
+        assert after["workflow_id"] is None
         assert "lease_clock_shift_s" in _table_columns(path, "task")
     store = HubStore(path)
     assert store.append_event(EventKind.HOST_PAUSED, {"grace_s": 180}).id == 2
@@ -1286,3 +1290,156 @@ def test_v28_export_completion_migration(tmp_path: Path) -> None:
         }
     assert all(markers[name] is not None for name in ("index", "deleted", "no_collection"))
     assert markers["partial"] is None and markers["active"] is None
+
+
+def _v32_workflow(connection: sqlite3.Connection, wid: str, run_id: str, ts: str) -> None:
+    connection.execute(
+        "INSERT INTO workflow (id, run_id, goal, status, created)"
+        " VALUES (?, ?, 'goal', 'active', ?)",
+        (wid, run_id, ts),
+    )
+
+
+def test_migration_v33_backfills_messages_from_tasks_authoritatively(tmp_path: Path) -> None:
+    """M4 Step 6a (#723): messages inherit their task's workflow; taskless stay NULL."""
+
+    path = tmp_path / "v32.db"
+    _legacy_database(path, 32)
+    with sqlite3.connect(path) as connection:
+        _v32_workflow(connection, "wf-1", "20260101_11111111", "2026-01-01T00:00:00Z")
+        _v32_workflow(connection, "wf-2", "20260102_22222222", "2026-01-01T00:00:00Z")
+        connection.execute(
+            "INSERT INTO task (id, workflow_id, role, title, instructions, state, created, updated)"
+            " VALUES ('t1', 'wf-1', 'implementer', 'T', 'I', 'working',"
+            " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO message (task_id, context_id, sender, direction, parts_json, ts)"
+            " VALUES ('t1', 'ctx', 'bob', 'to_alice', '[]', '2026-01-01T00:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO message (task_id, context_id, sender, direction, parts_json, ts)"
+            " VALUES (NULL, 'ctx', 'bob', 'to_alice', '[]', '2026-01-01T00:00:00Z')"
+        )
+
+    initialize_database(path)
+    initialize_database(path)
+
+    with database(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        rows = connection.execute("SELECT task_id, workflow_id FROM message ORDER BY id").fetchall()
+        assert rows[0]["workflow_id"] == "wf-1"
+        assert rows[1]["workflow_id"] is None
+        assert "idx_message_workflow" in {
+            r["name"]
+            for r in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+
+
+def test_migration_v33_backfills_events_only_from_valid_refs(tmp_path: Path) -> None:
+    """Events use one agreeing stored task/question/run reference; conflicts stay NULL."""
+
+    path = tmp_path / "v32.db"
+    _legacy_database(path, 32)
+    with sqlite3.connect(path) as connection:
+        _v32_workflow(connection, "wf-1", "20260101_aaaaaaaa", "2026-01-01T00:00:00Z")
+        _v32_workflow(connection, "wf-2", "20260102_bbbbbbbb", "2026-01-02T00:00:00Z")
+        connection.execute(
+            "INSERT INTO task (id, workflow_id, role, title, instructions, state, created, updated)"
+            " VALUES ('t1', 'wf-1', 'implementer', 'T', 'I', 'working',"
+            " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+        )
+        connection.execute(
+            "INSERT INTO operator_question (workflow_id, asked, actor, question)"
+            " VALUES ('wf-2', '2026-01-02T00:00:00Z', 'alice', 'Q?')"
+        )
+        # qid will be 1
+        connection.execute(
+            "INSERT INTO event (kind, payload_json, ts) VALUES"
+            " ('task_progress', '{\"task_id\": \"t1\"}', '2026-01-01T00:00:00Z'),"
+            " ('user_answered', '{\"question_id\": 1}', '2026-01-02T00:00:00Z'),"
+            ' (\'work_submitted\', \'{"workflow_id": "wf-2", "run_id": "20260102_bbbbbbbb"}\','
+            "  '2026-01-02T00:00:00Z'),"
+            ' (\'task_progress\', \'{"task_id": "t1", "question_id": 1}\','
+            "  '2026-01-03T00:00:00Z'),"
+            " ('agent_checked_in', '{}', '2026-01-04T00:00:00Z'),"
+            " ('task_progress', '{\"task_id\": \"missing\"}', '2026-01-05T00:00:00Z')"
+        )
+
+    initialize_database(path)
+
+    with database(path) as connection:
+        rows = connection.execute("SELECT kind, workflow_id FROM event ORDER BY id").fetchall()
+        assert rows[0]["workflow_id"] == "wf-1"
+        assert rows[1]["workflow_id"] == "wf-2"
+        assert rows[2]["workflow_id"] == "wf-2"
+        # Conflicting task (wf-1) vs question (wf-2) stays unscoped.
+        assert rows[3]["workflow_id"] is None
+        assert rows[4]["workflow_id"] is None
+        assert rows[5]["workflow_id"] is None
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM event WHERE kind = 'agent_released'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_migration_v33_leaves_legacy_decisions_unscoped(tmp_path: Path) -> None:
+    """Old decisions never gain an owner from prose, keys or timestamps."""
+
+    path = tmp_path / "v32.db"
+    _legacy_database(path, 32)
+    with sqlite3.connect(path) as connection:
+        _v32_workflow(connection, "wf-1", "20260101_cccccccc", "2026-01-01T00:00:00Z")
+        connection.execute(
+            "INSERT INTO decision (ts, summary, rationale, key)"
+            " VALUES ('2026-01-01T00:00:00Z', 'event:1:assign did work',"
+            " 'for wf-1 at 2026-01-01', 'k-1')"
+        )
+
+    initialize_database(path)
+
+    with database(path) as connection:
+        row = connection.execute("SELECT workflow_id FROM decision").fetchone()
+        assert row["workflow_id"] is None
+
+
+def test_migration_v33_two_runs_with_equal_timestamps_use_refs_not_time(tmp_path: Path) -> None:
+    """Equal/backward timestamps never steer attribution; stored refs do."""
+
+    path = tmp_path / "v32.db"
+    _legacy_database(path, 32)
+    same_ts = "2026-05-05T05:05:05Z"
+    with sqlite3.connect(path) as connection:
+        _v32_workflow(connection, "wf-early", "20260505_early111", same_ts)
+        _v32_workflow(connection, "wf-late", "20260505_late2222", same_ts)
+        connection.execute(
+            "INSERT INTO task (id, workflow_id, role, title, instructions, state, created, updated)"
+            " VALUES ('t-early', 'wf-early', 'implementer', 'T', 'I', 'working',"
+            f" '{same_ts}', '{same_ts}'),"
+            " ('t-late', 'wf-late', 'implementer', 'T', 'I', 'working',"
+            f" '{same_ts}', '{same_ts}')"
+        )
+        connection.execute(
+            "INSERT INTO message (task_id, context_id, sender, direction, parts_json, ts)"
+            f" VALUES ('t-early', 'c', 'a', 'to_alice', '[]', '{same_ts}'),"
+            f" ('t-late', 'c', 'a', 'to_alice', '[]', '{same_ts}')"
+        )
+        connection.execute(
+            "INSERT INTO event (kind, payload_json, ts) VALUES"
+            f" ('task_progress', '{{\"task_id\": \"t-early\"}}', '{same_ts}'),"
+            f" ('task_progress', '{{\"task_id\": \"t-late\"}}', '{same_ts}')"
+        )
+
+    initialize_database(path)
+
+    with database(path) as connection:
+        messages = connection.execute(
+            "SELECT task_id, workflow_id FROM message ORDER BY id"
+        ).fetchall()
+        assert (messages[0]["task_id"], messages[0]["workflow_id"]) == ("t-early", "wf-early")
+        assert (messages[1]["task_id"], messages[1]["workflow_id"]) == ("t-late", "wf-late")
+        events = connection.execute("SELECT workflow_id FROM event ORDER BY id").fetchall()
+        assert events[0]["workflow_id"] == "wf-early"
+        assert events[1]["workflow_id"] == "wf-late"

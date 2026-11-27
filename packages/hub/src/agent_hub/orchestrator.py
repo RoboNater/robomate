@@ -230,7 +230,8 @@ class OrchestratorOps(OrchestratorTools):
         return asdict(self.store.set_task_state(task_id, TaskState(state), note))
 
     async def release_agent(self, agent: str) -> dict[str, Any]:
-        return asdict(self.store.release_agent(agent))
+        caller = self._caller()
+        return asdict(self.store.release_agent(agent, actor=caller.actor))
 
     async def set_workflow_status(
         self, status: WorkflowStatus, summary: str, run_id: str | None = None

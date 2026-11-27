@@ -336,6 +336,9 @@ class MessageRecord:
     direction: str
     parts: list[dict[str, Any]]
     ts: str
+    # Nullable run attribution (M4 Step 6a, #723): the workflow that owns the
+    # record, or None for true hub-level records.
+    workflow_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +353,11 @@ class EventRecord:
     delivered_at: str | None = None
     delivery_expires: str | None = None
     acked_at: str | None = None
+    # Nullable run attribution (M4 Step 6a, #723), exposed additively in
+    # records and re-briefing. `run_id` is derived from the workflow row and
+    # never stored on the event itself.
+    workflow_id: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,6 +538,7 @@ def _normalize_part(part: dict[str, Any]) -> dict[str, Any]:
 
 def _message(row: Row) -> MessageRecord:
     parts: Any = json.loads(row["parts_json"])
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
     return MessageRecord(
         id=row["id"],
         task_id=row["task_id"],
@@ -540,10 +549,14 @@ def _message(row: Row) -> MessageRecord:
         if isinstance(parts, list)
         else [],
         ts=row["ts"],
+        workflow_id=str(row["workflow_id"])
+        if "workflow_id" in keys and row["workflow_id"] is not None
+        else None,
     )
 
 
 def _event(row: Row) -> EventRecord:
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
     return EventRecord(
         id=row["id"],
         kind=EventKind(row["kind"]),
@@ -555,6 +568,10 @@ def _event(row: Row) -> EventRecord:
         delivered_at=row["delivered_at"],
         delivery_expires=row["delivery_expires"],
         acked_at=row["acked_at"],
+        workflow_id=str(row["workflow_id"])
+        if "workflow_id" in keys and row["workflow_id"] is not None
+        else None,
+        run_id=str(row["run_id"]) if "run_id" in keys and row["run_id"] is not None else None,
     )
 
 
@@ -1277,6 +1294,7 @@ class HubStore:
                             "statement_sha256": statement_sha256,
                             "source": source,
                         },
+                        workflow_id,
                     )
                 row = connection.execute(
                     "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
@@ -1587,7 +1605,9 @@ class HubStore:
                 ).fetchone()["n"]
             )
             unacked_rows = connection.execute(
-                "SELECT * FROM event WHERE state = 'delivered' ORDER BY id ASC"
+                "SELECT event.*, workflow.run_id FROM event"
+                " LEFT JOIN workflow ON workflow.id = event.workflow_id"
+                " WHERE event.state = 'delivered' ORDER BY event.id ASC"
             ).fetchall()
             unacked_delivered = [asdict(_event(r)) for r in unacked_rows]
         result: dict[str, Any] = {
@@ -2321,9 +2341,9 @@ class HubStore:
                 # Stall clocks restart when a pause ends (#144).
                 self.activity.note_resumed(self._now())
             cursor = connection.execute(
-                "INSERT INTO decision (ts, summary, rationale, actor, session)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (self._now_iso(), summary, rationale, actor, session),
+                "INSERT INTO decision (ts, summary, rationale, actor, session, workflow_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (self._now_iso(), summary, rationale, actor, session, workflow_id),
             )
             connection.executemany(
                 "UPDATE operator_question SET resumed_by = ? WHERE id = ?",
@@ -2349,6 +2369,11 @@ class HubStore:
                     policy = _json_object(str(done_row["policy_json"])) or {}
                     on_done = policy.get("on_done", "release")
                     if on_done != "standby":
+                        to_release = connection.execute(
+                            "SELECT name FROM agent WHERE status IN (?, ?)"
+                            " AND standing_role != 'orchestrator'",
+                            (AgentStatus.IDLE.value, AgentStatus.BUSY.value),
+                        ).fetchall()
                         connection.execute(
                             "UPDATE agent SET status = ?"
                             " WHERE status IN (?, ?)"
@@ -2359,6 +2384,22 @@ class HubStore:
                                 AgentStatus.BUSY.value,
                             ),
                         )
+                        for agent_row in to_release:
+                            self._add_recorded_event(
+                                connection,
+                                EventKind.AGENT_RELEASED,
+                                {
+                                    "agent": str(agent_row["name"]),
+                                    "released_by": "done policy",
+                                },
+                                workflow_id,
+                            )
+                        # No closeout_expected write here: finalize() above has
+                        # already set every unreported row to run_finalized, so
+                        # a missing_reason IS NULL update would match nothing.
+                        # Early release_agent (before finalize) still records
+                        # agent_released via its own update; the sweep's agents
+                        # keep run_finalized.
         # Manifests are files, not rows: write them after the transaction
         # commits, so a crash between the two cannot leave a half-written
         # database row behind a completed manifest.
@@ -2422,14 +2463,17 @@ class HubStore:
         session: str | None,
     ) -> int:
         with database(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             if key is not None:
                 row = connection.execute("SELECT id FROM decision WHERE key = ?", (key,)).fetchone()
                 if row is not None:
                     return int(row["id"])
+            live = self._live_row(connection)
+            workflow_id = str(live["id"]) if live is not None else None
             cursor = connection.execute(
-                "INSERT INTO decision (ts, summary, rationale, key, actor, session)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (self._now_iso(), summary, rationale, key, actor, session),
+                "INSERT INTO decision (ts, summary, rationale, key, actor, session, workflow_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (self._now_iso(), summary, rationale, key, actor, session, workflow_id),
             )
             return int(cursor.lastrowid or 0)
 
@@ -2520,8 +2564,16 @@ class HubStore:
             )
             rationale = f"Workflow status set to {WorkflowStatus.ESCALATED.value}"
         connection.execute(
-            "INSERT INTO decision (ts, summary, rationale, actor, session) VALUES (?, ?, ?, ?, ?)",
-            (now, f"Asked the operator question {question_id}", rationale, actor, session),
+            "INSERT INTO decision (ts, summary, rationale, actor, session, workflow_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                now,
+                f"Asked the operator question {question_id}",
+                rationale,
+                actor,
+                session,
+                workflow_id,
+            ),
         )
         return question_id
 
@@ -2570,14 +2622,15 @@ class HubStore:
                 (now, actor, session, reason, event_id, question_id),
             )
             connection.execute(
-                "INSERT INTO decision (ts, summary, rationale, actor, session)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO decision (ts, summary, rationale, actor, session, workflow_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     now,
                     f"Withdrew operator question {question_id}",
                     f"Task {task_id} completed in event {event_id}; {reason}",
                     actor,
                     session,
+                    str(question["workflow_id"]),
                 ),
             )
         return {"question_id": question_id, "withdrawn": now, "event_id": event_id}
@@ -2648,7 +2701,8 @@ class HubStore:
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT answered, withdrawn FROM operator_question WHERE id = ?", (question_id,)
+                "SELECT answered, withdrawn, workflow_id FROM operator_question WHERE id = ?",
+                (question_id,),
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"unknown operator question: {question_id}")
@@ -2666,6 +2720,7 @@ class HubStore:
                 connection,
                 EventKind.USER_ANSWERED,
                 {"question_id": question_id, "answer": answer},
+                str(row["workflow_id"]),
             )
         self.signals.notify(EVENT_KEY)
         return {"question_id": question_id, "answered": now}
@@ -2830,6 +2885,7 @@ class HubStore:
                 "ci": report.ci.value,
                 "checks": [asdict(check) for check in report.checks],
             },
+            workflow_id,
         )
         return True
 
@@ -2859,6 +2915,7 @@ class HubStore:
                 "head_sha": head_sha,
                 "deadline": to_iso(deadline),
             },
+            workflow_id,
         )
 
     def _insert_gate_reading(
@@ -2923,6 +2980,7 @@ class HubStore:
                 sender="alice",
                 direction="from_alice",
                 parts=[text_part(note, metadata={MetaKeys.KIND: "state_override"})],
+                workflow_id=task.workflow_id,
             )
             self._finish(connection, task_id, state, {"status": state.value, "summary": note})
             result = self._require_task(connection, task_id)
@@ -3134,6 +3192,8 @@ class HubStore:
                     ),
                 )
             profile_payload = _profile_fields(profile, role_obj)
+            live = self._live_row(connection)
+            checkin_workflow_id = str(live["id"]) if live is not None else None
             self._add_message(
                 connection,
                 task_id=None,
@@ -3147,6 +3207,7 @@ class HubStore:
                         | {f"hub.{key}": value for key, value in profile_payload.items()},
                     )
                 ],
+                workflow_id=checkin_workflow_id,
             )
             self._add_event(
                 connection,
@@ -3160,6 +3221,7 @@ class HubStore:
                     "takeover": takeover,
                     "reattached_task_id": reattached["task_id"] if reattached else None,
                 },
+                checkin_workflow_id,
             )
             # Loss is provisional until this collection finalizes. Rejoining
             # restores the original window, without carrying a stale loss reason.
@@ -3308,24 +3370,50 @@ class HubStore:
             return float(value)
         return DEFAULT_MAX_TASK_LEASE_MIN
 
-    def release_agent(self, name: str) -> AgentRecord:
-        """Mark an agent released so its next assignment wait returns release."""
+    def release_agent(self, name: str, actor: str | None = None) -> AgentRecord:
+        """Mark an agent released so its next assignment wait returns release.
+
+        The production orchestrator always passes its actor; direct store calls
+        (tests, scripts) that pass None store UNKNOWN as an explicit marker
+        rather than inventing a real actor. Making actor required would churn
+        dozens of existing direct callers for no production gain.
+        """
 
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             agent = self._require_agent(connection, name)
             if agent.status == AgentStatus.RELEASED:
                 return agent
+            live = self._live_row(connection)
+            workflow_id = str(live["id"]) if live is not None else None
             connection.execute(
                 "UPDATE agent SET status = ? WHERE name = ?",
                 (AgentStatus.RELEASED.value, name),
             )
-            connection.execute(
-                "UPDATE closeout_expected SET missing_reason = 'agent_released' WHERE author = ?"
-                " AND missing_reason IS NULL AND NOT EXISTS (SELECT 1 FROM agent_closeout_report r"
-                " WHERE r.workflow_id = closeout_expected.workflow_id AND r.author ="
-                " closeout_expected.author)",
-                (name,),
+            if workflow_id is not None:
+                connection.execute(
+                    "UPDATE closeout_expected SET missing_reason = 'agent_released'"
+                    " WHERE workflow_id = ? AND author = ?"
+                    " AND missing_reason IS NULL AND NOT EXISTS"
+                    " (SELECT 1 FROM agent_closeout_report r WHERE r.workflow_id ="
+                    " closeout_expected.workflow_id AND r.author ="
+                    " closeout_expected.author)",
+                    (workflow_id, name),
+                )
+            else:
+                connection.execute(
+                    "UPDATE closeout_expected SET missing_reason = 'agent_released'"
+                    " WHERE author = ? AND missing_reason IS NULL AND NOT EXISTS"
+                    " (SELECT 1 FROM agent_closeout_report r WHERE r.workflow_id ="
+                    " closeout_expected.workflow_id AND r.author ="
+                    " closeout_expected.author)",
+                    (name,),
+                )
+            self._add_recorded_event(
+                connection,
+                EventKind.AGENT_RELEASED,
+                {"agent": name, "released_by": actor if actor is not None else UNKNOWN},
+                workflow_id,
             )
             released = self._require_agent(connection, name)
         self.signals.notify(context_key(agent.context_id))
@@ -3444,10 +3532,30 @@ class HubStore:
             superseded_task_id: str | None = None
             if source_event_id is not None:
                 source = connection.execute(
-                    "SELECT id FROM event WHERE id = ?", (source_event_id,)
+                    "SELECT * FROM event WHERE id = ?", (source_event_id,)
                 ).fetchone()
                 if source is None:
                     raise NotFoundError(f"unknown source event: {source_event_id}")
+                # Source-event attribution (M4 Step 6a, #723): a terminal or
+                # other-run event can never be the source of new work. Hub-only
+                # `recorded` rows (including `agent_released`) are never
+                # deliverable, so they are rejected without guessing from payload.
+                if source["state"] == EventState.RECORDED.value:
+                    raise ConflictError(
+                        f"source event {source_event_id} is hub-only ({source['kind']})"
+                        " and cannot source new work"
+                    )
+                if source["kind"] == EventKind.AGENT_RELEASED.value:
+                    raise ConflictError(
+                        f"source event {source_event_id} is hub-only (agent_released)"
+                        " and cannot source new work"
+                    )
+                source_workflow_id = source["workflow_id"]
+                if source_workflow_id is not None and str(source_workflow_id) != workflow_id:
+                    raise ConflictError(
+                        f"source event {source_event_id} belongs to another run and"
+                        " cannot source new work in this run"
+                    )
                 existing = connection.execute(
                     "SELECT task.*, workflow.run_id, workflow.statement_sha256, workflow.branch"
                     " FROM task LEFT JOIN workflow ON task.workflow_id = workflow.id"
@@ -3565,13 +3673,15 @@ class HubStore:
             )
             if superseded_task_id is not None:
                 connection.execute(
-                    "INSERT INTO decision (ts, summary, rationale, actor) VALUES (?, ?, ?, 'hub')",
+                    "INSERT INTO decision (ts, summary, rationale, actor, workflow_id)"
+                    " VALUES (?, ?, ?, 'hub', ?)",
                     (
                         now,
                         f"Assigned task {task_id} from source event {source_event_id},"
                         f" superseding canceled task {superseded_task_id}",
                         f"Task {superseded_task_id} was canceled before it produced a"
                         f" result, so it released source event {source_event_id}.",
+                        workflow_id,
                     ),
                 )
             self._add_message(
@@ -3581,6 +3691,7 @@ class HubStore:
                 sender="alice",
                 direction="from_alice",
                 parts=[text_part(instructions, metadata=assignment_metadata)],
+                workflow_id=workflow_id,
             )
             task = self._require_task(connection, task_id)
         self.signals.notify(context_key(record.context_id))
@@ -3660,11 +3771,13 @@ class HubStore:
                 sender=agent,
                 direction="to_alice",
                 parts=[text_part(note, metadata={MetaKeys.KIND: "progress"})],
+                workflow_id=task.workflow_id,
             )
             self._add_event(
                 connection,
                 EventKind.TASK_PROGRESS,
                 {"task_id": task.id, "agent": agent, "note": note},
+                task.workflow_id,
             )
             self._record_progress_at(connection, agent)
             res: tuple[Any, bool]
@@ -3721,6 +3834,7 @@ class HubStore:
                         },
                     )
                 ],
+                workflow_id=task.workflow_id,
             )
             self._set_state(connection, task.id, TaskState.INPUT_REQUIRED)
             self._add_event(
@@ -3732,6 +3846,7 @@ class HubStore:
                     "question": question,
                     "message_id": message_id,
                 },
+                task.workflow_id,
             )
         self.signals.notify(EVENT_KEY)
         self.signals.notify(context_key(record.context_id))
@@ -3810,6 +3925,7 @@ class HubStore:
                 sender="alice",
                 direction="from_alice",
                 parts=[text_part(text, metadata={MetaKeys.KIND: "reply"})],
+                workflow_id=task.workflow_id,
             )
             self._set_state(connection, task.id, TaskState.WORKING)
         self.signals.notify(task_key(task_id))
@@ -4005,6 +4121,7 @@ class HubStore:
                 sender=agent,
                 direction="to_alice",
                 parts=[_result_transcript_part(result_summary, terminal_status)],
+                workflow_id=task.workflow_id,
             )
             self._finish(connection, task.id, terminal_status, payload)
             event_payload: dict[str, Any] = {
@@ -4020,6 +4137,7 @@ class HubStore:
                 if terminal_status is TaskState.COMPLETED
                 else EventKind.TASK_FAILED,
                 event_payload,
+                task.workflow_id,
             )
             finished = self._require_task(connection, task.id)
             res: tuple[Any, bool]
@@ -4168,6 +4286,7 @@ class HubStore:
         sender: str,
         direction: str,
         parts: list[dict[str, Any]],
+        workflow_id: str | None = None,
     ) -> int:
         for index, part in enumerate(parts, start=1):
             part_size = _json_size_bytes(part)
@@ -4178,27 +4297,66 @@ class HubStore:
                     "send a URL or compact reference instead."
                 )
         cursor = connection.execute(
-            "INSERT INTO message (task_id, context_id, sender, direction, parts_json, ts)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, context_id, sender, direction, json.dumps(parts), self._now_iso()),
+            "INSERT INTO message (task_id, workflow_id, context_id, sender, direction,"
+            " parts_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                workflow_id,
+                context_id,
+                sender,
+                direction,
+                json.dumps(parts),
+                self._now_iso(),
+            ),
         )
         return int(cursor.lastrowid or 0)
 
     def _add_event(
-        self, connection: Connection, kind: EventKind, payload: Mapping[str, Any]
+        self,
+        connection: Connection,
+        kind: EventKind,
+        payload: Mapping[str, Any],
+        workflow_id: str | None = None,
+        state: EventState = EventState.QUEUED,
     ) -> int:
         cursor = connection.execute(
-            "INSERT INTO event (kind, payload_json, state, ts) VALUES (?, ?, 'queued', ?)",
-            (kind.value, json.dumps(dict(payload)), self._now_iso()),
+            "INSERT INTO event (kind, payload_json, workflow_id, state, ts) VALUES (?, ?, ?, ?, ?)",
+            (kind.value, json.dumps(dict(payload)), workflow_id, state.value, self._now_iso()),
         )
         return int(cursor.lastrowid or 0)
 
-    def append_event(self, kind: EventKind, payload: Mapping[str, Any]) -> EventRecord:
+    def _add_recorded_event(
+        self,
+        connection: Connection,
+        kind: EventKind,
+        payload: Mapping[str, Any],
+        workflow_id: str | None,
+    ) -> int:
+        """Insert a hub-only audit/timeline record that is never leased.
+
+        Uses the terminal `recorded` state: the delivery lease never selects
+        it and it implies no delivery or acknowledgement.
+        """
+
+        return self._add_event(connection, kind, payload, workflow_id, EventState.RECORDED)
+
+    def append_event(
+        self,
+        kind: EventKind,
+        payload: Mapping[str, Any],
+        workflow_id: str | None = None,
+        state: EventState = EventState.QUEUED,
+    ) -> EventRecord:
         """Queue an event for Alice and wake her inbox."""
 
         with database(self.path) as connection:
-            event_id = self._add_event(connection, kind, payload)
-            row = connection.execute("SELECT * FROM event WHERE id = ?", (event_id,)).fetchone()
+            event_id = self._add_event(connection, kind, payload, workflow_id, state)
+            row = connection.execute(
+                "SELECT event.*, workflow.run_id FROM event"
+                " LEFT JOIN workflow ON workflow.id = event.workflow_id"
+                " WHERE event.id = ?",
+                (event_id,),
+            ).fetchone()
             event = _event(row)
         self.signals.notify(EVENT_KEY)
         return event
@@ -4257,10 +4415,11 @@ class HubStore:
         with database(self.path) as connection:
             row = connection.execute(
                 """
-                SELECT * FROM event
-                WHERE state = 'queued'
-                   OR (state = 'delivered' AND delivery_expires <= ? AND ? = 0)
-                ORDER BY id ASC
+                SELECT event.*, workflow.run_id FROM event
+                LEFT JOIN workflow ON workflow.id = event.workflow_id
+                WHERE event.state = 'queued'
+                   OR (event.state = 'delivered' AND event.delivery_expires <= ? AND ? = 0)
+                ORDER BY event.id ASC
                 LIMIT 1
                 """,
                 (now, int(grace)),
@@ -4280,7 +4439,10 @@ class HubStore:
                 (delivery_id, now, expires, row["id"]),
             )
             updated_row = connection.execute(
-                "SELECT * FROM event WHERE id = ?", (row["id"],)
+                "SELECT event.*, workflow.run_id FROM event"
+                " LEFT JOIN workflow ON workflow.id = event.workflow_id"
+                " WHERE event.id = ?",
+                (row["id"],),
             ).fetchone()
             return _event(updated_row)
 
@@ -4433,6 +4595,7 @@ class HubStore:
                             "note": "Repeated held-task request; inspect recovery ID and progress",
                             "redelivery_count": count,
                         },
+                        outcome.workflow_id,
                     )
                 if count == 1:
                     return outcome
@@ -4643,9 +4806,14 @@ class HubStore:
                 "lease_shift_s": pause_s,
                 "shifted_task_leases": shifted,
             }
-            event_id = self._add_event(connection, EventKind.HOST_PAUSED, payload)
+            event_id = self._add_event(connection, EventKind.HOST_PAUSED, payload, None)
             event = _event(
-                connection.execute("SELECT * FROM event WHERE id = ?", (event_id,)).fetchone()
+                connection.execute(
+                    "SELECT event.*, workflow.run_id FROM event"
+                    " LEFT JOIN workflow ON workflow.id = event.workflow_id"
+                    " WHERE event.id = ?",
+                    (event_id,),
+                ).fetchone()
             )
         # Publish the baseline only after the durable event commits, so a
         # failed write is retried instead of silently losing the diagnostic.
@@ -4678,7 +4846,9 @@ class HubStore:
             events = [
                 _event(row)
                 for row in connection.execute(
-                    f"SELECT * FROM event WHERE id IN ({_placeholders(emitted)}) ORDER BY id",
+                    f"SELECT event.*, workflow.run_id FROM event"
+                    f" LEFT JOIN workflow ON workflow.id = event.workflow_id"
+                    f" WHERE event.id IN ({_placeholders(emitted)}) ORDER BY event.id",
                     emitted,
                 ).fetchall()
             ]
@@ -4695,7 +4865,7 @@ class HubStore:
 
     def _expire_leases(self, connection: Connection, now: str) -> list[int]:
         rows = connection.execute(
-            "SELECT id, assignee, lease_expires FROM task"
+            "SELECT id, assignee, lease_expires, workflow_id FROM task"
             f" WHERE state IN ({_placeholders(OPEN_STATES)})"
             " AND lease_expires IS NOT NULL AND lease_expires <= ?",
             (*(state.value for state in OPEN_STATES), now),
@@ -4718,16 +4888,17 @@ class HubStore:
                         "agent": row["assignee"],
                         "lease_expires": row["lease_expires"],
                     },
+                    str(row["workflow_id"]) if row["workflow_id"] is not None else None,
                 )
             )
         return emitted
 
     def _lose_agents(self, connection: Connection, cutoff: str) -> list[int]:
-        live = (AgentStatus.IDLE, AgentStatus.BUSY)
+        live_statuses = (AgentStatus.IDLE, AgentStatus.BUSY)
         rows = connection.execute(
-            f"SELECT * FROM agent WHERE status IN ({_placeholders(live)}) "
+            f"SELECT * FROM agent WHERE status IN ({_placeholders(live_statuses)}) "
             "AND last_heartbeat <= ? AND standing_role != 'orchestrator'",
-            (*(status.value for status in live), cutoff),
+            (*(status.value for status in live_statuses), cutoff),
         ).fetchall()
         emitted = []
         for row in rows:
@@ -4737,9 +4908,15 @@ class HubStore:
                 (AgentStatus.LOST.value, agent.name),
             )
             task_id = self._open_task_id(connection, agent.current_task_id)
+            task_workflow_id: str | None = None
             if task_id is not None:
                 # Re-queue the work as failed rather than silently stranding it;
                 # reassignment is Alice's call (§4.3).
+                task_row = connection.execute(
+                    "SELECT workflow_id FROM task WHERE id = ?", (task_id,)
+                ).fetchone()
+                if task_row is not None and task_row["workflow_id"] is not None:
+                    task_workflow_id = str(task_row["workflow_id"])
                 self._finish(
                     connection,
                     task_id,
@@ -4751,6 +4928,9 @@ class HubStore:
                         "artifacts": [],
                     },
                 )
+            if task_workflow_id is None:
+                live_row = self._live_row(connection)
+                task_workflow_id = str(live_row["id"]) if live_row is not None else None
             emitted.append(
                 self._add_event(
                     connection,
@@ -4760,6 +4940,7 @@ class HubStore:
                         "task_id": task_id,
                         "last_heartbeat": agent.last_heartbeat,
                     },
+                    task_workflow_id,
                 )
             )
         if rows:
@@ -5379,6 +5560,7 @@ class HubStore:
                         "reasons": current["reasons"],
                     }
                     | _stall_evidence(current),
+                    str(report["workflow_id"]) if report["workflow_id"] is not None else None,
                 )
                 connection.execute(
                     "UPDATE stall_episode SET event_id = ? WHERE id = ?", (event_id, episode_id)
@@ -5388,7 +5570,9 @@ class HubStore:
             events = [
                 _event(row)
                 for row in connection.execute(
-                    f"SELECT * FROM event WHERE id IN ({_placeholders(emitted)}) ORDER BY id",
+                    f"SELECT event.*, workflow.run_id FROM event"
+                    f" LEFT JOIN workflow ON workflow.id = event.workflow_id"
+                    f" WHERE event.id IN ({_placeholders(emitted)}) ORDER BY event.id",
                     emitted,
                 ).fetchall()
             ]
@@ -5445,19 +5629,21 @@ class HubStore:
                             "question_id": question_id,
                             "cleared_reason": row["cleared_reason"],
                         },
+                        str(row["workflow_id"]) if row["workflow_id"] is not None else None,
                     )
                     connection.execute(
                         "UPDATE operator_question SET settling_event_id = ? WHERE id = ?",
                         (event_id, question_id),
                     )
                     connection.execute(
-                        "INSERT INTO decision (ts, summary, rationale, actor)"
-                        " VALUES (?, ?, ?, 'hub')",
+                        "INSERT INTO decision (ts, summary, rationale, actor, workflow_id)"
+                        " VALUES (?, ?, ?, 'hub', ?)",
                         (
                             now_iso,
                             f"Withdrew operator question {question_id}",
                             f"Stall episode {row['id']} cleared: {row['cleared_reason']}; "
                             "no authority granted",
+                            str(row["workflow_id"]) if row["workflow_id"] is not None else None,
                         ),
                     )
                     emitted.append(event_id)
@@ -5507,6 +5693,7 @@ class HubStore:
                         "reasons": current["reasons"],
                     }
                     | _stall_evidence(current),
+                    str(row["workflow_id"]) if row["workflow_id"] is not None else None,
                 )
             )
 

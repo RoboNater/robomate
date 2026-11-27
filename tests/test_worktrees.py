@@ -750,7 +750,7 @@ def test_migration_from_v24_leaves_workspace_path_and_kind_null(
 
 def test_wire_schema_version_stays_1() -> None:
     assert WIRE_SCHEMA_VERSION == 1
-    assert SCHEMA_VERSION == 32
+    assert SCHEMA_VERSION == 33
 
 
 async def test_explicit_join_revalidates_identity_for_join_name(tmp_path: Path) -> None:

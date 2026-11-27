@@ -1420,7 +1420,14 @@ def test_pause_event_and_lease_shift_roll_back_together(
     clocks.step(3600, monotonic_seconds=10)
     original = HubStore._add_event
 
-    def fail_pause(self: HubStore, connection: Connection, kind: EventKind, payload: object) -> int:
+    def fail_pause(
+        self: HubStore,
+        connection: Connection,
+        kind: EventKind,
+        payload: object,
+        workflow_id: object = None,
+        state: object = None,
+    ) -> int:
         if kind is EventKind.HOST_PAUSED:
             raise RuntimeError("injected pause event write failure")
         raise AssertionError("unexpected event")
@@ -2935,3 +2942,786 @@ def test_status_summary_names_the_current_review_round_and_last_terminal_task(
     assert summary["run"]["last_task"]["role"] == "reviewer"
     assert summary["run"]["last_task"]["state"] == "completed"
     assert summary["run"]["approved_sha"] == head
+
+
+def _row_workflow_id(store: HubStore, table: str, row_id: int) -> str | None:
+    with database(store.path) as connection:
+        row = connection.execute(
+            f"SELECT workflow_id FROM {table} WHERE id = ?", (row_id,)
+        ).fetchone()
+        return None if row is None or row["workflow_id"] is None else str(row["workflow_id"])
+
+
+def test_writer_attribution_covers_every_insertion_path(store: HubStore) -> None:
+    """M4 Step 6a (#723): every writer names its workflow; hub-level stays NULL."""
+
+    workflow_id = store.get_state()["workflow"]["id"]
+    store.check_in("bob")
+    with database(store.path) as connection:
+        checkin_msg = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id IS NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert checkin_msg["workflow_id"] == workflow_id
+        checkin_event = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_checked_in' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert checkin_event["workflow_id"] == workflow_id
+
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    with database(store.path) as connection:
+        msg = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task.id,),
+        ).fetchone()
+        assert msg["workflow_id"] == workflow_id
+
+    store.record_progress(task.id, "bob", "working")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'task_progress'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()["workflow_id"]
+            == workflow_id
+        )
+
+    qid = store.open_question(task.id, "bob", "Need input?", "q1")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'worker_question'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()["workflow_id"]
+            == workflow_id
+        )
+
+    assert store.reply(task.id, "Proceed", qid) is True
+    with database(store.path) as connection:
+        reply = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id = ? AND direction = 'from_alice'"
+            " ORDER BY id DESC LIMIT 1",
+            (task.id,),
+        ).fetchone()
+        assert reply["workflow_id"] == workflow_id
+
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'task_completed'"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()["workflow_id"]
+            == workflow_id
+        )
+
+    decision_id = store.log_decision("Chose X", "Because Y", actor="alice", session=None)
+    assert _row_workflow_id(store, "decision", decision_id) == workflow_id
+
+    # Terminal transition retains its own workflow even when it activates the queue.
+    store.check_in("charlie")
+    queued_id = store.start_workflow("Second run", policy={})
+    from delivery_support import finish_run as _finish_for_writer
+
+    _finish_for_writer(store, "Done", actor="alice", session=None)
+    with database(store.path) as connection:
+        done_decision = connection.execute(
+            "SELECT workflow_id FROM decision WHERE summary = 'Done' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        # The done decision belongs to the finished run, not the newly active one.
+        live = store.get_state()["workflow"]["id"]
+        assert live == queued_id
+        assert done_decision["workflow_id"] != live
+
+    # Event records expose workflow/run additively: drain, probe, lease.
+    while True:
+        pending = store.lease_next_event()
+        if pending is None:
+            break
+        assert pending.workflow_id is not None or pending.kind.value == "host_paused"
+        if pending.workflow_id is not None:
+            assert pending.run_id is not None
+        store.ack_event(pending.delivery_id)
+    with database(store.path) as connection:
+        run_id = connection.execute(
+            "SELECT run_id FROM workflow WHERE id = ?", (workflow_id,)
+        ).fetchone()["run_id"]
+    probe = store.append_event(EventKind.TASK_PROGRESS, {"note": "probe"}, workflow_id=workflow_id)
+    leased = store.lease_next_event()
+    assert leased is not None
+    assert leased.id == probe.id
+    assert leased.workflow_id == workflow_id
+    assert leased.run_id == run_id
+
+
+def test_taskless_messages_need_live_run_for_attribution(tmp_path: Path) -> None:
+    """Taskless run messages land in the correct run; hub-only stays NULL."""
+
+    path = tmp_path / "taskless.db"
+    initialize_database(path)
+    lonely = HubStore(path)
+    lonely.check_in("solo")
+    with database(path) as connection:
+        assert (
+            connection.execute("SELECT workflow_id FROM message WHERE task_id IS NULL").fetchone()[
+                "workflow_id"
+            ]
+            is None
+        )
+        assert (
+            connection.execute(
+                "SELECT workflow_id FROM event WHERE kind = 'agent_checked_in'"
+            ).fetchone()["workflow_id"]
+            is None
+        )
+    lonely.initialize_workflow("First")
+    lonely.check_in("bob")
+    with database(path) as connection:
+        rows = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id IS NULL ORDER BY id"
+        ).fetchall()
+        assert rows[-1]["workflow_id"] is not None
+
+
+def test_old_question_answer_after_new_run_keeps_old_workflow(store: HubStore) -> None:
+    """Answering an old question after a new run starts attributes to the old run."""
+
+    store.check_in("bob")
+    store.assign_task("bob", "implementer", "Build", "Do work")
+    qid = store.ask_user("Merge?", None, actor="alice", session="s1")
+    old_workflow = store.get_state()["workflow"]["id"]
+    # Queue a new run while the old question is still open; the answer lands
+    # after the queued run's creation but must still attribute to the old run,
+    # never silently to whatever workflow is live now.
+    queued_id = store.start_workflow("Second run")
+    assert queued_id != old_workflow
+    result = store.answer_operator_question(qid, "yes")
+    assert result["question_id"] == qid
+    with database(store.path) as connection:
+        event = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'user_answered' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert event["workflow_id"] == old_workflow
+
+
+def test_source_event_attribution_rejects_other_run_and_recorded(store: HubStore) -> None:
+    """Terminal/other-run and hub-only recorded events cannot source new work."""
+
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
+    with database(store.path) as connection:
+        completed_event = connection.execute(
+            "SELECT id, workflow_id FROM event WHERE kind = 'task_completed'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    from delivery_support import finish_run as _finish
+
+    _finish(store, "Done", actor="alice", session=None)
+    store.initialize_workflow("Next")
+    store.check_in("bob", worker_instance_id="bob-2")
+    with pytest.raises(ConflictError, match="another run"):
+        store.assign_task(
+            "bob", "implementer", "Build", "Do work", source_event_id=completed_event["id"]
+        )
+    recorded = store.append_event(
+        EventKind.AGENT_RELEASED,
+        {"agent": "bob", "released_by": "alice"},
+        workflow_id=None,
+        state=__import__("agent_hub_common", fromlist=["EventState"]).EventState.RECORDED,
+    )
+    with pytest.raises(ConflictError, match="hub-only"):
+        store.assign_task("bob", "implementer", "Build", "Do work", source_event_id=recorded.id)
+
+
+def test_agent_released_record_from_release_agent(store: HubStore) -> None:
+    """Exactly one run-attributed recorded row per changed agent; none twice."""
+
+    store.check_in("bob")
+    store.check_in("charlie")
+    workflow_id = store.get_state()["workflow"]["id"]
+    store.release_agent("bob", actor="alice")
+    with database(store.path) as connection:
+        rows = connection.execute(
+            "SELECT kind, state, workflow_id, payload_json FROM event"
+            " WHERE kind = 'agent_released' ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["state"] == "recorded"
+        assert rows[0]["workflow_id"] == workflow_id
+        import json as _json
+
+        payload = _json.loads(rows[0]["payload_json"])
+        assert set(payload.keys()) == {"agent", "released_by"}
+        assert payload == {"agent": "bob", "released_by": "alice"}
+        # Distinct from the closeout missing reason the same transaction maintains.
+        missing = connection.execute(
+            "SELECT missing_reason FROM closeout_expected WHERE workflow_id = ? AND author = ?",
+            (workflow_id, "bob"),
+        ).fetchone()
+        # No collection requested, so no expected row; the release itself is stored.
+        assert missing is None or missing["missing_reason"] in (None, "agent_released")
+    # Already released writes nothing.
+    store.release_agent("bob", actor="alice")
+    with database(store.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM event WHERE kind = 'agent_released'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_agent_released_record_from_done_sweep(tmp_path: Path) -> None:
+    """on_done: release writes one recorded row per changed agent."""
+
+    path = tmp_path / "sweep.db"
+    initialize_database(path)
+    sweep_store = HubStore(path)
+    sweep_store.initialize_workflow("Run")
+    sweep_store.check_in("bob")
+    sweep_store.check_in("charlie")
+    workflow_id = sweep_store.get_state()["workflow"]["id"]
+    from delivery_support import finish_run as _finish
+
+    _finish(sweep_store, "Done", actor="alice", session=None)
+    with database(path) as connection:
+        rows = connection.execute(
+            "SELECT payload_json, state, workflow_id FROM event"
+            " WHERE kind = 'agent_released' ORDER BY id"
+        ).fetchall()
+        assert len(rows) == 2
+        for row in rows:
+            assert row["state"] == "recorded"
+            assert row["workflow_id"] == workflow_id
+            import json as _json
+
+            payload = _json.loads(row["payload_json"])
+            assert set(payload.keys()) == {"agent", "released_by"}
+            assert payload["released_by"] == "done policy"
+        agents = {_json.loads(r["payload_json"])["agent"] for r in rows}
+        assert agents == {"bob", "charlie"}
+
+
+def test_agent_released_no_live_run_is_hub_scoped(tmp_path: Path) -> None:
+    """A release with no live run stores NULL and stays hub-scoped."""
+
+    path = tmp_path / "hubscoped.db"
+    initialize_database(path)
+    lonely = HubStore(path)
+    lonely.check_in("bob")
+    lonely.release_agent("bob", actor="alice")
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id, state FROM event WHERE kind = 'agent_released'"
+        ).fetchone()
+        assert row["workflow_id"] is None
+        assert row["state"] == "recorded"
+
+
+def test_recorded_state_is_never_leased_delivered_or_acked(store: HubStore) -> None:
+    """The delivery lease never selects recorded rows; ack is a no-op."""
+
+    from agent_hub_common import EventState as _State
+
+    # Drain any queued rows from fixture setup so the recorded row stands alone.
+    while True:
+        pending = store.lease_next_event()
+        if pending is None:
+            break
+        store.ack_event(pending.delivery_id)
+    assert store.pending_events() == 0
+    with database(store.path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM event WHERE state = 'queued'").fetchone()[0]
+            == 0
+        )
+    recorded = store.append_event(
+        EventKind.AGENT_RELEASED,
+        {"agent": "bob", "released_by": "alice"},
+        workflow_id=store.get_state()["workflow"]["id"],
+        state=_State.RECORDED,
+    )
+    assert recorded.state.value == "recorded"
+    assert store.pending_events() == 0
+    # A recorded row is never leased even when it is the only row.
+    assert store.lease_next_event() is None
+    assert store.ack_event("missing-delivery-id") is False
+    # Queued rows still lease normally.
+    queued = store.append_event(EventKind.TASK_PROGRESS, {"note": "hi"})
+    assert store.pending_events() == 1
+    leased2 = store.lease_next_event()
+    assert leased2 is not None and leased2.id == queued.id
+    assert store.ack_event(leased2.delivery_id) is True
+
+
+def test_two_runs_with_overlapping_timestamps_keep_attribution(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """Equal and backward wall times never steer attribution (M4 Step 6a, #723)."""
+
+    path = tmp_path / "tworuns.db"
+    initialize_database(path)
+    two = HubStore(path)
+    frozen_clock.install(two)
+
+    # Run 1 writes at T0.
+    two.initialize_workflow("First")
+    two.check_in("bob")
+    run1 = two.get_state()["workflow"]["id"]
+    t1 = two.assign_task("bob", "implementer", "First", "Do first")
+    two.record_progress(t1.id, "bob", "run1-progress")
+    d1 = two.log_decision("Run1 decision", "Because", actor="alice", session=None)
+    two.submit_result(t1.id, "bob", TaskState.COMPLETED, summary="Done1")
+    # Taskless check-in message for run 1 is already written by check_in above.
+
+    # Run 2 writes at the same wall time (equal), then earlier (backward).
+    from delivery_support import finish_run as _finish_two
+
+    _finish_two(two, "Done1", actor="alice", session=None)
+    two.initialize_workflow("Second")
+    run2 = two.get_state()["workflow"]["id"]
+    assert run2 != run1
+    # Equal: do not advance; run 2's created/ts equal run 1's last write.
+    two.check_in("bob", worker_instance_id="bob-2")
+    t2 = two.assign_task("bob", "implementer", "Second", "Do second")
+    two.record_progress(t2.id, "bob", "run2-progress")
+    d2 = two.log_decision("Run2 decision", "Because", actor="alice", session=None)
+    with database(path) as connection:
+        max_ts1 = connection.execute(
+            "SELECT MAX(ts) AS m FROM event WHERE workflow_id = ?", (run1,)
+        ).fetchone()["m"]
+        min_ts2_equal = connection.execute(
+            "SELECT MIN(ts) AS m FROM event WHERE workflow_id = ?", (run2,)
+        ).fetchone()["m"]
+        assert max_ts1 is not None and min_ts2_equal is not None
+        assert min_ts2_equal == max_ts1  # equal wall times across runs
+    # Backward: drive run 2's next writes at an earlier wall time.
+    earlier = frozen_clock() - timedelta(seconds=3600)
+    two.clock = lambda: earlier
+    # Use a progress note at the earlier time on run 2's task.
+    two.record_progress(t2.id, "bob", "run2-backward-progress")
+    two.log_decision("Run2 backward", "Because", actor="alice", session=None)
+    with database(path) as connection:
+        backward_ts = connection.execute(
+            "SELECT ts FROM event WHERE payload_json LIKE '%run2-backward-progress%'"
+        ).fetchone()["ts"]
+        assert backward_ts < max_ts1  # strictly earlier, yet still attributed to run 2
+
+    with database(path) as connection:
+        # Every event, decision, task message and taskless message carries its own run.
+        for wid in (run1, run2):
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM event WHERE workflow_id = ?", (wid,)
+                ).fetchone()[0]
+                > 0
+            )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM decision WHERE workflow_id = ?", (wid,)
+                ).fetchone()[0]
+                > 0
+            )
+        # Task messages follow their task's run, not the wall clock.
+        for tid, wid in ((t1.id, run1), (t2.id, run2)):
+            msg_wf = connection.execute(
+                "SELECT workflow_id FROM message WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()["workflow_id"]
+            assert msg_wf == wid
+            evt_wf = connection.execute(
+                "SELECT workflow_id FROM event WHERE payload_json LIKE ? ORDER BY id DESC LIMIT 1",
+                (f"%{tid}%",),
+            ).fetchone()
+            assert evt_wf is not None and evt_wf["workflow_id"] == wid
+        # Taskless check-ins: one per run, each attributed to its live run at write time.
+        checkins = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_checked_in' ORDER BY id"
+        ).fetchall()
+        assert [r["workflow_id"] for r in checkins] == [run1, run2]
+        # Decisions never cross runs even though run 2 wrote earlier wall times.
+        assert (
+            connection.execute("SELECT workflow_id FROM decision WHERE id = ?", (d1,)).fetchone()[
+                "workflow_id"
+            ]
+            == run1
+        )
+        assert (
+            connection.execute("SELECT workflow_id FROM decision WHERE id = ?", (d2,)).fetchone()[
+                "workflow_id"
+            ]
+            == run2
+        )
+
+
+def _drain(store: HubStore) -> None:
+    while True:
+        pending = store.lease_next_event()
+        if pending is None:
+            break
+        store.ack_event(pending.delivery_id)
+
+
+def test_attribution_work_submitted(tmp_path: Path) -> None:
+    path = tmp_path / "worksubmitted.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("First")
+    queued = store.start_workflow("Second statement", emit_work_submitted=True)
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'work_submitted' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] == queued
+
+
+def test_attribution_set_task_state_message(store: HubStore) -> None:
+    store.check_in("bob")
+    task = store.assign_task("bob", "implementer", "Build", "Do work")
+    wid = task.workflow_id
+    store.set_task_state(task.id, TaskState.CANCELED, "No longer needed")
+    with database(store.path) as connection:
+        msg = connection.execute(
+            "SELECT workflow_id FROM message WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task.id,),
+        ).fetchone()
+        assert msg["workflow_id"] == wid
+
+
+def test_attribution_ci_settled_and_expired(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
+
+    def pending_report(pr: str, head: str) -> GateReport:
+        return GateReport(
+            pr_url=pr,
+            pr_state=PrState.OPEN,
+            expected_head_sha=head,
+            current_head_sha=head,
+            head_matches=True,
+            ci=CiStatus.PENDING,
+            checks=[Check("t", "pending", "")],
+            base_ref="main",
+            base_sha="b" * 40,
+            main_sha="c" * 40,
+            base_behind_main=False,
+            mergeable=Mergeable.UNKNOWN,
+            merge_state_status="UNKNOWN",
+        )
+
+    def pass_report(pr: str, head: str) -> GateReport:
+        return GateReport(
+            pr_url=pr,
+            pr_state=PrState.OPEN,
+            expected_head_sha=head,
+            current_head_sha=head,
+            head_matches=True,
+            ci=CiStatus.PASS,
+            checks=[Check("t", "pass", "")],
+            base_ref="main",
+            base_sha="b" * 40,
+            main_sha="c" * 40,
+            base_behind_main=False,
+            mergeable=Mergeable.CLEAN,
+            merge_state_status="CLEAN",
+        )
+
+    path = tmp_path / "ci.db"
+    initialize_database(path)
+    ci_store = HubStore(path)
+    frozen_clock.install(ci_store)
+    ci_store.initialize_workflow(policy={"max_wall_minutes": 60})
+    wid = ci_store.get_state()["workflow"]["id"]
+    pr = "https://github.com/octo/sandbox/pull/7"
+    head = "a" * 40
+    ci_store.record_gate_reading(pr, head, report=pending_report(pr, head), elapsed_s=0)
+    ci_store.record_gate_reading(pr, head, report=pass_report(pr, head), elapsed_s=0)
+    with database(path) as connection:
+        settled = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'ci_settled' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert settled is not None and settled["workflow_id"] == wid
+    # Expired: create a watch then expire it directly (writer under test).
+    ci_store.record_gate_reading(pr, head, report=pending_report(pr, head), elapsed_s=0)
+    deadline = frozen_clock() - timedelta(seconds=1)
+    with database(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ci_store._expire_ci_watch(connection, wid, pr, head, deadline)
+    with database(path) as connection:
+        expired = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'ci_watch_expired' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert expired is not None and expired["workflow_id"] == wid
+
+
+def test_attribution_closeout_report(tmp_path: Path) -> None:
+    path = tmp_path / "closeoutattr.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("Run")
+    store.check_in("bob", worker_instance_id="bob-instance")
+    task = store.assign_task("bob", "implementer", "Build", "Do")
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
+    run_id = store.get_state()["run_id"]
+    wid = store.get_state()["workflow"]["id"]
+    store.request_closeout_reports(run_id, "alice", "alice-session", 100)
+    body = {
+        "summary": "Did work",
+        "outstanding_items": [],
+        "lessons": ["L"],
+        "claims": [{"text": "C", "verification": "unverified"}],
+    }
+    store.submit_closeout_report(run_id, "bob", "bob-instance", "worker", body)
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'closeout_report_submitted'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] == wid
+        assert store.agent_by_name("bob") is not None
+
+
+def test_attribution_lease_expired(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    path = tmp_path / "lease.db"
+    initialize_database(path)
+    store = HubStore(path)
+    frozen_clock.install(store)
+    store.initialize_workflow("Run")
+    store.check_in("bob")
+    wid = store.get_state()["workflow"]["id"]
+    store.assign_task("bob", "implementer", "Build", "Do", lease_min=1)
+    frozen_clock.advance(120)
+    emitted = store.sweep(60)
+    assert any(e.kind == EventKind.LEASE_EXPIRED for e in emitted)
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'lease_expired' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] == wid
+
+
+def test_attribution_agent_lost_branches(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    # Task branch: lost agent with an open task attributes to the task's run.
+    path = tmp_path / "losttask.db"
+    initialize_database(path)
+    store = HubStore(path)
+    frozen_clock.install(store)
+    store.initialize_workflow("Run")
+    store.check_in("bob", worker_instance_id="bob-1")
+    wid = store.get_state()["workflow"]["id"]
+    store.assign_task("bob", "implementer", "Build", "Do")
+    frozen_clock.advance(400)
+    emitted = store.sweep(60)
+    assert any(e.kind == EventKind.AGENT_LOST for e in emitted)
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_lost' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] == wid
+
+    # Live fallback: idle agent with no task attributes to the live run.
+    path2 = tmp_path / "lostlive.db"
+    initialize_database(path2)
+    live_store = HubStore(path2)
+    frozen_clock.install(live_store)
+    live_store.initialize_workflow("Run")
+    live_store.check_in("solo", worker_instance_id="solo-1")
+    live_wid = live_store.get_state()["workflow"]["id"]
+    frozen_clock.advance(400)
+    live_store.sweep(60)
+    with database(path2) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_lost' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] == live_wid
+
+    # No live run: hub-scoped NULL.
+    path3 = tmp_path / "losthub.db"
+    initialize_database(path3)
+    hub_store = HubStore(path3)
+    frozen_clock.install(hub_store)
+    hub_store.check_in("ghost", worker_instance_id="ghost-1")
+    frozen_clock.advance(400)
+    hub_store.sweep(60)
+    with database(path3) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_lost' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] is None
+
+
+def test_attribution_stall_events_and_decisions(tmp_path: Path, frozen_clock: FrozenClock) -> None:
+    path = tmp_path / "stallattr.db"
+    initialize_database(path)
+    store = HubStore(path, detect_host_pauses=False)
+    frozen_clock.install(store)
+    store.initialize_workflow(policy={"stall_after_min": 1, "stall_action_after_min": 3})
+    wid = store.get_state()["workflow"]["id"]
+    agent = store.check_in("bob")
+    instance = str(agent.worker_instance_id)
+    store.note_worker_call("bob", instance, "check_in")
+    task = store.assign_task("bob", "implementer", "Fix", "Do it")
+    frozen_clock.advance(70)
+    store.heartbeat("bob", instance, task.id)
+    # Make progress stale but keep heartbeat fresh: advance past stall threshold.
+    frozen_clock.advance(70)
+    with database(path) as connection:
+        decisions_before = connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0]
+    stalled = store.sweep_stalls()
+    assert any(e.kind == EventKind.AGENT_STALLED for e in stalled)
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'agent_stalled' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["workflow_id"] == wid
+        # No decision is written for agent_stalled itself.
+        assert connection.execute("SELECT COUNT(*) FROM decision").fetchone()[0] == decisions_before
+    # Stall action: advance past action threshold to ask the operator.
+    frozen_clock.advance(4 * 60)
+    second = store.sweep_stalls()
+    assert any(e.kind == EventKind.STALL_ACTION for e in second)
+    with database(path) as connection:
+        action = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'stall_action'"
+            " AND payload_json LIKE '%operator_question%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert action is not None and action["workflow_id"] == wid
+        qrow = connection.execute(
+            "SELECT id, workflow_id FROM operator_question ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert qrow["workflow_id"] == wid
+        drow = connection.execute(
+            "SELECT workflow_id FROM decision ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert drow["workflow_id"] == wid
+    # Recovery: worker makes progress, next sweep withdraws the hub question.
+    store.record_progress(task.id, "bob", "recovered-progress")
+    store.note_worker_call("bob", instance, "progress")
+    third = store.sweep_stalls()
+    with database(path) as connection:
+        withdrawn = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'stall_action'"
+            " AND payload_json LIKE '%question_withdrawn%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert withdrawn is not None and withdrawn["workflow_id"] == wid
+        wdecision = connection.execute(
+            "SELECT workflow_id FROM decision WHERE summary LIKE 'Withdrew operator question%'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert wdecision is not None and wdecision["workflow_id"] == wid
+        qcheck = connection.execute(
+            "SELECT withdrawn FROM operator_question WHERE id = ?", (qrow["id"],)
+        ).fetchone()
+        assert qcheck["withdrawn"] is not None
+    assert any(
+        e.kind == EventKind.STALL_ACTION and e.payload.get("action") == "question_withdrawn"
+        for e in third
+    )
+
+
+def test_attribution_ask_withdraw_and_superseded(tmp_path: Path) -> None:
+    path = tmp_path / "askattr.db"
+    initialize_database(path)
+    store = HubStore(path)
+    store.initialize_workflow("Run")
+    wid = store.get_state()["workflow"]["id"]
+    store.check_in("bob")
+    # ask_user decision.
+    qid = store.ask_user("Merge?", None, actor="alice", session="s1")
+    with database(path) as connection:
+        drow = connection.execute(
+            "SELECT workflow_id FROM decision ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert drow["workflow_id"] == wid
+    # Resume before next assignment: answer and clear escalation.
+    store.answer_operator_question(qid, "yes")
+    store.set_workflow_status(WorkflowStatus.ACTIVE, "resume", actor="alice", session="s1")
+    # Task-wait withdraw decision.
+    task = store.assign_task("bob", "implementer", "Build", "Do")
+    tq = store.ask_user("Wait?", None, actor="alice", session="s1", waiting_on_task_id=task.id)
+    store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
+    with database(path) as connection:
+        ev = connection.execute(
+            "SELECT id FROM event WHERE kind = 'task_completed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    store.withdraw_question(tq, "Moot", ev["id"], actor="alice", session="s1")
+    # Resume again before superseded-assignment path (assign refused while escalated).
+    store.set_workflow_status(WorkflowStatus.ACTIVE, "resume", actor="alice", session="s1")
+    with database(path) as connection:
+        wrow = connection.execute(
+            "SELECT workflow_id FROM decision WHERE summary LIKE 'Withdrew%'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert wrow["workflow_id"] == wid
+    # Superseded-assignment decision: reuse a source event after cancel.
+    _drain(store)
+    # assign_task only needs the source row to exist; no lease required.
+    src2 = store.append_event(EventKind.TASK_PROGRESS, {"note": "src2"}, workflow_id=wid)
+    t_a = store.assign_task("bob", "implementer", "A", "Do A", source_event_id=src2.id)
+    store.cancel_task(t_a.id)
+    t_b = store.assign_task("bob", "implementer", "B", "Do B", source_event_id=src2.id)
+    assert t_b.id != t_a.id
+    with database(path) as connection:
+        srow = connection.execute(
+            "SELECT workflow_id FROM decision WHERE summary LIKE 'Assigned task%'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert srow["workflow_id"] == wid
+
+
+async def test_attribution_repeated_diagnostic(store: HubStore, frozen_clock: FrozenClock) -> None:
+    agent = store.check_in("bob")
+    wid = store.get_state()["workflow"]["id"]
+    store.assign_task("bob", "implementer", "Build", "Do")
+    await store.await_assignment(agent.context_id, 0.2)
+    await store.await_assignment(agent.context_id, 0.2)
+    # Third hold triggers the repeated_assignment diagnostic (count==2).
+    await store.await_assignment(agent.context_id, 0.2)
+    with database(store.path) as connection:
+        rows = connection.execute(
+            "SELECT workflow_id, payload_json FROM event WHERE payload_json LIKE"
+            " '%repeated_assignment%'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["workflow_id"] == wid
+
+
+def test_attribution_host_paused_stays_null(tmp_path: Path) -> None:
+    from agent_hub.store import HubStore as _HS
+
+    path = tmp_path / "pauseattr.db"
+    initialize_database(path)
+    store = _HS(path, detect_host_pauses=True)
+
+    class _Clocks:
+        def __init__(self) -> None:
+            from datetime import UTC, datetime
+
+            self.now = datetime(2026, 9, 11, 12, tzinfo=UTC)
+
+        def __call__(self) -> datetime:
+            from datetime import datetime as _DT
+
+            assert isinstance(self.now, _DT)
+            return self.now
+
+        def monotonic(self) -> float:
+            return 0.0
+
+        def step(self, wall_s: float, mono_s: float) -> None:
+            from datetime import timedelta
+
+            self.now = self.now + timedelta(seconds=wall_s)
+
+    clocks = _Clocks()
+    store.clock = clocks
+    store.monotonic_clock = clocks.monotonic
+    store.check_in("bob", worker_instance_id="bob-1")
+    assert store.sweep(180) == []
+    clocks.step(4 * 3600, 10)
+    events = store.sweep(180)
+    assert [e.kind for e in events] == [EventKind.HOST_PAUSED]
+    with database(path) as connection:
+        row = connection.execute(
+            "SELECT workflow_id FROM event WHERE kind = 'host_paused'"
+        ).fetchone()
+        assert row["workflow_id"] is None
