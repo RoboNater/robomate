@@ -416,6 +416,7 @@ allowed, only under all of these limits:
   `$R` the `robomate` entry):
 
   ```sh
+  set -euo pipefail
   trap '"$R" down' EXIT
   "$R" up --port <port> > "$S/up.log" 2>&1 &
   for i in $(seq 1 60); do grep -q 'running at' "$S/up.log" && break; sleep 0.5; done
@@ -426,11 +427,13 @@ allowed, only under all of these limits:
   Windows/PowerShell equivalent:
 
   ```powershell
+  $ErrorActionPreference = 'Stop'
   try {
     Start-Process $R -ArgumentList 'up','--port','<port>' -RedirectStandardOutput "$S/up.log" -RedirectStandardError "$S/up.err" -NoNewWindow
     for ($i = 0; $i -lt 60 -and -not (Select-String 'running at' "$S/up.log" -Quiet); $i++) { Start-Sleep -Milliseconds 500 }
-    Select-String 'running at' "$S/up.log"
+    if (-not (Select-String 'running at' "$S/up.log" -Quiet)) { throw 'hub never reached running at' }
     & $R status --brief
+    if ($LASTEXITCODE -ne 0) { throw "status failed with $LASTEXITCODE" }
   } finally { & $R down }
   ```
 
