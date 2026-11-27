@@ -2727,6 +2727,29 @@ def test_negative_pytest_workers_is_refused(area: dict[str, Path]) -> None:
     assert launches(area) == []
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        ("--warn-series-resets", "-1"),
+        ("--max-series-resets", "-1"),
+        ("--warn-series-resets", "6"),
+        ("--warn-series-resets", "7", "--max-series-resets", "6"),
+    ],
+)
+def test_invalid_series_reset_bounds_are_refused(
+    area: dict[str, Path], option: tuple[str, ...]
+) -> None:
+    code = invoke(
+        start_words(area, "bob", "implementer", "claude-code", *option),
+        programs=programs(area),
+        reader=FakeHub(lambda method: pytest.fail(f"read the hub: {method}")),
+        workspace=workspace_of(area),
+    )
+
+    assert code == 2
+    assert launches(area) == []
+
+
 @pytest.mark.parametrize("environment_exists", [True, False])
 @pytest.mark.parametrize("interactive", [True, False])
 def test_resume_exports_the_saved_identity_uv_cache_and_workers_again(

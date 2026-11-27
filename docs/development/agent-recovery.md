@@ -460,9 +460,23 @@ logged to `RUN_DIR/<name>-sessions.jsonl`; `run.json` records the path and
 backoff settings. Waits include `delay_s` and `next_attempt`. The launcher stops
 on release or workflow `done` (exit 0), spent resumes (1), unreadable or changed
 hub/workflow (3), missing workflow/ID or an attached predecessor (4), pause
-(5), or Ctrl-C/SIGHUP/SIGTERM (130). On interruption it stops only its own
+(5), a repeated non-retryable provider error (7), a long-run failure loop (8),
+or Ctrl-C/SIGHUP/SIGTERM (130). On interruption it stops only its own
 harness child and records its exit row before stopping (#534). It checks
 status again after a backoff before launching a successor.
+
+A series reset after a non-zero exit counts toward a stuck-loop signal (#169).
+A worker that lasts `--resume-series-reset-s` and then fails on every cycle
+refills the time budget and would otherwise be resumed forever. After
+`--warn-series-resets` (default 3) such runs in a row, the launcher logs a
+`series_reset_warning` line and prints a warning on stderr; after
+`--max-series-resets` (default 6) it stops with reason `series_resets_spent` and
+exit 8, printing the error and the `resume-<name>` instructions. A run shorter
+than the reset interval, or a long run that exits 0, clears the count, so
+ordinary crashes and a worker making progress in long runs keep today's
+backoff and series-reset behaviour. `--max-series-resets 0` keeps the warning
+only, `--warn-series-resets 0` keeps the cap only, and `--max-resumes` still
+wins when it is reached first.
 
 When automatic attempts are spent, preserve the workspace and pending task,
 question/result, verify the old harness is gone, then run the generated script
@@ -553,15 +567,23 @@ unsupervised. The launcher:
   then exits 1 with these manual steps. Each wait is logged as a `wait` line
   with `delay_s` and `next_attempt`, and stderr says when the next resume
   goes. Healthy running time before that first exit never spends the budget,
-  and a series reset refills it. The hub is re-read after the wait, before
+  and a series reset refills it. A long run that then fails on every cycle also
+  counts toward #169's stuck-loop signal: after `--warn-series-resets` (default
+  3) in a row the launcher logs `series_reset_warning` and warns on stderr,
+  and after `--max-series-resets` (default 6) it stops with reason
+  `series_resets_spent` and exit 8, printing the manual resume steps. A
+  shorter run or a long run that exits 0 clears the count, so ordinary crashes
+  and healthy long runs keep resuming; 0 disables either signal. The hub is
+  re-read after the wait, before
   every resume, so a pause, `done`, or a different hub or workflow during a
   long wait still stops the launcher.
 - stops without launching again, and says why, when the workflow is `paused`
   (exit 5: resume by hand when you are ready), when Alice exited before
   initializing the workflow or before printing her conversation ID (exit 4: it
-  never replays the kickoff or guesses an ID), or when the hub stays unreadable
+  never replays the kickoff or guesses an ID), when the hub stays unreadable
   or names another hub or workflow after `--read-retries` reads (exit 3: it
-  never guesses `done`).
+  never guesses `done`), when the same non-retryable provider error repeats
+  (exit 7), or when long failing runs reach `--max-series-resets` (exit 8).
 - on Ctrl-C, SIGHUP or SIGTERM, stops only the harness process it started,
   launches nothing more, and exits 130. The child's `exit` row is written
   before the stop, so a later resume needs no `--confirm-stopped`; a long
@@ -571,7 +593,10 @@ unsupervised. The launcher:
 --resume-total-s TOTAL --resume-series-reset-s RESET` sets the backoff for the
 run, passing the same settings to supervised workers and to Alice, and
 `run.json` records them under `launch.agents.alice` and each supervised
-worker's `launch.agents.<worker>`. Every launch, wait, exit, conversation ID
+worker's `launch.agents.<worker>`. The #169 warning and cap keep their defaults
+through preparation; to change them, add `--warn-series-resets N` and
+`--max-series-resets N` before `--` in the generated start and resume scripts
+(0 disables either). Every launch, wait, exit, conversation ID
 and stop reason is one line in `alice-sessions.jsonl`; the token and command
 lines are never logged.
 

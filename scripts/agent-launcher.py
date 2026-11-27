@@ -26,7 +26,8 @@ or its only unfinished run; ``--harness``, ``--model``, ``--effort`` and
 the harness there with a first prompt naming the join, next step, and turn rule,
 passes the harness's sandbox grants as flags, and resumes
 the same conversation with a fixed continuation and #158 backoff until the
-workflow is done or the worker is released. Nothing is rendered: the harness
+workflow is done or the worker is released, warning and then stopping after
+too many consecutive long failing runs (#169). Nothing is rendered: the harness
 finds the hub through its static ``robomate mcp`` entry, pinned to this hub's
 ``hub_id`` through ``ROBOMATE_HUB_ID`` in the child environment (#511), so the
 bridge never attaches by guessing from the worktree's binding. Each launch,
@@ -1634,6 +1635,8 @@ def supervision_args(args: argparse.Namespace, place: Place, **fields: Any) -> a
         "resume_max_delay_s",
         "resume_total_s",
         "resume_series_reset_s",
+        "warn_series_resets",
+        "max_series_resets",
         "read_retries",
         "read_retry_delay_s",
         "predecessor_wait_s",
@@ -2816,6 +2819,8 @@ def backoff_options(parser: argparse.ArgumentParser, *, worker_reads: bool = Tru
     parser.add_argument(
         "--resume-series-reset-s", type=float, default=common.DEFAULT_RESUME_SERIES_RESET_S
     )
+    parser.add_argument("--warn-series-resets", type=int, default=common.DEFAULT_WARN_SERIES_RESETS)
+    parser.add_argument("--max-series-resets", type=int, default=common.DEFAULT_MAX_SERIES_RESETS)
     parser.add_argument("--read-retries", type=int)
     parser.add_argument(
         "--read-retry-delay-s", type=float, default=common.DEFAULT_READ_RETRY_DELAY_S
@@ -2972,11 +2977,22 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
             "resume_max_delay_s",
             "resume_total_s",
             "resume_series_reset_s",
+            "warn_series_resets",
+            "max_series_resets",
             "read_retry_delay_s",
             "predecessor_wait_s",
         ):
             if not getattr(args, key) >= 0:
                 raise Usage(f"--{key.replace('_', '-')} must not be negative")
+        if (
+            args.max_series_resets > 0
+            and args.warn_series_resets
+            and args.warn_series_resets >= args.max_series_resets
+        ):
+            raise Usage(
+                "--warn-series-resets must be less than --max-series-resets "
+                "(use 0 to disable the warning)"
+            )
         if not args.predecessor_poll_s > 0:
             raise Usage("--predecessor-poll-s must be positive")
         if args.safe_mode and not args.interactive:

@@ -11,6 +11,10 @@ by hand. No hub mutation or ownership takeover is performed by this launcher.
 
 Each launch and exit is recorded in <name>-sessions.jsonl. --resume-session
 and --resume-prompt give hand resumes the same supervision and a fresh budget.
+A harness that lasts the series-reset interval and then fails on every cycle
+warns after --warn-series-resets and stops with exit 8 after
+--max-series-resets (#169), so a stuck long-run loop still reaches the
+operator.
 """
 
 from __future__ import annotations

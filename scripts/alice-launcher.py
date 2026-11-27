@@ -25,7 +25,9 @@ Both launchers share ``agent_launcher.py`` (#165):
    series, or after ``--max-resumes`` when given
    (by default no count limit). ``paused`` stops it until the operator resumes
    by hand. Healthy running time before that first exit never spends the
-   budget, and a series reset refills it.
+   budget, and a series reset refills it. A long run that then fails on every
+   cycle warns after ``--warn-series-resets`` and stops with exit 8 after
+   ``--max-series-resets`` (#169).
 
 It stops, without launching again, when it cannot tell what happened: the hub
 stays unreadable or reports another hub or workflow after ``--read-retries``
