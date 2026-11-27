@@ -465,8 +465,11 @@ or Ctrl-C/SIGHUP/SIGTERM (130). On interruption it stops only its own
 harness child and records its exit row before stopping (#534). It checks
 status again after a backoff before launching a successor.
 
-A series reset after a non-zero exit counts toward a stuck-loop signal (#169).
-A worker that lasts `--resume-series-reset-s` and then fails on every cycle
+A run that lasts `--resume-series-reset-s` and then exits non-zero counts
+toward a stuck-loop signal (#169); the first one counts even though the
+launcher writes no `series_reset` row for it, so the thresholds count these
+runs, not reset rows (6 runs from a fresh start is 5 reset rows). A worker that
+lasts `--resume-series-reset-s` and then fails on every cycle
 refills the time budget and would otherwise be resumed forever. After
 `--warn-series-resets` (default 3) such runs in a row, the launcher logs a
 `series_reset_warning` line and prints a warning on stderr; after
@@ -568,7 +571,9 @@ unsupervised. The launcher:
   with `delay_s` and `next_attempt`, and stderr says when the next resume
   goes. Healthy running time before that first exit never spends the budget,
   and a series reset refills it. A long run that then fails on every cycle also
-  counts toward #169's stuck-loop signal: after `--warn-series-resets` (default
+  counts toward #169's stuck-loop signal, by run: the first long failing run
+  counts even though it writes no `series_reset` row, so `--max-series-resets`
+  counts runs, not reset rows. After `--warn-series-resets` (default
   3) in a row the launcher logs `series_reset_warning` and warns on stderr,
   and after `--max-series-resets` (default 6) it stops with reason
   `series_resets_spent` and exit 8, printing the manual resume steps. A
