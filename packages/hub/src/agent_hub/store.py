@@ -2394,15 +2394,12 @@ class HubStore:
                                 },
                                 workflow_id,
                             )
-                        connection.execute(
-                            "UPDATE closeout_expected SET missing_reason = 'agent_released'"
-                            " WHERE workflow_id = ? AND author IN (SELECT name FROM agent"
-                            " WHERE status = ?) AND missing_reason IS NULL AND NOT EXISTS"
-                            " (SELECT 1 FROM agent_closeout_report r WHERE r.workflow_id ="
-                            " closeout_expected.workflow_id AND r.author ="
-                            " closeout_expected.author)",
-                            (workflow_id, AgentStatus.RELEASED.value),
-                        )
+                        # No closeout_expected write here: finalize() above has
+                        # already set every unreported row to run_finalized, so
+                        # a missing_reason IS NULL update would match nothing.
+                        # Early release_agent (before finalize) still records
+                        # agent_released via its own update; the sweep's agents
+                        # keep run_finalized.
         # Manifests are files, not rows: write them after the transaction
         # commits, so a crash between the two cannot leave a half-written
         # database row behind a completed manifest.
@@ -3374,7 +3371,13 @@ class HubStore:
         return DEFAULT_MAX_TASK_LEASE_MIN
 
     def release_agent(self, name: str, actor: str | None = None) -> AgentRecord:
-        """Mark an agent released so its next assignment wait returns release."""
+        """Mark an agent released so its next assignment wait returns release.
+
+        The production orchestrator always passes its actor; direct store calls
+        (tests, scripts) that pass None store UNKNOWN as an explicit marker
+        rather than inventing a real actor. Making actor required would churn
+        dozens of existing direct callers for no production gain.
+        """
 
         with database(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")

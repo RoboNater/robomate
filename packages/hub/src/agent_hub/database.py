@@ -673,7 +673,6 @@ def _migrate_run_attribution(connection: sqlite3.Connection) -> None:
         if not isinstance(payload, dict):
             continue
         candidates: set[str] = set()
-        has_conflict = False
         task_id = payload.get("task_id")
         if isinstance(task_id, str) and task_id:
             task_row = connection.execute(
@@ -703,9 +702,10 @@ def _migrate_run_attribution(connection: sqlite3.Connection) -> None:
             ).fetchone()
             if run_row is not None:
                 candidates.add(str(run_row["id"]))
-        if len(candidates) == 1 and not has_conflict:
+        if len(candidates) == 1:
             connection.execute(
-                "UPDATE event SET workflow_id = ? WHERE id = ?", (next(iter(candidates)), row["id"])
+                "UPDATE event SET workflow_id = ? WHERE id = ?",
+                (next(iter(candidates)), row["id"]),
             )
 
     # Decisions stay NULL for legacy rows: no authoritative reference exists in
