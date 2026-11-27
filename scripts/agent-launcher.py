@@ -1590,6 +1590,28 @@ class JoinedWorker(Joined, WorkerLauncher):
                 workflow = workflow | {"agent": agent | {"status": "idle"}}
         return super().finished(workflow, resumes)
 
+    def released_locally(self) -> bool:
+        """The current child's bridge saw the hub release this agent (#705).
+
+        Mirrors ``JoinedOrchestrator.bridge_completed_run`` (#703): only rows
+        after this child's ``join_offset`` count, from this agent and bound to
+        the pinned hub, so an earlier child's or another hub's record is never
+        taken for this launch. A release stays decisive when the hub is gone.
+        """
+        if super().released_locally():
+            return True
+        if self.join_offset is None or not self.hub_id:
+            return False
+        return any(
+            row.get("event") == "tool_call"
+            and row.get("tool") == "await_assignment"
+            and row.get("phase") == "success"
+            and row.get("outcome") == "release"
+            and row.get("agent") == self.agent
+            and row.get("hub_id") == self.hub_id
+            for row in telemetry_rows(self.bridge_log(), self.join_offset)
+        )
+
 
 # -- the subcommands ------------------------------------------------------------------
 

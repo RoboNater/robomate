@@ -104,11 +104,15 @@ class TelemetryLog:
         *,
         agent: str,
         worker_instance_id: str,
+        hub_id: str | None = None,
         session_fields: Mapping[str, Any] | None = None,
     ) -> None:
         self.path = path
         self.agent = agent
         self.worker_instance_id = worker_instance_id
+        # The launcher's hub pin, when it gave one: it binds each record to the
+        # hub this bridge serves, so a launcher can reject another hub's rows (#705).
+        self.hub_id = hub_id
         self.session_id = uuid4().hex
         if path is not None:
             try:
@@ -128,6 +132,7 @@ class TelemetryLog:
             "agent": self.agent,
             "worker_instance_id": self.worker_instance_id,
             "session_id": self.session_id,
+            **({"hub_id": self.hub_id} if self.hub_id is not None else {}),
             **fields,
         }
         try:

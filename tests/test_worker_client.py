@@ -215,6 +215,25 @@ async def test_telemetry_records_the_hub_url_at_startup_and_on_each_heartbeat(
     assert (bob.checkin_remote_addr, bob.last_remote_addr) == ("127.0.0.1", "127.0.0.1")
 
 
+def test_bridge_telemetry_names_the_launchers_pinned_hub(tmp_path: Path) -> None:
+    """#705: the release record a joined launcher accepts carries its hub pin."""
+
+    telemetry_log = tmp_path / "bob.jsonl"
+    configured = WorkerSettings(
+        hub_url=BASE_URL,
+        token=TOKEN,
+        agent_name="bob",
+        telemetry_log=telemetry_log,
+        environ={"ROBOMATE_HUB_ID": "hub-a"},
+    )
+    worker = WorkerHubClient(configured)
+    worker.telemetry.emit("tool_call", tool="await_assignment", phase="success", outcome="release")
+
+    rows = [json.loads(line) for line in telemetry_log.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["outcome"] == "release"
+    assert [row["hub_id"] for row in rows] == ["hub-a", "hub-a"]
+
+
 async def test_a_restarted_worker_checks_in_at_once_and_finishes_its_task(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,

@@ -95,6 +95,9 @@ class WorkerHubClient:
             settings.telemetry_log,
             agent=settings.agent_name,
             worker_instance_id=self.worker_instance_id,
+            # The launcher's pin, when it gave one: records then name the hub a
+            # launcher may accept a release record from (#705).
+            hub_id=((settings.environ or {}).get(HUB_ID_ENV) or "").strip() or None,
             session_fields={
                 # The address this worker dialed, to set beside the peer
                 # address the hub recorded for it (#126).
