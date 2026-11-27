@@ -354,6 +354,15 @@ Handle events as follows:
   Escalation describes.
 - `task_completed` or `task_failed`: read the typed result from the event and
   confirm it in `get_state` before routing it.
+- `ci_settled`: for the change request in the current MERGE action, call
+  `check_merge_gate` again with the approved head. A different event head can
+  indicate a push, so use the fresh gate to route it. The MERGE-source delivery
+  stays unacknowledged until its action finishes.
+- `ci_watch_expired`: for the current workflow, escalate the elapsed wall-time
+  rail. If the operator has already authorized continuation past that rail,
+  acknowledge the event and continue. Acknowledge either CI event as stale
+  when its workflow no longer matches, or when a settlement concerns a
+  change request outside the current MERGE action.
 - `agent_lost` or `lease_expired`: inspect all prior tasks and worker state.
   Reassign only when no matching replacement task exists and the remaining work
   and qualified worker are unambiguous; otherwise escalate. Never infer
@@ -611,8 +620,17 @@ Route every failed term rather than weakening the invariant:
 - `head_matches == false`: RE-REVIEW the reported `current_head_sha`, regardless
   of diff size. A forge head-match refusal is the same safe outcome.
 - stale base or conflicts: REBASE.
-- `mergeable == unknown` or `ci == pending`: call the gate again until the
-  wall-time rail expires.
+- `ci == pending`: call `wait_for_event()` in the foreground. Keep the
+  MERGE-source event unacknowledged. The connected wait renews its delivery
+  lease. Handle other inbox events as usual, keeping that source delivery out
+  of their acknowledgements. On `ci_settled` for the gated head, call the gate
+  again with the approved head and acknowledge the CI event after that read.
+  A same-PR event for another head or a wait timeout calls for a fresh gate
+  reading. Escalate on `ci_watch_expired`. If the operator authorizes
+  continuation, resume and recheck the gate. A fresh pending reading
+  re-arms the watch for settlement.
+- `mergeable == unknown` with CI already settled: call the gate again until
+  mergeability is known or the wall-time rail expires.
 - `ci == fail`: before assigning a repair, read the failed step and compare its
   signature (exit code, killed process, message) with what the change does, even
   in files the PR didn't touch. An identifiable infrastructure failure (for
@@ -796,6 +814,7 @@ delivery ID, or the merge/squash commit for that event. Use these routes:
 | Approving REVIEW -> NONBLOCKING, same head, no follow-up task -> MERGE | NONBLOCKING completion; the original approval remains valid, but its event already sourced NONBLOCKING. |
 | NONBLOCKING decline -> FOLLOW-UP -> MERGE | FOLLOW-UP completion; NONBLOCKING completion already sourced FOLLOW-UP. |
 | Missing review comment -> REVIEW-COMMENT-CORRECTION -> MERGE | Completed same-head correction supplying the required review comment, if no further task is needed. |
+| MERGE -> `ci_settled` -> fresh gate -> MERGE | Retain the same `task_completed` source across the CI wait and recheck. |
 
 These routes compose: if a completion instead sources another REBASE,
 CI-REPAIR, NONBLOCKING, correction, or review task, it is consumed by that

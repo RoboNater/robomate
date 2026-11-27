@@ -46,7 +46,7 @@ from .rpc import RpcDispatcher
 from .security import require_bearer
 from .signals import Signals
 from .store import HubStore
-from .sweeper import start_sweeper, stop_sweeper
+from .sweeper import run_ci_watcher, start_sweeper, stop_sweeper
 
 logger = logging.getLogger(__name__)
 
@@ -219,11 +219,12 @@ def create_app(
         else:
             logger.info("Bearer token loaded from HUB_TOKEN")
         sweeper = start_sweeper(store, resolved.sweep_interval_s, resolved.lost_after_s)
+        ci_watcher = asyncio.create_task(run_ci_watcher(store, gate), name="hub-ci-watcher")
         stage("lifespan ready")
         try:
             yield
         finally:
-            await stop_sweeper(sweeper)
+            await asyncio.gather(stop_sweeper(sweeper), stop_sweeper(ci_watcher))
 
     app = FastAPI(
         title="Agent Comms Hub",

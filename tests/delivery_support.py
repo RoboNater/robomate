@@ -37,7 +37,7 @@ class DeliveredForge:
             merged_sha=MERGED if self.state == PrState.MERGED else None,
         )
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         return self.reading(pr_url, expected_head_sha)
 
 

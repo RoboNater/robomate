@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +14,7 @@ from agent_hub import create_app
 from agent_hub.activity import HOLD_GRACE_S
 from agent_hub.database import database
 from agent_hub.gitlab_gate import GitLabGate, GlabResult
-from agent_hub.merge_gate import GhResult, MergeGate, MergeGateError
+from agent_hub.merge_gate import CiStatus, GateReport, GhResult, MergeGate, MergeGateError, PrState
 from agent_hub.orchestrator import OrchestratorOps
 from agent_hub.rpc import (
     ACTOR_HEADER,
@@ -35,7 +36,15 @@ from agent_hub.rpc import (
 )
 from agent_hub.signals import EVENT_KEY
 from agent_hub.store import DuplicateAgentError, EventRecord, HubStore
-from agent_hub_common import MAX_MESSAGE_PART_BYTES, AgentProfile, EventKind, HubSettings
+from agent_hub.sweeper import poll_ci_watches
+from agent_hub_common import (
+    MAX_MESSAGE_PART_BYTES,
+    AgentProfile,
+    EventKind,
+    HubSettings,
+    ReviewerResult,
+    ReviewerVerdict,
+)
 from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
 from delivery_support import DeliveredForge, seed_delivery
 from fastapi import FastAPI
@@ -949,15 +958,48 @@ async def test_active_orchestrator_keeps_delivery_through_merge_gate_and_pacing(
 
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+@pytest.mark.parametrize("wake_on", ["progress", "ci_settled"])
 async def test_connected_pacing_wait_keeps_its_delivery_leased(
+    app: FastAPI,
     client: httpx.AsyncClient,
     hub_store: HubStore,
     settings: HubSettings,
     frozen_clock: FrozenClock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    wake_on: str,
 ) -> None:
+    class CiForge(DeliveredForge):
+        ci = CiStatus.PENDING
+
+        async def check(
+            self, pr_url: str, expected_head_sha: str, *, wait: bool = True
+        ) -> GateReport:
+            return replace(self.reading(pr_url, expected_head_sha), ci=self.ci)
+
+    gate = CiForge(PrState.OPEN)
     await check_in(client, "bob")
     first = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
+    if wake_on == "ci_settled":
+        app.state.orchestrator.gate = gate
+        review = hub_store.assign_task("bob", "reviewer", "Review", "Review it", pr_head_sha=HEAD)
+        hub_store.submit_result(
+            review.id,
+            "bob",
+            ReviewerResult(
+                verdict=ReviewerVerdict.APPROVED,
+                pr_url=PR,
+                reviewed_head_sha=HEAD,
+                summary="Approved",
+            ),
+        )
+        delivery = await call(client, "wait_for_event", timeout_s=0, ack=first["delivery_id"])
+        first = delivery["result"]["event"]
+        assert first["kind"] == "task_completed"
+        assert first["payload"]["task_id"] == review.id
+        reading = await call(client, "check_merge_gate", pr_url=PR, expected_head_sha=HEAD)
+        assert reading["result"]["ci"] == "pending"
+
     half_lease = settings.event_lease_s / 2
     tick = asyncio.Event()
     timer_started = asyncio.Event()
@@ -990,9 +1032,27 @@ async def test_connected_pacing_wait_keeps_its_delivery_leased(
             "the connected wait to renew the delivery",
         )
         frozen_clock.advance(half_lease + 1)
-        queued = hub_store.append_event(EventKind.TASK_PROGRESS, {})
+        if wake_on == "ci_settled":
+            gate.ci = CiStatus.PASS
+            await poll_ci_watches(hub_store, gate)
+        else:
+            hub_store.append_event(EventKind.TASK_PROGRESS, {})
         body = await asyncio.wait_for(held, LIVENESS_S)
-        assert body["result"]["event"]["id"] == queued.id
+        settled = body["result"]["event"]
+        assert settled["kind"] == ("ci_settled" if wake_on == "ci_settled" else "task_progress")
+        if wake_on == "ci_settled":
+            assert settled["payload"]["head_sha"] == HEAD
+            assert settled["payload"]["ci"] == "pass"
+        assert settled["id"] != first["id"]
+        [source] = [
+            event
+            for event in hub_store.get_state()["unacked_delivered"]
+            if event["id"] == first["id"]
+        ]
+        assert source["delivery_id"] == first["delivery_id"]
+        assert source["delivery_attempts"] == 1
+        assert hub_store.ack_event(first["delivery_id"])
+        assert "Late ack" not in caplog.text
     finally:
         held.cancel()
         await asyncio.gather(held, return_exceptions=True)

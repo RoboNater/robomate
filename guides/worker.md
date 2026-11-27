@@ -246,9 +246,10 @@ commands only; they grant no permission to launch agents or hubs.
 <!-- Progress visibility: #170. -->
 
 Report progress when the validation suite starts, and on each poll that crosses
-about half of `stall_after_min`. Submit once the work is ready rather than
-holding the result for forge CI that Alice's merge gate checks anyway; if you
-wait for CI anyway, report progress when the wait starts.
+about half of `stall_after_min`. Submit once the work is ready. Alice's merge
+gate checks forge CI and the hub notifies her inbox when a pending check
+settles. If your assignment requires waiting for CI, report progress when
+the wait starts.
 
 ## Questions and blockers
 

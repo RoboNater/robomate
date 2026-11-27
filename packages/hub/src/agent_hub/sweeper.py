@@ -1,11 +1,4 @@
-"""The background pass that notices what stopped happening.
-
-Nothing else in the hub is driven by the passage of time: a lease only matters
-once it is overdue, and a worker that has gone quiet sends nothing to react to.
-This loop turns both into events on Alice's inbox, and keeps the stall
-episodes of agents whose bridge is alive but whose harness has gone quiet
-(#144).
-"""
+"""Background loops for leases, agent liveness, and pending forge checks."""
 
 from __future__ import annotations
 
@@ -13,9 +6,11 @@ import asyncio
 import logging
 from contextlib import suppress
 
-from .store import HubStore
+from .merge_gate import ForgeGate
+from .store import CiWatch, HubStore
 
 logger = logging.getLogger(__name__)
+CI_WATCH_INTERVAL_S = 30.0
 
 
 async def run_sweeper(store: HubStore, interval_s: float, lost_after_s: float) -> None:
@@ -53,3 +48,34 @@ async def stop_sweeper(task: asyncio.Task[None]) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def poll_ci_watches(store: HubStore, gate: ForgeGate) -> None:
+    """Read each forge once, without delaying lease and liveness sweeps."""
+
+    async def poll(watch: CiWatch) -> None:
+        report = None
+        if watch.deadline is None or store.clock() < watch.deadline:
+            try:
+                async with asyncio.timeout(CI_WATCH_INTERVAL_S):
+                    report = await gate.check(watch.pr_url, watch.head_sha, wait=False)
+            except Exception as exc:
+                # The next pass retries; a failed read is not a CI verdict.
+                logger.warning("CI watch %s forge read failed: %s", watch.id, type(exc).__name__)
+        store.record_ci_watch_poll(watch, report)
+
+    async with asyncio.TaskGroup() as tasks:
+        for watch in store.active_ci_watches():
+            tasks.create_task(poll(watch))
+
+
+async def run_ci_watcher(store: HubStore, gate: ForgeGate) -> None:
+    """Resume persisted watches immediately, then poll on a fixed cadence."""
+    loop = asyncio.get_running_loop()
+    while True:
+        started = loop.time()
+        try:
+            await poll_ci_watches(store, gate)
+        except Exception:
+            logger.exception("CI watch sweep failed")
+        await asyncio.sleep(max(0, started + CI_WATCH_INTERVAL_S - loop.time()))

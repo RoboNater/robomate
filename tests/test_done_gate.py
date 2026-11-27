@@ -46,7 +46,7 @@ class FakeGate:
     during_read: Callable[[], None] | None = None
     unavailable: bool = False
 
-    async def check(self, pr_url: str, expected_head_sha: str) -> GateReport:
+    async def check(self, pr_url: str, expected_head_sha: str, *, wait: bool = True) -> GateReport:
         self.calls += 1
         if self.during_read:
             self.during_read()
