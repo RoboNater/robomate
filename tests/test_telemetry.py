@@ -50,6 +50,23 @@ def test_telemetry_appends_bounded_structured_events(tmp_path: Path) -> None:
     assert len({record["session_id"] for record in records}) == 1
 
 
+def test_telemetry_binds_records_to_the_launchers_pinned_hub(tmp_path: Path) -> None:
+    """#705: a launcher accepts a release record only for the hub it pinned."""
+
+    path = tmp_path / "worker.jsonl"
+    telemetry = TelemetryLog(path, agent="bob", worker_instance_id="worker-1", hub_id="hub-a")
+    call_id, started = telemetry.start_tool("await_assignment")
+    telemetry.finish_tool("await_assignment", call_id, started, result={"release": True})
+
+    records = _records(path)
+    assert [record["hub_id"] for record in records] == ["hub-a", "hub-a", "hub-a"]
+    assert records[-1]["outcome"] == "release"
+
+    unpinned = tmp_path / "unpinned.jsonl"
+    TelemetryLog(unpinned, agent="bob", worker_instance_id="worker-1").emit("session_started")
+    assert "hub_id" not in _records(unpinned)[0]
+
+
 def test_telemetry_records_tool_errors_without_raising(tmp_path: Path) -> None:
     path = tmp_path / "worker.jsonl"
     telemetry = TelemetryLog(path, agent="bob", worker_instance_id="worker-1")

@@ -1779,6 +1779,49 @@ def test_orchestrator_uses_only_its_current_launchs_workflow_done_record(
         assert stopped.value.code == LAUNCHER.EXIT_HUB_UNREADABLE
 
 
+@pytest.mark.parametrize("evidence", ["current", "earlier-child", "other-hub", "other-agent"])
+def test_worker_uses_only_its_current_launchs_release_record(tmp_path: Path, evidence: str) -> None:
+    """#705: a released joined worker survives a hub stopped after done."""
+
+    def unavailable(_method: str) -> dict[str, Any]:
+        raise ConnectionRefusedError("hub shut down")
+
+    reader = FakeHub(unavailable)
+    args = argparse.Namespace(
+        agent="bob",
+        role="worker",
+        harness="claude-code",
+        command=[sys.executable],
+        sessions=tmp_path / "bob.jsonl",
+        read_retries=1,
+        telemetry=None,
+    )
+    launcher = CLI.JoinedWorker(args, reader)
+    launcher.hub_id = HUB
+    launcher.workflow_id = WORKFLOW
+    launcher.run_id = RUN
+    telemetry = CLI.bridge_telemetry(tmp_path, "bob")
+    row = {
+        "event": "tool_call",
+        "tool": "await_assignment",
+        "phase": "success",
+        "outcome": "release",
+        "agent": "charlie" if evidence == "other-agent" else "bob",
+        "hub_id": "other-hub" if evidence == "other-hub" else HUB,
+    }
+    telemetry.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    launcher.join_offset = telemetry.stat().st_size if evidence == "earlier-child" else 0
+
+    if evidence == "current":
+        assert launcher.resumable(0, 0) == "done"
+        stop = json.loads(args.sessions.read_text(encoding="utf-8"))
+        assert stop["event"] == "stop" and stop["reason"] == "released"
+    else:
+        with pytest.raises(LAUNCHER.Stop) as stopped:
+            launcher.resumable(0, 0)
+        assert stopped.value.code == LAUNCHER.EXIT_HUB_UNREADABLE
+
+
 def test_orchestrator_that_never_joins_stops(
     area: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -41,8 +41,9 @@ def telemetry_size(path: Path | None) -> int:
 def released(path: Path | None, offset: int) -> bool:
     """Ignore releases from earlier runs and malformed/incomplete telemetry lines.
 
-    A joined agent (agent-launcher.py) has no telemetry file: ``path`` is None
-    and the hub's agent row alone reports the release.
+    A joined agent (agent-launcher.py) has no separate telemetry file: ``path``
+    is None here. Its launcher reads the bridge's own telemetry instead, through
+    ``JoinedWorker.released_locally`` (#705).
     """
     if path is None:
         return False
@@ -107,12 +108,19 @@ class WorkerLauncher(common.Launcher):
         self.ever_joined = False
         self.telemetry_offset = telemetry_size(args.telemetry)
 
+    def released_locally(self) -> bool:
+        """Whether this launcher's own records show the hub released this agent.
+
+        A joined launcher overrides this with the telemetry its bridge child
+        wrote, so a release stays decisive when the hub is stopped after done
+        (#705).
+        """
+        return released(self.args.telemetry, self.telemetry_offset)
+
     def finished(self, workflow: dict[str, Any] | None, resumes: int) -> bool:
         agent = workflow.get("agent") if workflow else None
         reason = None
-        if released(self.args.telemetry, self.telemetry_offset) or (
-            agent is not None and agent["status"] == "released"
-        ):
+        if self.released_locally() or (agent is not None and agent["status"] == "released"):
             reason = "released"
         elif workflow is not None and workflow["status"] == "done":
             reason = "done"
@@ -141,7 +149,7 @@ class WorkerLauncher(common.Launcher):
 
     def resumable(self, exit_code: int, resumes: int) -> str:
         # A release in local telemetry remains decisive when the hub is unavailable.
-        if released(self.args.telemetry, self.telemetry_offset):
+        if self.released_locally():
             self.finished(None, resumes)
             return "done"
         workflow = self.read_hub()
