@@ -36,6 +36,27 @@ outcome as a `--match-head-commit` refusal: GitLab refused to merge an unverifie
 or unready head, protecting the target branch; route back to the gate or
 RE-REVIEW rather than forcing or bypassing the check.
 
+After the merged read-back succeeds and before WRAP-UP, post the merge-record
+comment the MERGE section requires through the Notes REST API:
+
+```text
+glab api --hostname <host> --method POST projects/<group%2Fproject>/merge_requests/<iid>/notes -F body=@<file>
+```
+
+Start it as `Orchestrator agent <name> on behalf of <account>` and say it is the
+orchestrator's merge record. Include the reviewed head (full SHA) with the
+review-comment URL of the final approving review (the last approving
+`ReviewerResult` before merge; a clean rebase adds no review), and the approved
+head when it differs because a clean rebase retained approval at the rebased
+head. Include any CI failure on a reviewed or approved head along the path, its
+diagnosis and repair or re-run, any rebase's head before -> after and base
+before and after and new head with `conflict_files` empty or the focused
+re-review URL, any operator decision that changed the path with its recorded
+`question_id` and a neutral summary, the final check names and results, and the
+merged SHA. One or two lines with the approved head, review URL and merged SHA
+suffice when the path was simple. For `deliver: pr`, post the same record at
+WRAP-UP with no merged SHA and say the PR remains unmerged by policy.
+
 ### GitLab CLI equivalents for reads
 
 - **Read an issue** (kickoff, plan), including its full discussion:
