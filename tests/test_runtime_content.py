@@ -693,7 +693,8 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
         " `start_workflow(statement=...)` directly; use a local-path clone (forge"
         " `unknown`, gate unbound); or use a pytest hub fixture with the preflight"
         " stubbed. - Its own port",
-        "- Its own port, never the run hub's. - Stopped",
+        "- Its own port, never the run hub's. - `robomate up` serves",
+        "} finally { & $R down } ``` - Stopped before the task ends",
         "- Stopped before the task ends, with `robomate down` in the same isolated"
         " environment, or by stopping the `hub` process you started. - Reported",
         "- Reported in the task result: the commands, the state directory, the port,"
@@ -707,7 +708,21 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
         " and operator credential, and any other agent's process."
     )
     assert normalize(smoke).count(" - ") == len(limits)
-    assert_fragments(smoke, ("pytest coverage that starts and stops its own hub",))
+    assert_fragments(
+        smoke,
+        (
+            "pytest coverage that starts and stops its own hub",
+            "`robomate up` serves in the foreground until the hub stops",
+            "with its output redirected to a file in the smoke directory",
+            "with a bounded poll rather than a fixed sleep",
+            "Install the `down` trap before starting the hub",
+            "run start, checks and stop as one script",
+            "`bash <file>` with `set -euo pipefail`",
+            "its own network or process lifetime",
+            "POSIX sketch",
+            "Windows/PowerShell equivalent",
+        ),
+    )
 
     agents = read("AGENTS.md")
     assert_fragments(

@@ -405,6 +405,35 @@ allowed, only under all of these limits:
   `unknown`, gate unbound); or use a pytest hub fixture with the preflight
   stubbed.
 - Its own port, never the run hub's.
+- `robomate up` serves in the foreground until the hub stops: start it in the
+  background with its output redirected to a file in the smoke directory, wait
+  for its `running at` line with a bounded poll rather than a fixed sleep, and
+  stop it with `robomate down` from the same isolated environment. Install the
+  `down` trap before starting the hub, and run start, checks and stop as one
+  script (POSIX: `bash <file>` with `set -euo pipefail`): some harnesses give
+  each shell call its own network or process lifetime, so a hub started in one
+  call cannot be reached from the next. POSIX sketch (`$S` smoke directory,
+  `$R` the `robomate` entry):
+
+  ```sh
+  trap '"$R" down' EXIT
+  "$R" up --port <port> > "$S/up.log" 2>&1 &
+  for i in $(seq 1 60); do grep -q 'running at' "$S/up.log" && break; sleep 0.5; done
+  grep 'running at' "$S/up.log"
+  "$R" status --brief
+  ```
+
+  Windows/PowerShell equivalent:
+
+  ```powershell
+  try {
+    Start-Process $R -ArgumentList 'up','--port','<port>' -RedirectStandardOutput "$S/up.log" -RedirectStandardError "$S/up.err" -NoNewWindow
+    for ($i = 0; $i -lt 60 -and -not (Select-String 'running at' "$S/up.log" -Quiet); $i++) { Start-Sleep -Milliseconds 500 }
+    Select-String 'running at' "$S/up.log"
+    & $R status --brief
+  } finally { & $R down }
+  ```
+
 - Stopped before the task ends, with `robomate down` in the same isolated
   environment, or by stopping the `hub` process you started.
 - Reported in the task result: the commands, the state directory, the port,
