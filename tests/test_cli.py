@@ -764,7 +764,7 @@ def test_up_redirected_output_escapes_unencodable_checkout(
         file_content = _read_log_file(log_file)
         assert "→" in file_content and "ā" in file_content
         assert "\\u2192" not in file_content
-        with urllib.request.urlopen(f"{info['url']}/healthz", timeout=2) as response:
+        with urllib.request.urlopen(f"{info['url']}/healthz", timeout=LIVENESS_S) as response:
             assert json.load(response)["status"] == "ok"
     finally:
         stop(root, env, process)
@@ -1230,7 +1230,7 @@ def _shutdown_with_bearer_only(url: str, token: str) -> dict[str, Any]:
         data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "hub.shutdown"}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=LIVENESS_S) as response:
         body: dict[str, Any] = json.load(response)
     return body
 
@@ -1938,7 +1938,7 @@ def test_status_renders_seeded_workflow_and_agents(
                 "X-Robomate-Session": "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a",
             },
         )
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=LIVENESS_S) as response:
             assert json.load(response)["result"] == {"ok": True}
         # #265: seeded-workflow rendering is read-only; run it in-process.
         result = _inproc_cli(monkeypatch, capsys, root, env, "status")
@@ -4539,7 +4539,7 @@ def test_up_with_agents_creates_worktrees_ahead_of_join(
             },
         }
         with httpx.Client(
-            base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=10.0
+            base_url=url, headers={"Authorization": f"Bearer {token}"}, timeout=LIVENESS_S
         ) as live:
             response = live.post("/a2a", json=payload)
         assert response.status_code == 200, response.text
@@ -4698,7 +4698,7 @@ def test_up_with_agents_partway_failure_leaves_reusable_worktrees(
         with httpx.Client(
             base_url=str(info["url"]),
             headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0,
+            timeout=LIVENESS_S,
         ) as live:
             response = live.post("/a2a", json=payload)
         assert response.status_code == 200, response.text
