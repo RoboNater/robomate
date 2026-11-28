@@ -63,7 +63,8 @@ other packages; it must depend on none of them.
 
 In `scripts/`, hyphenated files (`start-run.py`) are commands you run and
 underscored files (`run_common.py`) are imported modules; a module never shares
-a stem with a command.
+a stem with a command (`agent_interactive.py` is a known legacy exception,
+pending #681).
 
 ## Validation
 
