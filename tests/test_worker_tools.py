@@ -534,7 +534,7 @@ async def test_join_guide_can_be_retrieved_separately(
                 assert "# GitHub Forge Appendix" in role_result[1]["result"]
                 assert joined[1]["next_call"] == "await_assignment"
                 launcher = ast.parse(
-                    (Path(__file__).resolve().parents[1] / "scripts/agent_launcher.py").read_text(
+                    (Path(__file__).resolve().parents[1] / "scripts/launcher_common.py").read_text(
                         encoding="utf-8"
                     )
                 )

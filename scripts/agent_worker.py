@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import agent_launcher as common
+import launcher_common as common
 
 
 class WorkerReader(common.HubReader):

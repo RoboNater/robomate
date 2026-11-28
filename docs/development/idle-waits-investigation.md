@@ -237,7 +237,7 @@ in the installed 2.1.325 binary; "trialled" marks what a trial confirmed.
 - Codex's `exec` yield is a turn-level limit of its own; see
   [Codex polling](#codex-polling).
 - The launcher has no idle watchdog on a harness's output
-  (`scripts/agent_launcher.py`).
+  (`scripts/launcher_common.py`).
 
 Provider limits under contention (the opencode-go queue errors in the issue
 body) were not reproduced here. That is an operator-only item.
@@ -648,7 +648,7 @@ finite client/HTTP timeouts so a dead bridge still fails visibly.
 | Hub settings, status and liveness: `agent_hub_common/config.py:187-209,270-274`, `protocol.py:1083-1089`, `rpc.py:691-703`, `activity.py:49-54,150-164,193-220`, `store.py:4207-4294,4360-4416` | Set a hub ceiling that accommodates the profiles (initially 1800 s), clamp the effective request consistently, and account for that full legitimate hold plus grace. Keep 30 s heartbeats, 180 s loss detection, `IDLE_AFTER_S=120`, and stall policy independent of hold length; raising stall/lost thresholds would conceal the bug |
 | Wakeups, leases and closeout: Section 4, `store.py:3542-3713`, `closeout.py:128-141,370-471` | Test every outcome path, notify terminal reply waiters, fence superseded streams, and actually end or bound an inbox hold at a closeout deadline. Preserve dynamic event-lease wakeups, late ack semantics and pause/host-resume rules |
 | MCP entries and setup: `runtimes/codex.config.toml:11`, `runtimes/opencode.json:31`, `runtimes/antigravity.mcp.json:38`, `run_common.py:372-388,478-595`, `prepare-run.py:3217`, `docs/mcp-setup-prompt.md:38-49`, `scripts/check-mcp-tools.py:50-147` | Write and document corresponding client timeouts in static setup and generated configs, in seconds or milliseconds as required. Add timeout validation to the checker; passing tool discovery today says nothing about long-hold safety. Claude process variables belong in the launcher/session environment, not merely the MCP server's environment |
-| Launcher/recovery: `scripts/agent_launcher.py`, `scripts/prepare-run.py:731-799,1374-1387` | Carry the same profile/mode and Codex note across launch and resume. Keep transport errors visible and permit a subsequent call after restart; do not end a headless worker's turn to wait |
+| Launcher/recovery: `scripts/launcher_common.py`, `scripts/prepare-run.py:731-799,1374-1387` | Carry the same profile/mode and Codex note across launch and resume. Keep transport errors visible and permit a subsequent call after restart; do not end a headless worker's turn to wait |
 
 Prefer one resolved profile communicated by the bridge/join response to
 repeated independent literals in guides, hub config and launch templates.

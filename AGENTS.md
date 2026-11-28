@@ -61,6 +61,10 @@ docs/historical/      frozen PoC docs: edit only to repair a link
 uv workspace, Python 3.12+. `agent-hub-common` is a workspace dependency of the
 other packages; it must depend on none of them.
 
+In `scripts/`, hyphenated files (`start-run.py`) are commands you run and
+underscored files (`run_common.py`) are imported modules; a module never shares
+a stem with a command.
+
 ## Validation
 
 On a pull request, `test` and `windows` first run the PR's added, modified or

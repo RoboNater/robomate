@@ -50,7 +50,7 @@ from typing import IO, Any
 SCRIPTS = Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
-import agent_launcher as launcher_defaults  # noqa: E402
+import launcher_common as launcher_defaults  # noqa: E402
 from denise import joined_settings_path, resolve_settings, write_joined_settings  # noqa: E402
 from mcp_preflight import check as check_mcp_entry  # noqa: E402
 from run_common import probe_harness_version  # noqa: E402

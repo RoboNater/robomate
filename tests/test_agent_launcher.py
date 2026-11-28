@@ -48,12 +48,10 @@ from timing import LIVENESS_S, wait_until_sync
 fake_supervision = fake_harness.fake_supervision
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "agent_launcher_cli", ROOT / "scripts/agent-launcher.py"
-)
+SPEC = importlib.util.spec_from_file_location("launcher_cli", ROOT / "scripts/agent-launcher.py")
 assert SPEC and SPEC.loader
 CLI = importlib.util.module_from_spec(SPEC)
-sys.modules["agent_launcher_cli"] = CLI
+sys.modules["launcher_cli"] = CLI
 SPEC.loader.exec_module(CLI)
 LAUNCHER = CLI.common
 WORKER = sys.modules["agent_worker"]
@@ -4175,9 +4173,9 @@ import json
 import os
 import sys
 
-spec = importlib.util.spec_from_file_location("agent_launcher_cli", sys.argv[1])
+spec = importlib.util.spec_from_file_location("launcher_cli", sys.argv[1])
 cli = importlib.util.module_from_spec(spec)
-sys.modules["agent_launcher_cli"] = cli
+sys.modules["launcher_cli"] = cli
 spec.loader.exec_module(cli)
 config = json.loads(sys.argv[2])
 
@@ -4985,7 +4983,7 @@ def test_opencode_v2_doctor_mcp_verification(
 
 
 def test_opencode_v2_provider_error_recognizes_v2_shape() -> None:
-    import agent_launcher as common  # type: ignore[import-not-found]
+    import launcher_common as common  # type: ignore[import-not-found]
 
     line_401 = json.dumps(
         {
