@@ -883,6 +883,7 @@ def test_up_log_level_debug_shows_the_sweeper_line(
                 "role": "user",
                 "parts": [{"kind": "text", "text": "READY"}],
                 "metadata": {
+                    MetaKeys.STANDING_ROLE: "worker",
                     MetaKeys.AGENT: "bob",
                     MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
                     MetaKeys.OPERATION_ID: "op-1",
@@ -939,7 +940,7 @@ def test_up_log_level_warning_hides_the_info_startup_lines(
 def test_mcp_does_not_reconfigure_protocol_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     with io.BytesIO() as buffer, io.TextIOWrapper(buffer, encoding="cp1252") as stdout:
         monkeypatch.setattr(sys, "stdout", stdout)
-        monkeypatch.setattr(sys, "argv", ["robomate", "mcp", "--role", "orchestrator"])
+        monkeypatch.setattr(sys, "argv", ["robomate", "mcp"])
 
         def run(function: object, args: object, protocol_stdout: object) -> None:
             assert protocol_stdout is stdout
@@ -1918,11 +1919,11 @@ def test_status_renders_seeded_workflow_and_agents(
     database_path = directory / "hub.db"
     initialize_database(database_path)
     hub_store = HubStore(database_path)
-    hub_store.initialize_workflow("\n\nBuild issue #43\nmore detail")
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.start_workflow("\n\nBuild issue #43\nmore detail")
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
     hub_store.open_question(task.id, "bob", "secret question", "q1")
-    hub_store.check_in("dave", AgentProfile())
+    hub_store.register_worker("dave", AgentProfile())
     hub_store.release_agent("dave")
     process = start(root, env)
     try:
@@ -1973,7 +1974,7 @@ def test_status_shows_run_id_and_queue_length(
     database_path = directory / "hub.db"
     initialize_database(database_path)
     hub_store = HubStore(database_path)
-    hub_store.initialize_workflow("First run")
+    hub_store.start_workflow("First run")
     first_run_id = hub_store.get_state()["workflow"]["run_id"]
     hub_store.start_workflow("Second run")
     process = start(root, env)
@@ -2025,7 +2026,7 @@ def test_status_after_a_restart_shows_alice_finished_with_her_persisted_last_cal
     initialize_database(database_path)
     # The previous hub process: Alice's close-out was her last call.
     previous = HubStore(database_path)
-    previous.initialize_workflow("Build issue #95")
+    previous.start_workflow("Build issue #95")
     previous.note_orchestrator_session("alice", "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a")
     with previous.orchestrator_call(
         "5f0c6f0e-8f3c-4d57-9d0a-0b8b1c1e2f3a", "set_workflow_status", 75
@@ -2189,8 +2190,8 @@ def test_status_shows_stalled_agents_with_evidence(
     initialize_database(database_path)
     hub_store = HubStore(database_path)
     # About 60 ms, so the test need not wait minutes for the threshold.
-    hub_store.initialize_workflow("Build issue #43", {"stall_after_min": 0.001})
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.start_workflow("Build issue #43", {"stall_after_min": 0.001})
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
     process = start(root, env)
     try:
@@ -2250,8 +2251,8 @@ def test_status_snapshot_matches_get_state_and_changes_nothing(
     database_path = directory / "hub.db"
     initialize_database(database_path)
     hub_store = HubStore(database_path)
-    workflow_id = hub_store.initialize_workflow("Build issue #43")
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    workflow_id = hub_store.start_workflow("Build issue #43")
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
     delivered = hub_store.lease_next_event()
     assert delivered is not None
@@ -2372,7 +2373,7 @@ def test_report_cli_matches_the_terminal_file_and_headline(
         workflow_id = store.start_workflow("Address issue `example/repo#43`", source="submit:issue")
         run_id = store.get_workflow(workflow_id)["run_id"]
         report = hub_state(root) / "runs" / run_id / "report.md"
-        store.check_in("charlie", profile=AgentProfile(model="Unicode ∧ report detail"))
+        store.register_worker("charlie", profile=AgentProfile(model="Unicode ∧ report detail"))
 
         def command(
             *args: str, environ: dict[str, str] = env, cwd: Path = root
@@ -2447,7 +2448,7 @@ def test_inbox_answer_and_status_serve_the_operator(
     database_path = directory / "hub.db"
     initialize_database(database_path)
     hub_store = HubStore(database_path)
-    hub_store.initialize_workflow("Build issue #43")
+    hub_store.start_workflow("Build issue #43")
     hub_store.ask_user("Merge or wait?\x1b[2J", ["merge", "wait"], actor="alice", session=None)
     hub_store.ask_user("Which follow-up label?", None, actor="alice", session=None)
 
@@ -2510,7 +2511,7 @@ def test_inbox_answer_and_status_serve_the_operator(
         ]
 
         # #171: a moot task-wait question disappears without an operator answer.
-        hub_store.check_in("bob")
+        hub_store.register_worker("bob")
         hub_store.set_workflow_status(
             WorkflowStatus.ACTIVE, "Continue", actor="alice", session="s1"
         )
@@ -2832,8 +2833,8 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
     """The first worker tool call validates HUB_WORKSPACE with git (#65).
 
     On Windows a git child that inherits the MCP stdin pipe blocks until the
-    harness writes again, so check_in hung until a timeout or shutdown. After
-    sending check_in this test writes nothing more and requires the answer.
+    harness writes again, so join hung until a timeout or shutdown. After
+    sending join this test writes nothing more and requires the answer.
     """
     root, env = repository
     workspace = (tmp_path / "charlie").resolve()
@@ -2869,7 +2870,7 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
             "HUB_WORKSPACE": str(workspace),
         }
         worker = subprocess.Popen(
-            [CLI, "mcp", "--role", "worker"],
+            [CLI, "mcp"],
             cwd=workspace,
             env=worker_env,
             stdin=subprocess.PIPE,
@@ -2905,7 +2906,7 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "check_in", "arguments": {}},
+                "params": {"name": "join", "arguments": {"name": "charlie", "role": "reviewer"}},
             },
         ):
             stdin.write((json.dumps(payload) + "\n").encode())
@@ -2915,9 +2916,7 @@ def test_worker_mcp_first_call_needs_no_further_stdin(
             try:
                 response = responses.get(timeout=max(0.0, deadline - time.monotonic()))
             except queue.Empty:
-                raise AssertionError(
-                    "check_in got no answer without a further stdin write"
-                ) from None
+                raise AssertionError("join got no answer without a further stdin write") from None
             if response.get("id") == 2:
                 break
         result = response["result"]
@@ -3701,13 +3700,12 @@ def test_unjoined_mcp_join_whoami_and_hub_selector(
         worker_env = {
             key: value
             for key, value in env.items()
-            if key
-            not in {"ROBOMATE_HUB_URL", "ROBOMATE_TOKEN", "ROBOMATE_TOKEN_FILE", "AGENT_NAME"}
+            if not key.startswith(("ROBOMATE_HUB_", "ROBOMATE_TOKEN")) and key != "AGENT_NAME"
         }
 
         # 1. Without the operator opt-in an unbound bridge refuses an
         #    agent-chosen hub= with the fail-closed text and no listing (#526).
-        with _mcp_worker_bridge(outside, worker_env) as call:
+        with _mcp_worker_bridge(outside, worker_env | {"AGENT_NAME": "bob"}) as call:
             whoami_before = call("whoami", {})
             assert not whoami_before.get("isError"), whoami_before
             before_body = json.loads(whoami_before["content"][0]["text"])
@@ -4778,8 +4776,8 @@ def test_status_closeout_collection(
     directory.mkdir()
     initialize_database(directory / "hub.db")
     seed = HubStore(directory / "hub.db")
-    seed.initialize_workflow("Closeout status")
-    worker = seed.check_in("bob", worker_instance_id="bob-instance")
+    seed.start_workflow("Closeout status")
+    worker = seed.register_worker("bob", worker_instance_id="bob-instance")
     run_id = seed.get_state()["workflow"]["run_id"]
     seed.request_closeout_reports(run_id, "alice", "alice-session", 100)
     seed.submit_closeout_report(
@@ -4828,7 +4826,7 @@ def test_status_retains_export_failure_from_previous_queued_run(
     directory.mkdir()
     initialize_database(directory / "hub.db")
     seed = HubStore(directory / "hub.db")
-    seed.initialize_workflow("First run")
+    seed.start_workflow("First run")
     failed_run = seed.get_state()["workflow"]["run_id"]
     seed.request_closeout_reports(failed_run, "alice", "alice-session", 100)
     seed.start_workflow("Queued run")
@@ -4964,7 +4962,7 @@ async def test_status_renders_repeated_assignment_without_changing_stall_state(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Fix", "Secret instructions")
     await store.await_assignment(agent.context_id, 0)
     await store.await_assignment(agent.context_id, 0)
@@ -5000,7 +4998,7 @@ def test_status_renders_only_current_local_permission_observation(
 ) -> None:
     from agent_hub_common.launcher_observations import write_observation
 
-    store.check_in("bob", AgentProfile(harness="opencode"))
+    store.register_worker("bob", AgentProfile(harness="opencode"))
     status = store.status_summary() | {
         "repo_root": str(tmp_path),
         "url": "http://hub.test",
@@ -5109,7 +5107,7 @@ def _status_hub(
     hub_store = HubStore(database_path)
     frozen_clock.install(hub_store)
     if statement is None:
-        hub_store.initialize_workflow("Build issue #653")
+        hub_store.start_workflow("Build issue #653")
     else:
         hub_store.start_workflow(statement, source="submit:stdin")
     return hub_store
@@ -5126,7 +5124,7 @@ def _status_hub_with_run_branch(
         statement=f"Address issue `RoboNater/robomate#{issue}` and deliver it.",
     )
     hub_store.hub_name = "hub"
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     return hub_store
 
@@ -5177,7 +5175,7 @@ def test_status_headline_is_first_and_brief_prints_only_it(
         frozen_clock,
         statement="Address issue `RoboNater/robomate#653` and deliver it.",
     )
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", "secret instructions")
     _patch_status_hub(tmp_path, monkeypatch, hub_store)
 
@@ -5255,7 +5253,7 @@ def test_status_step_pr_and_stored_gate_describe_the_run(
         clock,
         statement="Address issue `RoboNater/robomate#653` and deliver it.",
     )
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     head = "a" * 40
     pr = "https://github.com/RoboNater/robomate/pull/653"
@@ -5299,7 +5297,7 @@ def test_status_shows_live_gate_ci_names_and_falls_back_without_writing(
         frozen_clock,
         statement="Address issue `RoboNater/robomate#653` and deliver it.",
     )
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     head = "a" * 40
     pr = "https://github.com/RoboNater/robomate/pull/653"
@@ -5586,7 +5584,7 @@ def test_status_notes_escape_truncate_and_expand_only_in_the_detail(
     """#653: agent text is inert, one escaped line by default, full under --notes."""
 
     hub_store = _status_hub(tmp_path, frozen_clock)
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     note = "\x1b[2J line one\nline two " + "z" * 400
     hub_store.record_progress(task.id, "bob", note)
@@ -5619,7 +5617,7 @@ def test_status_activity_is_one_line_per_agent_without_payload_text(
     """#653: --activity condenses the agents, orchestrator included, into the headline."""
 
     hub_store = _status_hub(tmp_path, frozen_clock)
-    bob = hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    bob = hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     hub_store.record_progress(task.id, "bob", "payload text stays out")
     hub_store.note_worker_call("bob", bob.worker_instance_id, "await_assignment")
@@ -5660,7 +5658,7 @@ def test_status_not_listening_appears_only_after_the_idle_threshold(
     """#660: a live, taskless worker past the hub's idle threshold gets the nudge hint."""
 
     hub_store = _status_hub(tmp_path, frozen_clock)
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     _patch_status_hub(tmp_path, monkeypatch, hub_store)
     # The first read starts the hub's in-memory silence clock.
     hub_store.status_summary()
@@ -5688,7 +5686,7 @@ def test_status_keeps_a_healthy_hold_distinct_from_a_stalled_task(
     """#660: a held wait reads 'listening'; a task with stale progress reads STALLED."""
 
     hub_store = _status_hub(tmp_path, frozen_clock)
-    bob = hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    bob = hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     _patch_status_hub(tmp_path, monkeypatch, hub_store)
 
     with hub_store.worker_hold("bob", str(bob.worker_instance_id), "await_assignment", 100):
@@ -5718,9 +5716,9 @@ def test_status_settles_released_lost_and_done_without_a_nudge(
     initialize_database(database_path)
     hub_store = HubStore(database_path)
     frozen_clock.install(hub_store)
-    hub_store.initialize_workflow("Build issue #660", {"on_done": "standby"})
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
-    hub_store.check_in("erin", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.start_workflow("Build issue #660", {"on_done": "standby"})
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("erin", AgentProfile(harness="codex", model="gpt-6-sol"))
     hub_store.release_agent("erin")
     _patch_status_hub(tmp_path, monkeypatch, hub_store)
 
@@ -5752,7 +5750,7 @@ def test_status_shows_a_lost_bridge_without_a_nudge(
     """#660: a lost bridge keeps its lifecycle output; the exact-session remedy is manual."""
 
     hub_store = _status_hub(tmp_path, frozen_clock)
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     _patch_status_hub(tmp_path, monkeypatch, hub_store)
     hub_store.status_summary()
     frozen_clock.advance(200)
@@ -5777,7 +5775,7 @@ def test_status_orchestrator_idle_with_no_open_work_gets_the_same_nudge(
     """#660: Alice's own idle state carries the nudge only with no open work."""
 
     hub_store = _status_hub(tmp_path, frozen_clock)
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     hub_store.note_orchestrator_session("alice", "s-1")
     _patch_status_hub(tmp_path, monkeypatch, hub_store)
     frozen_clock.advance(121)
@@ -5848,11 +5846,11 @@ def test_status_holding_precedes_no_workflow_and_terminal_hints() -> None:
         ({}, "not listening: no hub call seen; no task, hold or workflow"),
         (
             {
-                "last_call": "check_in",
+                "last_call": "join",
                 "last_call_at": "2026-11-26T12:00:00+00:00",
                 "last_call_age_s": 600,
             },
-            "not listening: last hub call check_in 12:00:00 (10 m ago); no task, hold or workflow",
+            "not listening: last hub call join 12:00:00 (10 m ago); no task, hold or workflow",
         ),
     ],
 )
@@ -5888,7 +5886,7 @@ def test_status_json_is_an_additive_superset(
         frozen_clock,
         statement="Address issue `RoboNater/robomate#653` and deliver it.",
     )
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     hub_store.record_progress(task.id, "bob", "a note")
     head = "a" * 40
@@ -6017,8 +6015,8 @@ def test_status_surfaces_sandbox_preflight_override_from_session_log(
 ) -> None:
     """#554: robomate status shows when a local agent launched with sandbox preflight overridden."""
 
-    store.check_in("bob", AgentProfile(harness="claude-code"))
-    store.check_in("charlie", AgentProfile(harness="codex"))
+    store.register_worker("bob", AgentProfile(harness="claude-code"))
+    store.register_worker("charlie", AgentProfile(harness="codex"))
     status = store.status_summary() | {
         "repo_root": str(tmp_path),
         "url": "http://hub.test",

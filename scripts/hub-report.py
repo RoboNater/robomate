@@ -30,8 +30,7 @@ gate base refs and CI check names) are printed flattened to one line and truncat
 and `--no-labels` leaves them out as well.
 
 Worker telemetry defaults to every `*-telemetry.jsonl` and `*.telemetry.jsonl`
-beside the state directory, which is where `prepare-run.py` and `step6.py` put
-it; `--telemetry` names files explicitly.
+beside the state directory or in its sessions directory. `--telemetry` names files explicitly.
 """
 
 from __future__ import annotations
@@ -362,21 +361,12 @@ def read_telemetry(paths: Iterable[Path]) -> Telemetry:
 
 def default_telemetry(state_dir: Path) -> list[Path]:
     run_dir = state_dir.parent
-    found = {*run_dir.glob("*-telemetry.jsonl"), *run_dir.glob("*.telemetry.jsonl")}
+    found = {
+        *run_dir.glob("*-telemetry.jsonl"),
+        *run_dir.glob("*.telemetry.jsonl"),
+        *(state_dir / "sessions").glob("*-bridge.jsonl"),
+    }
     return sorted(path for path in found if path.is_file())
-
-
-def manifest_workers(state_dir: Path) -> list[str]:
-    """Worker names a `prepare-run.py` manifest expects, whether or not they came."""
-
-    try:
-        manifest = json.loads((state_dir.parent / "run.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    harnesses = manifest.get("harnesses") if isinstance(manifest, dict) else None
-    if not isinstance(harnesses, dict):
-        return []
-    return [name for name in harnesses if closed(name)]
 
 
 # -- figures ------------------------------------------------------------------
@@ -480,13 +470,12 @@ def agent_figures(
     snapshot: Mapping[str, Any],
     telemetry: Telemetry,
     tasks: list[dict[str, Any]],
-    expected: Iterable[str],
     now: datetime,
 ) -> list[dict[str, Any]]:
     logged, logged_heartbeats = call_log_calls(snapshot["call_log"])
     rows = {row["name"]: row for row in snapshot["agent"]}
     names = [ALICE] + sorted(
-        ({*rows, *expected, *telemetry.calls, *telemetry.heartbeats, *logged} - {ALICE}),
+        ({*rows, *telemetry.calls, *telemetry.heartbeats, *logged} - {ALICE}),
     )
     workflow = snapshot["workflow"][0] if snapshot["workflow"] else None
     agents = []
@@ -520,13 +509,7 @@ def agent_figures(
         active_windows = union(active_windows)
 
         timed = [call for call in calls if call.start is not None]
-        if name == ALICE:
-            first = min((c.start for c in timed if c.start), default=None)
-        else:
-            first = min(
-                (c.start for c in timed if c.tool == "check_in" and c.start),
-                default=min((c.start for c in timed if c.start), default=None),
-            )
+        first = min((c.start for c in timed if c.start), default=None)
         released = telemetry.released.get(name)
         if released is None:
             released = max((c.end for c in calls if c.outcome == "release" and c.end), default=None)
@@ -882,7 +865,7 @@ def build_report(
     paths = default_telemetry(state_dir) if telemetry_paths is None else telemetry_paths
     telemetry = read_telemetry(paths)
     tasks = task_figures(snapshot, telemetry, now)
-    agents = agent_figures(snapshot, telemetry, tasks, manifest_workers(state_dir), now)
+    agents = agent_figures(snapshot, telemetry, tasks, now)
     workflow = workflow_figures(snapshot, tasks, now)
     stalls = stall_figures(snapshot["stall_episode"])
     stalled = {stall["agent"] for stall in stalls if stall["open"]}

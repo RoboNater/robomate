@@ -15,7 +15,7 @@ from a2a.types import (
 )
 from agent_hub.database import initialize_database
 from agent_hub.protocol import A2AProtocol
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import AgentProfile, HubSettings, MetaKeys
 
 WIRE_DIR = Path(__file__).parent / "wire"
@@ -154,7 +154,7 @@ async def test_wire_fixtures_dispatch(tmp_path: Path) -> None:
         guides_dir=tmp_path / "guides",
     )
     store = HubStore(db_path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     protocol = A2AProtocol(store, settings)
 
     # 1. message/send check-in fixture
@@ -164,7 +164,7 @@ async def test_wire_fixtures_dispatch(tmp_path: Path) -> None:
     assert resp_data["id"] == send_fixture["request"]["id"]
     assert resp_data["result"]["kind"] == "message"
     assert resp_data["result"]["metadata"][MetaKeys.AGENT] == "bob"
-    assert resp_data["result"]["metadata"][MetaKeys.KIND] == "check_in_ack"
+    assert resp_data["result"]["metadata"][MetaKeys.KIND] == "join_ack"
     assert resp_data["result"]["metadata"][MetaKeys.STATUS] == "idle"
     bob = store.agent_by_name("bob")
     assert bob is not None
@@ -222,10 +222,10 @@ async def test_tasks_get_populated_history_has_only_prefixed_metadata(
         guides_dir=tmp_path / "guides",
     )
     store = HubStore(db_path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     protocol = A2AProtocol(store, settings)
 
-    store.check_in("bob", AgentProfile(harness="claude-code", capabilities=("python",)))
+    store.register_worker("bob", AgentProfile(harness="claude-code", capabilities=("python",)))
     task = store.assign_task("bob", "implementer", "Fix issue #22", "Do the work")
     store.record_progress(task.id, "bob", "working on fix")
     q_id = store.open_question(task.id, "bob", "Which approach?", sent_as="q-001")

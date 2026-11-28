@@ -9,7 +9,7 @@ import httpx
 import pytest
 from agent_hub import create_app
 from agent_hub.database import initialize_database
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import (
     AgentProfile,
     Finding,
@@ -37,6 +37,7 @@ async def test_mock_worker_implements_task_end_to_end(tmp_path: Path) -> None:
     initialize_database(db_path)
     guides_dir = tmp_path / "guides"
     guides_dir.mkdir()
+    (guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
     (guides_dir / "implementer.md").write_text("# Implementer Guide", encoding="utf-8")
     (guides_dir / "forge").mkdir()
     (guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
@@ -58,7 +59,7 @@ async def test_mock_worker_implements_task_end_to_end(tmp_path: Path) -> None:
     )
     app = create_app(settings)
     store = app.state.store
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     worker_settings = WorkerSettings(
         hub_url=BASE_URL,
@@ -123,6 +124,7 @@ async def test_mock_worker_reviewer_task(tmp_path: Path) -> None:
     initialize_database(db_path)
     guides_dir = tmp_path / "guides"
     guides_dir.mkdir()
+    (guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
     (guides_dir / "reviewer.md").write_text("# Reviewer Guide", encoding="utf-8")
     (guides_dir / "forge").mkdir()
     (guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
@@ -144,7 +146,7 @@ async def test_mock_worker_reviewer_task(tmp_path: Path) -> None:
     )
     app = create_app(settings)
     store = app.state.store
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     worker_settings = WorkerSettings(
         hub_url=BASE_URL,
@@ -236,6 +238,7 @@ async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> 
     initialize_database(db_path)
     guides_dir = tmp_path / "guides"
     guides_dir.mkdir()
+    (guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
     (guides_dir / "worker.md").write_text("# Worker Guide", encoding="utf-8")
     (guides_dir / "implementer.md").write_text("# Implementer Guide", encoding="utf-8")
     (guides_dir / "forge").mkdir()
@@ -258,7 +261,7 @@ async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> 
     )
     app = create_app(settings)
     store = app.state.store
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     worker_settings = WorkerSettings(
         hub_url=BASE_URL,
@@ -303,7 +306,7 @@ async def test_mock_worker_join_role_registers_standing_role(tmp_path: Path) -> 
 
 def test_seed_scenario_writes_a_reproducible_manifest(tmp_path: Path) -> None:
     scenario_path = Path(__file__).resolve().parents[1] / "scenarios" / "step5c-untrusted.json"
-    manifest_path = tmp_path / "run.json"
+    manifest_path = tmp_path / "scenario.json"
     calls: list[tuple[list[str], str | None]] = []
 
     def fake_runner(args: list[str], input_text: str | None = None) -> str:
@@ -402,7 +405,7 @@ def test_seed_scenario_allows_an_explicit_repeat_rehearsal(tmp_path: Path) -> No
 
 
 def test_render_alice_prompt_is_self_contained(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "run.json"
+    manifest_path = tmp_path / "scenario.json"
     manifest_path.write_text(
         json.dumps(
             {
@@ -427,7 +430,7 @@ def test_render_alice_prompt_is_self_contained(tmp_path: Path) -> None:
 
 
 def test_crash_injector_records_the_requested_hook(tmp_path: Path) -> None:
-    manifest_path = tmp_path / "run.json"
+    manifest_path = tmp_path / "scenario.json"
     manifest = {"status": "running", "actions": []}
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     injector = mock_worker.CrashInjector("after_approval", manifest_path, manifest)
@@ -446,10 +449,10 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
     db_path = tmp_path / "hub.db"
     initialize_database(db_path)
     store = HubStore(db_path)
-    store.initialize_workflow(policy={"merge_method": "squash"})
+    store.start_workflow(DEFAULT_GOAL, policy={"merge_method": "squash"})
     store.log_decision("Plan for issue #7", "Use the normal workflow", actor="alice", session=None)
-    store.check_in("bob", AgentProfile(harness="claude-code"))
-    store.check_in("charlie", AgentProfile(harness="codex"))
+    store.register_worker("bob", AgentProfile(harness="claude-code"))
+    store.register_worker("charlie", AgentProfile(harness="codex"))
     pr_url = "https://github.com/RoboNater/robo-agents-sandbox/pull/2"
     sha1, sha2 = "1" * 40, "2" * 40
 
@@ -527,7 +530,7 @@ def test_verify_scenario_proves_routing_merge_and_release(tmp_path: Path) -> Non
     )
     finish_run(store, "merged and wrapped up", actor="alice", session=None)
 
-    manifest_path = tmp_path / "run.json"
+    manifest_path = tmp_path / "scenario.json"
     manifest_path.write_text(
         json.dumps(
             {

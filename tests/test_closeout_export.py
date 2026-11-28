@@ -23,7 +23,7 @@ def report(summary: str = "Completed work.") -> dict[str, Any]:
 
 def prepare(store: HubStore) -> str:
     for name in ("bob", "charlie"):
-        store.check_in(name, worker_instance_id=name + "-instance")
+        store.register_worker(name, worker_instance_id=name + "-instance")
         task = store.assign_task(name, "implementer", "Work", "Work")
         store.submit_result(task.id, name, TaskState.COMPLETED, "Done")
     run_id = str(store.get_state()["workflow"]["run_id"])
@@ -506,7 +506,7 @@ def test_predeadline_loss_status_read_and_early_done_export(
     assert store.status_summary()["closeout"]["missing"] == expected
     entries = json.loads((export_dir(store, run_id) / "index.json").read_text())["authors"]
     assert next(e for e in entries if e["author"] == "charlie")["reason"] == "worker_lost"
-    store.check_in("charlie", worker_instance_id="charlie-returned")
+    store.register_worker("charlie", worker_instance_id="charlie-returned")
     assert store.get_closeout_reports(run_id)["missing"] == expected
 
 

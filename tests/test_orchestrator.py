@@ -116,7 +116,7 @@ def test_operations_are_exactly_the_public_methods(cls: type) -> None:
     }
 
     assert public == set(OPERATIONS)
-    assert len(OPERATIONS) == 17
+    assert len(OPERATIONS) == 16
 
 
 def test_the_hub_implements_every_shared_tool() -> None:
@@ -144,7 +144,7 @@ def test_a_drifted_signature_is_refused_at_class_creation() -> None:
 def checked_in(store: HubStore, name: str) -> int:
     """Register a worker and lease its check-in event; return the event id."""
 
-    store.check_in(name, AgentProfile(capabilities=("python",)))
+    store.register_worker(name, AgentProfile(capabilities=("python",)))
     event = store.lease_next_event()
     assert event is not None
     return event.id
@@ -201,14 +201,6 @@ async def get_statement_unknown(store: HubStore) -> dict[str, Any]:
     return {"sha256": "0" * 64}
 
 
-async def initialize_workflow(store: HubStore) -> dict[str, Any]:
-    return {"goal": store.get_state()["workflow"]["goal"]}
-
-
-async def initialize_workflow_conflict(store: HubStore) -> dict[str, Any]:
-    return {"goal": "A different goal"}
-
-
 async def start_workflow(store: HubStore) -> dict[str, Any]:
     return {"statement": "Second run from chat"}
 
@@ -218,12 +210,12 @@ async def start_workflow_empty(store: HubStore) -> dict[str, Any]:
 
 
 async def wait_for_event(store: HubStore) -> dict[str, Any]:
-    store.check_in("bob", AgentProfile())
+    store.register_worker("bob", AgentProfile())
     return {"timeout_s": 0}
 
 
 async def wait_for_event_ack(store: HubStore) -> dict[str, Any]:
-    store.check_in("bob", AgentProfile())
+    store.register_worker("bob", AgentProfile())
     event = store.lease_next_event()
     assert event is not None
     return {"timeout_s": 0, "ack": event.delivery_id}
@@ -330,8 +322,6 @@ CASES: list[tuple[str, Prepare, bool]] = [
     ("get_closeout_reports", get_closeout_reports, OK),
     ("get_statement", get_statement, OK),
     ("get_statement", get_statement_unknown, FAILS),
-    ("initialize_workflow", initialize_workflow, OK),
-    ("initialize_workflow", initialize_workflow_conflict, FAILS),
     ("start_workflow", start_workflow, OK),
     ("start_workflow", start_workflow_empty, FAILS),
     ("wait_for_event", wait_for_event, OK),

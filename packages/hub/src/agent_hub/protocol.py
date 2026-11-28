@@ -15,7 +15,7 @@ import logging
 import math
 import re
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any
 from uuid import uuid4
@@ -116,7 +116,7 @@ def _join_layers(
 
 logger = logging.getLogger(__name__)
 
-CHECK_IN_TEXT = "READY"
+JOIN_TEXT = "READY"
 NEXT_TEXT = "NEXT"
 SSE_MEDIA_TYPE = "text/event-stream"
 # Proxies that buffer would defeat the point of holding the response open.
@@ -633,7 +633,7 @@ class A2AProtocol:
                 )
             if metadata.get(MetaKeys.KIND) == "heartbeat":
                 return self._heartbeat(message, metadata, remote_addr)
-            return self._check_in(message, metadata, remote_addr)
+            return self._join_worker(message, metadata, remote_addr)
 
         agent = self._resolve_agent(message, metadata)
         task = self._owned_task(message.task_id, agent)
@@ -709,28 +709,24 @@ class A2AProtocol:
             "warning": ". ".join(warnings) or None,
         }
 
-    def _check_in(
+    def _join_worker(
         self, message: A2AMessage, metadata: dict[str, Any], remote_addr: str | None
     ) -> A2AMessage:
-        if _text(message).upper() != CHECK_IN_TEXT:
-            raise _invalid(f"a message with no taskId must be the {CHECK_IN_TEXT} check-in")
+        if _text(message).upper() != JOIN_TEXT:
+            raise _invalid(f"a message with no taskId must be the {JOIN_TEXT} join")
         _require_schema_version(metadata)
         operation_id = _require_operation_id(metadata)
         worker_instance_id = _require_worker_instance_id(metadata)
         name = metadata.get(MetaKeys.AGENT)
         if not isinstance(name, str) or not name.strip():
-            raise _invalid(f"check-in requires metadata.{MetaKeys.AGENT}")
+            raise _invalid(f"join requires metadata.{MetaKeys.AGENT}")
         try:
             agent_name = validate_agent_name(name.strip())
         except ValueError as exc:
             raise _invalid(str(exc)) from exc
-        # A `join` names its standing role explicitly; a legacy `check_in`
-        # leaves it out and keeps the pre-worktree clone behaviour (no
-        # worktree is ever created for it). Only joins create worktrees.
-        is_join = MetaKeys.STANDING_ROLE in metadata
-        raw_role = _profile_text(metadata, MetaKeys.STANDING_ROLE) or StandingRole.WORKER.value
+        raw_role = _profile_text(metadata, MetaKeys.STANDING_ROLE)
         try:
-            standing_role = StandingRole(raw_role)
+            standing_role = StandingRole(raw_role or "")
         except ValueError as exc:
             allowed = ", ".join(r.value for r in WORKER_STANDING_ROLES)
             raise _invalid(f"metadata.{MetaKeys.STANDING_ROLE} must be one of {allowed}") from exc
@@ -744,21 +740,13 @@ class A2AProtocol:
         compatibility = self._bridge_compatibility(agent_name, metadata)
         profile = _profile(metadata)
         ad = self._wait_advertisement(metadata)
-        # M2 Step 7b (#314): `setup` and agent pins from the layers (Step 5).
-        # Only joins get them; legacy `check_in` keeps its pre-worktree behaviour.
-        join_setup: str | None = None
-        if is_join:
-            join_setup, pin_model, pin_effort = _join_layers(
-                self.settings, self.worktree_manager, agent_name
-            )
-            if pin_model is not None:
-                from dataclasses import replace as _replace_profile
-
-                profile = _replace_profile(profile, model=pin_model, model_source=ModelSource.ENV)
-            if pin_effort is not None:
-                profile = _replace_profile(
-                    profile, effort=pin_effort, effort_source=ModelSource.ENV
-                )
+        join_setup, pin_model, pin_effort = _join_layers(
+            self.settings, self.worktree_manager, agent_name
+        )
+        if pin_model is not None:
+            profile = replace(profile, model=pin_model, model_source=ModelSource.ENV)
+        if pin_effort is not None:
+            profile = replace(profile, effort=pin_effort, effort_source=ModelSource.ENV)
         # Explicit `HUB_WORKSPACE` vs the bridge-cwd fallback (r2-2 on #244):
         # an explicit workspace with no matching identity is refused; the
         # fallback stays lenient and gets a generated worktree.
@@ -771,55 +759,46 @@ class A2AProtocol:
             raise _invalid(f"metadata.{MetaKeys.WORKSPACE_PATH} must be a non-empty string")
         reported_path = raw_path.strip() if isinstance(raw_path, str) else None
 
-        # Where the bridge actually is, captured before the worktree override
-        # replaces `profile.workspace_id` with the hub's id for this agent
-        # name (#510). A legacy `check_in` keeps `claimant=None`, so its
-        # pre-worktree behaviour is unchanged.
-        claimant = (
-            Claimant(
-                bridge_path=reported_path,
-                bridge_workspace_id=profile.workspace_id,
-                explicit=workspace_explicit,
-            )
-            if is_join
-            else None
+        # Capture the bridge's own identity before substituting the hub's worktree (#510).
+        claimant = Claimant(
+            bridge_path=reported_path,
+            bridge_workspace_id=profile.workspace_id,
+            explicit=workspace_explicit,
         )
 
         workspace_path: str | None = None
         workspace_kind: str | None = None
-        if is_join:
-            if workspace_explicit:
-                if profile.workspace_id is None:
-                    raise _invalid(
-                        f"explicit HUB_WORKSPACE {reported_path or '(unset)'} has no matching "
-                        f"identity for agent {agent_name!r}; run scripts/bootstrap-workspace "
-                        "for that agent, or unset HUB_WORKSPACE to use a generated worktree"
-                    )
-                if reported_path is None:
-                    raise _invalid(
-                        f"explicit join for agent {agent_name!r} names no "
-                        f"metadata.{MetaKeys.WORKSPACE_PATH}"
-                    )
-                workspace_path = reported_path
-                workspace_kind = "clone"
-            elif self.worktree_manager is not None:
-                from .worktrees import WorktreeError
+        if workspace_explicit:
+            if profile.workspace_id is None:
+                raise _invalid(
+                    f"explicit HUB_WORKSPACE {reported_path or '(unset)'} has no matching "
+                    f"identity for agent {agent_name!r}; provision a clone with "
+                    "robomate workspace --clone "
+                    "for that agent, or unset HUB_WORKSPACE to use a generated worktree"
+                )
+            if reported_path is None:
+                raise _invalid(
+                    f"explicit join for agent {agent_name!r} names no "
+                    f"metadata.{MetaKeys.WORKSPACE_PATH}"
+                )
+            workspace_path = reported_path
+            workspace_kind = "clone"
+        elif self.worktree_manager is not None:
+            from .worktrees import WorktreeError
 
-                try:
-                    worktree_path, worktree_id = self.worktree_manager.ensure(agent_name)
-                except Exception as exc:
-                    if isinstance(exc, WorktreeError):
-                        raise _invalid(str(exc)) from exc
-                    raise
-                from dataclasses import replace
-
-                profile = replace(profile, workspace_id=worktree_id)
-                workspace_path = str(worktree_path)
-                workspace_kind = "worktree"
+            try:
+                worktree_path, worktree_id = self.worktree_manager.ensure(agent_name)
+            except Exception as exc:
+                if isinstance(exc, WorktreeError):
+                    raise _invalid(str(exc)) from exc
+                raise
+            profile = replace(profile, workspace_id=worktree_id)
+            workspace_path = str(worktree_path)
+            workspace_kind = "worktree"
 
         payload_hash = _hash_payload(
             {
-                "intent": "check_in",
+                "intent": "join",
                 "agent": agent_name,
                 "standing_role": standing_role.value,
                 "takeover": takeover,
@@ -850,7 +829,7 @@ class A2AProtocol:
 
         def _build_ack(agent: AgentRecord) -> str:
             ack_meta: dict[str, Any] = {
-                MetaKeys.KIND: "check_in_ack",
+                MetaKeys.KIND: "join_ack",
                 MetaKeys.AGENT: agent.name,
                 MetaKeys.STATUS: agent.status.value,
                 MetaKeys.WORKER_INSTANCE_ID: agent.worker_instance_id,
@@ -865,16 +844,12 @@ class A2AProtocol:
                 ack_meta[MetaKeys.WORKSPACE_KIND] = agent.workspace_kind
             if agent.reattached_task is not None:
                 ack_meta[MetaKeys.REATTACHED_TASK] = agent.reattached_task
-            if is_join:
-                # M2 Step 7b: the join response carries `setup` and the
-                # applied model/effort pins, so the agent runs setup in its
-                # worktree with the operator's pins.
-                ack_meta[MetaKeys.MODEL] = agent.model
-                ack_meta[MetaKeys.MODEL_SOURCE] = agent.model_source.value
-                ack_meta[MetaKeys.EFFORT] = agent.effort
-                ack_meta[MetaKeys.EFFORT_SOURCE] = agent.effort_source.value
-                if join_setup is not None:
-                    ack_meta[MetaKeys.SETUP] = join_setup
+            ack_meta[MetaKeys.MODEL] = agent.model
+            ack_meta[MetaKeys.MODEL_SOURCE] = agent.model_source.value
+            ack_meta[MetaKeys.EFFORT] = agent.effort
+            ack_meta[MetaKeys.EFFORT_SOURCE] = agent.effort_source.value
+            if join_setup is not None:
+                ack_meta[MetaKeys.SETUP] = join_setup
             return json.dumps(
                 _agent_message(
                     "REGISTERED",
@@ -883,7 +858,7 @@ class A2AProtocol:
                 ).model_dump(mode="json", exclude_none=True)
             )
 
-        resp_json, registered = self.store.check_in(
+        resp_json, registered = self.store.register_worker(
             agent_name,
             profile,
             standing_role=standing_role,
@@ -906,7 +881,7 @@ class A2AProtocol:
         # never gets here.
         instance = (response.metadata or {}).get(MetaKeys.WORKER_INSTANCE_ID)
         if isinstance(instance, str) and instance:
-            self.store.note_worker_call(agent_name, instance, "check_in")
+            self.store.note_worker_call(agent_name, instance, "join")
             agent = self.store.agent_by_name(agent_name)
             if agent is not None and agent.worker_instance_id == instance:
                 response.metadata = (response.metadata or {}) | {
@@ -1122,7 +1097,9 @@ class A2AProtocol:
         timeout_s: float,
         sent_as: str,
     ) -> AsyncIterator[bytes]:
-        with self.store.worker_hold(agent.name, agent.worker_instance_id, "ask_alice", timeout_s):
+        with self.store.worker_hold(
+            agent.name, agent.worker_instance_id, "ask_orchestrator", timeout_s
+        ):
             try:
                 reply = await self.store.await_reply(
                     task.id, question_id, timeout_s, worker_instance_id=agent.worker_instance_id
@@ -1229,14 +1206,14 @@ class A2AProtocol:
         if message.context_id:
             agent = self.store.agent_by_context(message.context_id)
             if agent is None:
-                raise _invalid(f"unknown contextId {message.context_id!r}; check in first")
+                raise _invalid(f"unknown contextId {message.context_id!r}; join first")
             note_a2a(actor=agent.name)
             return self._require_current_instance(agent, metadata)
         name = metadata.get(MetaKeys.AGENT)
         if isinstance(name, str) and name.strip():
             agent = self.store.agent_by_name(name.strip())
             if agent is None:
-                raise _invalid(f"unknown agent {name!r}; check in first")
+                raise _invalid(f"unknown agent {name!r}; join first")
             note_a2a(actor=agent.name)
             return self._require_current_instance(agent, metadata)
         raise _invalid(f"the message needs a contextId or metadata.{MetaKeys.AGENT}")
@@ -1248,7 +1225,7 @@ class A2AProtocol:
         if instance_id != agent.worker_instance_id:
             raise _invalid(f"worker instance for agent {agent.name} has been superseded")
         if agent.status.value == "lost":
-            raise _invalid(f"agent {agent.name} is lost; check in with a new worker instance")
+            raise _invalid(f"agent {agent.name} is lost; join with a new worker instance")
         return agent
 
     def _owned_task(self, task_id: str, agent: AgentRecord) -> TaskRecord:

@@ -28,7 +28,6 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
-      - run: uv run --locked python scripts/sync-worker-prompt.py --check
       # #643: log the PowerShell build once per Linux test job for crash reports.
       - name: Log pwsh version
         run: |
@@ -74,7 +73,6 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy
-      - run: uv run --locked python scripts/sync-worker-prompt.py --check
       - *changed-tests
       - run: uv run --locked pytest -n auto
       - run: uv run --locked python scripts/dependency-licenses.py --check

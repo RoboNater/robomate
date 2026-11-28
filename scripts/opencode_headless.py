@@ -459,7 +459,6 @@ def prepare(
     worktree: Path,
     sessions: Path,
     *,
-    agent: str | None = None,
     lane_tmp: Path | None = None,
     token_file: Path | None = None,
 ) -> tuple[list[str], dict[str, str]]:
@@ -476,23 +475,7 @@ def prepare(
     hub = env.get("ROBOMATE_LAUNCH_HUB_CHECKOUT")
     # Only explicit launcher/run metadata establishes a temporary root. An
     # ambient UV_CACHE_DIR=/tmp/uv-cache must never grant all of /tmp.
-    # Prepared runs already have a local metadata file beside their journal.
-    manifest = sessions.parent / "run.json"
     env["ROBOMATE_PERMISSION_STATUS_DIR"] = str(sessions.parent)
-    if manifest.is_file():
-        metadata = json.loads(manifest.read_text(encoding="utf-8"))
-        hub = metadata.get("hub_repo")
-        lane_tmp = None
-        run_dir = metadata.get("run_dir")
-        if (
-            agent
-            and isinstance(run_dir, str)
-            and Path(run_dir).is_absolute()
-            and Path(run_dir).resolve() == sessions.parent.resolve()
-        ):
-            lane_tmp = Path(run_dir) / "tmp" / agent
-        if metadata.get("state_dir"):
-            env["ROBOMATE_PERMISSION_STATUS_DIR"] = str(Path(metadata["state_dir"]) / "sessions")
     roots = allowed_roots(worktree, Path(hub) if hub else None, lane_tmp)
     name = "robomate_headless_" + uuid.uuid4().hex
     overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))

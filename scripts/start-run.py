@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Start a scripted robomate run from one config file (M2, #268).
 
-The joined successor of ``prep-standard-run``: one command starts the hub of a
-fresh checkout, the agents' worktrees, the submitted work and all three agents
-headless under the launcher's supervision; the run then proceeds without
+One command starts a fresh checkout's hub, creates agent worktrees, submits
+the work and starts all three supervised harnesses. The run proceeds without
 further input. It renders no team config, prompt or start script: it runs the
 M2 commands (``robomate up``, ``robomate workspace``, ``robomate submit``,
 ``scripts/agent-launcher.py start``) in order. The same Python runs under Bash
@@ -19,8 +18,8 @@ and PowerShell::
         --config run-config.toml --issue 42 --generate-config next-run.toml
 
 TOML keys use underscores and CLI options hyphens; the command line overrides
-the file, and either ``issue`` or ``work_file`` selects the work. A
-``prep-standard-run`` config is read as it is. ``[policy]`` keys, and
+the file, and either ``issue`` or ``work_file`` selects the work.
+The ``[policy]`` keys and
 ``--policy k=v``, go to ``robomate submit --policy`` over the configuration
 layers. The repository is cloned to ``<run_dir>/<hub_name>``; the hub keeps its
 state, token and worktrees beside it, in ``<hub_name>.robomate/``. The command
@@ -58,7 +57,7 @@ from run_common import probe_harness_version  # noqa: E402
 
 #: The standard team: names and standing roles are fixed; harness, model and effort are set.
 AGENTS = {"alice": "orchestrator", "bob": "implementer", "charlie": "reviewer"}
-#: The case-insensitive harness spellings prep-standard-run accepts.
+#: The case-insensitive harness spellings accepted in a run configuration.
 HARNESS_NAMES = {
     "claude": "claude-code",
     "claude-code": "claude-code",
@@ -107,7 +106,7 @@ DEFAULTS: dict[str, str | int | float | bool | list[str]] = {
 FLOAT_KEYS = ("resume_delay_s", "resume_max_delay_s", "resume_total_s", "resume_series_reset_s")
 SECONDS_KEYS = (*FLOAT_KEYS, "join_window_s")
 PATH_KEYS = ("run_parent_dir", "work_file")
-#: prep-standard-run's top-level policy keys; this reads them into ``[policy]``.
+#: Legacy top-level policy keys; this reads them into ``[policy]``.
 POLICY_SHORTHANDS = ("stall_after_min", "stall_action_after_min")
 COMMENTS = {
     "repository": "Clone URL or local path of the target repository.",
@@ -146,7 +145,7 @@ POLICY_COMMENT = """\
 # stall_after_min = 20
 # stall_action_after_min = 0
 """
-#: The counter and close-out text prepare-run puts in every statement (#34).
+#: The counter and close-out text included in every scripted statement (#34).
 COUNTER_CLOSE_OUT = (
     "Only if the run uses a shared counter, the implementer bob claims a unique value "
     "in the run's reservations issue before writing code that uses it, using the "
@@ -441,7 +440,6 @@ def denise(values: Mapping[str, Any]) -> dict[str, str]:
     }
     return resolve_settings(
         team,
-        joined=True,
         **{key: values[f"denise_{key}"] for key in ("settings_from", "harness", "model", "effort")},
     )
 
@@ -570,13 +568,11 @@ def origin_slug(origin: str, forge: str) -> str | None:
 
 
 def compose_statement(values: Mapping[str, Any], *, origin: str, forge: str) -> str:
-    """What prepare-run queued, for the joined run: the work, its counter rules, the account.
+    """Build the queued statement: the work, its counter rules, the account.
 
     An issue gets ``robomate submit --issue``'s own one-issue sentence. The
-    reservations target and close-out text follow, as prepare-run wrote them,
-    and the account the agents name in comments closes it, where prepare-run
-    put it in Alice's prompt. The statement is the one per-run text every
-    assignment carries (``get_statement``).
+    reservations target, close-out text and forge comment identity follow.
+    Every assignment references the stored text through ``get_statement``.
     """
 
     from robomate.cli import _render_issue_statement

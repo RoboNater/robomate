@@ -10,7 +10,6 @@ identity is refused, while the bridge-cwd fallback stays lenient (r2-2).
 
 from __future__ import annotations
 
-import json
 import subprocess
 import uuid
 from pathlib import Path
@@ -20,7 +19,7 @@ import httpx
 import pytest
 from agent_hub import create_app
 from agent_hub.database import SCHEMA_VERSION, database, initialize_database
-from agent_hub.store import TAKEOVER_REFUSED_REMEDY, HubStore
+from agent_hub.store import DEFAULT_GOAL, TAKEOVER_REFUSED_REMEDY, HubStore
 from agent_hub.worktrees import (
     WorktreeError,
     WorktreeManager,
@@ -42,6 +41,7 @@ from agent_hub_common.discovery import (
     read_binding,
     resolve_repository,
 )
+from agent_hub_common.workspace import create_clone, read_identity
 from conftest import BASE_URL, CALLER_HEADERS, TOKEN, message, rpc
 
 
@@ -224,7 +224,7 @@ def _hub_app_with_repo(
     app = create_app(settings, hub_info=hub_info)
     store: HubStore = app.state.store
     initialize_database(store.path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     return app, store, layered.worktree_root, repo.git_common_dir, hub_info
 
 
@@ -564,8 +564,6 @@ async def test_explicit_workspace_creates_no_worktree_and_keeps_clone(
 ) -> None:
     """An explicit HUB_WORKSPACE join records a clone and creates no worktree."""
 
-    import sys
-
     app, store, worktree_root, _, hub_info = _hub_app_with_repo(tmp_path)
     origin = tmp_path / "origin"
     subprocess.run(["git", "init", "--initial-branch=main", str(origin)], check=True)
@@ -587,20 +585,9 @@ async def test_explicit_workspace_creates_no_worktree_and_keeps_clone(
         capture_output=True,
     )
     destination = tmp_path / "bob-clone"
-    root = Path(__file__).resolve().parents[1]
-    bootstrap = (
-        [sys.executable, str(root / "scripts/bootstrap-workspace.py")]
-        if __import__("os").name == "nt"
-        else [str(root / "scripts/bootstrap-workspace.sh")]
-    )
-    out = subprocess.run(
-        [*bootstrap, "bob", str(destination), str(origin)],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    identity = json.loads(out)
-    # Join with the bootstrap identity so the hub records the clone.
+    create_clone(destination, str(origin), "bob")
+    identity = read_identity(destination, "bob")
+    # Join with the provisioned identity so the hub records the clone.
 
     async with (
         app.router.lifespan_context(app),
@@ -703,8 +690,8 @@ def test_db_records_workspace_path_and_kind_and_rejects_other_kinds(
     path = tmp_path / "hub.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow()
-    store.check_in(
+    store.start_workflow(DEFAULT_GOAL)
+    store.register_worker(
         "bob",
         AgentProfile(),
         standing_role="implementer",
@@ -716,7 +703,7 @@ def test_db_records_workspace_path_and_kind_and_rejects_other_kinds(
     assert agent is not None
     assert (agent.workspace_path, agent.workspace_kind) == ("/wt/repo/bob", "worktree")
     with pytest.raises(Exception, match="workspace_kind|CHECK|constraint"):
-        store.check_in(
+        store.register_worker(
             "charlie",
             AgentProfile(),
             standing_role="implementer",
@@ -756,8 +743,6 @@ def test_wire_schema_version_stays_1() -> None:
 async def test_explicit_join_revalidates_identity_for_join_name(tmp_path: Path) -> None:
     """r1-1: a clone configured for bob cannot authorize a join as charlie."""
 
-    import sys
-
     from agent_hub_common.discovery import HubEndpoint
     from worker_mcp.client import WorkerHubClient, WorkerProtocolError
     from worker_mcp.config import WorkerSettings
@@ -783,17 +768,7 @@ async def test_explicit_join_revalidates_identity_for_join_name(tmp_path: Path) 
         capture_output=True,
     )
     destination = tmp_path / "bob-clone-r11"
-    root = Path(__file__).resolve().parents[1]
-    bootstrap = (
-        [sys.executable, str(root / "scripts/bootstrap-workspace.py")]
-        if __import__("os").name == "nt"
-        else [str(root / "scripts/bootstrap-workspace.sh")]
-    )
-    subprocess.run(
-        [*bootstrap, "bob", str(destination), str(origin)],
-        check=True,
-        capture_output=True,
-    )
+    create_clone(destination, str(origin), "bob")
     env = {
         "ROBOMATE_HUB_URL": BASE_URL,
         "ROBOMATE_TOKEN": TOKEN,
@@ -826,8 +801,6 @@ async def test_explicit_join_revalidates_identity_for_join_name(tmp_path: Path) 
 async def test_from_env_settings_join_honors_explicit_workspace(tmp_path: Path) -> None:
     """r1-2: `from_env` workspace (environ=None) still joins as a clone."""
 
-    import sys
-
     from worker_mcp.client import WorkerHubClient
     from worker_mcp.config import WorkerSettings
 
@@ -852,19 +825,8 @@ async def test_from_env_settings_join_honors_explicit_workspace(tmp_path: Path) 
         capture_output=True,
     )
     destination = tmp_path / "bob-clone-r12"
-    root = Path(__file__).resolve().parents[1]
-    bootstrap = (
-        [sys.executable, str(root / "scripts/bootstrap-workspace.py")]
-        if __import__("os").name == "nt"
-        else [str(root / "scripts/bootstrap-workspace.sh")]
-    )
-    out = subprocess.run(
-        [*bootstrap, "bob", str(destination), str(origin)],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    identity = json.loads(out)
+    create_clone(destination, str(origin), "bob")
+    identity = read_identity(destination, "bob")
     settings = WorkerSettings.from_env(
         {
             "HUB_URL": BASE_URL,
@@ -924,9 +886,13 @@ def _branch_store(
     path = tmp_path / f"{hub}.db"
     initialize_database(path)
     store = HubStore(path, hub_name=hub, git_common_dir=common)
-    store.initialize_workflow(goal)
-    store.check_in("bob", AgentProfile(), standing_role="implementer", worker_instance_id="i-bob")
-    store.check_in("bob2", AgentProfile(), standing_role="implementer", worker_instance_id="i-bob2")
+    store.start_workflow(goal)
+    store.register_worker(
+        "bob", AgentProfile(), standing_role="implementer", worker_instance_id="i-bob"
+    )
+    store.register_worker(
+        "bob2", AgentProfile(), standing_role="implementer", worker_instance_id="i-bob2"
+    )
     return store, common
 
 
@@ -1002,8 +968,10 @@ def test_two_hubs_name_branches_without_collision(tmp_path: Path) -> None:
     first = HubStore(first_path, hub_name="repo", git_common_dir=common)
     second = HubStore(second_path, hub_name="other", git_common_dir=common)
     for s in (first, second):
-        s.initialize_workflow("Address issue `o/r#45`, merge it.")
-        s.check_in("bob", AgentProfile(), standing_role="implementer", worker_instance_id="i-b")
+        s.start_workflow("Address issue `o/r#45`, merge it.")
+        s.register_worker(
+            "bob", AgentProfile(), standing_role="implementer", worker_instance_id="i-b"
+        )
     first_task = first.assign_task("bob", "implementer", "Build", "build")
     second_task = second.assign_task("bob", "implementer", "Build", "build")
     assert first_task.branch == "robomate/repo/bob/45"

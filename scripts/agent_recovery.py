@@ -13,14 +13,12 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agent_interactive import add_launch_controls, split_arguments
 from agent_launcher import EXIT_CANNOT_RESUME, EXIT_PAUSED, HubReader, Stop, log_session, say
 from agent_sessions import exact_id as exact_id
 
@@ -109,68 +107,6 @@ def lock_holder_pid(log: Path) -> int | None:
         return None
     found = _LOCK_HOLDER.findall(data)
     return int(found[-1]) if found else None
-
-
-def add_options(parser: argparse.ArgumentParser, *, public: bool = False) -> None:
-    if not public:
-        parser.add_argument(
-            "--recover", action="store_true", help="discover and prepare manual recovery"
-        )
-        parser.add_argument(
-            "--recovery-config", type=Path, help="generated script's original config/home"
-        )
-    else:
-        parser.add_argument("--resume-session", help="exact saved conversation ID")
-    parser.add_argument("--hub-id", help="expected hub ID when saved metadata is missing")
-    parser.add_argument("--workflow-id", help="expected workflow ID when saved metadata is missing")
-    parser.add_argument("--stopped-at", help="known old process stop time, ISO 8601 with timezone")
-    parser.add_argument(
-        "--confirm-stopped",
-        action="store_true",
-        help="confirm the old harness exited when no recorded exit is available",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="proceed despite pause or worker operator-question advisories; "
-        "never bypass identity/attachment",
-    )
-
-
-def split_controls(
-    argv: list[str] | None, *, interactive: bool = False
-) -> tuple[list[str], dict[str, Any]]:
-    """Generated wrappers expose controls, never their pinned configuration/command."""
-    words = list(sys.argv[1:] if argv is None else argv)
-    if "--recovery-options" not in words:
-        return words, {}
-    start = words.index("--recovery-options")
-    end = (
-        len(words) - 1 - words[::-1].index("--recovery-command")
-        if "--recovery-command" in words[start:]
-        else len(words)
-    )
-    parser = argparse.ArgumentParser(
-        description="Resume this saved agent run; no arguments needed.", allow_abbrev=False
-    )
-    add_options(parser, public=True)
-    if interactive:
-        add_launch_controls(parser)
-        parser.add_argument("conversation_id", nargs="?")
-        option_words, extra = split_arguments(words[start + 1 : end])
-        if "--" in option_words:
-            parser.error("use --harness-args for extra harness words")
-        controls = vars(parser.parse_intermixed_args(option_words))
-        conversation = controls.pop("conversation_id")
-        if conversation:
-            if controls.get("resume_session"):
-                parser.error("supply either an ID or --resume-session")
-            controls["resume_session"] = conversation
-        controls["harness_args"] = extra
-    else:
-        controls = vars(parser.parse_args(words[start + 1 : end]))
-    remainder = words[end + 1 :] if end < len(words) else []
-    return words[:start] + remainder, {k: v for k, v in controls.items() if v is not None}
 
 
 def refuse(reason: str, message: str) -> None:
@@ -382,64 +318,11 @@ def prepare(
 ) -> tuple[str, str]:
     """Return exact conversation and generated prompt, after all prerequisites pass.
 
-    ``orchestrator`` says whether ``agent`` is the orchestrator; None (the
-    prepared runs) decides by the name ``alice``.
+    ``orchestrator`` says whether ``agent`` is the orchestrator.
     """
     if orchestrator is None:
         orchestrator = agent == "alice"
-    config = getattr(args, "recovery_config", None)
-    if config is not None:
-        config_file = (
-            config / "config.toml"
-            if args.harness == "codex"
-            else config / ".gemini/config/mcp_config.json"
-            if args.harness == "antigravity"
-            else config / "mcp_config.local.json"
-            if args.harness == "devin"
-            else config
-        )
-        backup = config_file.with_name(config_file.name + ".ask-backup")
-        if args.harness in ("antigravity", "devin") and backup.exists():
-            refuse(
-                "config",
-                f"An ask is running or left an unrestored MCP backup at {backup}. "
-                f"After that ask exits, restore the backup to {config_file} before recovery.",
-            )
-        if not config.exists() or not config_file.is_file():
-            refuse(
-                "config",
-                f"Original configuration/home {config_file} is missing. Restore that run's "
-                "configuration and authentication before retrying; do not use another home.",
-            )
     rows = records(args.sessions, agent, args.harness)
-    manifest_path = args.sessions.parent / "run.json"
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict):
-            refuse("manifest", "Malformed run.json. Restore the original manifest and retry.")
-        launch = manifest.get("launch", {})
-        workspaces = manifest.get("workspaces", {})
-        if (
-            not isinstance(launch, dict)
-            or not isinstance(launch.get("agents", {}), dict)
-            or not isinstance(workspaces, dict)
-        ):
-            refuse("manifest", "Malformed run.json. Restore the original manifest and retry.")
-        profile = launch.get("agents", {}).get(agent, {})
-        identity = workspaces.get(agent, {})
-        if not isinstance(profile, dict) or not isinstance(identity, dict):
-            refuse("manifest", "Malformed agent metadata in run.json. Restore it and retry.")
-        if profile.get("harness", args.harness) != args.harness:
-            refuse("manifest", "Harness differs from run.json. Restore the original resume script.")
-        workspace = identity.get("path")
-        if workspace is not None and Path(workspace).resolve() != Path.cwd().resolve():
-            refuse(
-                "workspace",
-                "Workspace differs from run.json. Use the resume script in the "
-                "original run directory on this agent's host.",
-            )
-        if manifest.get("hub_id"):
-            rows = [{"hub_id": manifest["hub_id"]}, *rows]
     ids = {r["conversation_id"] for r in rows if isinstance(r.get("conversation_id"), str)}
     starts = [i for i, r in enumerate(rows) if r.get("event") == "start"]
     if starts and not any(isinstance(r.get("conversation_id"), str) for r in rows[starts[-1] :]):

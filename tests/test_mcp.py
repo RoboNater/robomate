@@ -17,7 +17,6 @@ TOOLS = {
     "get_closeout_reports",
     "get_state",
     "get_statement",
-    "initialize_workflow",
     "start_workflow",
     "wait_for_event",
     "assign_task",
@@ -49,25 +48,18 @@ async def test_tools_and_durable_actions(tmp_path: Path) -> None:
         await call("set_workflow_status", status="done", summary="Too early")
     with pytest.raises(Exception, match="invalid workflow policy.*max_review_round"):
         await call(
-            "initialize_workflow",
-            goal="Address issue #5",
+            "start_workflow",
+            statement="Address issue #5",
             policy={"max_review_round": 5},
         )
     assert (await call("get_state"))["workflow"] is None
     initialized = await call(
-        "initialize_workflow",
-        goal="Address issue #5",
+        "start_workflow",
+        statement="Address issue #5",
         policy={"max_task_lease_min": 10},
     )
     assert initialized["policy"] == {"max_task_lease_min": 10}
-    assert (
-        await call(
-            "initialize_workflow",
-            goal="Address issue #5",
-            policy={"max_task_lease_min": 10},
-        )
-    )["id"] == initialized["id"]
-    bob = store.check_in("bob", AgentProfile(capabilities=("python",)))
+    bob = store.register_worker("bob", AgentProfile(capabilities=("python",)))
     checkin_event = store.lease_next_event()
     assert checkin_event is not None
     with pytest.raises(Exception, match=f"maximum is {MAX_MESSAGE_PART_BYTES} bytes"):

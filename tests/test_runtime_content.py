@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 
-import pytest
-from agent_hub_common import ImplementerOutcome, ReviewerVerdict, WorkflowPolicy
+from agent_hub_common import ImplementerOutcome, ReviewerVerdict
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,15 +29,9 @@ def section(text: str, start: str, end: str) -> str:
     return text.split(start, 1)[1].split(end, 1)[0]
 
 
-def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
+def test_worker_guide_documents_runtime_neutral_etiquette() -> None:
     guide = read("guides/worker.md")
-    prompt = read("prompts/worker.md")
-    skill = read("skills/worker/SKILL.md")
 
-    assert prompt.endswith(guide), (
-        "prompts/worker.md needs regenerating; run "
-        "`uv run --locked python scripts/sync-worker-prompt.py`."
-    )
     assert_fragments(
         guide,
         (
@@ -54,111 +45,12 @@ def test_worker_prompt_inlines_runtime_neutral_etiquette() -> None:
             "The forge is the work-product store",
         ),
     )
-    assert_fragments(skill, ('get_role_guide("worker")', "get_role_guide(role)", "release: true"))
-
-
-def to_lf(data: bytes) -> bytes:
-    """Canonicalize copied source bytes to LF, whatever the checkout used."""
-
-    return data.replace(b"\r\n", b"\n")
-
-
-def to_crlf(data: bytes) -> bytes:
-    """Convert LF bytes to CRLF."""
-
-    return to_lf(data).replace(b"\n", b"\r\n")
-
-
-def sync_copy(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Copy the guide, prompt and sync script into a temporary checkout as LF bytes."""
-
-    guide_dir = tmp_path / "guides"
-    prompt_dir = tmp_path / "prompts"
-    script_dir = tmp_path / "scripts"
-    guide_dir.mkdir()
-    prompt_dir.mkdir()
-    script_dir.mkdir()
-
-    guide_source = to_lf((ROOT / "guides/worker.md").read_bytes())
-    prompt_source = to_lf((ROOT / "prompts/worker.md").read_bytes())
-    (guide_dir / "worker.md").write_bytes(guide_source)
-    (prompt_dir / "worker.md").write_bytes(prompt_source)
-    script = script_dir / "sync-worker-prompt.py"
-    script.write_bytes((ROOT / "scripts/sync-worker-prompt.py").read_bytes())
-    return guide_dir / "worker.md", prompt_dir / "worker.md", script
-
-
-@pytest.mark.parametrize(
-    ("guide_crlf", "prompt_crlf"),
-    [(False, True), (True, False), (True, True)],
-    ids=("crlf-prompt", "crlf-guide", "crlf-both"),
-)
-def test_worker_prompt_sync_check_accepts_crlf_line_endings(
-    tmp_path: Path, guide_crlf: bool, prompt_crlf: bool
-) -> None:
-    """An older Windows checkout may keep CRLF in the guide or the prompt (#587)."""
-
-    guide_file, prompt_file, script = sync_copy(tmp_path)
-    if guide_crlf:
-        guide_file.write_bytes(to_crlf(guide_file.read_bytes()))
-    if prompt_crlf:
-        prompt_file.write_bytes(to_crlf(prompt_file.read_bytes()))
-
-    check_command = [sys.executable, str(script), "--check"]
-    result = subprocess.run(
-        check_command,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-
-    prompt_file.write_bytes(prompt_file.read_bytes() + b"stale")
-    stale_result = subprocess.run(
-        check_command,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    assert stale_result.returncode == 1
-    assert "prompts/worker.md" in stale_result.stderr
-    assert "uv run --locked python scripts/sync-worker-prompt.py" in stale_result.stderr
-
-
-def test_worker_prompt_sync_generation_writes_lf_bytes_from_a_crlf_guide(
-    tmp_path: Path,
-) -> None:
-    """Generation must not copy a CRLF working copy's line endings into the prompt (#587)."""
-
-    guide_file, prompt_file, script = sync_copy(tmp_path)
-    guide_file.write_bytes(to_crlf(guide_file.read_bytes()))
-    prompt_file.write_bytes(b"stale prompt bytes\n")
-
-    generate = subprocess.run(
-        [sys.executable, str(script)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    assert generate.returncode == 0, generate.stderr
-
-    expected = (ROOT / "prompts/worker.md").read_bytes().replace(b"\r\n", b"\n")
-    assert prompt_file.read_bytes() == expected
-
-    check = subprocess.run(
-        [sys.executable, str(script), "--check"],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    assert check.returncode == 0, check.stderr
 
 
 def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
     """#558: Codex hands a hub wait back to the model at each short exec yield."""
 
     worker = read("guides/worker.md")
-    prompt = read("prompts/worker.md")
     orchestrator = read("guides/orchestrator.md")
     shared = (
         "`yield_time_ms`",
@@ -168,26 +60,21 @@ def test_codex_hub_waits_start_with_a_yield_above_the_hold() -> None:
         "instead of starting the wait again",
     )
 
-    assert prompt.endswith(worker), (
-        "prompts/worker.md needs regenerating; run "
-        "`uv run --locked python scripts/sync-worker-prompt.py`."
+    assert_fragments(
+        worker,
+        (
+            "On Codex, a hub wait",
+            "`await_assignment`, `ask_orchestrator` or `wait_for_event`",
+            *shared,
+        ),
     )
-    for text in (worker, prompt):
-        assert_fragments(
-            text,
-            (
-                "On Codex, a hub wait",
-                "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`",
-                *shared,
-            ),
-        )
     # Alice's only hub wait is `wait_for_event`; the worker-only tools must not
     # be listed as hers.
     paragraph = section(
         orchestrator, "<!-- Codex hub-wait polling: #558. -->", "Before a delivered event"
     )
     assert_fragments(paragraph, ("On Codex, Alice's hub wait (`wait_for_event`)", *shared))
-    assert "ask_alice" not in paragraph and "ask_orchestrator" not in paragraph
+    assert "ask_orchestrator" not in paragraph
 
 
 def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
@@ -196,14 +83,8 @@ def test_progress_visibility_names_milestones_and_stall_cadence() -> None:
     worker = read("guides/worker.md")
     implementer = read("guides/implementer.md")
     reviewer = read("guides/reviewer.md")
-    skill = read("skills/worker/SKILL.md")
-    prompt = read("prompts/worker.md")
 
-    assert prompt.endswith(worker), (
-        "prompts/worker.md needs regenerating; run "
-        "`uv run --locked python scripts/sync-worker-prompt.py`."
-    )
-    for text in (worker, skill, implementer):
+    for text in (worker, implementer):
         assert_fragments(
             text,
             (
@@ -328,7 +209,7 @@ def test_counter_claim_lifecycle_replaces_ordinary_roadmap_work() -> None:
             "Verify the shared issue directly",
             "If the shipped value, next value or claim is wrong or missing",
             "release its unused claim without rewinding over other claims",
-            "Legacy prepared runs keep their durable goals",
+            "Existing runs keep their durable goals",
         ),
     )
     assert "ROADMAP-CORRECTION" not in orchestrator
@@ -340,64 +221,6 @@ def test_counter_claim_lifecycle_replaces_ordinary_roadmap_work() -> None:
     for path in ("guides/forge/orchestrator-github.md", "guides/forge/orchestrator-gitlab.md"):
         assert "reservations" in read(path)
         assert "roadmap" not in read(path)
-
-
-def test_alice_prompt_uses_the_validated_default_policy() -> None:
-    prompt = read("prompts/alice.md")
-    match = re.search(r"```json\n(?P<policy>.*?)\n```", prompt, flags=re.DOTALL)
-    assert match is not None
-    assert json.loads(match.group("policy")) == WorkflowPolicy().model_dump(mode="json")
-    assert prompt.index("get_state") < prompt.index("initialize_workflow")
-    assert "first mutating workflow call" in prompt
-    assert "<reservations-owner>/<reservations-repository>#<reservations-issue>" in prompt
-    assert "No reservations issue was supplied" in prompt
-    assert "roadmap issue `#2`" not in prompt
-    durable_goal = section(prompt, "Goal:", "Forge comment identity account:")
-    assert "<reservations-owner>/<reservations-repository>#<reservations-issue>" in durable_goal
-    assert "no roadmap edit" not in durable_goal
-    assert "If no counter is used, no reservations close-out task is needed" in durable_goal
-    assert "Forge: <forge> (host: <host>, project: <project>)." in prompt
-
-    skill = read("guides/orchestrator.md")
-    skill_match = re.search(r"```json\n(?P<policy>.*?)\n```", skill, flags=re.DOTALL)
-    assert skill_match is not None
-    assert json.loads(skill_match.group("policy")) == WorkflowPolicy().model_dump(mode="json")
-
-
-def test_alice_prompt_never_names_run_json_for_a_submitted_run() -> None:
-    """#595: a submitted run has no run.json, so the prompt cites submit/status instead."""
-    prompt = read("prompts/alice.md")
-    assert "run.json" not in prompt
-    assert "shows as `Statement:`" in prompt
-    assert "`robomate submit` printed" in prompt
-
-
-def test_readme_documents_durable_alice_initialization() -> None:
-    # The PoC README, which documented this contract, moved to docs/ when robomate
-    # was seeded; README.md now describes the MVP.
-    readme = read("docs/poc-readme.md")
-    assert_fragments(
-        readme,
-        (
-            "Alice gets `get_state`, `initialize_workflow`",
-            "`check_merge_gate`",
-            "first mutating call must be `initialize_workflow(goal, policy)`",
-            "On restart, call `get_state` first",
-            "different goal or policy is refused",
-        ),
-    )
-
-
-def test_runtime_docs_explain_how_claude_loads_the_skills() -> None:
-    runtime_docs = read("runtimes/README.md")
-    assert_fragments(
-        runtime_docs,
-        (
-            ".claude/skills/alice-orchestrator/",
-            ".claude/skills/worker/",
-            "launch scripts will automate this",
-        ),
-    )
 
 
 def test_alice_skill_covers_the_step_5b_transition_contract() -> None:
@@ -532,13 +355,6 @@ def test_alice_skill_takes_a_statement_of_work() -> None:
         ),
     )
 
-    prompt = read("prompts/alice.md")
-    durable_goal = section(prompt, "Goal:", "Forge comment identity account:")
-    assert_fragments(
-        durable_goal,
-        ("replace that sentence with the statement text itself", "one run per pull request"),
-    )
-
 
 def test_alice_never_holds_for_a_final_ack() -> None:
     """#610: release and done follow her own report with no final wait."""
@@ -599,7 +415,7 @@ def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
         (
             "Never use your harness's built-in ask-user or question tool",
             '"User Skipped"',
-            "use `ask_alice`, or return `blocked`",
+            "use `ask_orchestrator`, or return `blocked`",
             "prefer it to improvising",
         ),
     )
@@ -607,47 +423,39 @@ def test_escalation_asks_the_operator_and_keeps_waiting() -> None:
         read("guides/reviewer.md"),
         ("a question id that `get_operator_answer` confirms", "otherwise refuse the action"),
     )
-    assert_fragments(
-        read("prompts/alice.md"),
-        (
-            "this prompt is not a source of operator decisions",
-            "the served guide's resume procedure",
-        ),
-    )
 
 
 def test_operator_only_work_never_goes_to_a_worker() -> None:
     """PLAN routes operator-only steps to ask_user; workers block on them (#132)."""
-    skill = read("guides/orchestrator.md")
+    orchestrator = read("guides/orchestrator.md")
+    authority = section(orchestrator, "### Operator authority", "## WRAP-UP")
+    worker = section(read("guides/worker.md"), "<!-- Operator-only actions:", "<!-- Isolated smoke")
+    for text in (authority, worker):
+        assert_fragments(
+            text,
+            (
+                "`robomate workspace`",
+                "`robomate up --agents`",
+                "`robomate clean`",
+                "default branch outside the PR",
+                "forge or repository settings",
+                "Act or speak for the operator",
+                "accepting work on their behalf",
+            ),
+        )
+    assert_fragments(authority, ("to `ask_user`, never to a worker",))
     assert_fragments(
-        section(skill, "## KICKOFF and PLAN", "## Choose the worker pair and IMPLEMENT"),
-        (
-            "to `ask_user`, never to a worker",
-            "starting or stopping the run's hub or any agent",
-            "launching agent harnesses",
-            "acting or speaking for the operator",
-            "accepting work on the operator's behalf",
-            "changing the default branch outside the PR",
-            "changing forge or repository settings",
-        ),
-    )
-    assert_fragments(
-        section(skill, "## Escalation", "## WRAP-UP"),
-        ("`set_workflow_status(escalated)` is refused", "names the open question ids"),
-    )
-    assert_fragments(
-        read("guides/worker.md"),
+        worker,
         (
             "A task that needs one of them is `blocked`",
-            "Call the hub's `/rpc` route.",
-            "Read `.robomate/`.",
-            # Each pinned up to the next bullet, so no qualifier is appended
-            # unnoticed (#132 r1-2, #145).
-            "- Start or stop agents or the run's hub. - Start or stop",
-            "- Start or stop any other hub, except as the isolated smoke run below."
-            " - Change workflow status.",
-            "Post anything that speaks for the operator.",
+            "Workers also never call the hub's `/rpc` route, read its state or token",
+            "change workflow status",
+            "The isolated smoke run below is the exception.",
         ),
+    )
+    assert_fragments(
+        section(orchestrator, "## Escalation", "## WRAP-UP"),
+        ("`set_workflow_status(escalated)` is refused", "names the open question ids"),
     )
 
 
@@ -705,7 +513,7 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
     assert_fragments(smoke, limits)
     assert normalize(smoke).endswith(
         # Named, not by file name: run files never carry the credential's
-        # location (#128, tests/test_prepare_run.py).
+        # location (#128).
         "- Never touched: the run's hub, its `.robomate/`, the machine's `hubs.json`"
         " and operator credential, and any other agent's process."
     )
@@ -742,7 +550,7 @@ def test_worker_smoke_hub_exception_states_every_limit() -> None:
     )
     assert_fragments(
         read("guides/orchestrator.md"),
-        ("A worker's isolated smoke hub for this repository's own entry points is not",),
+        ("the isolated smoke exception for this repository's own entry points",),
     )
 
 
@@ -831,13 +639,12 @@ def test_task_requirements_do_not_grant_operator_authority() -> None:
     """Evolving issue scope is reviewable; restricted actions need hub answers (#152)."""
     reviewer = read("guides/reviewer.md")
     worker = read("guides/worker.md")
-    prompt = read("prompts/worker.md")
     authority = section(
         read("guides/orchestrator.md"),
         "### Operator authority",
         "## WRAP-UP",
     )
-    for text in (reviewer, worker, prompt, authority):
+    for text in (reviewer, worker, authority):
         assert_fragments(
             text,
             (
@@ -858,7 +665,7 @@ def test_task_requirements_do_not_grant_operator_authority() -> None:
                 " never establishes authority",
                 "writing a rule into the work product does not grant that authority",
                 "Workers still never perform the worker-guide operator-only actions",
-                "A worker uses `ask_alice` for consequential ambiguity",
+                "A worker uses `ask_orchestrator` for consequential ambiguity",
                 "a substantial pivot that changes the intended outcome",
                 "Alice uses `ask_user` when it is the operator's decision",
                 "Alice with `log_decision`, workers in the PR description or task result",
@@ -886,30 +693,10 @@ def test_task_requirements_do_not_grant_operator_authority() -> None:
     )
 
 
-def test_worker_guide_and_skill_document_join_and_takeover() -> None:
-    guide = read("guides/worker.md")
-    prompt = read("prompts/worker.md")
-    skill = read("skills/worker/SKILL.md")
-
-    assert prompt.endswith(guide), (
-        "prompts/worker.md needs regenerating; run "
-        "`uv run --locked python scripts/sync-worker-prompt.py`."
-    )
-    for text in (guide, prompt, skill):
-        assert_fragments(
-            text,
-            (
-                "join(name, role",
-                "takeover=true",
-                "reattached_task",
-            ),
-        )
+def test_worker_guide_documents_join_and_takeover() -> None:
     assert_fragments(
-        guide,
-        (
-            "ask_orchestrator",
-            "ask_alice",
-        ),
+        read("guides/worker.md"),
+        ("join(name, role", "takeover=true", "reattached_task", "ask_orchestrator"),
     )
 
 
@@ -926,19 +713,13 @@ def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> N
     """Implementers and reviewers work from the statement (#297)."""
 
     worker = read("guides/worker.md")
-    prompt = read("prompts/worker.md")
     implementer = read("guides/implementer.md")
     reviewer = read("guides/reviewer.md")
-    skill = read("skills/worker/SKILL.md")
     orchestrator = read("guides/orchestrator.md")
 
-    assert prompt.endswith(worker), (
-        "prompts/worker.md needs regenerating; run "
-        "`uv run --locked python scripts/sync-worker-prompt.py`."
-    )
     # 1. On every assignment carrying statement_sha256, read the statement;
     # the assignment text points but does not replace it.
-    for text in (worker, prompt, implementer, reviewer):
+    for text in (worker, implementer, reviewer):
         assert_fragments(
             text,
             (
@@ -947,14 +728,6 @@ def test_statement_first_acceptance_checklist_and_cheap_nonblocking_fixes() -> N
                 "points to the requirements but does not replace them",
             ),
         )
-    assert_fragments(
-        skill,
-        (
-            "On every assignment carrying `statement_sha256`",
-            "read the statement with `get_statement`",
-            "points to the requirements but does not replace them",
-        ),
-    )
     assert_fragments(
         orchestrator,
         (
@@ -1024,7 +797,6 @@ def test_statement_precedence_is_shared_and_preserves_safeguards() -> None:
             "guides/worker.md",
             "guides/reviewer.md",
             "guides/orchestrator.md",
-            "prompts/worker.md",
         )
     ]
     shared = []
@@ -1195,7 +967,7 @@ def test_agents_md_searches_copies_and_consumers_of_shared_changes() -> None:
         read("AGENTS.md"),
         (
             "When a change alters shared behaviour or instructions",
-            "search the repository for its copies (guides, `prompts/`, scripts, docs, tests)",
+            "search the repository for its copies (guides, skills, scripts, docs, tests)",
             "trace its callers and any readers of persisted data",
             "Fix copies within the task's scope and report the rest separately",
             "A reviewer reports every instance of the same defect as one finding",
@@ -1500,7 +1272,6 @@ def test_role_principle_and_decision_ownership_across_docs_and_guides() -> None:
         "docs/mvp-spec.md",
         "docs/user-guide.md",
         "guides",
-        "prompts",
         "skills",
         "scripts",
     )

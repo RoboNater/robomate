@@ -143,11 +143,11 @@ def a2a_tool(payload: Any) -> str:
     metadata = message.get("metadata")
     kind = metadata.get(MetaKeys.KIND) if isinstance(metadata, dict) else None
     if method == "message/stream":
-        return "ask_alice" if message.get("taskId") is not None else "await_assignment"
+        return "ask_orchestrator" if message.get("taskId") is not None else "await_assignment"
     if kind == "closeout_report":
         return "submit_closeout_report"
     if message.get("taskId") is None:
-        return "heartbeat" if kind == "heartbeat" else "check_in"
+        return "heartbeat" if kind == "heartbeat" else "join"
     return "submit_result" if kind == "result" else "report_progress"
 
 

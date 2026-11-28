@@ -11,7 +11,7 @@ import httpx
 import pytest
 from agent_hub.database import SCHEMA_VERSION, initialize_database
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import TaskState
 from agent_hub_common.discovery import write_hub_json
 from agent_hub_common.registry import register
@@ -180,9 +180,9 @@ def seed_run(run_dir: Path, *, status: str = "done") -> Path:
             # bob's wire as the hub saw it, heartbeats included.
             ("a2a", "bob", "heartbeat", "ok", 50, 40, None, 100, 100),
             ("a2a", "bob", "heartbeat", "ok", 50, 40, None, 400, 400),
-            ("a2a", "bob", "check_in", "ok", 600, 300, None, 30, 30),
+            ("a2a", "bob", "join", "ok", 600, 300, None, 30, 30),
             # charlie has no telemetry: the hub's record is all there is.
-            ("a2a", "charlie", "check_in", "ok", 100, 10, None, 20, 20),
+            ("a2a", "charlie", "join", "ok", 100, 10, None, 20, 20),
             ("a2a", "charlie", "await_assignment", "assignment", 100, 10, None, 20, 720),
             ("a2a", "charlie", "submit_result", "ok", 100, 10, None, 1200, 1200),
             ("a2a", "charlie", "await_assignment", "timeout", 100, 10, None, 1200, 1300),
@@ -198,12 +198,12 @@ def seed_run(run_dir: Path, *, status: str = "done") -> Path:
 
     bob = [
         {"event": "session_started", "agent": "bob", "timestamp": at(0)},
-        telemetry_call("bob", "check_in", 30, outcome="registered"),
+        telemetry_call("bob", "join", 30, outcome="registered"),
         telemetry_call("bob", "await_assignment", 90, 60, outcome="assignment", task=task_id(1)),
         telemetry_call("bob", "get_role_guide", 100),
         {"event": "heartbeat", "agent": "bob", "timestamp": at(120)},
         telemetry_call("bob", "report_progress", 300, retries=1, task=task_id(1)),
-        telemetry_call("bob", "ask_alice", 400, 10, outcome="reply", task=task_id(1)),
+        telemetry_call("bob", "ask_orchestrator", 400, 10, outcome="reply", task=task_id(1)),
         {"event": "heartbeat", "agent": "bob", "timestamp": at(420)},
         telemetry_call("bob", "submit_result", 660, task=task_id(1)),
         telemetry_call("bob", "await_assignment", 760, 100, outcome="timeout"),
@@ -212,14 +212,12 @@ def seed_run(run_dir: Path, *, status: str = "done") -> Path:
         {"event": "heartbeat", "agent": "bob", "timestamp": at(1300)},
         telemetry_call("bob", "await_assignment", 1560, 50, outcome="release"),
     ]
-    dave = [telemetry_call("dave", "check_in", 5, phase="error")]
+    dave = [telemetry_call("dave", "join", 5, phase="error")]
     for name, records in (("bob", bob), ("dave", dave)):
         lines = [json.dumps(record) for record in records]
         (run_dir / f"{name}-telemetry.jsonl").write_text(
             "\n".join(lines) + "\nnot json\n", encoding="utf-8"
         )
-    manifest = {"harnesses": {"bob": "claude-code", "charlie": "codex", "erin": "codex"}}
-    (run_dir / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
     return state
 
 
@@ -233,7 +231,7 @@ def test_a_seeded_run_produces_known_totals(tmp_path: Path) -> None:
     report = REPORT.build_report(state, now=T0 + timedelta(hours=2))
     agents = by_name(report)
 
-    assert list(agents) == ["alice", "bob", "charlie", "dave", "erin"]
+    assert list(agents) == ["alice", "bob", "charlie", "dave"]
     bob = agents["bob"]
     assert bob["calls_source"] == "telemetry" and bob["wire_source"] == "call_log"
     assert bob["calls"] == {"total": 10, "active": 4, "waiting": 2, "other": 4}
@@ -255,12 +253,9 @@ def test_a_seeded_run_produces_known_totals(tmp_path: Path) -> None:
     assert "call_log is empty" not in REPORT.render_text(report)
     assert alice["time_s"] == {"total": 2010.0, "turn": 1910.0, "waiting": 100.0, "idle": 0.0}
 
-    # dave made one failed check-in; erin was expected and never came.
+    # Dave made one failed join.
     assert agents["dave"]["checked_in"] is False
     assert agents["dave"]["calls"]["total"] == 1 and agents["dave"]["errors"] == 1
-    erin = agents["erin"]
-    assert erin["checked_in"] is False and erin["calls"]["total"] == 0
-    assert erin["time_s"]["total"] is None
 
     totals = report["totals"]
     assert totals["calls"]["total"] == 21
@@ -359,7 +354,7 @@ def test_readings_before_workflow_initialization_appear_in_report(tmp_path: Path
     initialize_database(state / "hub.db")
     store = HubStore(state / "hub.db", clock=lambda: T0)
     store.record_gate_reading(PR, HEAD, error_code=-32004, elapsed_s=0.1)
-    workflow_id = store.initialize_workflow("Include pre-initialization gate calls")
+    workflow_id = store.start_workflow("Include pre-initialization gate calls")
     store.record_gate_reading(PR, HEAD, error_code=-32004, elapsed_s=0.2)
 
     built = REPORT.build_report(state, now=T0 + timedelta(seconds=1))
@@ -407,10 +402,10 @@ def test_active_waiting_and_idle_sum_to_total_time(tmp_path: Path) -> None:
 def test_the_classifier_counts_a_timeout_during_a_task_as_active() -> None:
     telemetry = REPORT.Telemetry()
     telemetry.calls["bob"] = [
-        REPORT.Call("check_in", "registered", T0, T0),
+        REPORT.Call("join", "registered", T0, T0),
         REPORT.Call("await_assignment", "timeout", T0, T0 + timedelta(seconds=100)),
         REPORT.Call(
-            "ask_alice", "timeout", T0 + timedelta(seconds=200), T0 + timedelta(seconds=300)
+            "ask_orchestrator", "timeout", T0 + timedelta(seconds=200), T0 + timedelta(seconds=300)
         ),
         REPORT.Call(
             "await_assignment", "release", T0 + timedelta(seconds=400), T0 + timedelta(seconds=400)
@@ -420,7 +415,7 @@ def test_the_classifier_counts_a_timeout_during_a_task_as_active() -> None:
     tasks = [{"assignee": "bob", "picked_up": at(150), "created": at(150), "finished": at(350)}]
     snapshot: dict[str, list[Any]] = {"agent": [], "workflow": [], "call_log": []}
 
-    [_, bob] = REPORT.agent_figures(snapshot, telemetry, tasks, [], T0)
+    [_, bob] = REPORT.agent_figures(snapshot, telemetry, tasks, T0)
 
     assert bob["calls"] == {"total": 4, "active": 1, "waiting": 1, "other": 2}
     assert bob["timeouts"] == 2
@@ -437,8 +432,8 @@ def test_a_workflow_in_progress_reports_partial_figures(tmp_path: Path) -> None:
     REPORT.render_text(empty)
 
     store = HubStore(path=state / "hub.db")
-    store.initialize_workflow(policy={"max_wall_minutes": 60})
-    store.check_in("bob")
+    store.start_workflow(DEFAULT_GOAL, policy={"max_wall_minutes": 60})
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "IMPLEMENT for #7", MARKER)
     now = datetime.now(UTC) + timedelta(minutes=5)
 
@@ -460,7 +455,7 @@ def test_limits_left_out_of_the_stored_policy_report_their_defaults(tmp_path: Pa
     initialize_database(state / "hub.db")
     store = HubStore(path=state / "hub.db")
     # Only what Alice supplies is stored; the hub enforces the §5 defaults.
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     workflow = REPORT.build_report(state, telemetry_paths=[])["workflow"]
 
@@ -476,8 +471,8 @@ def test_tasks_ended_by_alice_report_their_terminal_outcome(tmp_path: Path) -> N
     state.mkdir()
     initialize_database(state / "hub.db")
     store = HubStore(path=state / "hub.db")
-    store.initialize_workflow()
-    store.check_in("bob")
+    store.start_workflow(DEFAULT_GOAL)
+    store.register_worker("bob")
     outcomes = {}
     for override in (TaskState.FAILED, TaskState.CANCELED, None):
         task = store.assign_task("bob", "implementer", f"IMPLEMENT {override}", MARKER)
@@ -497,10 +492,10 @@ async def test_a_live_hub_database_is_read_without_being_modified(
     tmp_path: Path, hub_store: HubStore, client: httpx.AsyncClient, capsys: Any
 ) -> None:
     hub_store.log_decision("Plan", MARKER, key="plan", actor="alice", session=None)
-    hub_store.check_in("bob")
+    hub_store.register_worker("bob")
     hub_store.assign_task("bob", "implementer", "IMPLEMENT", MARKER)
     telemetry = tmp_path / "bob-telemetry.jsonl"
-    telemetry.write_text(json.dumps(telemetry_call("bob", "check_in", 0)) + "\n")
+    telemetry.write_text(json.dumps(telemetry_call("bob", "join", 0)) + "\n")
     # A second connection holding the WAL open, as a serving hub's would.
     holder = sqlite3.connect(hub_store.path)
     holder.execute("PRAGMA journal_mode = WAL")
@@ -588,13 +583,12 @@ def test_workflow_figures_include_statement_sha256(tmp_path: Path) -> None:
     store = HubStore(state / "hub.db", clock=lambda: T0)
     goal = "Address example/repo#1 for #296"
     expected = hashlib.sha256(goal.encode()).hexdigest()
-    store.start_workflow(goal, source="prepare-run", force_queued=True)
+    store.start_workflow(goal, source="submit:stdin", force_queued=True)
     store.start_workflow()
     built = REPORT.build_report(state, telemetry_paths=[], now=T0 + timedelta(seconds=1))
     assert built["workflow"]["statement_sha256"] == expected
     text = REPORT.render_text(built)
     assert f"statement: {expected}" in text
-    assert "run.json" not in text
 
 
 class SteppedClock:
@@ -612,8 +606,8 @@ def test_stall_episodes_are_reported_with_their_evidence(tmp_path: Path, capsys:
     clock = SteppedClock()
     store = HubStore(tmp_path / "hub.db", clock=clock)
     store.activity.mark_started(T0)
-    store.initialize_workflow(MARKER, {"stall_after_min": 2})
-    store.check_in("bob")
+    store.start_workflow(MARKER, {"stall_after_min": 2})
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", MARKER, MARKER, lease_min=600)
     store.sweep_stalls()
     clock.now = T0 + timedelta(minutes=3)

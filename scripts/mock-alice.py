@@ -215,7 +215,7 @@ def verify_endurance_telemetry(
         for record in successful
     )
     question_timeouts = sum(
-        record.get("tool") == "ask_alice" and record.get("outcome") == "timeout"
+        record.get("tool") == "ask_orchestrator" and record.get("outcome") == "timeout"
         for record in successful
     )
     long_task_heartbeats = sum(
@@ -261,7 +261,7 @@ def verify_endurance_telemetry(
     if assignment_timeouts < 1:
         raise RuntimeError("Telemetry has no await_assignment timeout/retry evidence")
     if question_timeouts < 1:
-        raise RuntimeError("Telemetry has no ask_alice timeout/retry evidence")
+        raise RuntimeError("Telemetry has no ask_orchestrator timeout/retry evidence")
     if long_task_heartbeats < 1:
         raise RuntimeError("Telemetry has no accepted heartbeat during the long work interval")
     if long_work_tool_gap_s <= lost_after_s:
@@ -333,7 +333,9 @@ async def drive_endurance(
     if long_work_s <= lost_after_s:
         raise ValueError("long_work_s must exceed lost_after_s")
 
-    store.initialize_workflow()
+    workflow = store.get_state()["workflow"]
+    if workflow is None or workflow["status"] == "done":
+        store.start_workflow(DEFAULT_GOAL)
 
     logger.info("Endurance Alice waiting for worker %r to check in...", expected_agent)
     checkin_deadline = monotonic() + checkin_timeout_s
@@ -381,8 +383,8 @@ async def drive_endurance(
 
         if cycle == 0:
             action = (
-                f"Call ask_alice for this task with the exact question {ENDURANCE_QUESTION!r} "
-                f"and timeout_s={question_hold_s}. When it times out, call ask_alice again "
+                f"Call ask_orchestrator for this task with question {ENDURANCE_QUESTION!r} "
+                f"and timeout_s={question_hold_s}. When it times out, call ask_orchestrator again "
                 "with the identical question until Alice replies."
             )
         elif cycle == 1:
@@ -425,7 +427,7 @@ async def drive_endurance(
                     raise RuntimeError(f"Unexpected question during cycle {cycle + 1}")
                 if not replied:
                     logger.info(
-                        "Holding question reply %.1fs to force ask_alice timeout/retry",
+                        "Holding question reply %.1fs to force ask_orchestrator timeout/retry",
                         question_reply_delay_s,
                     )
                     await asyncio.sleep(question_reply_delay_s)
@@ -493,7 +495,7 @@ class AliceBackend(Protocol):
 
     label: str
 
-    async def initialize_workflow(self, goal: str, policy: dict[str, Any]) -> dict[str, Any]: ...
+    async def start_workflow(self, goal: str, policy: dict[str, Any]) -> dict[str, Any]: ...
 
     async def get_state(self) -> dict[str, Any]: ...
 
@@ -534,8 +536,8 @@ class DirectStoreBackend:
     def __init__(self, store: HubStore) -> None:
         self.store = store
 
-    async def initialize_workflow(self, goal: str, policy: dict[str, Any]) -> dict[str, Any]:
-        workflow_id = self.store.initialize_workflow(goal, policy)
+    async def start_workflow(self, goal: str, policy: dict[str, Any]) -> dict[str, Any]:
+        workflow_id = self.store.start_workflow(goal, policy)
         workflow = self.store.get_state()["workflow"]
         return {"id": workflow_id, "goal": workflow["goal"], "policy": workflow["policy"]}
 
@@ -605,9 +607,9 @@ class McpBackend:
     def __init__(self, session: ClientSession) -> None:
         self.session = session
 
-    async def initialize_workflow(self, goal: str, policy: dict[str, Any]) -> dict[str, Any]:
+    async def start_workflow(self, goal: str, policy: dict[str, Any]) -> dict[str, Any]:
         return await _call_dict(
-            self.session, "initialize_workflow", {"goal": goal, "policy": policy}
+            self.session, "start_workflow", {"statement": goal, "policy": policy}
         )
 
     async def get_state(self) -> dict[str, Any]:
@@ -728,7 +730,12 @@ async def drive_one_task_with_backend(
 ) -> dict[str, Any]:
     """Drive the lifecycle once over either Alice backend, including recovery."""
 
-    await backend.initialize_workflow(workflow_goal, dict(policy or {}))
+    state = await backend.get_state()
+    workflow = state["workflow"]
+    if workflow is None or workflow["status"] == "done":
+        await backend.start_workflow(workflow_goal, dict(policy or {}))
+    elif workflow["goal"] != workflow_goal or workflow["policy"] != dict(policy or {}):
+        raise RuntimeError("The live workflow differs from the requested mock goal or policy.")
     logger.info(
         "Alice (%s) is ready. Waiting for worker %r to check in...",
         backend.label,
@@ -1204,10 +1211,7 @@ def main() -> None:
             )
             result["telemetry"] = telemetry
         elif args.mcp:
-            bridge_cmd = args.bridge_cmd or (
-                f'"{Path(sys.executable).with_name("robomate")}" mcp'
-                + ("" if args.join else " --role orchestrator")
-            )
+            bridge_cmd = args.bridge_cmd or (f'"{Path(sys.executable).with_name("robomate")}" mcp')
             cmd_parts = _parse_cmd(bridge_cmd)
             env, cwd = bridge_launch(args.hub)
             params = StdioServerParameters(
@@ -1220,16 +1224,13 @@ def main() -> None:
                     ClientSession(read, write) as session,
                 ):
                     await session.initialize()
+                    joined = await _call(
+                        session,
+                        "join",
+                        {"name": "alice", "role": "orchestrator", "takeover": args.takeover},
+                    )
                     if args.join:
-                        return await _call(
-                            session,
-                            "join",
-                            {
-                                "name": "alice",
-                                "role": "orchestrator",
-                                "takeover": args.takeover,
-                            },
-                        )
+                        return joined
                     return await drive_one_task_mcp(
                         session=session,
                         expected_agent=args.agent,

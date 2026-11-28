@@ -49,8 +49,10 @@ def test_typed_snapshot_keeps_every_finding_and_step(
     started = store.get_workflow(workflow_id)
     run_id, sha = started["run_id"], started["statement_sha256"]
     store.join_orchestrator("alice", "session", AgentProfile(harness="claude-code"))
-    store.check_in("bob", profile=AgentProfile(harness="codex", model="worker-model"))
-    store.check_in("charlie", profile=AgentProfile(harness="opencode", provider="review-provider"))
+    store.register_worker("bob", profile=AgentProfile(harness="codex", model="worker-model"))
+    store.register_worker(
+        "charlie", profile=AgentProfile(harness="opencode", provider="review-provider")
+    )
     config = ResolvedConfig(
         nits_issue=4, closeout_steps=("First recorded step", "Second recorded step")
     )
@@ -202,8 +204,8 @@ def test_merge_record_comment_and_run_report_read_the_same_delivery_facts(
 ) -> None:
     """#707/#452: the comment's delivery facts equal the report's, including a clean rebase."""
 
-    store.check_in("charlie")
-    store.check_in("bob")
+    store.register_worker("charlie")
+    store.register_worker("bob")
     review = store.assign_task("charlie", "reviewer", "Review", "", pr_head_sha=HEAD)
     store.submit_result(
         review.id,
@@ -266,7 +268,7 @@ def test_draft_keeps_failed_or_blocked_closeout_until_retry(
     hub_store: HubStore, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     store = hub_store
-    store.check_in("bob")
+    store.register_worker("bob")
     config = ResolvedConfig(closeout_steps=("Replaced checklist",))
     monkeypatch.setattr("agent_hub_common.load_config_layers", lambda **kwargs: config)
     failed = store.assign_task("bob", "closeout", "First attempt", "")
@@ -312,7 +314,7 @@ def test_invalid_run_id_is_refused(store: HubStore, value: str) -> None:
 
 def test_legacy_completed_run_projects_missing_facts_without_reexport(store: HubStore) -> None:
     run_id = store.get_state()["run_id"]
-    store.check_in("charlie")
+    store.register_worker("charlie")
     task = store.assign_task(
         "charlie", "reviewer", "Review", "Never derive facts from this prose", pr_head_sha=HEAD
     )

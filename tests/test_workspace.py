@@ -5,23 +5,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import pytest
-from agent_hub.store import DuplicateAgentError, HubStore
+from agent_hub.store import DEFAULT_GOAL, DuplicateAgentError, HubStore
 from agent_hub_common import AgentProfile, ConfigurationError, HubSettings, MetaKeys
-from agent_hub_common.workspace import IDENTITY_FILE, create_clone
+from agent_hub_common.workspace import IDENTITY_FILE, create_clone, read_identity
 from conftest import message, rpc
 from worker_mcp.config import WorkerSettings
 
 ROOT = Path(__file__).resolve().parents[1]
-# Windows cannot execute the bash wrapper; it runs the same entry point directly.
-BOOTSTRAP = (
-    [sys.executable, str(ROOT / "scripts/bootstrap-workspace.py")]
-    if os.name == "nt"
-    else [str(ROOT / "scripts/bootstrap-workspace.sh")]
-)
 
 
 def command(*args: str) -> str:
@@ -48,67 +42,31 @@ def repository(tmp_path: Path) -> Path:
     return origin
 
 
-def _skip_if_bootstrap_guard_refuses(destination: Path) -> None:
-    """#549: skip when the bootstrap script's coordination-checkout guard would fire.
-
-    ``scripts/bootstrap-workspace.py`` errors with "destination must be outside
-    the coordination checkout" for any destination inside the checkout that runs
-    it, and that guard is correct production behaviour which stays unchanged.
-    The tests here bootstrap into ``tmp_path``, so when pytest's base temp sits
-    inside the running checkout — native-Windows TEMP nested in a reviewer's
-    clone as a sandbox ACL workaround — the guard would refuse every
-    destination. Skip with the guard's own containment condition instead of
-    weakening or routing around the guard.
-    """
-
-    resolved = destination.resolve()
-    if resolved == ROOT or ROOT in resolved.parents:
-        pytest.skip(
-            "scripts/bootstrap-workspace.py would refuse this destination: "
-            "'destination must be outside the coordination checkout' — pytest's "
-            "base temp is inside the coordination checkout (#549)"
-        )
+def provision_clone(repository: Path, destination: Path, agent: str = "bob") -> dict[str, Any]:
+    create_clone(destination, str(repository), agent)
+    return read_identity(destination, agent)
 
 
-def bootstrap(repository: Path, destination: Path, agent: str = "bob") -> dict[str, str]:
-    _skip_if_bootstrap_guard_refuses(destination)
-    return cast(
-        dict[str, str],
-        json.loads(
-            command(
-                *BOOTSTRAP,
-                agent,
-                str(destination),
-                str(repository),
-            )
-        ),
-    )
-
-
-def test_bootstrap_persistence_and_isolation(repository: Path, tmp_path: Path) -> None:
+def test_clone_persistence_and_isolation(repository: Path, tmp_path: Path) -> None:
     bob, charlie = tmp_path / "bob", tmp_path / "charlie"
-    first = bootstrap(repository, bob)
-    second = bootstrap(repository, charlie, "charlie")
+    first = provision_clone(repository, bob)
+    second = provision_clone(repository, charlie, "charlie")
     assert first["workspace_id"] != second["workspace_id"]
-    assert bootstrap(repository, bob) == first
+    assert provision_clone(repository, bob) == first
     identity = bob / ".git" / IDENTITY_FILE
     if os.name != "nt":
         assert identity.stat().st_mode & 0o777 == 0o600
     assert command("git", "-C", str(bob), "ls-files") == ""
     (bob / "uncommitted-marker").write_text("isolated")
     assert not (charlie / "uncommitted-marker").exists()
-    result = subprocess.run(
-        [*BOOTSTRAP, "bob", str(bob), str(repository)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0 and "dirty" in result.stderr
+    with pytest.raises(ConfigurationError, match="dirty"):
+        provision_clone(repository, bob)
     assert (bob / "uncommitted-marker").read_text() == "isolated"
 
 
 def test_workspace_configuration(repository: Path, tmp_path: Path) -> None:
     bob = tmp_path / "bob"
-    identity = bootstrap(repository, bob)
+    identity = provision_clone(repository, bob)
     env = {
         "HUB_URL": "http://hub",
         "HUB_TOKEN": "test",
@@ -130,7 +88,7 @@ def test_workspace_configuration(repository: Path, tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="64 lowercase"):
         WorkerSettings.from_env(env)
     (bob / ".git" / IDENTITY_FILE).unlink()
-    with pytest.raises(ConfigurationError, match="bootstrap-workspace"):
+    with pytest.raises(ConfigurationError, match="robomate workspace --clone"):
         WorkerSettings.from_env(env)
 
 
@@ -140,7 +98,7 @@ def test_workspace_under_a_non_ascii_path_is_accepted(tmp_path: Path) -> None:
     origin.mkdir(parents=True)
     command("git", "init", "--initial-branch=main", str(origin))
     bob = tmp_path / "café" / "bob é"
-    identity = bootstrap(origin, bob)
+    identity = provision_clone(origin, bob)
     settings = WorkerSettings.from_env(
         {
             "HUB_URL": "http://hub",
@@ -159,20 +117,20 @@ def test_workspace_readmission_and_stale_heartbeat(store: HubStore, status: str)
     from agent_hub.database import database
 
     profile = AgentProfile(workspace_id="a" * 64)
-    store.check_in("bob", profile, worker_instance_id="old")
+    store.register_worker("bob", profile, worker_instance_id="old")
     with pytest.raises(DuplicateAgentError, match="workspace"):
-        store.check_in("charlie", profile, worker_instance_id="other")
+        store.register_worker("charlie", profile, worker_instance_id="other")
     with pytest.raises(DuplicateAgentError, match="live worker"):
-        store.check_in("bob", profile, worker_instance_id="new")
+        store.register_worker("bob", profile, worker_instance_id="new")
     with database(store.path) as connection:
         connection.execute("UPDATE agent SET status = ? WHERE name = 'bob'", (status,))
-    store.check_in("charlie", profile, worker_instance_id="other")
+    store.register_worker("charlie", profile, worker_instance_id="other")
     if status == "lost":
         assert not store.heartbeat("bob", "old", None)
     with pytest.raises(DuplicateAgentError, match="workspace"):
-        store.check_in("bob", profile, worker_instance_id="new")
+        store.register_worker("bob", profile, worker_instance_id="new")
     store.release_agent("charlie")
-    store.check_in("bob", profile, worker_instance_id="new")
+    store.register_worker("bob", profile, worker_instance_id="new")
     assert not store.heartbeat("bob", "old", None)
 
 
@@ -207,19 +165,20 @@ async def test_workspace_wire_conflict_and_replay(
 
 def test_busy_workspace_is_occupied(store: HubStore) -> None:
     profile = AgentProfile(workspace_id="b" * 64)
-    store.check_in("bob", profile, worker_instance_id="first")
+    store.register_worker("bob", profile, worker_instance_id="first")
     store.assign_task("bob", "implementer", "work", "independent edits")
     with pytest.raises(DuplicateAgentError, match="workspace"):
-        store.check_in("charlie", profile, worker_instance_id="second")
+        store.register_worker("charlie", profile, worker_instance_id="second")
 
 
+@pytest.mark.hub_settings(guides_dir=ROOT / "guides")
 async def test_worker_reports_persisted_identity(
     client: httpx.AsyncClient, hub_store: HubStore, repository: Path, tmp_path: Path
 ) -> None:
     from worker_mcp.client import WorkerHubClient
 
     destination = tmp_path / "bob"
-    persisted = bootstrap(repository, destination)
+    persisted = provision_clone(repository, destination)
     settings = WorkerSettings.from_env(
         {
             "HUB_URL": "http://hub.test",
@@ -229,23 +188,16 @@ async def test_worker_reports_persisted_identity(
         }
     )
     worker = WorkerHubClient(settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     registered = hub_store.agent_by_name("bob")
     assert registered is not None and registered.workspace_id == persisted["workspace_id"]
 
 
-def test_bootstrap_missing_identity_error(repository: Path, tmp_path: Path) -> None:
+def test_clone_missing_identity_error(repository: Path, tmp_path: Path) -> None:
     destination = tmp_path / "interrupted"
-    _skip_if_bootstrap_guard_refuses(destination)
     subprocess.run(["git", "clone", str(repository), str(destination)], check=True)
-    result = subprocess.run(
-        [*BOOTSTRAP, "bob", str(destination), str(repository)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    assert "missing robo-agents-workspace.json" in result.stderr
-    assert "remove the incomplete clone" in result.stderr
+    with pytest.raises(ConfigurationError, match="identity invalid"):
+        provision_clone(repository, destination)
 
 
 def _make_repo(tmp_path: Path, name: str = "repo") -> Path:
@@ -341,7 +293,7 @@ async def test_hub_workspace_creates_ahead_of_join_and_join_reuses_it(tmp_path: 
     app = create_app(settings, hub_info=hub_info)
     store = app.state.store
     initialize_database(store.path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     async with (
         app.router.lifespan_context(app),
@@ -477,7 +429,7 @@ async def test_join_returns_setup_and_applies_pins(tmp_path: Path) -> None:
     app = create_app(settings, hub_info=hub_info)
     store = app.state.store
     initialize_database(store.path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     async with (
         app.router.lifespan_context(app),
@@ -577,7 +529,7 @@ async def test_orchestrator_join_returns_setup_and_applies_pins(tmp_path: Path) 
     app = create_app(settings, hub_info=hub_info)
     store = app.state.store
     initialize_database(store.path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     async with (
         app.router.lifespan_context(app),
@@ -679,7 +631,7 @@ async def test_worker_client_join_surfaces_setup_and_pins(tmp_path: Path) -> Non
     app = create_app(settings, hub_info=hub_info)
     store = app.state.store
     initialize_database(store.path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
 
     async with (
         app.router.lifespan_context(app),
@@ -723,7 +675,7 @@ async def test_join_detects_remote_clone(
     (settings.guides_dir / "forge").mkdir()
     (settings.guides_dir / "forge" / "github.md").write_text("# Forge\n", encoding="utf-8")
     clone = tmp_path / "bob"
-    identity = bootstrap(repository, clone)
+    identity = provision_clone(repository, clone)
     cwd = clone
     if subdirectory:
         cwd = clone / "src"
@@ -743,7 +695,7 @@ async def test_detected_clone_mismatch_names_identity(
     from worker_mcp.client import WorkerHubClient
 
     clone = tmp_path / "bob"
-    bootstrap(repository, clone)
+    provision_clone(repository, clone)
     bridge_settings = WorkerSettings.unjoined(cwd=clone, environ={})
     async with WorkerHubClient(bridge_settings, http_client=client) as bridge:
         with pytest.raises(ValueError, match="detected clone identity") as error:
@@ -838,7 +790,7 @@ def test_no_cwd_bridge_ignores_lane_clone_identity(
     from timing import LIVENESS_S
 
     lane = tmp_path / "lane"
-    identity = bootstrap(repository, lane, identity_agent)
+    identity = provision_clone(repository, lane, identity_agent)
     assert read_identity(lane, identity_agent)["workspace_id"] == identity["workspace_id"]
 
     inner = tmp_path / "inner"

@@ -11,9 +11,7 @@ import pytest
 import robomate.cli as cli
 from agent_hub.forge_preflight import (
     gitlab_policy_checks,
-    gitlab_policy_checks_sync,
     gitlab_preflight,
-    gitlab_preflight_sync,
 )
 from agent_hub.gitlab_gate import (
     GitLabGate,
@@ -508,37 +506,6 @@ async def test_ci_rule_parity_non404_refuses_both(ci_result: GlabResult) -> None
     gate = GitLabGate(project, runner=gate_runner)
     with pytest.raises(Exception, match="failed|500"):
         await gate._has_ci_config(ref, "main")
-
-
-def test_sync_wrappers_match_async() -> None:
-    """gitlab_preflight_sync/policy_checks_sync are the sync entries (r1-2)."""
-
-    import asyncio
-
-    async def base_runner(args: Sequence[str]) -> GlabResult:
-        if list(args) == ["version"]:
-            return GlabResult(0, "glab version 1.36.0 (build)", "")
-        if args[-1] == "user":
-            return GlabResult(0, '{"username":"u"}', "")
-        assert args[-1] == "projects/group%2Fproject"
-        return GlabResult(0, json.dumps(POLICY_BASE), "")
-
-    async def policy_runner(args: Sequence[str]) -> GlabResult:
-        if args[-1] == "projects/group%2Fproject":
-            return GlabResult(0, json.dumps(POLICY_BASE), "")
-        assert "repository/files" in args[-1]
-        return GlabResult(0, json.dumps({"file_name": ".gitlab-ci.yml"}), "")
-
-    assert gitlab_preflight_sync(ORIGIN, runner=base_runner) == asyncio.run(
-        gitlab_preflight(ORIGIN, runner=base_runner)
-    )
-    assert gitlab_policy_checks_sync(
-        ORIGIN, merge_method="squash", allow_no_ci="auto", runner=policy_runner
-    ) == asyncio.run(
-        gitlab_policy_checks(
-            ORIGIN, merge_method="squash", allow_no_ci="auto", runner=policy_runner
-        )
-    )
 
 
 def test_project_facts_helper_parses_once_for_both_suites() -> None:

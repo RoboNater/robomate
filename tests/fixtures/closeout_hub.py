@@ -35,7 +35,7 @@ app = create_app(
         "hub_id": "pytest-closeout",
         "repo_root": state,
         "origin": "unknown",
-        "forge": "unknown",
+        "forge": "github",
         "url": url,
         "default_branch": "main",
     },

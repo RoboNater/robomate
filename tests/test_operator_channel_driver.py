@@ -259,7 +259,7 @@ def test_machine_state_is_compared_without_reading_the_files(tmp_path: Path) -> 
 def audit_rows() -> list[dict[str, Any]]:
     alice, session = driver.ORCHESTRATOR, "0b6f8a8e-7f61-4d1f-9a43-7d5f5bb0f9a1"
     rows = [
-        ("initialize_workflow", "ok", alice, session),
+        ("start_workflow", "ok", alice, session),
         ("ask_user", "ok", alice, session),
         ("set_workflow_status", "error -32002", alice, session),
         ("assign_task", "error -32002", alice, session),

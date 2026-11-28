@@ -62,7 +62,7 @@ def test_large_advance_records_no_host_pause(store: HubStore, frozen_clock: Froz
 async def test_holds_time_out_in_real_time_on_a_frozen_clock(
     store: HubStore, frozen_clock: FrozenClock
 ) -> None:
-    agent = store.check_in("bob", worker_instance_id="bob-instance")
+    agent = store.register_worker("bob", worker_instance_id="bob-instance")
     started = monotonic()
     assert await asyncio.wait_for(store.await_assignment(agent.context_id, 0.2), LIVENESS_S) is None
     assert 0.2 <= monotonic() - started < LIVENESS_S

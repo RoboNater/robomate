@@ -1,5 +1,9 @@
 # rbm-bench: model evaluation by replaying robomate's history
 
+The pilot below uses the tooling at [`b15b064ed7b3`](https://github.com/RoboNater/robomate/tree/b15b064ed7b3a2693e59f35743b7fbbad9f27eba).
+To reproduce it, use a tooling copy from that revision. The joined-launch
+migration belongs with the [benchmark follow-up](https://github.com/RoboNater/robomate/issues/337).
+
 rbm-bench (pilot) picks models per role by replaying robomate's own merged work,
 rather than from public benchmarks. Two case kinds:
 

@@ -358,7 +358,7 @@ async def test_gate_after_wall_expiry_rearms_without_repeating_expiry(
     assert restarted.next_event() is None
 
 
-@pytest.mark.parametrize("activation", ["auto", "start", "initialize"])
+@pytest.mark.parametrize("activation", ["auto", "start"])
 async def test_ci_watch_wall_time_starts_when_queued_work_activates(
     store: HubStore, frozen_clock: FrozenClock, activation: str
 ) -> None:
@@ -371,10 +371,7 @@ async def test_ci_watch_wall_time_starts_when_queued_work_activates(
         finish_run(store, "previous run done", actor="alice", session=None)
         store.start_workflow("Queued work", policy, force_queued=True)
         frozen_clock.advance(120)
-        if activation == "start":
-            store.start_workflow()
-        else:
-            store.initialize_workflow("Queued work", policy)
+        store.start_workflow()
 
     gh = FakeGh(checks=checks("pending"))
     merge_gate = MergeGate(runner=gh, poll_timeout_s=0)
@@ -1029,9 +1026,7 @@ async def test_post_merge_gate_populates_completed_run_and_manifest(
 
     store = HubStore(tmp_path / "hub.db")
     initialize_database(store.path)
-    store.initialize_workflow(
-        "Deliver", {"closeout": False, "deliver": "merge" if merged else "pr"}
-    )
+    store.start_workflow("Deliver", {"closeout": False, "deliver": "merge" if merged else "pr"})
 
     # Anchor to the first run, then advance explicitly between runs. Real
     # wall time can step backwards on WSL2 (#209); this tests merge evidence,
@@ -1039,7 +1034,7 @@ async def test_post_merge_gate_populates_completed_run_and_manifest(
     clock = MonotonicClock()
     clock.start = datetime.fromisoformat(store.get_state()["workflow"]["created"])
     store.clock = clock
-    store.check_in("bob")
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     store.submit_result(
         task.id,
@@ -1051,7 +1046,7 @@ async def test_post_merge_gate_populates_completed_run_and_manifest(
             "head_sha": HEAD,
         },
     )
-    store.check_in("charlie")
+    store.register_worker("charlie")
     review = store.assign_task("charlie", "reviewer", "Review", "Review", pr_head_sha=HEAD)
     store.submit_result(
         review.id,

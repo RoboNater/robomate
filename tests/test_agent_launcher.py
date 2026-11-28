@@ -1,6 +1,6 @@
 """The joined agents' launcher: start, resume, ask and Denise's doctor entry (#247).
 
-The fake harness of the prepared launchers' tests stands in for each CLI here
+The fake harness stands in for each CLI here
 too, extended to record its working directory and to stay running until a
 test kills it. The hub is a reader whose answers each test scripts; its
 `read()` is the real bearer-only parser. The hub's checkout is a git checkout
@@ -33,19 +33,21 @@ import pytest
 from agent_hub_common import registry
 from agent_hub_common.launcher_observations import permission_diagnostic
 from fake_harness import (
+    ID_LINES,
+    IDS,
     SUPERVISED_MAX_RESUMES,
     attempts,
     bounded,
     exit_codes,
     live_own_pids,
 )
-from test_alice_launcher import ID_LINES, IDS, LAUNCHER, ROOT
 from timing import LIVENESS_S, wait_until_sync
 
 # One shared autouse fixture (fake_harness.py), re-exported here by alias so
 # ruff does not treat the pytest fixture as an unused import (#464 r1-3).
 fake_supervision = fake_harness.fake_supervision
 
+ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "agent_launcher_cli", ROOT / "scripts/agent-launcher.py"
 )
@@ -53,6 +55,7 @@ assert SPEC and SPEC.loader
 CLI = importlib.util.module_from_spec(SPEC)
 sys.modules["agent_launcher_cli"] = CLI
 SPEC.loader.exec_module(CLI)
+LAUNCHER = CLI.common
 WORKER = sys.modules["agent_worker"]
 RECOVERY = importlib.import_module("agent_recovery")
 
@@ -316,44 +319,6 @@ def test_ambient_uv_cache_never_grants_its_parent(
     name = launch["argv"][launch["argv"].index("--agent") + 1]
     rules = content["agent"][name]["permission"]["external_directory"]
     assert cache.parent.resolve().as_posix() + "/*" not in rules
-
-
-@pytest.mark.parametrize("matching_metadata", [False, True])
-def test_prepared_temporary_root_requires_matching_run_metadata(
-    area: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-    matching_metadata: bool,
-) -> None:
-    area["sessions"].mkdir(parents=True)
-    metadata = {
-        "run_dir": str(area["sessions"] if matching_metadata else area["root"]),
-        "hub_repo": str(area["checkout"]),
-        "state_dir": str(area["state"]),
-    }
-    (area["sessions"] / "run.json").write_text(json.dumps(metadata))
-    monkeypatch.setenv("UV_CACHE_DIR", str(area["root"] / "unrelated" / "uv-cache"))
-    hub = FakeHub(
-        after_launches(
-            area,
-            {"workflow": workflow(), "agents": [agent_row()]},
-            {"workflow": workflow(), "agents": [agent_row("released")]},
-        )
-    )
-    assert (
-        invoke(
-            start_words(area, "bob", "implementer", "opencode"),
-            programs=programs(area),
-            reader=hub,
-            workspace=workspace_of(area),
-        )
-        == 0
-    )
-    launch = launches(area)[0]
-    content = json.loads(launch["env"]["OPENCODE_CONFIG_CONTENT"])
-    name = launch["argv"][launch["argv"].index("--agent") + 1]
-    rules = content["agent"][name]["permission"]["external_directory"]
-    assert ((area["sessions"] / "tmp" / "bob").as_posix() + "/*" in rules) == matching_metadata
-    assert (area["root"] / "unrelated").as_posix() + "/*" not in rules
 
 
 def test_permission_trace_is_incremental_and_matches_session_request(tmp_path: Path) -> None:
@@ -1003,9 +968,6 @@ def test_worker_first_prompt_and_continuations_share_turn_rule(role: str) -> Non
         )
         assert "Wait for CI and other work in the foreground" in text
         assert "Do not end your turn until await_assignment returns release: true" in text
-    skill = (ROOT / "skills/worker/SKILL.md").read_text(encoding="utf-8")
-    assert CLI.common.WORKER_TURN_RULE in " ".join(skill.split())
-    assert "Use the worker skill." in first
     assert "Then await your assignment with await_assignment" in first
     assert "\n" not in first
 
@@ -1201,9 +1163,8 @@ def test_grants_are_flags_for_the_measured_harnesses(
     assert CLI.grants("opencode", linked, None) == []
 
 
-@pytest.mark.parametrize("main", [CLI.main, CLI.common.main], ids=["agent", "legacy"])
 def test_launcher_main_configures_output_streams(
-    monkeypatch: pytest.MonkeyPatch, main: Callable[..., int]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
     stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
@@ -1211,7 +1172,7 @@ def test_launcher_main_configures_output_streams(
         patch.setattr(sys, "stdout", stdout)
         patch.setattr(sys, "stderr", stderr)
         with pytest.raises(SystemExit) as exc:
-            main(["--help"])
+            CLI.main(["--help"])
         assert exc.value.code == 0
         assert stdout.encoding == stderr.encoding == "utf-8"
         assert stdout.errors == stderr.errors == "backslashreplace"

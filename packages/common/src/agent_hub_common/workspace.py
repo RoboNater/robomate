@@ -1,4 +1,4 @@
-"""Persistent full-clone identities shared by bootstrap and worker configuration."""
+"""Persistent full-clone identities used by remote workspaces and worker joins."""
 
 from __future__ import annotations
 
@@ -75,7 +75,8 @@ def read_identity(workspace: Path, agent: str) -> dict[str, Any]:
         return value
     except (OSError, ValueError) as exc:
         raise ConfigurationError(
-            f"HUB_WORKSPACE identity invalid: {exc}; run scripts/bootstrap-workspace.sh"
+            f"HUB_WORKSPACE identity invalid: {exc}; "
+            "provision the clone with robomate workspace --clone"
         ) from exc
 
 

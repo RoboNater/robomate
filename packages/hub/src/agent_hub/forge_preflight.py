@@ -1,9 +1,4 @@
-"""Policy-independent GitLab startup checks; unavailable facts only warn.
-
-Also policy-dependent GitLab checks shared by `prepare-run.py` and
-`robomate submit`, and GitHub checks for `robomate submit` (M2 Step 4, #241;
-prepare-run keeps its own GitHub checks until Step 11).
-"""
+"""Policy-independent GitLab startup checks; unavailable facts only warn."""
 
 from __future__ import annotations
 
@@ -210,9 +205,7 @@ async def gitlab_policy_checks(
 ) -> list[PreflightCheck]:
     """Policy-dependent GitLab checks: access, merge compatibility, CI presence (#96, #93).
 
-    Shared by ``prepare-run.py`` now and ``robomate submit`` next (M2 Step 4,
-    #241): the caller enforces ``refuse`` strictly, while ``robomate up``
-    keeps its warn-only ``gitlab_preflight`` unchanged.
+    Submit enforces refusal checks strictly. Startup uses the warn-only base checks.
 
     - ``allow_no_ci`` explicit (``true``/``false``) runs no CI-file call at all
       (#93 r2-1).
@@ -399,28 +392,6 @@ async def gitlab_policy_checks(
     return checks
 
 
-def gitlab_preflight_sync(origin: str, *, runner: GlabRunner) -> list[PreflightCheck]:
-    """Sync wrapper for the policy-independent base checks: no second implementation."""
-
-    return asyncio.run(gitlab_preflight(origin, runner=runner))
-
-
-def gitlab_policy_checks_sync(
-    origin: str,
-    *,
-    merge_method: str,
-    allow_no_ci: str,
-    runner: GlabRunner,
-) -> list[PreflightCheck]:
-    """Sync wrapper for ``prepare-run.py``: no second implementation."""
-
-    return asyncio.run(
-        gitlab_policy_checks(
-            origin, merge_method=merge_method, allow_no_ci=allow_no_ci, runner=runner
-        )
-    )
-
-
 GH_TIMEOUT_S = 30.0
 
 
@@ -438,8 +409,7 @@ async def run_gh(args: Sequence[str]) -> GhResult:
     """Run `gh` without letting it touch the hub's MCP stdin or stdout (M2 Step 4).
 
     Mirrors `gitlab_gate.run_glab` (including its timeout) so submit's GitHub
-    checks see the same failures as the merge gate would, not prepare-run's
-    untimed adapter.
+    checks see the same failures as the merge gate would.
     """
 
     import os
@@ -473,7 +443,7 @@ def parse_github_slug(origin: str) -> str | None:
     """Return `owner/repo` for a GitHub origin, else None for local paths.
 
     Hub origins are full remotes (SSH or HTTPS), never bare slugs; a local
-    path (no remote) has no slug and skips forge checks, like prepare-run.
+    path (no remote) has no slug and skips forge checks.
     """
 
     text = origin.strip()

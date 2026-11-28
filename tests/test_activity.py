@@ -9,7 +9,7 @@ import pytest
 from agent_hub.activity import EVENT_BACKLOG, NO_HUB_CALL, NO_TASK_PROGRESS, ActivityTracker
 from agent_hub.database import database, initialize_database
 from agent_hub.protocol import A2AProtocol
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import (
     AgentStatus,
     EventKind,
@@ -18,7 +18,7 @@ from agent_hub_common import (
     TaskState,
     WorkflowStatus,
 )
-from conftest import SESSION, check_in, message, rpc
+from conftest import SESSION, join_worker, message, rpc
 from delivery_support import finish_run
 from timing import FrozenClock, wait_until
 
@@ -45,7 +45,7 @@ def make_store(path: Path, clock: FakeClock, policy: dict[str, Any] | None = Non
     initialize_database(path)
     store = HubStore(path, clock=clock, monotonic_clock=lambda: clock.now.timestamp())
     store.activity.mark_started(clock())
-    store.initialize_workflow(policy=policy)
+    store.start_workflow(DEFAULT_GOAL, policy=policy)
     return store
 
 
@@ -57,8 +57,8 @@ def hub(tmp_path: Path, clock: FakeClock) -> HubStore:
 def worker(store: HubStore, name: str = "bob") -> str:
     """Check a worker in as the protocol layer does; return its instance."""
 
-    agent = store.check_in(name)
-    store.note_worker_call(name, agent.worker_instance_id, "check_in")
+    agent = store.register_worker(name)
+    store.note_worker_call(name, agent.worker_instance_id, "join")
     return str(agent.worker_instance_id)
 
 
@@ -128,7 +128,7 @@ def test_an_error_or_cancellation_clears_the_hold(
     hub: HubStore, clock: FakeClock, error: type[BaseException]
 ) -> None:
     instance = worker(hub)
-    with pytest.raises(error), hub.worker_hold("bob", instance, "ask_alice", 100):
+    with pytest.raises(error), hub.worker_hold("bob", instance, "ask_orchestrator", 100):
         raise error()
     record = hub.activity.worker("bob", instance)
     assert record is not None and record.holds == {}
@@ -210,7 +210,7 @@ def test_a_worker_waiting_for_alices_answer_is_not_stalled(hub: HubStore, clock:
     task = hub.assign_task("bob", "implementer", "Fix", "Do it")
     hub.open_question(task.id, "bob", "Which branch?", "m-1")
     for _ in range(30):
-        with hub.worker_hold("bob", instance, "ask_alice", 100):
+        with hub.worker_hold("bob", instance, "ask_orchestrator", 100):
             clock.advance(seconds=100)
     state = assessed(hub, "bob")
     assert not state["stalled"] and state["progress_age_s"] is None
@@ -223,7 +223,7 @@ def test_released_and_lost_workers_are_never_stalled(hub: HubStore, clock: FakeC
     clock.advance(minutes=30)
     heartbeat(hub, "charlie", hub.agent_by_name("charlie").worker_instance_id)  # type: ignore[union-attr]
     hub.sweep(lost_after_s=180)  # bob is released, so never lost
-    hub.check_in("dave")
+    hub.register_worker("dave")
     for _ in range(4):
         clock.advance(minutes=1)
         hub.sweep(lost_after_s=180)
@@ -618,8 +618,8 @@ def test_no_workflow_means_no_assessment(tmp_path: Path, clock: FakeClock) -> No
 def test_the_tracker_alone_needs_no_database() -> None:
     tracker = ActivityTracker()
     now = datetime(2026, 10, 8, tzinfo=UTC)
-    tracker.worker_call("bob", "i-1", "check_in", now)
-    tracker.worker_call("bob", "i-2", "check_in", now + timedelta(seconds=5))
+    tracker.worker_call("bob", "i-1", "join", now)
+    tracker.worker_call("bob", "i-2", "join", now + timedelta(seconds=5))
     assert tracker.worker("bob", "i-1") is None
     assert tracker.worker("bob", "i-2").last_call == now + timedelta(seconds=5)  # type: ignore[union-attr]
 
@@ -630,9 +630,9 @@ def test_the_tracker_alone_needs_no_database() -> None:
 async def test_wire_calls_count_and_heartbeats_and_reads_do_not(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     record = hub_store.activity.worker("bob", "test-worker-instance")
-    assert record is not None and record.last_call_kind == "check_in"
+    assert record is not None and record.last_call_kind == "join"
     called = record.last_call
 
     response = await client.post(
@@ -653,7 +653,7 @@ async def test_wire_calls_count_and_heartbeats_and_reads_do_not(
     response.raise_for_status()
     for method in ("hub.status", "hub.questions", "hub.heartbeat", "hub.info"):
         await client.post("/rpc", json=rpc(method, {}))
-    assert record.last_call == called and record.last_call_kind == "check_in"
+    assert record.last_call == called and record.last_call_kind == "join"
     orchestrator = hub_store.activity.orchestrator()
     assert orchestrator is not None and orchestrator.last_call is None
     assert orchestrator.heartbeat is not None
@@ -678,7 +678,7 @@ async def test_wire_calls_count_and_heartbeats_and_reads_do_not(
 async def test_status_json_carries_the_assessment_additively(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     hub_store.assign_task("bob", "implementer", "Fix", "Do it")
     status = hub_store.status_summary()
     (bob,) = status["agents"]
@@ -693,7 +693,7 @@ async def test_status_json_carries_the_assessment_additively(
 # -- review r1 -------------------------------------------------------------------------
 
 
-async def test_a_replayed_check_in_of_a_superseded_instance_keeps_the_current_hold(
+async def test_a_replayed_join_worker_of_a_superseded_instance_keeps_the_current_hold(
     tmp_path: Path, clock: FakeClock, settings: HubSettings
 ) -> None:
     """r1-1: the cached replay names the old instance; it must not touch the new one."""
@@ -736,7 +736,7 @@ def test_status_lists_workers_that_checked_in_before_the_workflow(
 
     initialize_database(tmp_path / "hub.db")
     store = HubStore(tmp_path / "hub.db", clock=clock)
-    store.check_in("bob")
+    store.register_worker("bob")
     clock.advance(hours=1)
     status = store.status_summary()
     assert status["workflow"] is None and status["orchestrator_activity"] is None

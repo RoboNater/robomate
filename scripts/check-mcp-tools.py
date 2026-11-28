@@ -57,7 +57,7 @@ PROBE_TIMEOUT_S = 180
 SKILL_INSTALLABLE = {
     "alice-orchestrator": True,
     "alice-relay": False,
-    "worker": True,
+    "worker": False,
 }
 
 

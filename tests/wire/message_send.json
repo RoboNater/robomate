@@ -20,6 +20,7 @@
           "hub.provider": "anthropic",
           "hub.operation_id": "op-checkin-101",
           "hub.schema_version": 1,
+          "hub.standing_role": "worker",
           "hub.worker_instance_id": "worker-101"
         },
         "parts": [
@@ -41,7 +42,8 @@
       "messageId": "msg-ack-101",
       "metadata": {
         "hub.agent": "bob",
-        "hub.kind": "check_in_ack",
+        "hub.kind": "join_ack",
+        "hub.standing_role": "worker",
         "hub.status": "idle",
         "hub.worker_instance_id": "worker-101"
       },
