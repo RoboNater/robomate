@@ -387,8 +387,10 @@ allowed, only under all of these limits:
   `OPENCODE_CONFIG_CONTENT` and every `HUB_*` launcher variable (for example
   `HUB_TELEMETRY_LOG`, `HUB_HARNESS`, `HUB_HARNESS_VERSION`, `HUB_HARNESS_MODE`,
   `HUB_MODEL`, `HUB_PROVIDER` and `HUB_EFFORT`): `ROBOMATE_HUB_ID` would
-  otherwise pin discovery to the run's hub instead of this checkout's, and the
-  rest would report the run agent's identity or write its telemetry.
+  otherwise pin discovery to the run's hub instead of this checkout's,
+  `OPENCODE_CONFIG_CONTENT` would leak the agent's harness config into an
+  OpenCode launch, and the rest would report the run agent's identity or write
+  its telemetry.
 - `robomate up` and `down` keep their state beside the checkout, in
   `<checkout>.robomate/<hub>/` (a legacy hub's, in the checkout's `.robomate/`),
   whatever `HUB_STATE_DIR` says, so run them from a temporary checkout (a
