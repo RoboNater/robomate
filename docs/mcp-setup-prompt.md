@@ -26,6 +26,7 @@ That is, the command `uv` with the remaining words as its argument list.
 Rules:
 
 - Name it exactly `robomate`, at **user (global) scope**, not project scope.
+- For an interactive join, follow [Interactive joins](user-guide.md#interactive-joins) in the user guide; never add `--allow-hub-selection` to this entry.
 - **No token, no hub URL, no identity and no paths other than `--project`.** Don't set `ROBOMATE_HUB_URL`, `ROBOMATE_TOKEN*`, `AGENT_NAME` or any `HUB_*` variable in the static entry except `HUB_MCP_TIMEOUT_S` where specified in the table below. The bridge finds the hub from the agent's worktree. robomate's launcher supplies identity on each launch: for Codex it adds `-c mcp_servers.robomate.env.<KEY>=…` overrides, which must merge into this entry.
 - No `--role` and no `--name`. The agent declares both when it calls `join`.
 - Don't limit the tool list (no `enabled_tools`-style allow-list) unless the harness requires one. The same entry serves orchestrators and workers.

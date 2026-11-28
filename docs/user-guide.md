@@ -59,6 +59,48 @@ The bridge discovers the hub from the workspace binding, then each join returns 
 
 A hub belongs to its owning checkout. Another linked worktree of the target repository can run another hub with separate state, scope and agents. Use `robomate ls` to find hubs and `robomate status --hub <name-or-checkout>` to select one. A new hub stores state and token in separate directories beside the checkout. Use `robomate status --json` for their resolved paths. The operator can relocate a hub that still stores state inside its checkout with `robomate relocate`.
 
+### Interactive joins
+
+An interactive agent joins like a launched one: the bridge finds the hub, and
+the agent calls `join(name, role)` with no `hub=` argument. Choose the hub
+before starting the harness.
+
+**Local interactive join.** Select the hub on the CLI and let the worktree
+binding name it to the bridge.
+
+```sh
+robomate workspace bob [--hub <name|hub_id|checkout>]
+cd <printed worktree path>
+claude   # or codex / opencode / agy, using the normal shared entry
+# then: join(name="bob", role="implementer"), with no hub= argument
+```
+
+`robomate workspace` creates or reuses Bob's worktree under the selected hub
+and prints its path; without `--hub` it uses this checkout's hub, as the other
+commands do. The worktree's binding selects the hub, so the join needs no
+selector. A bridge started in a directory that is not bound to a hub refuses
+`join` with “this robomate bridge has no hub … report blocked” instead of
+attaching to another hub.
+
+**Another host, or an IDE that starts MCP servers outside the opened folder.**
+Set `ROBOMATE_HUB_URL` and `ROBOMATE_TOKEN_FILE` in that session's launch
+environment, as in [Remote workers](#remote-workers). The pin selects the hub
+wherever the bridge starts, so no flag or `hub=` argument is needed.
+
+**`robomate mcp --allow-hub-selection`** lets an unbound worker bridge accept
+an agent's `join(hub=...)`. Never add it to the shared `robomate` entry or any
+other user-level entry: every session of that harness loads the entry, so the
+grant would let an agent choose a hub once a launcher pin is missing or
+dropped, and it applies to unattended agents too (#526). The two routes
+above make it unnecessary for an interactive join. If it is ever needed, scope
+it to one launch instead: for Claude Code, keep the shared entry clean and
+start with a separate config file,
+`claude --mcp-config <file> --strict-mcp-config`.
+
+Don't tell an agent to pass `hub=`. Choose the hub with
+`robomate workspace --hub` or the environment pin, and let the agent join
+without one.
+
 ## Submit work
 
 State decisions a run depends on in the issue or work file. Submit an issue
