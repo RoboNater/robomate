@@ -28,12 +28,10 @@ EXPECTED_TOOLS = {
     "submit_closeout_report",
     "join",
     "whoami",
-    "check_in",
     "get_role_guide",
     "await_assignment",
     "report_progress",
     "ask_orchestrator",
-    "ask_alice",
     "submit_result",
     "get_operator_answer",
     "get_statement",
@@ -108,14 +106,12 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
         agent_name="bob",
     )
     client = WorkerHubClient(settings)
+    client._joined = True
     client.join = AsyncMock(  # type: ignore[method-assign]
         return_value={"status": "registered", "agent": "bob", "role": "implementer"}
     )
     client.whoami = AsyncMock(  # type: ignore[method-assign]
         return_value={"joined": True, "name": "bob", "role": "implementer"}
-    )
-    client.check_in = AsyncMock(  # type: ignore[method-assign]
-        return_value={"status": "registered", "agent": "bob", "context_id": "c1"}
     )
     client.get_role_guide = AsyncMock(return_value="# Guide\nContent")  # type: ignore[method-assign]
     client.await_assignment = AsyncMock(  # type: ignore[method-assign]
@@ -123,7 +119,6 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
     )
     client.report_progress = AsyncMock(return_value={"ok": True, "note": "working"})  # type: ignore[method-assign]
     client.ask_orchestrator = AsyncMock(return_value={"reply": "yes"})  # type: ignore[method-assign]
-    client.ask_alice = AsyncMock(return_value={"reply": "yes"})  # type: ignore[method-assign]
     client.submit_result = AsyncMock(return_value={"status": "completed", "task_id": "t1"})  # type: ignore[method-assign]
     client.get_operator_answer = AsyncMock(return_value={"question_id": 1, "status": "unanswered"})  # type: ignore[method-assign]
     client.get_statement = AsyncMock(  # type: ignore[method-assign]
@@ -154,11 +149,6 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
         "name": "bob",
         "role": "implementer",
     }
-    assert (await call("check_in", capabilities=["python"])) == {
-        "status": "registered",
-        "agent": "bob",
-        "context_id": "c1",
-    }
     assert (await call("get_role_guide", role="implementer")) == {"result": "# Guide\nContent"}
     assert (await call("await_assignment", timeout_s=60.0)) == {
         "task_id": "t1",
@@ -172,9 +162,6 @@ async def test_worker_mcp_tools_list_and_dispatch() -> None:
     assert (
         await call("ask_orchestrator", task_id="t1", question="is this ok?", timeout_s=30.0)
     ) == {"reply": "yes"}
-    assert (await call("ask_alice", task_id="t1", question="is this ok?", timeout_s=30.0)) == {
-        "reply": "yes",
-    }
     assert (
         await call(
             "submit_result",
@@ -254,12 +241,10 @@ async def test_unjoined_bridge_refuses_other_tools_and_names_join() -> None:
     assert whoami_res[1]["joined"] is False
 
     guarded_calls: list[tuple[str, dict[str, Any]]] = [
-        ("check_in", {}),
         ("get_role_guide", {"role": "implementer"}),
         ("await_assignment", {}),
         ("report_progress", {"task_id": "t1", "note": "step"}),
         ("ask_orchestrator", {"task_id": "t1", "question": "q?"}),
-        ("ask_alice", {"task_id": "t1", "question": "q?"}),
         (
             "submit_result",
             {
@@ -289,6 +274,7 @@ async def test_worker_mcp_tool_boundary_writes_telemetry(tmp_path: Path) -> None
         telemetry_log=telemetry_path,
     )
     client = WorkerHubClient(settings)
+    client._joined = True
     client.await_assignment = AsyncMock(return_value={"timeout": True})  # type: ignore[method-assign]
     server = create_worker_mcp(client)
 
@@ -360,6 +346,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 async def test_submit_result_passes_the_supplied_body_through(body: dict[str, Any]) -> None:
     settings = WorkerSettings(hub_url="http://hub.example", token="t", agent_name="b")
     client = WorkerHubClient(settings)
+    client._joined = True
     client.submit_result = AsyncMock(return_value={"status": "completed"})  # type: ignore[method-assign]
     server = create_worker_mcp(client)
 
@@ -429,6 +416,7 @@ async def test_submit_result_telemetry_identifies_task_on_error(tmp_path: Path) 
         telemetry_log=telemetry_path,
     )
     client = WorkerHubClient(settings)
+    client._joined = True
     client.submit_result = AsyncMock(side_effect=RuntimeError("already completed"))  # type: ignore[method-assign]
     server = create_worker_mcp(client)
 

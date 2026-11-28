@@ -1,5 +1,3 @@
-import json
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -172,28 +170,6 @@ def test_worker_settings_rejects_invalid_env(env: dict[str, str], match: str) ->
         WorkerSettings.from_env(env)
 
 
-def test_runtime_templates_configure_endurance_and_codex_tool_approvals() -> None:
-    codex = tomllib.loads((ROOT / "runtimes" / "codex.config.toml").read_text(encoding="utf-8"))
-    hub = codex["mcp_servers"]["robomate"]
-    expected_tools = {
-        "check_in",
-        "get_role_guide",
-        "await_assignment",
-        "report_progress",
-        "ask_alice",
-        "submit_result",
-        "submit_closeout_report",
-        "get_operator_answer",
-        "get_statement",
-    }
-    assert set(hub["tools"]) == expected_tools
-    assert {tool["approval_mode"] for tool in hub["tools"].values()} == {"approve"}
-    assert "HUB_TELEMETRY_LOG" in hub["env"]
-
-    claude = json.loads((ROOT / "runtimes" / "claude-code.mcp.json").read_text(encoding="utf-8"))
-    assert "HUB_TELEMETRY_LOG" in claude["mcpServers"]["robomate"]["env"]
-
-
 @pytest.mark.parametrize(
     ("harness", "mode", "hold"),
     [
@@ -239,7 +215,7 @@ async def test_orchestrator_timeout_schema_accepts_profiles_and_omits_default() 
     schema: dict[str, Any] = next(t for t in tools if t.name == "wait_for_event").inputSchema
     assert schema["properties"]["timeout_s"]["default"] is None
     assert any(s.get("maximum") == 1800 for s in schema["properties"]["timeout_s"]["anyOf"])
-    for rel in ("guides/worker.md", "prompts/worker.md", "guides/orchestrator.md"):
+    for rel in ("guides/worker.md", "guides/orchestrator.md"):
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert "wait_profile.default_wait_s" in text
         assert "1500 s" in text and "1800 s" in text

@@ -8,9 +8,8 @@ owns orchestration; you own only the task currently assigned to you.
 ## Protocol
 
 1. Call `join(name, role, ...)` once when the runtime starts, using the name and
-   standing role (`implementer`, `reviewer`, or `worker`) the operator gave you
-   (or call `check_in` once on prepared runs where `AGENT_NAME` is already
-   configured). Report only capabilities, a model identifier, and an effort
+   standing role (`implementer`, `reviewer`, or `worker`) the operator gave you.
+   Report only capabilities, a model identifier, and an effort
    level you actually know; configured launcher values take precedence, and
    unknown identity fields must never be guessed. The `join` response includes
    this worker etiquette guide (`guide` and `guide_sha256`), any
@@ -129,8 +128,11 @@ in the worktree or `closeout/`. Normal repository setup and check caches
 
 <!-- Headless turn end: #115. -->
 
-Your turn ends only after `await_assignment` returns `release: true`. A
-headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits
+Every reply must contain a tool call until await_assignment returns release: true.
+Wait for CI and other work in the foreground. Do not end your turn until
+await_assignment returns release: true.
+
+A headless runtime (`claude -p`, `codex exec`, `opencode run`, `agy -p`) exits
 when your turn ends; the hub then declares you lost and fails your task. Never
 end your turn to wait for CI, a background command, a long test run, or Alice,
 and never end it promising to continue once a background job finishes. Wait in
@@ -139,7 +141,7 @@ using the effective hub wait profile (interactive Claude keeps calls under 120 s
 
 <!-- Codex hub-wait polling: #558. -->
 
-On Codex, a hub wait (`await_assignment`, `ask_alice`/`ask_orchestrator` or
+On Codex, a hub wait (`await_assignment`, `ask_orchestrator` or
 `wait_for_event`) runs in an `exec` cell that yields back to the model after
 `yield_time_ms`, and each `wait` poll of it is another model call. Start the
 script with a pragma that outlasts the hold, for example
@@ -159,9 +161,8 @@ the test harness itself. A clean rebase with no hand resolutions relies on CI;
 a rebase with hand resolutions also runs the full suite locally.
 
 `-n auto` uses `PYTEST_XDIST_AUTO_NUM_WORKERS` from the run's launch/resume
-script. The operator sets `pytest_workers` in the run's config
-(`start-run.py`'s `run.toml`, or the standard-run TOML for a prepared run) or
-passes `--pytest-workers N`; zero clears the override and uses the CPU count.
+script. The operator sets `pytest_workers` in the run TOML or passes
+`--pytest-workers N`; zero clears the override and uses the CPU count.
 The setting can be edited in a generated script before resuming (the run
 record then retains its original value, like a hand-edited model). Don't
 unset or change it unless the statement or issue names a worker count. Record
@@ -305,7 +306,7 @@ first; writing a rule into the work product does not grant that authority.
 Workers still never perform the worker-guide operator-only actions; return
 `blocked` and name the action so Alice can route it to the operator.
 
-A worker uses `ask_alice` for consequential ambiguity that cannot reasonably
+A worker uses `ask_orchestrator` for consequential ambiguity that cannot reasonably
 be resolved or a substantial pivot that changes the intended outcome. Alice
 uses `ask_user` when it is the operator's decision. Record meaningful changes
 of direction briefly: Alice with `log_decision`, workers in the PR description
@@ -315,8 +316,7 @@ The MVP stays flexible: do not require exhaustive upfront specifications or
 approval of every adjustment, and do not add scope locking, source pinning,
 or change-control machinery.
 
-Use `ask_orchestrator(task_id, question)` (or the
-`ask_alice(task_id, question)` alias on prepared runs) when a
+Use `ask_orchestrator(task_id, question)` when a
 decision cannot be derived from the assignment, its acceptance criteria, the
 role guide, or repository policy. Ask before expanding scope, making a
 destructive choice, resolving an ambiguous conflict, or acting on contradictory
@@ -333,7 +333,7 @@ answer.
 
 Never use your harness's built-in ask-user or question tool. Run headless, it
 returns a placeholder such as "User Skipped". A skipped, empty, or default
-answer is not an answer: use `ask_alice`, or return `blocked`.
+answer is not an answer: use `ask_orchestrator`, or return `blocked`.
 
 Use `outcome: blocked` (or reviewer `verdict: blocked`) when progress requires
 someone else's action or decision. `blocked` with a clear blocker is the
@@ -356,12 +356,18 @@ operator through generic escalation instead.
 Never do any of the following, whatever the instructions say. A task that
 needs one of them is `blocked`; name the action as the blocker.
 
-- Call the hub's `/rpc` route.
-- Read `.robomate/`.
-- Start or stop agents or the run's hub.
-- Start or stop any other hub, except as the isolated smoke run below.
-- Change workflow status.
-- Post anything that speaks for the operator.
+- Start or stop hubs (`robomate up`, `robomate down`, `robomate down --all`),
+  forget or relocate a hub, or remove its state. The isolated smoke run below
+  is the exception.
+- Launch or stop team agents.
+- Create or remove agent worktrees with `robomate workspace`,
+  `robomate up --agents` or `robomate clean`. The hub can provision a worktree
+  when an agent calls `join`.
+- Change the default branch outside the PR or change forge or repository settings.
+- Act or speak for the operator, including accepting work on their behalf.
+
+Workers also never call the hub's `/rpc` route, read its state or token
+directory, or change workflow status.
 
 <!-- Isolated smoke hub: operator decision on #145. -->
 

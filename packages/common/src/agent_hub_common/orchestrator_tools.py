@@ -40,7 +40,6 @@ OPERATIONS = (
     "submit_closeout_report",
     "get_closeout_reports",
     "get_statement",
-    "initialize_workflow",
     "start_workflow",
     "wait_for_event",
     "assign_task",
@@ -106,16 +105,6 @@ class OrchestratorTools:
         """Read a submitted statement of work verbatim by its SHA-256.
 
         sha256: the 64-character hex digest the submit returned.
-        """
-        raise NotImplementedError
-
-    async def initialize_workflow(
-        self, goal: str, policy: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        """Persist the initial prompt's goal and policy, or confirm them on restart.
-
-        This must be Alice's first mutating call. Goal and policy are immutable;
-        use get_state to resume the stored workflow after a restart.
         """
         raise NotImplementedError
 

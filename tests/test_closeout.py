@@ -15,7 +15,13 @@ import httpx
 import pytest
 from agent_hub import create_app
 from agent_hub.database import database
-from agent_hub.store import ConflictError, HubStore, NotFoundError, PayloadTooLargeError
+from agent_hub.store import (
+    DEFAULT_GOAL,
+    ConflictError,
+    HubStore,
+    NotFoundError,
+    PayloadTooLargeError,
+)
 from agent_hub_common import (
     AgentCloseoutReport,
     Finding,
@@ -35,13 +41,15 @@ from worker_mcp.config import WorkerSettings
 from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
 from worker_mcp.tools import create_worker_mcp
 
+pytestmark = pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+
 
 def report(summary: str = "Implemented the assigned work.") -> dict[str, Any]:
     return {"summary": summary, "outstanding_items": [], "lessons": [], "claims": []}
 
 
-async def call(server: Any, name: str, **args: Any) -> dict[str, Any]:
-    result = await server.call_tool(name, args)
+async def call(server: Any, tool: str, **args: Any) -> dict[str, Any]:
+    result = await server.call_tool(tool, args)
     assert isinstance(result, tuple)
     return dict(result[1])
 
@@ -73,7 +81,9 @@ WINDOW_S = 100
 
 @pytest.mark.parametrize("crash", [False, True])
 # Holds are bounded by LIVENESS_S, so lift the test hub's 1 s ceiling (#367).
-@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+@pytest.mark.hub_settings(
+    max_wait_s=LIVENESS_S, guides_dir=Path(__file__).resolve().parents[1] / "guides"
+)
 async def test_isolated_collection_scenario(
     app: FastAPI,
     hub_store: HubStore,
@@ -104,7 +114,7 @@ async def test_isolated_collection_scenario(
                 workers.append(worker)
                 server = create_worker_mcp(worker)
                 servers.append(server)
-                await call(server, "check_in")
+                await call(server, "join", name=name, role="worker")
                 task = hub_store.assign_task(name, "implementer", "Work", "Do the work")
                 assert (await call(server, "await_assignment", timeout_s=0))["task_id"] == task.id
                 hub_store.submit_result(task.id, name, TaskState.COMPLETED, "Work completed")
@@ -204,7 +214,7 @@ async def test_isolated_collection_scenario(
 
 
 def prepare(store: HubStore, timeout_s: float = 100) -> str:
-    store.check_in("bob", worker_instance_id="bob-instance")
+    store.register_worker("bob", worker_instance_id="bob-instance")
     task = store.assign_task("bob", "implementer", "Build", "Build")
     store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
     run_id = str(store.get_state()["workflow"]["run_id"])
@@ -379,7 +389,7 @@ async def test_request_survives_restart_and_a2a_splits_parts(
     worker = WorkerHubClient(
         WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"), client
     )
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Build", "Build")
     hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
     run_id = hub_store.get_state()["workflow"]["run_id"]
@@ -400,7 +410,7 @@ async def test_request_survives_restart_and_a2a_splits_parts(
 
 
 def test_unassigned_lost_participant_and_sequential_runs(store: HubStore) -> None:
-    store.check_in("charlie", worker_instance_id="charlie-instance")
+    store.register_worker("charlie", worker_instance_id="charlie-instance")
     now = store._now()
     store.clock = lambda: now + timedelta(seconds=2)
     store.sweep(1)
@@ -451,7 +461,7 @@ async def test_closeout_safe_errors_and_part_limits(
     worker = WorkerHubClient(
         WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"), client
     )
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     run_id = hub_store.get_state()["workflow"]["run_id"]
     hub_store.request_closeout_reports(run_id, "alice", "session")
     secret = 'credential-"-with-escape'
@@ -500,7 +510,7 @@ async def test_invalid_closeout_report_details_are_safe(
     worker = WorkerHubClient(
         WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"), client
     )
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     run_id = hub_store.get_state()["workflow"]["run_id"]
     hub_store.request_closeout_reports(run_id, "alice", "session")
     bad = report() | {
@@ -543,7 +553,7 @@ async def test_invalid_closeout_rules_and_error_limit(
     worker = WorkerHubClient(
         WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"), client
     )
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     run_id = hub_store.get_state()["workflow"]["run_id"]
     hub_store.request_closeout_reports(run_id, "alice", "session")
     try:
@@ -587,7 +597,7 @@ async def test_accounted_shared_worker_submission(
         WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"), client
     )
     server = create_worker_mcp(worker, include_orchestrator=True)
-    await call(server, "check_in")
+    await call(server, "join", name="bob", role="worker")
     run_id = hub_store.get_state()["workflow"]["run_id"]
     alice = bridge_for(app)
     try:
@@ -626,8 +636,8 @@ async def test_accounted_shared_worker_submission(
 
 
 def test_verified_claims_and_finding_references(store: HubStore) -> None:
-    store.check_in("bob", worker_instance_id="bob-instance")
-    store.check_in("charlie", worker_instance_id="charlie-instance")
+    store.register_worker("bob", worker_instance_id="bob-instance")
+    store.register_worker("charlie", worker_instance_id="charlie-instance")
     task = store.assign_task("charlie", "reviewer", "Review", "Review", pr_head_sha="a" * 40)
     store.submit_result(
         task.id,
@@ -727,10 +737,10 @@ def test_closeout_default_uses_policy_300_and_explicit_overrides(
         hub_store = HubStore(path)
         frozen_clock.install(hub_store)
         if policy is None:
-            hub_store.initialize_workflow()
+            hub_store.start_workflow(DEFAULT_GOAL)
         else:
-            hub_store.initialize_workflow("Goal", policy)
-        hub_store.check_in("bob", worker_instance_id="bob-instance")
+            hub_store.start_workflow("Goal", policy)
+        hub_store.register_worker("bob", worker_instance_id="bob-instance")
         task = hub_store.assign_task("bob", "implementer", "Build", "Build")
         hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
         run_id = str(hub_store.get_state()["workflow"]["run_id"])
@@ -804,7 +814,7 @@ def test_closeout_policy_and_argument_bounds_schema_and_hub(tmp_path: Path) -> N
         path = Path(tmp_path) / f"hub-{str(bad)}.db"
         initialize_database(path)
         hub_store = HubStore(path)
-        hub_store.initialize_workflow()
+        hub_store.start_workflow(DEFAULT_GOAL)
         run_id = str(hub_store.get_state()["workflow"]["run_id"])
         with pytest.raises(ValueError, match="greater than zero and at most 1800"):
             hub_store.request_closeout_reports(run_id, "alice", "sess", bad)
@@ -812,7 +822,7 @@ def test_closeout_policy_and_argument_bounds_schema_and_hub(tmp_path: Path) -> N
     path = Path(tmp_path) / "hub-1800.db"
     initialize_database(path)
     hub_store = HubStore(path)
-    hub_store.initialize_workflow()
+    hub_store.start_workflow(DEFAULT_GOAL)
     run_id = str(hub_store.get_state()["workflow"]["run_id"])
     hub_store.request_closeout_reports(run_id, "alice", "sess", 1800)
     assert _deadline_delta_s(hub_store, run_id) == pytest.approx(1800, abs=1)
@@ -860,8 +870,8 @@ def test_closeout_host_pause_shifts_longer_window(
     initialize_database(path)
     hub_store = HubStore(path, detect_host_pauses=True)
     frozen_clock.install(hub_store)
-    hub_store.initialize_workflow()
-    hub_store.check_in("bob", worker_instance_id="bob-instance")
+    hub_store.start_workflow(DEFAULT_GOAL)
+    hub_store.register_worker("bob", worker_instance_id="bob-instance")
     task = hub_store.assign_task("bob", "implementer", "Build", "Build")
     hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
     run_id = str(hub_store.get_state()["workflow"]["run_id"])
@@ -906,7 +916,7 @@ async def test_closeout_mcp_omitted_timeout_uses_policy_300(
         bridge = bridge_for(app)
         alice = create_orchestrator_mcp(bridge)
         try:
-            hub_store.check_in("bob", worker_instance_id="bob-instance")
+            hub_store.register_worker("bob", worker_instance_id="bob-instance")
             task = hub_store.assign_task("bob", "implementer", "Build", "Build")
             hub_store.submit_result(task.id, "bob", TaskState.COMPLETED, "Built")
             run_id = str(hub_store.get_state()["workflow"]["run_id"])
@@ -926,7 +936,7 @@ def test_closeout_stored_out_of_range_policy_refused(tmp_path: Path) -> None:
         path = Path(tmp_path) / f"bad-policy-{bad}.db"
         initialize_database(path)
         hub_store = HubStore(path)
-        hub_store.initialize_workflow()
+        hub_store.start_workflow(DEFAULT_GOAL)
         run_id = str(hub_store.get_state()["workflow"]["run_id"])
         with database(hub_store.path) as connection:
             connection.execute(
@@ -952,7 +962,7 @@ async def test_loss_rejoin_clears_reason_and_preserves_window(
     ] == "worker_lost"
     if expired:
         frozen_clock.advance(101)
-    returned = store.check_in("bob", worker_instance_id="bob-returned")
+    returned = store.register_worker("bob", worker_instance_id="bob-returned")
     reason = "deadline_expired" if expired and not paused else "awaiting_report"
     assert {m["author"]: m["reason"] for m in store.status_summary()["closeout"]["missing"]}[
         "bob"
@@ -972,7 +982,7 @@ async def test_loss_rejoin_clears_reason_and_preserves_window(
 def test_collection_of_already_lost_worker_and_submitted_report_precedence(
     store: HubStore, frozen_clock: FrozenClock
 ) -> None:
-    store.check_in("charlie", worker_instance_id="charlie-instance")
+    store.register_worker("charlie", worker_instance_id="charlie-instance")
     frozen_clock.advance(2)
     store.sweep(1)
     run_id = prepare(store)

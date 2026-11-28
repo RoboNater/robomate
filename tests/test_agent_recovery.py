@@ -16,9 +16,11 @@ from typing import Any
 import pytest
 from agent_hub.store import HubStore
 from delivery_support import finish_run
-from test_alice_launcher import CODEX_ID, LAUNCHER
+from fake_harness import CODEX_ID
 from timing import FrozenClock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+LAUNCHER = importlib.import_module("agent_launcher")
 RECOVERY = importlib.import_module("agent_recovery")
 
 
@@ -67,7 +69,7 @@ def recovery_args(tmp_path: Path) -> argparse.Namespace:
         force=False,
         resume_prompt=tmp_path / "resume-bob.prompt.md",
     )
-    args.resume_prompt.write_text("Reconcile; check_in first.\n", encoding="utf-8")
+    args.resume_prompt.write_text("Reconcile; join_worker first.\n", encoding="utf-8")
     save_rows(args, [row("start"), row("exit")])
     return args
 
@@ -87,27 +89,6 @@ def row(event: str, **changes: Any) -> dict[str, Any]:
 
 def save_rows(args: argparse.Namespace, rows: list[dict[str, Any]]) -> None:
     args.sessions.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-
-
-@pytest.mark.parametrize("target_key", ["roadmap", "reservations"])
-def test_resume_loads_old_and_new_reservations_metadata_without_rewriting_goal(
-    recovery_args: argparse.Namespace, target_key: str
-) -> None:
-    """The rename must not change a prepared run's durable statement (#408)."""
-    goal = "Address acme/app#42; update roadmap acme/app#2 after merge."
-    manifest = {
-        "schema_version": 1,
-        "hub_id": "hub-1",
-        "work": {"goal": goal, target_key: "acme/app#2"},
-        "launch": {"agents": {"bob": {"harness": "codex"}}},
-    }
-    path = recovery_args.sessions.parent / "run.json"
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-    before = path.read_bytes()
-    conversation, prompt = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
-    assert conversation == CODEX_ID
-    assert "task-1" in prompt
-    assert path.read_bytes() == before
 
 
 def test_zero_argument_preparation_captures_distinct_times_and_full_state(
@@ -351,38 +332,6 @@ def test_concurrent_launcher_lock_cannot_be_overridden(recovery_args: argparse.N
         pass
 
 
-@pytest.mark.parametrize(
-    "control",
-    [
-        ["--hub-url", "http://other"],
-        ["--harness", "opencode"],
-        ["--sessions", "other.jsonl"],
-        ["--", "other-command"],
-        ["--recovery-command", "--hub-url", "http://other"],
-        ["--recovery-command", "--", "evil"],
-        ["--recovery-command"],
-    ],
-)
-@pytest.mark.parametrize("interactive", [False, True])
-def test_generated_controls_cannot_replace_the_pinned_run_or_command(
-    control: list[str], interactive: bool
-) -> None:
-    with pytest.raises(SystemExit) as error:
-        RECOVERY.split_controls(
-            [
-                "--harness",
-                "codex",
-                *(["--shell-command", "codex resume pinned-id"] if interactive else []),
-                "--recovery-options",
-                *control,
-                "--recovery-command",
-                *([] if interactive else ["--", "codex", "exec"]),
-            ],
-            interactive=interactive,
-        )
-    assert error.value.code == 2
-
-
 def test_live_pid_recommendation_never_tells_operator_to_stop_unrelated_process(
     recovery_args: argparse.Namespace,
     monkeypatch: pytest.MonkeyPatch,
@@ -435,29 +384,6 @@ def test_process_name_can_query_own_process() -> None:
     assert not RECOVERY.process_name(os.getpid()).startswith("unavailable;")
 
 
-@pytest.mark.parametrize(
-    "case", ["configuration", "manifest-harness", "manifest-workspace", "manifest-hub"]
-)
-def test_original_run_metadata_is_essential(recovery_args: argparse.Namespace, case: str) -> None:
-    manifest: dict[str, Any] = {}
-    if case == "configuration":
-        recovery_args.recovery_config = recovery_args.sessions.parent / "missing-home"
-    elif case == "manifest-harness":
-        manifest = {"launch": {"agents": {"bob": {"harness": "opencode"}}}}
-    elif case == "manifest-workspace":
-        # A path that differs from cwd whatever directory the suite runs from
-        # (#461 autouse chdir): recovery must refuse the workspace mismatch.
-        manifest = {
-            "workspaces": {"bob": {"path": str(recovery_args.sessions.parent / "original-run")}}
-        }
-    else:
-        manifest = {"hub_id": "other"}
-    (recovery_args.sessions.parent / "run.json").write_text(json.dumps(manifest))
-    recovery_args.force = True
-    with pytest.raises(LAUNCHER.Stop):
-        RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
-
-
 @pytest.mark.parametrize("agent", ["alice", "bob"])
 def test_real_isolated_hub_pending_question_schema_and_recommendation(
     recovery_args: argparse.Namespace,
@@ -487,40 +413,6 @@ def test_real_isolated_hub_pending_question_schema_and_recommendation(
     assert hub_store.status_summary()["workflow"]["status"] == "escalated"
 
 
-def test_unavailable_hub_refuses_recovery_with_restore_recommendation(
-    recovery_args: argparse.Namespace,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class OfflineReader(RecoveryReader):
-        def call(self, method: str) -> dict[str, Any]:
-            raise ConnectionError("hub unavailable")
-
-    save_rows(recovery_args, [row("start", agent="alice"), row("exit", agent="alice")])
-    before = recovery_args.resume_prompt.read_text()
-    code = LAUNCHER.main(
-        [
-            "--recover",
-            "--harness",
-            "codex",
-            "--hub-url",
-            "http://unavailable",
-            "--token-file",
-            str(recovery_args.sessions.parent / "token"),
-            "--sessions",
-            str(recovery_args.sessions),
-            "--resume-prompt",
-            str(recovery_args.resume_prompt),
-            "--",
-            "must-never-launch-this-harness",
-        ],
-        OfflineReader(),
-    )
-    assert code == LAUNCHER.EXIT_HUB_UNREADABLE
-    error = capsys.readouterr().err
-    assert "hub unavailable" in error and "Restore" in error and "hub reachability" in error
-    assert recovery_args.resume_prompt.read_text() == before
-
-
 def test_budget_stop_timestamp_is_never_used_as_process_exit(
     recovery_args: argparse.Namespace,
 ) -> None:
@@ -528,19 +420,6 @@ def test_budget_stop_timestamp_is_never_used_as_process_exit(
     recovery_args.confirm_stopped = True
     _, prompt = RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
     assert "unknown (not recorded)" in prompt
-
-
-@pytest.mark.parametrize("harness", ["codex", "antigravity", "devin"])
-def test_existing_home_without_mcp_configuration_refuses_recovery(
-    recovery_args: argparse.Namespace,
-    harness: str,
-) -> None:
-    recovery_args.harness = harness
-    recovery_args.recovery_config = recovery_args.sessions.parent / "empty-home"
-    recovery_args.recovery_config.mkdir()
-    recovery_args.force = True
-    with pytest.raises(LAUNCHER.Stop, match="Restore that run's configuration"):
-        RECOVERY.prepare(recovery_args, RecoveryReader(), "bob")
 
 
 def test_windows_shell_selection_uses_git_bash_instead_of_wsl(
@@ -559,34 +438,6 @@ def test_windows_shell_selection_uses_git_bash_instead_of_wsl(
     bash.unlink()
     with pytest.raises(OSError, match="Git Bash is unavailable"):
         RECOVERY.bash_executable(windows=True)
-
-
-@pytest.mark.parametrize(
-    "harness,config_file",
-    [("antigravity", ".gemini/config/mcp_config.json"), ("devin", "mcp_config.local.json")],
-)
-def test_ask_backup_blocks_recovery_before_hub_reads(
-    recovery_args: argparse.Namespace, harness: str, config_file: str
-) -> None:
-    recovery_args.harness = harness
-    home = recovery_args.sessions.parent / "config-home"
-    config = home / config_file
-    config.parent.mkdir(parents=True)
-    config.write_text('{"mcpServers": {}}')
-    backup = config.with_name(config.name + ".ask-backup")
-    original = '{"mcpServers": {"robomate": {"command": "must-not-run"}}}'
-    backup.write_text(original)
-    recovery_args.recovery_config = home
-    recovery_args.force = True
-    reader = RecoveryReader()
-    with pytest.raises(LAUNCHER.Stop) as refused:
-        RECOVERY.prepare(recovery_args, reader, "bob")
-    assert refused.value.reason == "config"
-    assert str(backup) in str(refused.value)
-    assert "restore" in str(refused.value)
-    assert reader.calls == []
-    assert backup.read_text() == original
-    assert json.loads(config.read_text()) == {"mcpServers": {}}
 
 
 @pytest.mark.parametrize(
@@ -738,7 +589,7 @@ def test_done_live_and_queued_workflows_pick_live_one(
     """#299 item 3: an earlier done workflow, a live one and a queued one picks the live one."""
 
     finish_run(hub_store, "done", actor="alice", session="s-1")
-    live_id = hub_store.initialize_workflow("Live workflow goal", {})
+    live_id = hub_store.start_workflow("Live workflow goal", {})
     queued_id = hub_store.start_workflow(
         "Queued workflow goal", {}, source="cli", force_queued=True
     )
@@ -1087,10 +938,10 @@ def test_stale_task_from_earlier_workflow_is_not_evidence(
 ) -> None:
     """#299 r1-1: an open task left on a done workflow never vouches for the live one."""
 
-    hub_store.check_in("bob")
+    hub_store.register_worker("bob")
     stale = hub_store.assign_task("bob", "implementer", "Old", "old work")
     finish_run(hub_store, "done", actor="alice", session="s-1")
-    live_id = hub_store.initialize_workflow("Live workflow goal", {})
+    live_id = hub_store.start_workflow("Live workflow goal", {})
     assert stale.workflow_id != live_id
     status = _detached(hub_store.status_summary(), "bob")
     snapshot = hub_store.snapshot() | {"hub_id": "hub-1"}
@@ -1119,7 +970,7 @@ def test_task_on_live_workflow_is_evidence(
 ) -> None:
     """#299 r1-1: a real open task on the live workflow keeps the positive path."""
 
-    hub_store.check_in("bob")
+    hub_store.register_worker("bob")
     task = hub_store.assign_task("bob", "implementer", "Live", "live work")
     status = _detached(hub_store.status_summary(), "bob")
     snapshot = hub_store.snapshot() | {"hub_id": "hub-1"}

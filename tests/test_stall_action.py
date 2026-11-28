@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from agent_hub.database import SCHEMA_VERSION, database, initialize_database
-from agent_hub.store import EventRecord, HubStore
+from agent_hub.store import DEFAULT_GOAL, EventRecord, HubStore
 from agent_hub_common import AgentStatus, EventKind, EventState, TaskState, WorkflowPolicy
 from pydantic import ValidationError
 from timing import FrozenClock
@@ -20,10 +20,12 @@ def setup(tmp_path: Path, clock: FrozenClock, action: float = 3) -> tuple[HubSto
     initialize_database(path)
     store = HubStore(path, detect_host_pauses=False)
     clock.install(store)
-    store.initialize_workflow(policy={"stall_after_min": 1, "stall_action_after_min": action})
-    agent = store.check_in("bob")
+    store.start_workflow(
+        DEFAULT_GOAL, policy={"stall_after_min": 1, "stall_action_after_min": action}
+    )
+    agent = store.register_worker("bob")
     instance = str(agent.worker_instance_id)
-    store.note_worker_call("bob", instance, "check_in")
+    store.note_worker_call("bob", instance, "join")
     return store, instance
 
 
@@ -162,7 +164,7 @@ def test_worker_waiting_for_answer_is_exempt(tmp_path: Path, frozen_clock: Froze
     store, instance = setup(tmp_path, frozen_clock)
     task = store.assign_task("bob", "implementer", "Fix", "Work")
     store.open_question(task.id, "bob", "Need decision", "m1")
-    with store.worker_hold("bob", instance, "ask_alice", 600):
+    with store.worker_hold("bob", instance, "ask_orchestrator", 600):
         assert advance(store, frozen_clock, instance, 180) == []
     assert not store.open_operator_questions()
 

@@ -227,7 +227,7 @@ first; writing a rule into the work product does not grant that authority.
 Workers still never perform the worker-guide operator-only actions; return
 `blocked` and name the action so Alice can route it to the operator.
 
-A worker uses `ask_alice` for consequential ambiguity that cannot reasonably
+A worker uses `ask_orchestrator` for consequential ambiguity that cannot reasonably
 be resolved or a substantial pivot that changes the intended outcome. Alice
 uses `ask_user` when it is the operator's decision. Record meaningful changes
 of direction briefly: Alice with `log_decision`, workers in the PR description

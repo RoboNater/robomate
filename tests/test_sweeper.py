@@ -48,7 +48,7 @@ async def test_app_start_resumes_persisted_ci_watch(
 async def test_the_loop_reports_an_overdue_lease_without_being_asked(
     store: HubStore,
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     store.assign_task("bob", "implementer", "Fix #1", "Open a PR", lease_min=-1)
     await drain(store)
 
@@ -102,8 +102,8 @@ async def test_wake_loop_reports_pause_and_suppresses_expiry_and_stalls(
     mono = [100.0]
     store.clock = lambda: wall[0]
     store.monotonic_clock = lambda: mono[0]
-    agent = store.check_in("bob", worker_instance_id="bob-1")
-    store.note_worker_call("bob", "bob-1", "check_in")
+    agent = store.register_worker("bob", worker_instance_id="bob-1")
+    store.note_worker_call("bob", "bob-1", "join")
     task = store.assign_task("bob", "implementer", "Fix", "Work", lease_min=1)
     await drain(store)
     assert store.sweep(180) == []

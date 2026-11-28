@@ -24,7 +24,7 @@ import pytest
 import pytest_asyncio
 from agent_hub import create_app
 from agent_hub.database import initialize_database
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import SCHEMA_VERSION, HubSettings, MetaKeys
 from agent_hub_common.discovery import legacy_state_dir, write_hub_json
 from fastapi import FastAPI
@@ -117,8 +117,6 @@ _ROOT = Path(__file__).resolve().parents[1]
 # ``NAME=value`` / ``export NAME=value`` and PowerShell's ``$env:NAME = value``.
 # Find them anywhere a word starts so a line carrying more than one assignment
 # (``A=1 B=2 cmd``) contributes every name.
-_SHELL_ENV_ASSIGN = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=")
-_POWERSHELL_ENV_ASSIGN = re.compile(r"\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
 
 def _load_script(module_name: str, relative: str) -> Any:
@@ -138,7 +136,7 @@ def _script_subscript_keys(path: Path, mapping: str) -> set[str]:
 
     Some launch paths set their environment on a local mapping inside a method
     that cannot be called in isolation; read their literal keys from the AST,
-    as ``prepare-run.hub_env`` does for its dict literal.
+    so that subprocess tests isolate all launcher-owned settings.
     """
 
     import ast
@@ -161,16 +159,6 @@ def _script_subscript_keys(path: Path, mapping: str) -> set[str]:
     return keys
 
 
-def _launch_script_env_keys(lines: list[str]) -> set[str]:
-    """Environment names a generated start script sets before its harness (#592)."""
-
-    keys: set[str] = set()
-    for line in lines:
-        keys.update(_SHELL_ENV_ASSIGN.findall(line))
-        keys.update(_POWERSHELL_ENV_ASSIGN.findall(line))
-    return keys
-
-
 def collect_launcher_env_keys() -> dict[str, set[str]]:
     """Variable names each launcher env-builder puts on a child (#531, #592).
 
@@ -182,7 +170,6 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
     ``{builder_name: names}`` for failure messages.
     """
 
-    import ast
     import tempfile
     from unittest import mock
 
@@ -231,106 +218,6 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
         produced["agent_launcher.run_child"] = _script_subscript_keys(
             _ROOT / "scripts/agent_launcher.py", "environment"
         )
-
-        prepare_path = _ROOT / "scripts/prepare-run.py"
-        # The generated launch scripts are removed with #248; collect them only
-        # while their producer exists (#592).
-        if prepare_path.exists():
-            prepare = _load_script("launcher_env_prepare_run", "scripts/prepare-run.py")
-            produced["prepare-run.worker_env"] = set(
-                prepare.worker_env(
-                    "bob",
-                    "opencode",
-                    "1.0.0",
-                    "anthropic",
-                    "m",
-                    "",
-                    "/tmp/workspace",
-                    "/tmp/token",
-                    "/tmp/telemetry.jsonl",
-                )
-            )
-
-            # Alice's hub_env is a dict literal inside prepare(), not a callable.
-            # Read its keys from the AST and expand **bridge_identity_env(...).
-            tree = ast.parse(prepare_path.read_text(encoding="utf-8"))
-            hub_keys: set[str] = set()
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Assign):
-                    continue
-                targets = [
-                    t.id for t in node.targets if isinstance(t, ast.Name) and t.id == "hub_env"
-                ]
-                if targets and isinstance(node.value, ast.Dict):
-                    for key, value in zip(node.value.keys, node.value.values, strict=True):
-                        if key is None:
-                            # ``**bridge_identity_env(...)``: expand by calling it.
-                            if (
-                                isinstance(value, ast.Call)
-                                and isinstance(value.func, ast.Name)
-                                and value.func.id == "bridge_identity_env"
-                            ):
-                                hub_keys |= produced["run_common.bridge_identity_env"]
-                            else:
-                                raise AssertionError(
-                                    "prepare-run hub_env unpacks an unrecognised call; "
-                                    "extend collect_launcher_env_keys"
-                                )
-                        elif isinstance(key, ast.Constant) and isinstance(key.value, str):
-                            hub_keys.add(key.value)
-                        else:
-                            raise AssertionError(
-                                f"prepare-run hub_env has a non-literal key: {ast.dump(key)}"
-                            )
-                for target in node.targets:
-                    if (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "hub_env"
-                        and isinstance(target.slice, ast.Constant)
-                        and isinstance(target.slice.value, str)
-                    ):
-                        hub_keys.add(target.slice.value)
-            assert hub_keys, "prepare-run hub_env dict literal was not found"
-            produced["prepare-run.hub_env"] = hub_keys
-
-            # launch_lines writes the start script's temp-directory, CODEX_HOME,
-            # OPENCODE_CONFIG, OPENCODE_CONFIG_CONTENT and antigravity home/XDG
-            # lines. Render every harness it accepts, on both hosts, for both
-            # auto-start modes and both worker/non-worker paths, so a key added
-            # to any branch is collected rather than only the two we guessed.
-            launch_counter = 0
-            launch_keys: set[str] = set()
-            for harness in sorted(set(prepare.HARNESS_NAMES.values())):
-                for host in ("posix", "nt"):
-                    for auto_start in (True, False):
-                        for worker in (None, "bob"):
-                            # Path() must see the real host; only launch_lines
-                            # renders for the other one.
-                            launch_counter += 1
-                            workdir = Path(f"/tmp/work{launch_counter}")
-                            config = Path(f"/tmp/config{launch_counter}")
-                            prompt = Path(f"/tmp/prompt{launch_counter}.md")
-                            tmp_dir = Path(f"/tmp/tmp{launch_counter}")
-                            # Devin has no effort flag and interactive OpenCode
-                            # rejects --variant; neither affects env names.
-                            effort = "high" if auto_start and harness != "devin" else ""
-                            with mock.patch.object(os, "name", host):
-                                lines = prepare.launch_lines(
-                                    harness,
-                                    workdir,
-                                    config,
-                                    prompt,
-                                    None,
-                                    model="m",
-                                    effort=effort,
-                                    auto_start=auto_start,
-                                    tmp_dir=tmp_dir,
-                                    worker=worker,
-                                    token_file=Path("/tmp/token"),
-                                )
-                            launch_keys |= _launch_script_env_keys(lines)
-            produced["prepare-run.launch_lines"] = launch_keys
 
         place = agent_launcher_cli.Place(
             url="http://127.0.0.1:8420",
@@ -453,8 +340,8 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """#461: keep a no-``cwd`` bridge default off a worker-lane clone identity.
 
     ``WorkerHubClient.join`` resolves ``settings.cwd or Path.cwd()`` and detects
-    ``.git/robo-agents-workspace.json`` there. A prepared worker clone (or a
-    ``bootstrap-workspace`` clone) carries that file, so a bridge built without
+    ``.git/robo-agents-workspace.json`` there. A worker clone provisioned by
+    ``robomate workspace --clone`` carries that file, so a bridge built without
     ``cwd=`` would adopt the lane identity — or refuse it when it names another
     agent — behaviour a plain CI checkout never shows. Chdir every test to its
     own clean, identity-free ``tmp_path`` (outside any git checkout) so the
@@ -519,7 +406,7 @@ def store(settings: HubSettings, request: pytest.FixtureRequest) -> HubStore:
         path=settings.database_path,
         detect_host_pauses=settings.detect_host_pauses,
     )
-    hub_store.initialize_workflow()
+    hub_store.start_workflow(DEFAULT_GOAL)
     if not request.node.get_closest_marker("real_clock"):
         clock = request.getfixturevalue("frozen_clock")
         clock.install(hub_store)
@@ -541,7 +428,7 @@ def hub_store(app: FastAPI) -> HubStore:
 
     store = cast(HubStore, app.state.store)
     initialize_database(store.path)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     return store
 
 
@@ -599,6 +486,8 @@ def message(
     resolved_metadata = dict(metadata or {})
     if context_id is not None or text.upper() == "READY":
         resolved_metadata.setdefault(MetaKeys.WORKER_INSTANCE_ID, "test-worker-instance")
+    if text.upper() == "READY":
+        resolved_metadata.setdefault(MetaKeys.STANDING_ROLE, "worker")
     if resolved_metadata:
         body["metadata"] = resolved_metadata
     return {"message": body}
@@ -614,7 +503,7 @@ def sse_results(response: httpx.Response) -> list[Any]:
     ]
 
 
-async def check_in(
+async def join_worker(
     client: httpx.AsyncClient,
     name: str,
     capabilities: list[str] | None = None,

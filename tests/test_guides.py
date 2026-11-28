@@ -205,10 +205,10 @@ def test_served_guides_carry_the_codex_hub_wait_instruction(role: str, forge: st
         )
     )
     if role == "worker":
-        assert "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`" in text
+        assert "`await_assignment`, `ask_orchestrator` or `wait_for_event`" in text
     else:
         assert "Alice's hub wait (`wait_for_event`)" in text
-        assert "`await_assignment`, `ask_alice`/`ask_orchestrator` or `wait_for_event`" not in text
+        assert "`await_assignment`, `ask_orchestrator` or `wait_for_event`" not in text
 
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
@@ -785,15 +785,14 @@ def test_served_orchestrator_guide_states_closeout_policy_window(forge: str) -> 
 
 
 @pytest.mark.parametrize("forge", ["github", "gitlab"])
-def test_served_orchestrator_guide_never_sends_alice_looking_for_run_json(forge: str) -> None:
-    """#595: a submitted run has no run.json, so the served guide names no file."""
+def test_served_orchestrator_guide_names_the_submitted_statement_hash(forge: str) -> None:
+    """#595: find the submitted statement hash in submit/status output."""
 
     response = guide_response(CHECKED_IN_GUIDES, "orchestrator", forge=forge)
     assert response.status_code == 200
     text = bytes(response.body).decode("utf-8")
-    assert "run.json" not in text
-    assert "shows as `Statement:`" in text
-    assert "`robomate submit` printed" in text
+    assert "printed by `robomate submit`" in text
+    assert "shown as `Statement:`" in text
 
 
 def test_github_orchestrator_merges_then_deletes_only_the_remote_branch() -> None:
@@ -872,8 +871,7 @@ def test_worker_smoke_unsets_the_launcher_hub_variables() -> None:
             missing.append(name)
     assert not missing, (
         f"smoke recipe in guides/worker.md does not name: {', '.join(missing)}; "
-        "add each to the recipe and regenerate prompts/worker.md with "
-        "`uv run --locked python scripts/sync-worker-prompt.py`"
+        "add each to the recipe"
     )
     # Families the recipe must actually name for the coverage rules above.
     assert "`ROBOMATE_TOKEN*`" in section

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Measure hub call bytes by replaying a published Step 6 call sequence (#78).
 
+This replay uses the PoC tool dialect and runs from checkout b15b064ed7b3.
+
 This is a scripted substitute for a Step 6 acceptance run, not one: no LLM
 runs, and nothing touches GitHub. It starts a scratch `robomate up` HTTP hub
 with accounting enabled and three `robomate mcp` bridges (one orchestrator,

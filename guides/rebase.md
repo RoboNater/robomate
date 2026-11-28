@@ -41,7 +41,7 @@ the approved changes unchanged. If you are unsure whether a file counts, list it
 3. **Resolve conflicts, and only conflicts.** Keep the intent of both sides.
    Do not refactor, rename, reformat or fix anything else, however tempting it
    is: every extra change is code no reviewer has read. If a resolution needs a
-   design decision, `ask_alice`, or submit `outcome: blocked` with the question
+   design decision, `ask_orchestrator`, or submit `outcome: blocked` with the question
    in `blocker`.
 4. **Look for the conflicts git cannot see.** Two branches can merge cleanly
    and still be wrong together. Most often they both claim the same shared

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import sys
 from collections import deque
 from collections.abc import AsyncIterator
@@ -18,7 +17,6 @@ from typing import TextIO
 import anyio
 from agent_hub_common import reserve_stdout
 from agent_hub_common.accounting import CallRecord
-from agent_hub_common.discovery import discover
 from agent_hub_common.orchestrator_tools import OPERATIONS
 from mcp.server.fastmcp import FastMCP
 from mcp.server.stdio import stdio_server
@@ -90,16 +88,9 @@ async def serve_mcp(
         )
 
 
-async def run_worker(stdout: TextIO) -> None:
-    settings = WorkerSettings.from_env()
-    async with WorkerHubClient(settings) as client:
-        await serve_mcp(create_worker_mcp(client), stdout)
-
-
 async def run_worker_bridge(
     stdout: TextIO,
     *,
-    name: str | None = None,
     harness: str | None = None,
     allow_hub_selection: bool = False,
 ) -> None:
@@ -112,18 +103,11 @@ async def run_worker_bridge(
         nonlocal client
         async with init_lock:
             if client is None:
-                configured_name = name or os.environ.get("AGENT_NAME", "").strip()
-                if configured_name:
-                    endpoint = discover(Path.cwd())
-                    settings = WorkerSettings.from_discovered(
-                        endpoint, agent_name=configured_name, harness=harness
-                    )
-                else:
-                    settings = WorkerSettings.unjoined(
-                        harness=harness,
-                        cwd=Path.cwd(),
-                        allow_hub_selection=allow_hub_selection,
-                    )
+                settings = WorkerSettings.unjoined(
+                    harness=harness,
+                    cwd=Path.cwd(),
+                    allow_hub_selection=allow_hub_selection,
+                )
                 created = WorkerHubClient(settings)
                 await created.__aenter__()
                 client = created
@@ -132,7 +116,7 @@ async def run_worker_bridge(
     server = create_worker_mcp(
         get_client,
         server_name="robomate",
-        include_orchestrator=name is None,
+        include_orchestrator=True,
     )
     pending: deque[CallRecord] = deque(maxlen=256)
     orchestrator_tools = frozenset(
@@ -173,7 +157,7 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     with reserve_stdout() as protocol_stdout, suppress(KeyboardInterrupt):
-        anyio.run(run_worker, protocol_stdout)
+        anyio.run(run_worker_bridge, protocol_stdout)
 
 
 if __name__ == "__main__":

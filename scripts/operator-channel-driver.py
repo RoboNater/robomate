@@ -664,16 +664,16 @@ async def scenario(
         issue_number = int(issue_url.rstrip("/").rsplit("/", 1)[-1])
         facts["issue_url"] = issue_url
         workflow = await alice.call(
-            "initialize_workflow",
-            goal=f"Scripted operator-channel validation {run_id}: address {issue_url}",
+            "start_workflow",
+            statement=f"Scripted operator-channel validation {run_id}: address {issue_url}",
             policy={
                 "merge_method": "squash",
                 "closeout": False,
                 "role_policy": {"reviewer_harness_differs": False},
             },
         )
-        await bob.check_in()
-        await charlie.check_in()
+        await bob.join(IMPLEMENTER, "implementer")
+        await charlie.join(REVIEWER, "reviewer")
         checked_in: dict[str, int] = {}
         while len(checked_in) < 2:
             checkin = await alice.next_event("agent_checked_in")
@@ -683,7 +683,7 @@ async def scenario(
             2,
             "Start a workflow on a seeded sandbox issue",
             script(f"orchestrator `{ORCHESTRATOR}` and workers"),
-            f"`gh issue create`; `initialize_workflow`; `{IMPLEMENTER}` and `{REVIEWER}` check in",
+            f"`gh issue create`; `start_workflow`; `{IMPLEMENTER}` and `{REVIEWER}` join",
             hub=(
                 f"workflow `{workflow['id']}` {state['workflow']['status']}; "
                 f"agent_checked_in events {sorted(checked_in.values())}"

@@ -66,17 +66,11 @@ def create_worker_mcp(
         )
         return result
 
-    def require_joined(resolved: WorkerHubClient, *, allow_preconfigured: bool = True) -> None:
+    def require_joined(resolved: WorkerHubClient) -> None:
         if resolved.standing_role is StandingRole.ORCHESTRATOR:
             raise RuntimeError("this tool requires a worker role")
-        if resolved.is_joined:
-            return
-        if allow_preconfigured and resolved.settings.agent_name:
-            return
-        raise RuntimeError(
-            "Worker has not joined or checked in yet; "
-            "call join(name=..., role=...) or check_in first"
-        )
+        if not resolved.is_joined:
+            raise RuntimeError("Worker has not joined yet; call join(name=..., role=...) first")
 
     @server.tool(
         description=(
@@ -127,26 +121,6 @@ def create_worker_mcp(
         return await invoke(resolved, "whoami", resolved.whoami(), {})
 
     @server.tool()
-    async def check_in(
-        capabilities: list[str] | None = None, model: str | None = None
-    ) -> dict[str, Any]:
-        """One-time registration with the hub, reporting this worker's identity profile.
-
-        Harness, provider and configured capabilities come from the launcher.
-        capabilities: optional extra capabilities to declare.
-        model: your exact model ID if you know it; ignored when the launcher
-        already names the model. Omit rather than guess.
-        """
-        resolved = await resolve()
-        require_joined(resolved, allow_preconfigured=True)
-        return await invoke(
-            resolved,
-            "check_in",
-            resolved.check_in(capabilities, model),
-            {"capabilities": capabilities, "model": model},
-        )
-
-    @server.tool()
     async def get_role_guide(role: str, page: int | None = None) -> str:
         """Fetch a role guide. For the orchestrator, request pages starting at 1.
 
@@ -162,7 +136,7 @@ def create_worker_mcp(
             if page is None:
                 raise ValueError("request orchestrator guide pages starting at 1")
         else:
-            require_joined(resolved, allow_preconfigured=True)
+            require_joined(resolved)
         if page is not None and page < 1:
             raise ValueError("page must be at least 1")
         guide = await invoke(
@@ -246,26 +220,6 @@ def create_worker_mcp(
         )
 
     @server.tool()
-    async def ask_alice(
-        task_id: str, question: str, timeout_s: Timeout | None = None
-    ) -> dict[str, Any]:
-        """Ask Alice a clarifying question and hold for her response.
-
-        Returns {reply: text}, {timeout: true}, or {task_ended: true, state, note}.
-        On timeout, call ask_alice again to continue waiting; retries resume the pending question.
-        timeout_s: Optional seconds; omit to use join.wait_profile.default_wait_s.
-        """
-        resolved = await resolve()
-        require_joined(resolved)
-        return await invoke(
-            resolved,
-            "ask_alice",
-            resolved.ask_alice(task_id, question, timeout_s),
-            {"task_id": task_id, "question": question, "timeout_s": timeout_s},
-            task_id=task_id,
-        )
-
-    @server.tool()
     async def ask_orchestrator(
         task_id: str, question: str, timeout_s: Timeout | None = None
     ) -> dict[str, Any]:
@@ -293,7 +247,7 @@ def create_worker_mcp(
         decision; withdrawn grants no authority.
         """
         resolved = await resolve()
-        require_joined(resolved, allow_preconfigured=True)
+        require_joined(resolved)
         return await invoke(
             resolved,
             "get_operator_answer",
@@ -312,7 +266,7 @@ def create_worker_mcp(
         resolved = await resolve()
         if resolved.orchestrator is not None and resolved.orchestrator.joined:
             return await resolved.orchestrator.call("get_statement", {"sha256": sha256})
-        require_joined(resolved, allow_preconfigured=True)
+        require_joined(resolved)
         return await invoke(
             resolved,
             "get_statement",

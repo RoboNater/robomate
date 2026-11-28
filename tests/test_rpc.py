@@ -45,7 +45,7 @@ from agent_hub_common import (
     ReviewerResult,
     ReviewerVerdict,
 )
-from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, check_in, rpc
+from conftest import BASE_URL, CALLER_HEADERS, SESSION, TOKEN, MonotonicClock, join_worker, rpc
 from delivery_support import DeliveredForge, seed_delivery
 from fastapi import FastAPI
 from starlette.types import Message, Receive, Scope, Send
@@ -124,7 +124,7 @@ async def test_hub_status_is_compact_and_reports_open_work(
         "url": "http://hub.test",
         "default_branch": "main",
     }
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
     hub_store.open_question(task.id, "bob", "question text", "q1")
     headers = {ACTOR_HEADER: "alice", SESSION_HEADER: SESSION}
@@ -189,7 +189,7 @@ async def test_hub_status_projection_keeps_an_adversarial_note_and_gate_reading(
         "url": "http://hub.test",
         "default_branch": "main",
     }
-    hub_store.check_in("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
+    hub_store.register_worker("bob", AgentProfile(harness="codex", model="gpt-6-sol"))
     task = hub_store.assign_task("bob", "implementer", "Build", "secret instructions")
     note = "ANSI \x1b[2J, CR \r, NUL \x00\nnext line " + "y" * 2000
     hub_store.record_progress(task.id, "bob", note)
@@ -231,7 +231,6 @@ async def test_a_bridge_heartbeating_after_done_reads_as_finished_not_active(
         "url": "http://hub.test",
         "default_branch": "main",
     }
-    await call(client, "initialize_workflow", goal="Ship it")
     await call(
         client,
         "set_workflow_status",
@@ -266,8 +265,8 @@ async def test_hub_status_shows_known_review_pr_and_head(
         "url": "http://hub.test",
         "default_branch": "main",
     }
-    hub_store.check_in("bob", AgentProfile())
-    hub_store.check_in("dave", AgentProfile())
+    hub_store.register_worker("bob", AgentProfile())
+    hub_store.register_worker("dave", AgentProfile())
     implement = hub_store.assign_task("bob", "implementer", "Build", "build")
     hub_store.submit_result(
         implement.id,
@@ -587,14 +586,14 @@ async def test_errors_map_to_stable_codes_with_the_original_message(
         NOT_FOUND,
         "unknown agent: nobody",
     )
-    code, text = error_of(await call(client, "initialize_workflow", goal="Something else"))
-    assert code == CONFLICT and text.startswith("workflow is already initialized")
+    code, text = error_of(await call(client, "start_workflow"))
+    assert code == CONFLICT and "wait for it to finish" in text
     code, text = error_of(
-        await call(client, "initialize_workflow", goal="g", policy={"max_review_round": 5})
+        await call(client, "start_workflow", statement="g", policy={"max_review_round": 5})
     )
     assert code == INVALID_PARAMS and "invalid workflow policy" in text
 
-    hub_store.check_in("bob", AgentProfile())
+    hub_store.register_worker("bob", AgentProfile())
     event = hub_store.lease_next_event()
     assert event is not None
     code, text = error_of(
@@ -823,7 +822,7 @@ async def test_wait_for_event_holds_the_request_until_an_event_arrives(
     )
     assert not held.done()
 
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
 
     body = await asyncio.wait_for(held, LIVENESS_S)
     event = body["result"]["event"]
@@ -859,9 +858,9 @@ async def test_disconnected_rpc_releases_only_its_hold_and_delivery(
         await app(scope, receive_or_disconnect, send)
 
     await call(client, "hub.heartbeat")
-    hub_store.check_in("bob")
+    hub_store.register_worker("bob")
     prior = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
-    hub_store.check_in("charlie")
+    hub_store.register_worker("charlie")
     other = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
     original_lease = HubStore.lease_next_event
 
@@ -890,7 +889,7 @@ async def test_disconnected_rpc_releases_only_its_hold_and_delivery(
             await wait_until(lambda: hub_store.signals.waiting(EVENT_KEY), "the wait to park")
             if race_event:
                 monkeypatch.setattr(HubStore, "lease_next_event", lease_while_disconnecting)
-                hub_store.check_in("dana")
+                hub_store.register_worker("dana")
             else:
                 dropped.set()
             body = await asyncio.wait_for(held, LIVENESS_S)
@@ -938,7 +937,7 @@ async def test_active_orchestrator_keeps_delivery_through_merge_gate_and_pacing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     cast(OrchestratorOps, app.state.orchestrator).gate = DeliveredForge()
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     event = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
 
     frozen_clock.advance(settings.event_lease_s * 0.75)
@@ -978,7 +977,7 @@ async def test_connected_pacing_wait_keeps_its_delivery_leased(
             return replace(self.reading(pr_url, expected_head_sha), ci=self.ci)
 
     gate = CiForge(PrState.OPEN)
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     first = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
     if wake_on == "ci_settled":
         app.state.orchestrator.gate = gate
@@ -1066,7 +1065,7 @@ async def test_ack_of_an_expired_delivery_still_acks_it(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # #50: an action that outlives the delivery lease is not redone.
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     delivered = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
     frozen_clock.advance(settings.event_lease_s + 1)
 
@@ -1082,7 +1081,7 @@ async def test_ack_of_an_expired_delivery_still_acks_it(
 async def test_an_expired_delivery_is_redelivered_without_an_ack(
     client: httpx.AsyncClient, settings: HubSettings, frozen_clock: FrozenClock
 ) -> None:
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     first = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
     frozen_clock.advance(settings.event_lease_s * 0.75)
     # The bridge can keep sending heartbeats and flushing rows after Alice goes silent.
@@ -1155,7 +1154,7 @@ async def test_heartbeat_fences_old_session_and_releases_delivery(
         ACTOR_HEADER: "alice",
         SESSION_HEADER: "0d6f4b5e-1a2b-4c3d-8e9f-a0b1c2d3e4f5",
     }
-    hub_store.check_in("bob", AgentProfile())
+    hub_store.register_worker("bob", AgentProfile())
     first = (await call(client, "wait_for_event", old, timeout_s=0))["result"]["event"]
     assert first is not None
     assert (await call(client, "hub.heartbeat", old))["result"] == {"ok": True}
@@ -1214,7 +1213,7 @@ async def test_superseded_held_call_releases_event_it_received_after_takeover(
     held = asyncio.create_task(call(client, "wait_for_event", old, timeout_s=0))
     await asyncio.wait_for(started.wait(), LIVENESS_S)
     assert "result" in await call(client, "join", new, name="alice", takeover=True)
-    hub_store.check_in("bob", AgentProfile())
+    hub_store.register_worker("bob", AgentProfile())
     resume.set()
     assert error_of(await held) == (CONFLICT, "superseded by a newer orchestrator session")
     repeated = (await call(client, "wait_for_event", new, timeout_s=0))["result"]["event"]
@@ -1522,7 +1521,7 @@ async def test_escalation_is_left_only_once_the_operator_has_answered(
     """#132: only ask_user escalates, and the operator's answers end it."""
 
     cast(RpcDispatcher, app.state.rpc).operator_token = OPERATOR_TOKEN
-    hub_store.check_in("bob", AgentProfile())
+    hub_store.register_worker("bob", AgentProfile())
     assign: dict[str, Any] = {
         "agent": "bob",
         "role": "implementer",
@@ -1621,8 +1620,8 @@ async def test_assign_task_refuses_standing_role_mismatch_with_invalid_params(
 ) -> None:
     from agent_hub_common import StandingRole
 
-    hub_store.check_in("bob", AgentProfile(), standing_role=StandingRole.IMPLEMENTER)
-    hub_store.check_in("dave", AgentProfile(), standing_role=StandingRole.WORKER)
+    hub_store.register_worker("bob", AgentProfile(), standing_role=StandingRole.IMPLEMENTER)
+    hub_store.register_worker("dave", AgentProfile(), standing_role=StandingRole.WORKER)
     event = hub_store.lease_next_event()
     assert event is not None
 
@@ -1675,7 +1674,7 @@ async def test_assign_task_requires_pr_head_sha_for_reviewer_and_rebase(
 ) -> None:
     from agent_hub_common import MetaKeys
 
-    hub_store.check_in("bob", AgentProfile())
+    hub_store.register_worker("bob", AgentProfile())
     event = hub_store.lease_next_event()
     assert event is not None
 
@@ -1716,14 +1715,14 @@ async def test_orchestrator_join_resume_hash_and_explicit_takeover(
 ) -> None:
     import hashlib
 
-    hub_store.check_in("bob")
+    hub_store.register_worker("bob")
     delivered = (await call(client, "wait_for_event", timeout_s=0))["result"]["event"]
     first = (await call(client, "join", name="alice", profile={"model": "known-model"}))["result"]
     assert first["guide_sha256"] == hashlib.sha256(first["guide"].encode()).hexdigest()
     assert first["state"]["workflow"]["status"] == "active"
     assert hub_store.status_summary()["agents"][0]["standing_role"] == "orchestrator"
     with pytest.raises(DuplicateAgentError, match="registered as orchestrator"):
-        hub_store.check_in("alice", takeover=True)
+        hub_store.register_worker("alice", takeover=True)
     assert first["resume_procedure"] and "get_state" in first["resume_procedure"]
     assert first["unacked_delivered"][0]["id"] == delivered["id"]
     again = (await call(client, "join", name="alice"))["result"]
@@ -1813,27 +1812,8 @@ async def test_start_workflow_queues_and_second_starts_after_done(
     assert after["previous_run"]["run_id"] == first["run_id"]
 
 
-async def test_initialize_workflow_confirms_active_and_starts_new_after_done(
-    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
-) -> None:
-    current = (await call(client, "get_state"))["result"]["workflow"]
-    first = (await call(client, "initialize_workflow", goal=current["goal"]))["result"]
-    assert first["id"] == current["id"]
-    again = (await call(client, "initialize_workflow", goal=current["goal"]))["result"]
-    assert again["id"] == first["id"] and again["run_id"] == first["run_id"]
-    await call(
-        client,
-        "set_workflow_status",
-        status="done",
-        summary="Done",
-        run_id=prepare_rpc_delivery(app, hub_store),
-    )
-    second = (await call(client, "initialize_workflow", goal="New goal"))["result"]
-    assert second["id"] != first["id"] and second["run_id"] != first["run_id"]
-
-
 async def test_assign_task_carries_run_id(client: httpx.AsyncClient, hub_store: HubStore) -> None:
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     event = hub_store.lease_next_event()
     assert event is not None
     assigned = (
@@ -2240,11 +2220,10 @@ async def test_submit_resolves_auto_and_explicit_skips_probe(tmp_path: Path) -> 
     assert local_result["run_id"] and local_result["statement_sha256"]
 
 
-@pytest.mark.parametrize("entry", ["initialize_workflow", "start_workflow"])
-async def test_new_run_refuses_stale_released_worker_until_check_in(
-    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore, entry: str
+async def test_new_run_refuses_stale_released_worker_until_join_worker(
+    app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     await call(
         client,
         "set_workflow_status",
@@ -2252,10 +2231,7 @@ async def test_new_run_refuses_stale_released_worker_until_check_in(
         summary="Done",
         run_id=prepare_rpc_delivery(app, hub_store),
     )
-    params: dict[str, Any] = (
-        {"goal": "Next"} if entry == "initialize_workflow" else {"statement": "Next"}
-    )
-    assert "result" in await call(client, entry, **params)
+    assert "result" in await call(client, "start_workflow", statement="Next")
     state = (await call(client, "get_state"))["result"]
     assert next(a for a in state["agents"] if a["name"] == "bob")["status"] == "lost"
     new_workflow_id = state["workflow"]["id"]
@@ -2297,7 +2273,7 @@ async def test_new_run_refuses_stale_released_worker_until_check_in(
     )
     code, message = error_of(await call(client, "assign_task", **assign))
     assert code == CONFLICT and "must check in again before it can be given work" in message
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     assert "result" in await call(client, "assign_task", **assign)
 
 
@@ -2316,6 +2292,7 @@ async def test_orchestrator_explicit_workspace_mismatch_is_refused(
     code, message = error_of(body)
     assert code == INVALID_PARAMS
     assert "HUB_WORKSPACE" in message
+    assert "provision a clone with robomate workspace --clone" in message
 
 
 async def test_hub_workspace_needs_operator_and_validates_name(
@@ -2353,8 +2330,8 @@ async def test_assign_task_names_branch_and_reuses_it(
     """M2 Step 7c (#315): first implementer assignment names the run's branch."""
 
     hub_store.hub_name = "testhub"
-    await check_in(client, "bob")
-    await check_in(client, "bob2")
+    await join_worker(client, "bob")
+    await join_worker(client, "bob2")
     # The default workflow goal has no issue number, so the label is a slug.
     event = hub_store.lease_next_event()
     assert event is not None
@@ -2410,7 +2387,7 @@ async def test_long_inbox_hold_uses_hub_clamp_for_activity_and_wait(
         return original(self, session, kind, timeout_s)
 
     monkeypatch.setattr(HubStore, "orchestrator_call", capture)
-    hub_store.check_in("bob")
+    hub_store.register_worker("bob")
     response = await call(client, "wait_for_event", timeout_s=requested)
     assert response["result"]["event"]["kind"] == "agent_checked_in"
     # conftest caps hub holds at 1 s; coercion and tracking use the same value.

@@ -28,8 +28,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
-from agent_sessions import ask_hint, ask_hint_from_args
-from opencode_headless import OpenCodeConfigError
+from opencode_headless import OpenCodeConfigError as OpenCodeConfigError
 
 _JOURNAL_LOCK = threading.Lock()
 
@@ -218,20 +217,6 @@ def provider_error(line: str, provider: str) -> tuple[str | None, ProviderSignat
         return session, (provider, status, kind, code, False)
     except (ValueError, KeyError, TypeError, AttributeError):
         return None, None
-
-
-def instruction(path: Path) -> str:
-    """A one-line pointer to a prompt file, safe through a Windows npm .cmd shim."""
-
-    return f"Read {path} and follow the instructions in it"
-
-
-def start_launch(harness: str, base: list[str], prompt: Path, session_id: str) -> Launch:
-    """The first launch, with the kickoff prompt."""
-
-    if harness == "codex":
-        return text_launch(harness, base, prompt.read_text(encoding="utf-8"), session_id)
-    return text_launch(harness, base, instruction(prompt), session_id)
 
 
 def text_launch(harness: str, base: list[str], text: str, session_id: str) -> Launch:
@@ -447,22 +432,16 @@ class Launcher:
         self.stop_noted = False
 
     def resume_name(self) -> str:
-        """How the operator resumes this agent by hand, for stop messages."""
-        return f"resume-{self.agent}"
+        raise NotImplementedError
 
     def start_name(self) -> str:
-        """How the operator starts a new workflow, for stop messages."""
-        return "start-alice"
+        raise NotImplementedError
 
     def first_launch(self) -> Launch:
-        """The first launch of a new conversation: the kickoff prompt file."""
-        return start_launch(self.harness, self.base, self.args.prompt, self.conversation or "")
+        raise NotImplementedError
 
     def manual_resume_text(self) -> str:
-        """The operator's manual resume prompt, once; Codex reads it on stdin."""
-        if self.harness == "codex":
-            return str(self.args.resume_prompt.read_text(encoding="utf-8"))
-        return instruction(self.args.resume_prompt)
+        raise NotImplementedError
 
     def log(self, event: str, **fields: object) -> None:
         log_session(
@@ -599,10 +578,6 @@ class Launcher:
         argv = launch.argv
         if self.harness == "claude-code" and "--permission-prompts" not in argv:
             version = environment.get("HUB_HARNESS_VERSION", "")
-            manifest = self.args.sessions.parent / "run.json"
-            if manifest.is_file():
-                metadata = json.loads(manifest.read_text(encoding="utf-8"))
-                version = metadata.get("versions", {}).get("claude", "")
             match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
             # 2.1.325 is the first version verified by #517. Older/unknown
             # versions retain their supported argv rather than receiving a new flag.
@@ -619,7 +594,6 @@ class Launcher:
                 environment,
                 cwd,
                 self.args.sessions,
-                agent=self.agent,
                 lane_tmp=getattr(getattr(self.args, "identity", None), "lane_tmp", None),
                 token_file=self.args.token_file,
             )
@@ -643,7 +617,6 @@ class Launcher:
             errors="replace",
             bufsize=1,
             # agent-launcher.py runs the harness in the agent's worktree (#247);
-            # the prepared-run scripts `cd` there before starting the launcher.
             cwd=cwd,
             # agent-launcher.py hands every joining child its hub selection (#247 r1-3).
             env=environment,
@@ -1254,202 +1227,3 @@ def _feed(stream: TextIO | None, text: str) -> None:
         stream.close()
     except (BrokenPipeError, OSError, ValueError):
         pass
-
-
-def parse_args(argv: list[str] | None, *, worker: bool = False) -> argparse.Namespace:
-    from agent_recovery import add_options, split_controls
-
-    argv, controls = split_controls(argv)
-
-    description = (
-        "Resume a headless worker on any supported harness until release."
-        if worker
-        else "Run a headless Alice, resuming the same conversation until her workflow is done."
-    )
-    parser = argparse.ArgumentParser(description=description)
-    add_options(parser)
-    if worker:
-        parser.add_argument("--agent", required=True)
-        parser.add_argument("--telemetry", type=Path, required=True)
-        parser.add_argument("--predecessor-wait-s", type=float, default=300.0)
-        parser.add_argument("--predecessor-poll-s", type=float, default=2.0)
-    parser.add_argument("--harness", required=True, choices=HARNESSES)
-    parser.add_argument("--hub-url", required=True, help="the run hub's URL, never discovered")
-    parser.add_argument("--token-file", type=Path, required=True, help="the hub bearer token")
-    parser.add_argument("--sessions", type=Path, required=True, help="the JSONL launch log")
-    parser.add_argument("--prompt", type=Path, help="the kickoff prompt file (first launch)")
-    parser.add_argument("--resume-session", help="resume this conversation ID by hand")
-    parser.add_argument(
-        "--resume-prompt", type=Path, help="with --resume-session: the manual resume prompt"
-    )
-    parser.add_argument(
-        "--max-resumes",
-        type=int,
-        default=DEFAULT_MAX_RESUMES,
-        help="stop after this many automatic resumes (default: no count limit, "
-        "--resume-total-s governs; 0 disables automatic resumes)",
-    )
-    parser.add_argument(
-        "--resume-delay-s",
-        type=float,
-        default=DEFAULT_RESUME_DELAY_S,
-        help="first wait between automatic resumes in seconds "
-        f"(default {DEFAULT_RESUME_DELAY_S:g}); doubles until --resume-max-delay-s",
-    )
-    parser.add_argument(
-        "--resume-max-delay-s",
-        type=float,
-        default=DEFAULT_RESUME_MAX_DELAY_S,
-        help="cap for the doubling wait in seconds "
-        f"(default {DEFAULT_RESUME_MAX_DELAY_S:g}, about 30 minutes)",
-    )
-    parser.add_argument(
-        "--resume-total-s",
-        type=float,
-        default=DEFAULT_RESUME_TOTAL_S,
-        help="stop automatic resumes after this much time in seconds since the first "
-        f"exit of the current series (default {DEFAULT_RESUME_TOTAL_S:g}, about 12 hours)",
-    )
-    parser.add_argument(
-        "--resume-series-reset-s",
-        type=float,
-        default=DEFAULT_RESUME_SERIES_RESET_S,
-        help="a run lasting this long starts a new backoff series at the short delay "
-        f"(default {DEFAULT_RESUME_SERIES_RESET_S:g})",
-    )
-    parser.add_argument(
-        "--warn-series-resets",
-        type=int,
-        default=DEFAULT_WARN_SERIES_RESETS,
-        help="warn after this many consecutive runs that last at least "
-        "--resume-series-reset-s and exit non-zero "
-        f"(default {DEFAULT_WARN_SERIES_RESETS}; 0 disables the warning)",
-    )
-    parser.add_argument(
-        "--max-series-resets",
-        type=int,
-        default=DEFAULT_MAX_SERIES_RESETS,
-        help="stop automatic resumes after this many consecutive runs that last at "
-        "least --resume-series-reset-s and exit non-zero "
-        f"(default {DEFAULT_MAX_SERIES_RESETS}; 0 disables the cap)",
-    )
-    parser.add_argument(
-        "--read-retries",
-        type=int,
-        default=DEFAULT_WORKER_READ_RETRIES if worker else DEFAULT_READ_RETRIES,
-        help="bounded hub read attempts (default: 60 for workers, 5 for Alice)",
-    )
-    parser.add_argument("--read-retry-delay-s", type=float, default=DEFAULT_READ_RETRY_DELAY_S)
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="the harness command, after --")
-    args = parser.parse_args(argv)
-    for key, value in controls.items():
-        setattr(args, key, value)
-    if args.command[:1] == ["--"]:
-        args.command = args.command[1:]
-    if not args.command:
-        parser.error("the harness command is required after --")
-    if args.max_resumes is not None and args.max_resumes < 0:
-        parser.error("--max-resumes must not be negative (0 disables automatic resumes)")
-    if not args.resume_delay_s >= 0:
-        parser.error("--resume-delay-s must not be negative")
-    if not args.resume_max_delay_s >= 0:
-        parser.error("--resume-max-delay-s must not be negative")
-    if not args.resume_total_s >= 0:
-        parser.error("--resume-total-s must not be negative")
-    if not args.resume_series_reset_s >= 0:
-        parser.error("--resume-series-reset-s must not be negative")
-    if args.warn_series_resets < 0:
-        parser.error("--warn-series-resets must not be negative")
-    if args.max_series_resets < 0:
-        parser.error("--max-series-resets must not be negative")
-    if (
-        args.max_series_resets > 0
-        and args.warn_series_resets
-        and args.warn_series_resets >= args.max_series_resets
-    ):
-        parser.error(
-            "--warn-series-resets must be less than --max-series-resets "
-            "(use 0 to disable the warning)"
-        )
-    if args.read_retries < 1:
-        parser.error("--read-retries must be at least 1")
-    if not args.read_retry_delay_s >= 0:
-        parser.error("--read-retry-delay-s must not be negative")
-    if args.recover and args.resume_prompt is None:
-        parser.error("--recover needs --resume-prompt")
-    if args.resume_session is not None:
-        if not args.resume_session.strip():
-            parser.error("--resume-session must name a conversation ID")
-        if args.resume_prompt is None:
-            parser.error("--resume-session needs --resume-prompt")
-    elif args.prompt is None and not args.recover:
-        parser.error("--prompt is required unless --resume-session is given")
-    if worker:
-        if not args.predecessor_wait_s >= 0:
-            parser.error("--predecessor-wait-s must not be negative")
-        if not args.predecessor_poll_s > 0:
-            parser.error("--predecessor-poll-s must be positive")
-    return args
-
-
-def main(
-    argv: list[str] | None = None,
-    reader: HubReader | None = None,
-    *,
-    launcher_type: type[Launcher] = Launcher,
-    worker: bool = False,
-) -> int:
-    safe_output_streams()
-    try:
-        args = parse_args(argv, worker=worker)
-    except SystemExit as exc:
-        words = sys.argv[1:] if argv is None else argv
-        hint = ask_hint_from_args(words)
-        if exc.code and "--recover" in words and hint:
-            say(hint)
-        raise
-    launcher = launcher_type(args, reader)
-    with interrupt_handlers(launcher):
-        try:
-            from agent_recovery import agent_lock
-
-            with agent_lock(args.sessions):
-                try:
-                    return launcher.run()
-                except KeyboardInterrupt:
-                    launcher.interrupted_fallback()
-                    return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
-                except Stop as stop:
-                    return _stopped(launcher, stop)
-        except KeyboardInterrupt:
-            launcher.interrupted_fallback()
-            return _stopped(launcher, Stop(EXIT_INTERRUPTED, "interrupted", "interrupted"))
-        except Stop as stop:
-            say(str(stop))
-            if args.recover:
-                say(ask_hint(args.sessions, launcher.agent))
-            return stop.code
-        except OpenCodeConfigError as exc:
-            say(f"Harness configuration failure: {exc}")
-            return EXIT_CANNOT_RESUME
-        except (OSError, ValueError, urllib.error.URLError) as exc:
-            say(
-                f"Recovery/launch unavailable: {exc}. Restore the original run files and hub "
-                "reachability, then retry the resume script; do not replay kickoff."
-            )
-            if args.recover:
-                say(ask_hint(args.sessions, launcher.agent))
-            return EXIT_HUB_UNREADABLE
-        finally:
-            launcher.stop_child(wait=True)
-
-
-def _stopped(launcher: Launcher, stop: Stop) -> int:
-    launcher.log("stop", reason=stop.reason, exit_code=stop.code)
-    if stop.code == EXIT_INTERRUPTED:
-        say("interrupted; stopped the harness this launcher started and launched nothing more")
-    else:
-        say(str(stop))
-    if launcher.args.recover:
-        say(ask_hint(launcher.args.sessions, launcher.agent))
-    return stop.code

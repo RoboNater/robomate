@@ -1963,8 +1963,7 @@ def _status(
     if live:
         live_reading, live_error = _live_gate_reading(status)
     if as_json:
-        # Operator tools take the hub's state from here (spec §4): prepare-run
-        # reads hub.db and hub-report reads its state directory through it.
+        # Operator tools find durable state through this projection (spec §4).
         report = status | {
             "state_dir": str(location[0]) if location else None,
             "token_file": str(location[1]) if location else None,
@@ -2600,23 +2599,13 @@ def _ls(as_json: bool) -> None:
 
 
 async def _mcp(args: argparse.Namespace, stdout: Any) -> None:
-    from worker_mcp.main import run_worker_bridge, serve_mcp
-    from worker_mcp.orchestrator import OrchestratorBridge, create_orchestrator_mcp
+    from worker_mcp.main import run_worker_bridge
 
-    if args.role in (None, "worker"):
-        await run_worker_bridge(
-            stdout,
-            name=args.name,
-            harness=args.harness,
-            allow_hub_selection=args.allow_hub_selection,
-        )
-    else:
-        bridge = OrchestratorBridge(args.name or "alice", harness=args.harness)
-        try:
-            server = create_orchestrator_mcp(bridge)
-            await serve_mcp(server, stdout, await bridge.accounting(server))
-        finally:
-            await bridge.close()
+    await run_worker_bridge(
+        stdout,
+        harness=args.harness,
+        allow_hub_selection=args.allow_hub_selection,
+    )
 
 
 def main() -> None:
@@ -2765,8 +2754,6 @@ def main() -> None:
     )
     forget.add_argument("--json", action="store_true")
     mcp = commands.add_parser("mcp", help="serve an agent's MCP tools over stdio")
-    mcp.add_argument("--role", choices=("orchestrator", "worker"), default=None)
-    mcp.add_argument("--name")
     mcp.add_argument("--harness")
     mcp.add_argument(
         "--allow-hub-selection",

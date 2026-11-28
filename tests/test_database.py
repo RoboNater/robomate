@@ -11,7 +11,7 @@ from agent_hub.database import (
     database,
     initialize_database,
 )
-from agent_hub.store import ConflictError, HubStore
+from agent_hub.store import DEFAULT_GOAL, ConflictError, HubStore
 from agent_hub_common import (
     UNKNOWN,
     AgentProfile,
@@ -175,7 +175,7 @@ def test_migration_from_v1_adds_an_unknown_profile(tmp_path: Path) -> None:
     assert agent.model_source is ModelSource.UNKNOWN
     assert agent.workspace_id is None
 
-    store.check_in("bob", AgentProfile(harness="codex"))
+    store.register_worker("bob", AgentProfile(harness="codex"))
     updated = store.agent_by_name("bob")
     assert updated is not None
     assert updated.harness == "codex"
@@ -288,7 +288,7 @@ def test_migration_from_v6_leaves_existing_tasks_unbound(tmp_path: Path) -> None
     store = HubStore(path)
     old = store.get_task("t1")
     assert old is not None and old.pr_head_sha is None
-    store.check_in("bob")
+    store.register_worker("bob")
     head = "ABCDEF0123456789abcdef0123456789abcdef01"
     new = store.assign_task("bob", "reviewer", "Review", "Look again", pr_head_sha=head)
     assert new.pr_head_sha == head.lower()
@@ -308,7 +308,7 @@ def test_model_source_is_constrained_to_its_enum(tmp_path: Path) -> None:
         )
 
 
-async def test_migration_from_v3_mainline_preserves_profiles_and_enables_idempotent_check_in(
+async def test_migration_from_v3_mainline_preserves_profiles_and_enables_idempotent_join_worker(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "v3_mainline.db"
@@ -406,6 +406,7 @@ async def test_migration_from_v3_mainline_preserves_profiles_and_enables_idempot
                     MetaKeys.MODEL: "claude-3-7-sonnet",
                     MetaKeys.MODEL_SOURCE: "env",
                     MetaKeys.WORKSPACE_ID: "ws-bob-main",
+                    MetaKeys.STANDING_ROLE: "worker",
                     MetaKeys.SCHEMA_VERSION: 1,
                     MetaKeys.OPERATION_ID: op_id,
                     MetaKeys.WORKER_INSTANCE_ID: "worker-v3-migration",
@@ -1135,7 +1136,7 @@ def test_migration_from_v20_adds_standing_role_and_join_profile_sources(tmp_path
     assert bob.effort == UNKNOWN
     assert bob.effort_source is ModelSource.UNKNOWN
     # A migrated 'worker' accepts both implementer and reviewer assignments.
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     t1 = store.assign_task("bob", "implementer", "Impl", "Do impl")
     store.submit_result(t1.id, "bob", TaskState.COMPLETED, "done")
     t2 = store.assign_task("bob", "reviewer", "Rev", "Do review", pr_head_sha="a" * 40)
@@ -1203,7 +1204,7 @@ def test_migration_from_v21_adds_run_id_statement_and_queued(tmp_path: Path) -> 
     assert new_id not in ("wf-done-1", hex_id, "wf-queued")
     assert store.get_state()["workflow"]["id"] == new_id
     finish_run(store, "Done", actor="alice", session=None)
-    assert store.initialize_workflow("Another fresh goal") not in (
+    assert store.start_workflow("Another fresh goal") not in (
         "wf-done-1",
         hex_id,
         "wf-queued",

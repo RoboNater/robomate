@@ -596,7 +596,7 @@ def _validated_workflow_policy(policy: Mapping[str, Any] | None) -> dict[str, An
         )
         raise InvalidPolicyError(
             f"invalid workflow policy: {details}. Correct the policy and retry "
-            "initialize_workflow before assigning work."
+            "start_workflow before assigning work."
         ) from exc
     # `auto` is resolved to bool by `hub.submit` before storage (M2 Step 4, r1-2);
     # the chat path must not store it unresolved, since the merge rule reads a bool.
@@ -1086,7 +1086,7 @@ class HubStore:
 
         `on_done: release` (and Alice's explicit `release_agent`) leaves workers
         `released` when a run ends. `_readmitted` keeps that sticky across
-        `check_in`, so without clearing, the next run's returning workers would
+        `join`, so without clearing, the next run's returning workers would
         get `release: true` from their first `await_assignment`. A new live run
         clears it to `lost` (unavailable) without a loss event or task failure.
         Only a fresh check-in makes the worker idle again. Free the instance
@@ -1102,92 +1102,6 @@ class HubStore:
         from .closeout import remember
 
         remember(self, connection)
-
-    def initialize_workflow(
-        self, goal: str = DEFAULT_GOAL, policy: Mapping[str, Any] | None = None
-    ) -> str:
-        """Create the workflow once, or confirm the durable initial prompt.
-
-        Goal and policy are immutable workflow inputs. A restarted Alice repeats
-        this call with the same values; a different prompt must not silently
-        replace rails that existing tasks were created under. After a run is
-        `done`, the same call with a new goal starts a new run with a new
-        `run_id` (M2 Step 3, #240); `start_workflow` queues instead of
-        conflicting while a run is live.
-        """
-
-        requested_policy = _validated_workflow_policy(policy)
-        encoded_policy = json.dumps(requested_policy, sort_keys=True)
-        now = self._now()
-        now_iso = to_iso(now)
-        with database(self.path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            live = self._live_row(connection)
-            if live is not None:
-                stored_policy = _json_object(live["policy_json"]) or {}
-                if live["goal"] != goal or stored_policy != requested_policy:
-                    expected_sha = live["statement_sha256"] or _statement_sha256(
-                        str(live["goal"]).encode("utf-8")
-                    )
-                    raise ConflictError(
-                        "workflow is already initialized with "
-                        f"status={live['status']!r}, goal={live['goal']!r}, and a different goal "
-                        "or policy; use get_state to resume it, or queue a different run with "
-                        "start_workflow(statement) and start it after this one is done. "
-                        f"Expected statement_sha256={expected_sha} "
-                        "(read it with get_statement)"
-                    )
-                return str(live["id"])
-            queued = self._queued_rows(connection)
-            if queued:
-                oldest = queued[0]
-                stored_policy = _json_object(oldest["policy_json"]) or {}
-                if oldest["goal"] == goal and stored_policy == requested_policy:
-                    connection.execute(
-                        "UPDATE workflow SET status = ?, activated_at = ? WHERE id = ?",
-                        (WorkflowStatus.ACTIVE.value, now_iso, oldest["id"]),
-                    )
-                    self._clear_stale_releases(connection)
-                    workflow_id = str(oldest["id"])
-                else:
-                    expected_sha = oldest["statement_sha256"] or _statement_sha256(
-                        str(oldest["goal"]).encode("utf-8")
-                    )
-                    raise ConflictError(
-                        f"workflow {oldest['run_id']} is queued with goal={oldest['goal']!r}; "
-                        "call start_workflow() with no statement to start it, or "
-                        "initialize_workflow with its exact goal and policy to confirm it. "
-                        f"Expected statement_sha256={expected_sha} "
-                        "(read it with get_statement)"
-                    )
-            else:
-                workflow_id = uuid4().hex
-                run_id = self._unique_run_id(connection, now)
-                statement_sha256, _ = self._store_statement(
-                    connection, goal, "initialize_workflow", now_iso
-                )
-                connection.execute(
-                    "INSERT INTO workflow (id, run_id, goal, status, policy_json,"
-                    " statement_sha256, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        workflow_id,
-                        run_id,
-                        goal,
-                        WorkflowStatus.ACTIVE.value,
-                        encoded_policy,
-                        statement_sha256,
-                        now_iso,
-                    ),
-                )
-                self._clear_stale_releases(connection)
-            # Read the row for the manifest before committing: the file must
-            # describe exactly the workflow the database just stored.
-            row = connection.execute(
-                "SELECT * FROM workflow WHERE id = ?", (workflow_id,)
-            ).fetchone()
-            assert row is not None
-        self._write_manifest(row)
-        return workflow_id
 
     def start_workflow(
         self,
@@ -1309,8 +1223,8 @@ class HubStore:
         row = self._live_row(connection)
         if row is None:
             raise ConflictError(
-                f"workflow is not initialized; call initialize_workflow(goal, policy) "
-                f"or start_workflow(statement, policy) before {operation}"
+                "workflow is not initialized; call start_workflow(statement, policy) "
+                f"before {operation}"
             )
         return str(row["id"])
 
@@ -2251,7 +2165,7 @@ class HubStore:
                 row = self._require_live_or_recent(connection)
                 if row is None:
                     raise ConflictError(
-                        "workflow is not initialized; call initialize_workflow or start_workflow "
+                        "workflow is not initialized; call start_workflow "
                         "before set_workflow_status"
                     )
                 workflow_id = str(row["id"])
@@ -2991,7 +2905,7 @@ class HubStore:
 
     # -- agents -------------------------------------------------------------
 
-    def check_in(
+    def register_worker(
         self,
         name: str,
         profile: AgentProfile = DEFAULT_PROFILE,
@@ -3022,7 +2936,7 @@ class HubStore:
         re-registration would inherit an open task or supersede a live
         instance, a claimant that does not match the held row's workspace and
         harness profile is refused before any write. `None` skips the gate
-        for legacy/prepared check-ins and direct store callers.
+        for direct store callers.
 
         A compatibility report travels in the check-in event, committed with
         registration so it is visible as soon as the worker can be assigned.
@@ -3203,7 +3117,7 @@ class HubStore:
                 parts=[
                     text_part(
                         "READY",
-                        metadata={MetaKeys.KIND: "check_in"}
+                        metadata={MetaKeys.KIND: "join"}
                         | {f"hub.{key}": value for key, value in profile_payload.items()},
                     )
                 ],

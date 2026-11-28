@@ -11,7 +11,13 @@ import httpx
 import pytest
 from agent_hub.database import database, initialize_database
 from agent_hub.mcp import create_mcp
-from agent_hub.store import ConflictError, EventRecord, HubStore, IdempotencyConflictError
+from agent_hub.store import (
+    DEFAULT_GOAL,
+    ConflictError,
+    EventRecord,
+    HubStore,
+    IdempotencyConflictError,
+)
 from agent_hub_common import (
     AgentProfile,
     AgentStatus,
@@ -26,6 +32,8 @@ from delivery_support import finish_run
 from timing import LIVENESS_S, FrozenClock
 from worker_mcp.client import WorkerHubClient
 from worker_mcp.config import WorkerSettings
+
+pytestmark = pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
 
 script_path = Path(__file__).resolve().parents[1] / "scripts" / "mock-alice.py"
 spec = importlib.util.spec_from_file_location("mock_alice", script_path)
@@ -84,7 +92,7 @@ def timed_store(settings: HubSettings, clock: FakeClock) -> HubStore:
 
     initialize_database(settings.database_path)
     store = HubStore(settings.database_path, clock=clock)
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     return store
 
 
@@ -108,7 +116,7 @@ async def run_worker_lifecycle(client: WorkerHubClient, *, ask: bool = False) ->
     restarts; `ask` adds the question the reply-crash cases turn on.
     """
 
-    await client.check_in(["python"])
+    await client.join(client.settings.agent_name, "worker", capabilities=["python"])
     while True:
         assignment = await client.await_assignment(timeout_s=LIVENESS_S)
         if not assignment.get("timeout"):
@@ -116,7 +124,9 @@ async def run_worker_lifecycle(client: WorkerHubClient, *, ask: bool = False) ->
     task_id = assignment["task_id"]
     if ask:
         while True:
-            answer = await client.ask_alice(task_id, "Should I proceed?", timeout_s=LIVENESS_S)
+            answer = await client.ask_orchestrator(
+                task_id, "Should I proceed?", timeout_s=LIVENESS_S
+            )
             if not answer.get("timeout"):
                 break
         assert "Approved" in answer.get("reply", "")
@@ -365,7 +375,7 @@ def test_state_guards_idempotency(store: HubStore) -> None:
         assert len(audit_rows) == 1
 
     # 3. assign_task guard when agent is busy
-    store.check_in("worker-1", AgentProfile())
+    store.register_worker("worker-1", AgentProfile())
     task = store.assign_task("worker-1", "implementer", "Task 1", "Instructions")
     with pytest.raises(ConflictError, match="already holds task"):
         store.assign_task("worker-1", "reviewer", "Task 2", "Instructions", pr_head_sha="a" * 40)
@@ -405,7 +415,7 @@ def test_state_guards_idempotency(store: HubStore) -> None:
 
 
 def test_assignment_replay_is_bound_to_its_source_event(store: HubStore) -> None:
-    store.check_in("bob", AgentProfile(harness="claude-code"))
+    store.register_worker("bob", AgentProfile(harness="claude-code"))
     source = store.lease_next_event()
     assert source is not None and source.kind is EventKind.AGENT_CHECKED_IN
 
@@ -629,7 +639,7 @@ def _alice_acts(store: HubStore, event: EventRecord) -> None:
 def _prepare(store: HubStore, clock: FakeClock, scenario: str) -> EventKind:
     """Leave exactly one unacked event queued, and say which kind it is."""
 
-    store.check_in("bob", AgentProfile(harness="claude-code"))
+    store.register_worker("bob", AgentProfile(harness="claude-code"))
     if scenario.startswith("agent_checked_in"):
         return EventKind.AGENT_CHECKED_IN
 
@@ -725,7 +735,7 @@ def test_replaying_a_delivered_event_changes_nothing_twice(
 def test_reply_requires_and_guards_the_newest_question_id(store: HubStore) -> None:
     """A redelivered answer to q1 can never become the answer to q2 (#51)."""
 
-    store.check_in("bob", AgentProfile(harness="claude-code"))
+    store.register_worker("bob", AgentProfile(harness="claude-code"))
     task = store.assign_task("bob", "implementer", "Fix it", "Please fix it.")
 
     q1 = store.open_question(task.id, "bob", "Ship it as drafted?", sent_as="q-1")

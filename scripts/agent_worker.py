@@ -1,4 +1,4 @@
-"""Worker supervision shared by worker-launcher.py and agent-launcher.py (#165, #247).
+"""Worker supervision for the joined launcher (#165, #247).
 
 Standard library only. Before each launch, bearer-only hub status is checked:
 cleanly detached predecessors can be replaced at once; attached predecessors
@@ -9,64 +9,11 @@ takeover is performed here.
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from pathlib import Path
 from typing import Any
 
 import agent_launcher as common
-
-CONTINUE_PROMPT = (
-    "Your previous harness process exited before Alice released you. The launcher "
-    "resumed this same conversation. This fixed continuation carries no operator "
-    "decision, approval, or state. Your hub tools run in a new worker-mcp process: "
-    "call check_in once. Reconcile your assignment with the hub: if you still hold "
-    "a task, finish it and submit its result; if the task failed or was canceled, "
-    "drop it and return to await_assignment. Every reply must contain a tool call "
-    "until await_assignment returns release: true; an announcement of a step must "
-    "come with its tool call. Wait for CI and other work in the foreground. Do not "
-    "end your turn until await_assignment returns release: true."
-)
-
-
-def telemetry_size(path: Path | None) -> int:
-    if path is None:
-        return 0
-    try:
-        return path.stat().st_size
-    except FileNotFoundError:
-        return 0
-
-
-def released(path: Path | None, offset: int) -> bool:
-    """Ignore releases from earlier runs and malformed/incomplete telemetry lines.
-
-    A joined agent (agent-launcher.py) has no separate telemetry file: ``path``
-    is None here. Its launcher reads the bridge's own telemetry instead, through
-    ``JoinedWorker.released_locally`` (#705).
-    """
-    if path is None:
-        return False
-    try:
-        with path.open("rb") as stream:
-            stream.seek(offset)
-            data = stream.read()
-    except FileNotFoundError:
-        return False
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if (
-            isinstance(record, dict)
-            and record.get("event") == "tool_call"
-            and record.get("phase") == "success"
-            and record.get("tool") == "await_assignment"
-            and record.get("outcome") == "release"
-        ):
-            return True
-    return False
 
 
 class WorkerReader(common.HubReader):
@@ -100,22 +47,13 @@ class WorkerReader(common.HubReader):
 
 
 class WorkerLauncher(common.Launcher):
-    continue_prompt = CONTINUE_PROMPT
-
     def __init__(self, args: argparse.Namespace, reader: common.HubReader | None = None) -> None:
         super().__init__(args, reader or WorkerReader(args.hub_url, args.token_file, args.agent))
         self.agent = args.agent
         self.ever_joined = False
-        self.telemetry_offset = telemetry_size(args.telemetry)
 
     def released_locally(self) -> bool:
-        """Whether this launcher's own records show the hub released this agent.
-
-        A joined launcher overrides this with the telemetry its bridge child
-        wrote, so a release stays decisive when the hub is stopped after done
-        (#705).
-        """
-        return released(self.args.telemetry, self.telemetry_offset)
+        raise NotImplementedError
 
     def finished(self, workflow: dict[str, Any] | None, resumes: int) -> bool:
         agent = workflow.get("agent") if workflow else None
@@ -126,26 +64,15 @@ class WorkerLauncher(common.Launcher):
             reason = "done"
         if reason:
             self.log("stop", reason=reason, resumes=resumes)
-            # A joined launcher overrides this with the per-workflow start or
-            # resume guidance (#660); the prepared launcher prints nothing extra.
             self.announce_stop(reason, workflow)
             return True
         return False
 
     def manual_resume_hint(self) -> str:
-        return (
-            f"Run resume-{self.agent} with no arguments to capture the snapshot and "
-            "prepare recovery automatically; follow its prerequisite recommendations."
-        )
+        raise NotImplementedError
 
     def own_join_evidence(self, agent: dict[str, Any] | None) -> bool:
-        """Whether the agent row is evidence that this launcher's child joined.
-
-        The prepared launcher reads no join records of its own, so any row is
-        its evidence. The joined launcher overrides this to reject a row left
-        by an earlier run on a reused hub (#546).
-        """
-        return agent is not None
+        raise NotImplementedError
 
     def resumable(self, exit_code: int, resumes: int) -> str:
         # A release in local telemetry remains decisive when the hub is unavailable.
@@ -198,7 +125,7 @@ class WorkerLauncher(common.Launcher):
             workflow = self.read_hub()
             if self.finished(workflow, resumes):
                 return False
-            # Workers may check in before Alice initializes a new workflow.
+            # Workers may join before Alice starts a new workflow.
             # A resume still needs the existing workflow, checked by resumable().
             if workflow is None and (resumes or self.args.resume_session is not None):
                 raise common.Stop(

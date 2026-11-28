@@ -14,6 +14,7 @@ from agent_hub.database import database, initialize_database
 from agent_hub.merge_gate import Check, CiStatus, GateReport, Mergeable, PrState
 from agent_hub.signals import EVENT_KEY, context_key, task_key
 from agent_hub.store import (
+    DEFAULT_GOAL,
     TAKEOVER_REFUSED_REMEDY,
     Claimant,
     ConflictError,
@@ -67,7 +68,7 @@ class FakeClock:
 
 
 def test_expire_event_leases_redelivers_without_touching_worker_lease(store: HubStore) -> None:
-    store.check_in("bob", CLAUDE)
+    store.register_worker("bob", CLAUDE)
     task = store.assign_task("bob", "implementer", "Fix", "Do it")
     before = store.get_task(task.id)
     first = store.lease_next_event()
@@ -94,8 +95,8 @@ def test_state_uses_one_read_snapshot(tmp_path: Path, monkeypatch: pytest.Monkey
     path = tmp_path / "hub.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow()
-    store.check_in("bob")
+    store.start_workflow(DEFAULT_GOAL)
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Fix", "Instructions")
     changed = False
 
@@ -121,8 +122,8 @@ def test_state_uses_one_read_snapshot(tmp_path: Path, monkeypatch: pytest.Monkey
     assert state["agents"][0]["current_task_id"] == task.id
 
 
-def test_check_in_registers_an_agent_and_queues_the_event(store: HubStore) -> None:
-    agent = store.check_in("bob", CLAUDE, worker_instance_id="bob-1")
+def test_join_worker_registers_an_agent_and_queues_the_event(store: HubStore) -> None:
+    agent = store.register_worker("bob", CLAUDE, worker_instance_id="bob-1")
 
     event = store.next_event()
 
@@ -153,12 +154,12 @@ def test_check_in_registers_an_agent_and_queues_the_event(store: HubStore) -> No
     }
 
 
-def test_check_in_records_a_declared_model_that_disagrees_with_the_configured_one(
+def test_join_worker_records_a_declared_model_that_disagrees_with_the_configured_one(
     store: HubStore,
 ) -> None:
     profile = replace(CLAUDE, declared_model="claude-sonnet-5")
 
-    agent = store.check_in("bob", profile)
+    agent = store.register_worker("bob", profile)
     event = store.next_event()
 
     # Resolution is untouched: the configured value stays authoritative (§3).
@@ -194,7 +195,7 @@ def test_check_in_records_a_declared_model_that_disagrees_with_the_configured_on
 def test_only_a_configured_model_the_runtime_contradicts_is_a_mismatch(
     store: HubStore, profile: AgentProfile, declared_model: str
 ) -> None:
-    store.check_in("bob", profile)
+    store.register_worker("bob", profile)
 
     event = store.next_event()
     [state] = store.get_state()["agents"]
@@ -207,18 +208,18 @@ def test_only_a_configured_model_the_runtime_contradicts_is_a_mismatch(
 def test_a_returning_worker_replaces_the_declared_model_with_its_new_one(
     store: HubStore,
 ) -> None:
-    store.check_in("bob", replace(CLAUDE, declared_model="claude-sonnet-5"))
+    store.register_worker("bob", replace(CLAUDE, declared_model="claude-sonnet-5"))
     store.release_agent("bob")
 
-    store.check_in("bob", CLAUDE)
+    store.register_worker("bob", CLAUDE)
 
     agent = store.agent_by_name("bob")
     assert agent is not None and agent.declared_model == "unknown"
 
 
 def test_get_state_shows_each_workers_profile(store: HubStore) -> None:
-    store.check_in("bob", CLAUDE)
-    store.check_in("charlie", AgentProfile(harness="codex"))
+    store.register_worker("bob", CLAUDE)
+    store.register_worker("charlie", AgentProfile(harness="codex"))
 
     agents = {agent["name"]: agent for agent in store.get_state()["agents"]}
     assert agents["bob"].pop("heartbeat_age_s") >= 0
@@ -266,29 +267,29 @@ def test_get_state_shows_each_workers_profile(store: HubStore) -> None:
 
 
 def test_a_second_live_instance_cannot_claim_an_idle_agent_name(store: HubStore) -> None:
-    first = store.check_in("bob", CLAUDE, worker_instance_id="bob-1")
+    first = store.register_worker("bob", CLAUDE, worker_instance_id="bob-1")
     task_id = assign(store)
     store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
 
     with pytest.raises(DuplicateAgentError, match="live worker instance"):
-        store.check_in("bob", worker_instance_id="bob-2")
+        store.register_worker("bob", worker_instance_id="bob-2")
 
     assert store.agent_by_name("bob") == first
 
 
 def test_a_second_live_instance_cannot_take_over_an_open_task(store: HubStore) -> None:
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     task_id = assign(store)
 
     with pytest.raises(DuplicateAgentError, match="live worker instance"):
-        store.check_in("bob", worker_instance_id="bob-2")
+        store.register_worker("bob", worker_instance_id="bob-2")
 
     current = store.agent_by_name("bob")
     assert current is not None and current.current_task_id == task_id
 
 
 def test_assignment_marks_the_agent_busy_and_records_the_instructions(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
 
     task = store.assign_task("bob", "implementer", "Fix #1", "Open a PR")
 
@@ -308,7 +309,7 @@ HEAD = "0123456789abcdef0123456789abcdef01234567"
 def test_a_review_or_rebase_assignment_is_bound_to_the_head_it_was_given(
     store: HubStore, role: str
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
 
     task = store.assign_task("bob", role, f"{role} #7", "Work on it", pr_head_sha=HEAD.upper())
 
@@ -322,7 +323,7 @@ def test_a_review_or_rebase_assignment_is_bound_to_the_head_it_was_given(
 def test_a_review_or_rebase_assignment_without_pr_head_sha_is_refused(
     store: HubStore, role: str
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
 
     with pytest.raises(ValueError, match=rf"pr_head_sha is required for {role} tasks"):
         store.assign_task("bob", role, f"{role} #7", "Work on it")
@@ -333,7 +334,7 @@ def test_a_review_or_rebase_assignment_without_pr_head_sha_is_refused(
 
 
 def test_an_unbound_assignment_carries_no_head(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
 
     task = store.assign_task("bob", "implementer", "Fix #1", "Open a PR")
 
@@ -345,7 +346,7 @@ def test_an_unbound_assignment_carries_no_head(store: HubStore) -> None:
 def test_a_malformed_head_sha_is_refused_before_anything_is_assigned(
     store: HubStore, sha: str
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
 
     with pytest.raises(ValueError, match="pr_head_sha"):
         store.assign_task("bob", "reviewer", "Review", "Review it", pr_head_sha=sha)
@@ -365,7 +366,7 @@ def test_a_malformed_head_sha_is_refused_before_anything_is_assigned(
 def test_a_rebase_result_is_stored_whole_and_reported_to_alice(
     store: HubStore, outcome: ImplementerOutcome, state: TaskState, kind: EventKind
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = store.assign_task("bob", "rebase", "Rebase", "Rebase it", pr_head_sha=HEAD).id
     while store.next_event():
         pass
@@ -389,7 +390,7 @@ def test_a_rebase_result_is_stored_whole_and_reported_to_alice(
 
 
 def test_a_second_assignment_to_a_busy_agent_is_refused(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     assign(store)
 
     with pytest.raises(ConflictError, match="already holds"):
@@ -397,7 +398,7 @@ def test_a_second_assignment_to_a_busy_agent_is_refused(store: HubStore) -> None
 
 
 def test_a_released_agent_takes_no_further_assignment(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     store.release_agent("bob")
 
     with pytest.raises(ConflictError, match="released"):
@@ -410,7 +411,7 @@ def test_assigning_to_an_unknown_agent_is_refused(store: HubStore) -> None:
 
 
 async def test_waiting_worker_gets_the_task_and_claims_it(store: HubStore) -> None:
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
 
     async def alice() -> None:
         await wait_until(
@@ -435,7 +436,7 @@ async def test_waiting_worker_gets_the_task_and_claims_it(store: HubStore) -> No
 
 
 async def test_waiting_worker_is_released_while_it_waits(store: HubStore) -> None:
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
 
     async def alice() -> None:
         await wait_until(
@@ -450,7 +451,7 @@ async def test_waiting_worker_is_released_while_it_waits(store: HubStore) -> Non
 
 
 async def test_assignment_wait_times_out_without_work(store: HubStore) -> None:
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
 
     assert await store.await_assignment(agent.context_id, 0.05) is None
 
@@ -461,7 +462,7 @@ async def test_assignment_wait_rejects_an_unknown_context(store: HubStore) -> No
 
 
 def test_progress_is_recorded_as_an_event(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     store.next_event()
 
@@ -474,7 +475,7 @@ def test_progress_is_recorded_as_an_event(store: HubStore) -> None:
 
 
 async def test_a_question_parks_the_task_until_alice_replies(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
 
     question_id = store.open_question(task_id, "bob", "Which base branch?", "q-1")
@@ -497,7 +498,7 @@ async def test_a_question_parks_the_task_until_alice_replies(store: HubStore) ->
 
 
 async def test_an_unanswered_question_times_out(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     question_id = store.open_question(task_id, "bob", "Which base branch?", "q-1")
 
@@ -512,7 +513,7 @@ async def test_a_reply_that_lands_between_attempts_reaches_the_retry(
 ) -> None:
     """ "Call again" is only safe if a retry can still see the answer it missed."""
 
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     first = store.open_question(task_id, "bob", "Which base branch?", "q-1")
     assert await store.await_reply(task_id, first, 0.05) is None
@@ -527,8 +528,8 @@ async def test_a_reply_that_lands_between_attempts_reaches_the_retry(
     assert [part["text"] for part in reply.parts] == ["main"]
 
 
-def test_a_retried_question_does_not_ask_alice_twice(store: HubStore) -> None:
-    store.check_in("bob")
+def test_a_retried_question_does_not_ask_orchestrator_twice(store: HubStore) -> None:
+    store.register_worker("bob")
     task_id = assign(store)
     while store.next_event():
         pass
@@ -542,7 +543,7 @@ def test_a_retried_question_does_not_ask_alice_twice(store: HubStore) -> None:
 
 
 def test_a_different_question_is_a_new_question(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
 
     first = store.open_question(task_id, "bob", "Which base branch?", "q-1")
@@ -561,7 +562,7 @@ def test_a_different_question_is_a_new_question(store: HubStore) -> None:
 def test_a_result_ends_the_task_and_frees_the_worker(
     store: HubStore, status: TaskState, kind: EventKind
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     while store.next_event():
         pass
@@ -583,7 +584,7 @@ def test_a_result_ends_the_task_and_frees_the_worker(
 
 
 def test_a_result_must_be_terminal_and_can_only_be_reported_once(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
 
     with pytest.raises(ConflictError, match="completed or failed"):
@@ -595,7 +596,7 @@ def test_a_result_must_be_terminal_and_can_only_be_reported_once(store: HubStore
 
 
 def test_cancelling_frees_the_worker_and_only_works_once(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
 
     canceled = store.cancel_task(task_id)
@@ -610,7 +611,7 @@ def test_cancelling_frees_the_worker_and_only_works_once(store: HubStore) -> Non
 def test_a_canceled_source_event_task_is_superseded(store: HubStore) -> None:
     """#542: a canceled task never produced a result, so its event is reusable."""
 
-    store.check_in("bob")
+    store.register_worker("bob")
     source = store.next_event()
     assert source is not None
     original = store.assign_task(
@@ -651,7 +652,7 @@ def test_a_canceled_source_event_task_is_superseded(store: HubStore) -> None:
 def test_an_identical_replay_still_returns_a_canceled_source_event_task(
     store: HubStore,
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     source = store.next_event()
     assert source is not None
     original = store.assign_task("bob", "implementer", "Fix", "Do it", source_event_id=source.id)
@@ -670,7 +671,7 @@ def test_an_identical_replay_still_returns_a_canceled_source_event_task(
 def test_a_non_canceled_source_event_task_refuses_a_different_payload(
     store: HubStore, finish: str
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     source = store.next_event()
     assert source is not None
     task = store.assign_task("bob", "implementer", "Fix", "Do it", source_event_id=source.id)
@@ -693,7 +694,7 @@ def test_a_non_canceled_source_event_task_refuses_a_different_payload(
 
 
 def test_events_are_consumed_once_and_in_order(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     store.record_progress(task_id, "bob", "one")
 
@@ -710,7 +711,7 @@ async def test_waiting_for_an_event_returns_as_soon_as_one_is_queued(store: HubS
             lambda: store.signals.waiting(EVENT_KEY) > 0,
             "waiter to register",
         )
-        store.check_in("bob")
+        store.register_worker("bob")
 
     event, _ = await asyncio.gather(store.wait_for_event(LIVENESS_S), worker())
 
@@ -722,7 +723,7 @@ async def test_waiting_for_an_event_times_out_on_an_empty_inbox(store: HubStore)
 
 
 def test_history_can_be_trimmed_to_the_most_recent_messages(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     store.record_progress(task_id, "bob", "one")
     store.record_progress(task_id, "bob", "two")
@@ -733,7 +734,7 @@ def test_history_can_be_trimmed_to_the_most_recent_messages(store: HubStore) -> 
 
 
 def test_an_overdue_lease_is_reported_exactly_once(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = store.assign_task("bob", "implementer", "Fix #1", "Open a PR", lease_min=-1).id
 
     first = store.sweep(lost_after_s=3600)
@@ -752,7 +753,7 @@ def test_a_silent_worker_is_lost_and_its_task_fails(store: HubStore) -> None:
     # Model silence explicitly; wall-clock rollback has its own regression.
     clock = FakeClock()
     store.clock = clock
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     clock.advance(seconds=2)
     store.sweep(lost_after_s=1)
@@ -768,44 +769,44 @@ def test_a_silent_worker_is_lost_and_its_task_fails(store: HubStore) -> None:
 def test_a_release_survives_the_worker_restarting(store: HubStore) -> None:
     # Alice releases at wrap-up; a worker that comes back afterwards has to be
     # told to stop rather than left polling for work nobody will assign.
-    store.check_in("bob")
+    store.register_worker("bob")
     store.release_agent("bob")
 
-    returned = store.check_in("bob", AgentProfile(capabilities=("python",)))
+    returned = store.register_worker("bob", AgentProfile(capabilities=("python",)))
 
     assert returned.status is AgentStatus.RELEASED
     assert returned.capabilities == ["python"]
 
 
 def test_checking_in_readmits_a_lost_worker(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     store.sweep(lost_after_s=-1)
 
-    returned = store.check_in("bob")
+    returned = store.register_worker("bob")
 
     assert returned.status is AgentStatus.IDLE
 
 
 def test_a_lost_worker_is_given_no_work_until_it_checks_in_again(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     store.sweep(lost_after_s=-1)
 
     with pytest.raises(ConflictError, match="not idle"):
         assign(store)
 
-    store.check_in("bob")
+    store.register_worker("bob")
     assert store.get_task(assign(store)) is not None
 
 
 def test_a_released_worker_is_never_declared_lost(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     store.release_agent("bob")
 
     assert store.sweep(lost_after_s=-1) == []
 
 
 def test_a_worker_that_keeps_heartbeating_stays_live(store: HubStore) -> None:
-    worker = store.check_in("bob")
+    worker = store.register_worker("bob")
     assert store.heartbeat("bob", worker.worker_instance_id, None, 120)
 
     assert store.sweep(lost_after_s=60) == []
@@ -817,7 +818,7 @@ def test_heartbeats_keep_a_worker_alive_during_twenty_minutes_without_llm_calls(
     clock = FakeClock()
     store.clock = clock
     store.monotonic_clock = lambda: clock.now.timestamp()
-    worker = store.check_in("bob", worker_instance_id="bob-1")
+    worker = store.register_worker("bob", worker_instance_id="bob-1")
     task = store.assign_task("bob", "implementer", "Long tests", "Run them", lease_min=5)
 
     for _ in range(20):
@@ -837,7 +838,7 @@ def test_stopped_worker_is_lost_once_and_restart_supersedes_the_instance(
 ) -> None:
     clock = FakeClock()
     store.clock = clock
-    first = store.check_in("bob", worker_instance_id="bob-1")
+    first = store.register_worker("bob", worker_instance_id="bob-1")
     task = store.assign_task("bob", "implementer", "Task", "Work")
     while store.next_event():
         pass
@@ -850,7 +851,7 @@ def test_stopped_worker_is_lost_once_and_restart_supersedes_the_instance(
     assert failed is not None and failed.result is not None
     assert failed.result["reason"] == "worker_lost"
 
-    restarted = store.check_in("bob", worker_instance_id="bob-2")
+    restarted = store.register_worker("bob", worker_instance_id="bob-2")
     assert restarted.context_id == first.context_id
     assert restarted.worker_instance_id == "bob-2"
     assert restarted.status is AgentStatus.IDLE
@@ -868,12 +869,12 @@ def test_a_detached_instance_lets_its_successor_keep_the_open_task(
     # new worker-mcp must be able to check in before the task is failed (#115).
     clock = FakeClock()
     store.clock = clock
-    first = store.check_in("bob", worker_instance_id="bob-1")
+    first = store.register_worker("bob", worker_instance_id="bob-1")
     task_id = assign(store)
 
     assert store.detach("bob", "bob-1")
     clock.advance(seconds=30)
-    restarted = store.check_in("bob", worker_instance_id="bob-2")
+    restarted = store.register_worker("bob", worker_instance_id="bob-2")
 
     assert restarted.context_id == first.context_id
     assert restarted.status is AgentStatus.BUSY
@@ -887,7 +888,7 @@ def test_a_detached_instance_lets_its_successor_keep_the_open_task(
 def test_a_detached_worker_that_never_returns_is_still_lost(store: HubStore) -> None:
     clock = FakeClock()
     store.clock = clock
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     task_id = assign(store)
     assert store.detach("bob", "bob-1")
 
@@ -899,13 +900,13 @@ def test_a_detached_worker_that_never_returns_is_still_lost(store: HubStore) -> 
 
 
 def test_only_the_live_instance_can_detach(store: HubStore) -> None:
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     task_id = assign(store)
 
     # A stale or foreign instance cannot free the slot of a running worker.
     assert not store.detach("bob", "bob-0")
     with pytest.raises(DuplicateAgentError, match="live worker instance"):
-        store.check_in("bob", worker_instance_id="bob-2")
+        store.register_worker("bob", worker_instance_id="bob-2")
 
     store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
     store.release_agent("bob")
@@ -917,10 +918,10 @@ def test_only_the_live_instance_can_detach(store: HubStore) -> None:
 def test_superseded_heartbeat_does_not_renew_or_revive(store: HubStore) -> None:
     clock = FakeClock()
     store.clock = clock
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     clock.advance(seconds=181)
     store.sweep(lost_after_s=180)
-    store.check_in("bob", worker_instance_id="bob-2")
+    store.register_worker("bob", worker_instance_id="bob-2")
     task = store.assign_task("bob", "implementer", "Task", "Work", lease_min=5)
     before = store.agent_by_name("bob")
     original_expiry = task.lease_expires
@@ -942,7 +943,7 @@ def test_a_wall_clock_stepped_back_never_moves_liveness_or_the_lease_back(
     # WSL2 steps its wall clock back by seconds when it resyncs (#120).
     clock = FakeClock()
     store.clock = clock
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     task = store.assign_task("bob", "implementer", "Task", "Work", lease_min=5)
     clock.advance(minutes=1)
     assert store.heartbeat("bob", "bob-1", task.id, max_task_lease_min=30)
@@ -966,8 +967,8 @@ def test_heartbeat_lease_renewal_stops_at_cap_and_expires_once(tmp_path: Path) -
     path = tmp_path / "lease-cap.db"
     initialize_database(path)
     store = HubStore(path, clock=clock)
-    store.initialize_workflow(policy={"max_task_lease_min": 10})
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.start_workflow(DEFAULT_GOAL, policy={"max_task_lease_min": 10})
+    store.register_worker("bob", worker_instance_id="bob-1")
     task = store.assign_task("bob", "implementer", "Task", "Work", lease_min=3)
     while store.next_event():
         pass
@@ -993,19 +994,20 @@ def test_initial_lease_is_also_bounded_by_the_workflow_cap(tmp_path: Path) -> No
     path = tmp_path / "initial-lease-cap.db"
     initialize_database(path)
     store = HubStore(path, clock=clock)
-    store.initialize_workflow(policy={"max_task_lease_min": 10})
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.start_workflow(DEFAULT_GOAL, policy={"max_task_lease_min": 10})
+    store.register_worker("bob", worker_instance_id="bob-1")
 
     task = store.assign_task("bob", "implementer", "Task", "Work", lease_min=30)
 
     assert task.lease_expires == to_iso(clock.now + timedelta(minutes=10))
+
     assert task.lease_duration_s == 10 * 60
 
 
 def test_state_reports_heartbeat_and_progress_ages_separately(store: HubStore) -> None:
     clock = FakeClock()
     store.clock = clock
-    worker = store.check_in("bob", worker_instance_id="bob-1")
+    worker = store.register_worker("bob", worker_instance_id="bob-1")
     task_id = assign(store)
     initial_heartbeat = worker.last_heartbeat
 
@@ -1022,16 +1024,6 @@ def test_state_reports_heartbeat_and_progress_ages_separately(store: HubStore) -
     assert agent["progress_age_s"] == 30
 
 
-def test_the_single_workflow_is_initialized_once(store: HubStore) -> None:
-    first = store.initialize_workflow()
-    store.check_in("bob")
-    task_id = assign(store)
-
-    task = store.get_task(task_id)
-    assert store.initialize_workflow() == first
-    assert task is not None and task.workflow_id == first
-
-
 def test_initial_workflow_policy_is_immutable_durable_and_used_by_rails(
     tmp_path: Path,
 ) -> None:
@@ -1041,20 +1033,14 @@ def test_initial_workflow_policy_is_immutable_durable_and_used_by_rails(
     first_store = HubStore(path, clock=clock)
     policy = {"max_task_lease_min": 10, "merge_method": "merge"}
 
-    workflow_id = first_store.initialize_workflow("Address issue #5", policy)
+    workflow_id = first_store.start_workflow("Address issue #5", policy)
     restarted = HubStore(path, clock=clock)
 
-    assert restarted.initialize_workflow("Address issue #5", policy) == workflow_id
+    assert restarted.get_state()["workflow"]["id"] == workflow_id
     assert restarted.get_state()["workflow"]["policy"] == policy
-    restarted.check_in("bob", worker_instance_id="bob-1")
+    restarted.register_worker("bob", worker_instance_id="bob-1")
     task = restarted.assign_task("bob", "implementer", "Task", "Work", lease_min=30)
     assert task.lease_expires == to_iso(clock.now + timedelta(minutes=10))
-
-    with pytest.raises(ConflictError, match="queue a different run") as error:
-        restarted.initialize_workflow(
-            "Address issue #5", {"max_task_lease_min": 20, "merge_method": "merge"}
-        )
-    assert "HUB_STATE_DIR" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -1074,7 +1060,7 @@ def test_invalid_initial_policy_is_rejected_before_insert(
     store = HubStore(path)
 
     with pytest.raises(InvalidPolicyError, match=field):
-        store.initialize_workflow("Address issue #5", policy)
+        store.start_workflow("Address issue #5", policy)
 
     assert store.get_state()["workflow"] is None
 
@@ -1085,15 +1071,15 @@ def test_assignment_and_status_require_explicit_workflow_initialization(
     path = tmp_path / "uninitialized.db"
     initialize_database(path)
     store = HubStore(path)
-    store.check_in("bob")
+    store.register_worker("bob")
 
-    with pytest.raises(ConflictError, match="initialize_workflow.*assign_task"):
+    with pytest.raises(ConflictError, match="start_workflow.*assign_task"):
         store.assign_task("bob", "implementer", "Task", "Work")
-    with pytest.raises(ConflictError, match="initialize_workflow.*set_workflow_status"):
+    with pytest.raises(ConflictError, match="start_workflow.*set_workflow_status"):
         store.set_workflow_status(WorkflowStatus.PAUSED, "Pause", actor="alice", session=None)
 
     assert store.get_state()["workflow"] is None
-    store.initialize_workflow("Address issue #5", {"max_task_lease_min": 10})
+    store.start_workflow("Address issue #5", {"max_task_lease_min": 10})
     assert store.assign_task("bob", "implementer", "Task", "Work").workflow_id
 
 
@@ -1142,7 +1128,7 @@ def test_decision_text_cannot_move_which_questions_a_resume_names(store: HubStor
 
 
 def _task_wait_question(store: HubStore) -> tuple[str, int]:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     question_id = store.ask_user(
         "Keep waiting or reassign?",
@@ -1206,7 +1192,7 @@ def test_withdrawal_retains_evidence_and_resumes_without_authority(store: HubSto
     "bad_evidence", ["missing", "old", "wrong_task", "wrong_kind", "unfinished"]
 )
 def test_withdrawal_rejects_unsettling_events(store: HubStore, bad_evidence: str) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     old = store.append_event(EventKind.TASK_COMPLETED, {"task_id": task_id}).id
     question_id = store.ask_user(
@@ -1269,7 +1255,7 @@ def test_withdrawal_rejects_closed_questions_and_invalid_reasons(store: HubStore
 
 
 def test_task_wait_binding_requires_an_open_task(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     _complete_waiting_task(store, task_id)
     for task in (task_id, "missing"):
@@ -1300,7 +1286,7 @@ def pause_store(store: HubStore) -> tuple[HubStore, PauseClocks]:
     clocks = PauseClocks()
     store.clock = clocks
     store.monotonic_clock = clocks.monotonic
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     assert store.sweep(180) == []  # Establish the consecutive-sweep baseline.
     return store, clocks
 
@@ -1402,7 +1388,7 @@ def test_pause_does_not_extend_already_expired_or_newly_created_tasks(
 ) -> None:
     store, clocks = pause_store
     expired = store.assign_task("bob", "implementer", "Old", "Work", lease_min=-1)
-    store.check_in("charlie", worker_instance_id="charlie-1")
+    store.register_worker("charlie", worker_instance_id="charlie-1")
     clocks.step(3600, monotonic_seconds=10)
     fresh = store.assign_task("charlie", "implementer", "New", "Work")
     event = store.sweep(180)[0]
@@ -1508,7 +1494,7 @@ def test_worker_liveness_across_consecutive_pauses_and_pre_pause_checkin(
     store, clocks = pause_store
     lost_after_s = 2.0
     task = store.assign_task("bob", "implementer", "Fix issue", "Instructions", lease_min=10)
-    store.check_in("dan", worker_instance_id="dan-1")
+    store.register_worker("dan", worker_instance_id="dan-1")
     assert store.sweep(lost_after_s) == []  # Establish baseline with lost_after_s=2.0
 
     # The five consecutive sweep gaps logged in #354.
@@ -1541,16 +1527,16 @@ def test_worker_liveness_across_consecutive_pauses_and_pre_pause_checkin(
 
 
 @pytest.mark.parametrize("bad_name", ["Feature.B", "state", "token", "con", "-bob", ""])
-def test_check_in_validates_agent_names_like_hub_names(store: HubStore, bad_name: str) -> None:
+def test_join_worker_validates_agent_names_like_hub_names(store: HubStore, bad_name: str) -> None:
     with pytest.raises(ValueError, match="agent name"):
-        store.check_in(bad_name)
+        store.register_worker(bad_name)
 
 
 def test_standing_roles_enforce_compatible_task_assignments(store: HubStore) -> None:
-    store.initialize_workflow()
-    store.check_in("bob", standing_role="implementer", worker_instance_id="bob-1")
-    store.check_in("charlie", standing_role="reviewer", worker_instance_id="charlie-1")
-    store.check_in("dan", standing_role="worker", worker_instance_id="dan-1")
+    store.start_workflow(DEFAULT_GOAL)
+    store.register_worker("bob", standing_role="implementer", worker_instance_id="bob-1")
+    store.register_worker("charlie", standing_role="reviewer", worker_instance_id="charlie-1")
+    store.register_worker("dan", standing_role="worker", worker_instance_id="dan-1")
 
     with pytest.raises(ValueError, match=r"standing role '?implementer'?"):
         store.assign_task("bob", "reviewer", "Review", "Look", pr_head_sha=HEAD)
@@ -1574,8 +1560,8 @@ def test_standing_roles_enforce_compatible_task_assignments(store: HubStore) -> 
 
 
 def test_takeover_supersedes_old_instance_and_reattaches_live_task(store: HubStore) -> None:
-    store.initialize_workflow()
-    store.check_in("bob", CLAUDE, standing_role="implementer", worker_instance_id="bob-1")
+    store.start_workflow(DEFAULT_GOAL)
+    store.register_worker("bob", CLAUDE, standing_role="implementer", worker_instance_id="bob-1")
     _ = store.next_event()
     task = store.assign_task(
         "bob", "implementer", "IMPLEMENT for #238", "Implement join", pr_head_sha=HEAD
@@ -1584,10 +1570,12 @@ def test_takeover_supersedes_old_instance_and_reattaches_live_task(store: HubSto
 
     # Without takeover, a second live instance gets 409 DuplicateAgentError.
     with pytest.raises(DuplicateAgentError, match=r"(?i)takeover=true"):
-        store.check_in("bob", CLAUDE, standing_role="implementer", worker_instance_id="bob-2")
+        store.register_worker(
+            "bob", CLAUDE, standing_role="implementer", worker_instance_id="bob-2"
+        )
 
     # With takeover=True, the new instance supersedes bob-1 and reattaches the held task.
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         CLAUDE,
         standing_role="implementer",
@@ -1639,10 +1627,10 @@ def _claimant(
 def _held_worktree(store: HubStore, tmp_path: Path) -> tuple[Path, str]:
     """Register bob in a worktree holding an open task, and return both ids."""
 
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     path = tmp_path / "wt" / "bob"
     path.mkdir(parents=True)
-    store.check_in(
+    store.register_worker(
         "bob",
         CODEX,
         standing_role="implementer",
@@ -1663,7 +1651,7 @@ def test_claimant_workspace_mismatch_refuses_and_names_only_workspace(
     assert before is not None
 
     with pytest.raises(TakeoverRefusedError) as excinfo:
-        store.check_in(
+        store.register_worker(
             "bob",
             CODEX,
             standing_role="implementer",
@@ -1690,7 +1678,7 @@ def test_claimant_missing_bridge_path_is_a_worktree_mismatch(
 ) -> None:
     path, _ = _held_worktree(store, tmp_path)
     with pytest.raises(TakeoverRefusedError, match="workspace:"):
-        store.check_in(
+        store.register_worker(
             "bob",
             CODEX,
             standing_role="implementer",
@@ -1718,7 +1706,7 @@ def test_claimant_profile_mismatch_refuses(
     assert before is not None
 
     with pytest.raises(TakeoverRefusedError) as excinfo:
-        store.check_in(
+        store.register_worker(
             "bob",
             incoming,
             standing_role="implementer",
@@ -1749,7 +1737,7 @@ def test_claimant_ignores_harness_version_effort_and_capabilities(
         capabilities=("rust",),
         declared_model="something-else",
     )
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         incoming,
         standing_role="implementer",
@@ -1767,11 +1755,11 @@ def test_claimant_ignores_harness_version_effort_and_capabilities(
 def test_claimant_model_difference_needs_env_source_on_both_sides(
     store: HubStore, tmp_path: Path
 ) -> None:
-    store.initialize_workflow()
+    store.start_workflow(DEFAULT_GOAL)
     path = tmp_path / "wt" / "bob"
     path.mkdir(parents=True)
     declared = replace(CODEX, model_source=ModelSource.DECLARED)
-    store.check_in(
+    store.register_worker(
         "bob",
         declared,
         standing_role="implementer",
@@ -1782,7 +1770,7 @@ def test_claimant_model_difference_needs_env_source_on_both_sides(
     store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
 
     # Row source is `declared`, so a different incoming model is not a mismatch.
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         replace(CODEX, model="other", model_source=ModelSource.ENV),
         standing_role="implementer",
@@ -1798,7 +1786,7 @@ def test_claimant_model_difference_needs_env_source_on_both_sides(
 def test_claimant_declared_model_difference_is_accepted(store: HubStore, tmp_path: Path) -> None:
     path, _ = _held_worktree(store, tmp_path)
     # Row model_source is `env`; an incoming `declared` source skips the gate.
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         replace(CODEX, model="other", model_source=ModelSource.DECLARED),
         standing_role="implementer",
@@ -1812,8 +1800,8 @@ def test_claimant_declared_model_difference_is_accepted(store: HubStore, tmp_pat
 
 
 def test_claimant_clone_requires_matching_workspace_id(store: HubStore) -> None:
-    store.initialize_workflow()
-    store.check_in(
+    store.start_workflow(DEFAULT_GOAL)
+    store.register_worker(
         "bob",
         replace(CODEX, workspace_id="clone-1"),
         standing_role="implementer",
@@ -1824,7 +1812,7 @@ def test_claimant_clone_requires_matching_workspace_id(store: HubStore) -> None:
     store.assign_task("bob", "implementer", "IMPLEMENT for #510", "Implement the gate")
 
     with pytest.raises(TakeoverRefusedError, match="workspace:"):
-        store.check_in(
+        store.register_worker(
             "bob",
             replace(CODEX, workspace_id="clone-2"),
             standing_role="implementer",
@@ -1838,7 +1826,7 @@ def test_claimant_clone_requires_matching_workspace_id(store: HubStore) -> None:
     # A clone row is defined by an explicit HUB_WORKSPACE, so a claimant that
     # did not name one is not in that clone even with a matching id.
     with pytest.raises(TakeoverRefusedError, match="workspace:"):
-        store.check_in(
+        store.register_worker(
             "bob",
             replace(CODEX, workspace_id="clone-1"),
             standing_role="implementer",
@@ -1849,7 +1837,7 @@ def test_claimant_clone_requires_matching_workspace_id(store: HubStore) -> None:
             claimant=_claimant("/clone/bob", workspace_id="clone-1", explicit=False),
         )
 
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         replace(CODEX, workspace_id="clone-1"),
         standing_role="implementer",
@@ -1869,7 +1857,7 @@ def test_claimant_gate_covers_join_after_detach_without_takeover(
     assert store.detach("bob", "bob-1") is True
 
     with pytest.raises(TakeoverRefusedError):
-        store.check_in(
+        store.register_worker(
             "bob",
             replace(CODEX, harness="opencode", provider="deepseek"),
             standing_role="implementer",
@@ -1879,7 +1867,7 @@ def test_claimant_gate_covers_join_after_detach_without_takeover(
             claimant=_claimant(str(tmp_path / "elsewhere")),
         )
 
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         CODEX,
         standing_role="implementer",
@@ -1892,9 +1880,9 @@ def test_claimant_gate_covers_join_after_detach_without_takeover(
     assert agent.current_task_id == task_id
 
 
-def test_claimant_none_keeps_legacy_check_in_ungated(store: HubStore, tmp_path: Path) -> None:
+def test_claimant_none_keeps_legacy_join_worker_ungated(store: HubStore, tmp_path: Path) -> None:
     path, _ = _held_worktree(store, tmp_path)
-    agent = store.check_in(
+    agent = store.register_worker(
         "bob",
         replace(CODEX, harness="opencode", provider="deepseek"),
         standing_role="implementer",
@@ -1920,7 +1908,7 @@ def test_run_identity_has_unique_run_ids_and_statement(tmp_path: Path) -> None:
     path = tmp_path / "run-id.db"
     initialize_database(path)
     store = HubStore(path)
-    first = store.initialize_workflow("First run")
+    first = store.start_workflow("First run")
     state = store.get_state()
     assert state["workflow"] is not None
     first_run_id = state["workflow"]["run_id"]
@@ -2026,9 +2014,9 @@ def test_backward_clock_task_order_uses_insertion_order(tmp_path: Path) -> None:
     initialize_database(path)
     clock = FakeClock()
     store = HubStore(path, clock=clock)
-    store.initialize_workflow("Task order run")
-    store.check_in("bob")
-    store.check_in("charlie")
+    store.start_workflow("Task order run")
+    store.register_worker("bob")
+    store.register_worker("charlie")
     first = store.assign_task("bob", "implementer", "First task", "Do first")
     clock.now -= timedelta(seconds=1)
     second = store.assign_task("charlie", "implementer", "Second task", "Do second")
@@ -2061,42 +2049,6 @@ def test_backward_clock_live_queued_order_uses_insertion_order(tmp_path: Path) -
     assert after["previous_run"]["workflow_id"] == first
 
 
-def test_initialize_workflow_confirms_active_and_starts_new_after_done(
-    tmp_path: Path,
-) -> None:
-    """initialize_workflow with the same goal confirms; after done it starts new."""
-
-    path = tmp_path / "init-alias.db"
-    initialize_database(path)
-    store = HubStore(path)
-    first = store.initialize_workflow("Same goal")
-    assert store.initialize_workflow("Same goal") == first
-    first_run_id = store.get_state()["workflow"]["run_id"]
-    finish_run(store, "Done", actor="alice", session=None)
-    second = store.initialize_workflow("New goal")
-    assert second != first
-    assert store.get_state()["workflow"]["run_id"] != first_run_id
-
-
-def test_initialize_workflow_mismatch_names_expected_sha(tmp_path: Path) -> None:
-    """#296 item 4: a mismatched initialize_workflow names the expected sha."""
-
-    import hashlib
-
-    path = tmp_path / "guard.db"
-    initialize_database(path)
-    store = HubStore(path)
-    goal = "Queued goal for #296"
-    expected_sha = hashlib.sha256(goal.encode()).hexdigest()
-    store.start_workflow(goal, source="prepare-run", force_queued=True)
-    with pytest.raises(ConflictError, match=f"Expected statement_sha256={expected_sha}"):
-        store.initialize_workflow("A different goal")
-    # Starting the queued run yields the matching sha.
-    store.start_workflow()
-    live = store.get_state()["workflow"]
-    assert live is not None and live["statement_sha256"] == expected_sha
-
-
 def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None:
     """Manifest is written at start and completed at done; restart keeps valid JSON."""
 
@@ -2120,7 +2072,7 @@ def test_manifest_written_at_start_and_completed_at_done(tmp_path: Path) -> None
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["run_id"] == run_id
     # Give the run a task, an agent and a PR result so the end fields populate.
     worker_path = r"D:\worker checkout\bob"
-    restarted.check_in(
+    restarted.register_worker(
         "bob",
         AgentProfile(harness="codex", model="gpt-6-sol"),
         workspace_kind="clone",
@@ -2156,8 +2108,8 @@ def test_on_done_release_vs_standby(tmp_path: Path) -> None:
         path = tmp_path / f"on-done-{on_done}.db"
         initialize_database(path)
         store = HubStore(path)
-        store.initialize_workflow("Policy run", {"on_done": on_done})
-        store.check_in("bob")
+        store.start_workflow("Policy run", {"on_done": on_done})
+        store.register_worker("bob")
         bob = store.agent_by_name("bob")
         assert bob is not None
         assert bob.status is AgentStatus.IDLE
@@ -2172,8 +2124,8 @@ def test_on_done_release_vs_standby(tmp_path: Path) -> None:
     path = tmp_path / "on-done-queued.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("First", {"on_done": "release"})
-    store.check_in("bob")
+    store.start_workflow("First", {"on_done": "release"})
+    store.register_worker("bob")
     store.start_workflow("Second")
     finish_run(store, "Done", actor="alice", session=None)
     bob = store.agent_by_name("bob")
@@ -2188,8 +2140,8 @@ def test_assignments_carry_run_id(tmp_path: Path) -> None:
     path = tmp_path / "assign-run-id.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("Run with task")
-    store.check_in("bob")
+    store.start_workflow("Run with task")
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     assert task.run_id is not None
     assert task.run_id == store.get_state()["workflow"]["run_id"]
@@ -2202,16 +2154,16 @@ def test_new_run_clears_stale_releases(tmp_path: Path) -> None:
     path = tmp_path / "stale-release.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("Run one")
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.start_workflow("Run one")
+    store.register_worker("bob", worker_instance_id="bob-1")
     # Default on_done=release with an empty queue releases bob at done.
     finish_run(store, "Done", actor="alice", session=None)
     bob = store.agent_by_name("bob")
     assert bob is not None
     assert bob.status is AgentStatus.RELEASED
     # A new run becomes live; the stale release must not stick.
-    store.initialize_workflow("Run two")
-    store.check_in("bob", worker_instance_id="bob-2")
+    store.start_workflow("Run two")
+    store.register_worker("bob", worker_instance_id="bob-2")
     agent = store.agent_by_name("bob")
     assert agent is not None and agent.status is AgentStatus.IDLE
     task = store.assign_task("bob", "implementer", "Build", "Do work")
@@ -2287,7 +2239,7 @@ def test_chat_path_rejects_unresolved_allow_no_ci_auto(tmp_path: Path) -> None:
     initialize_database(path)
     store = HubStore(path)
     with pytest.raises(InvalidPolicyError, match="auto"):
-        store.initialize_workflow("goal text", {"allow_no_ci": "auto"})
+        store.start_workflow("goal text", {"allow_no_ci": "auto"})
     with pytest.raises(InvalidPolicyError, match="auto"):
         store.start_workflow("statement text", {"allow_no_ci": "auto"})
     # Explicit bools still store.
@@ -2295,17 +2247,17 @@ def test_chat_path_rejects_unresolved_allow_no_ci_auto(tmp_path: Path) -> None:
     assert wid
 
 
-@pytest.mark.parametrize("entry", ["initialize", "start", "promote"])
-def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, entry: str) -> None:
+@pytest.mark.parametrize("entry", ["start", "promote"])
+def test_stale_release_requires_join_worker_on_each_live_run_path(
+    tmp_path: Path, entry: str
+) -> None:
     clock = FakeClock()
     store = HubStore(tmp_path / "release.db", clock=clock)
     initialize_database(store.path)
-    store.initialize_workflow("First", {"on_done": "release"})
-    store.check_in("bob", worker_instance_id="old")
+    store.start_workflow("First", {"on_done": "release"})
+    store.register_worker("bob", worker_instance_id="old")
     finish_run(store, "Done", actor="alice", session=None)
-    if entry == "initialize":
-        store.initialize_workflow("Second")
-    elif entry == "start":
+    if entry == "start":
         store.start_workflow("Second")
     else:
         # The old released worker remains absent while other workers run.
@@ -2313,7 +2265,7 @@ def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, e
         # Exercise a released row at the promotion itself, as when Alice
         # releases an absent worker while the intervening run is active.
         store.release_agent("bob")
-        store.check_in("charlie")
+        store.register_worker("charlie")
         store.start_workflow("Second")
         finish_run(store, "Done", actor="alice", session=None)
         charlie = store.agent_by_name("charlie")
@@ -2340,7 +2292,7 @@ def test_stale_release_requires_check_in_on_each_live_run_path(tmp_path: Path, e
             connection.execute("SELECT count(*) FROM task WHERE state = 'failed'").fetchone()[0]
             == 0
         )
-    store.check_in("bob", worker_instance_id="new")
+    store.register_worker("bob", worker_instance_id="new")
     bob = store.agent_by_name("bob")
     assert bob is not None and bob.status is AgentStatus.IDLE
     task = store.assign_task("bob", "implementer", "Build", "Do work")
@@ -2354,8 +2306,8 @@ def test_joined_workers_remain_assignable_between_runs(tmp_path: Path, queued: b
     path = tmp_path / "joined.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("First", {"on_done": "release" if queued else "standby"})
-    store.check_in("bob", worker_instance_id="same")
+    store.start_workflow("First", {"on_done": "release" if queued else "standby"})
+    store.register_worker("bob", worker_instance_id="same")
     if queued:
         store.start_workflow("Second")
     finish_run(store, "Done", actor="alice", session=None)
@@ -2372,7 +2324,7 @@ def test_joined_workers_remain_assignable_between_runs(tmp_path: Path, queued: b
 async def test_held_working_task_is_redelivered_with_flag(store: HubStore) -> None:
     """#326: a worker that lost track gets its held task back, not a timeout."""
 
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task_id = assign(store)
     claimed = await store.await_assignment(agent.context_id, 2.0)
     assert isinstance(claimed, TaskRecord)
@@ -2396,7 +2348,7 @@ async def test_held_working_task_is_redelivered_with_flag(store: HubStore) -> No
 async def test_held_input_required_task_is_redelivered(store: HubStore) -> None:
     """#326: a parked question is also an open held task worth returning."""
 
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task_id = assign(store)
     claimed = await store.await_assignment(agent.context_id, 2.0)
     assert isinstance(claimed, TaskRecord)
@@ -2413,7 +2365,7 @@ async def test_held_input_required_task_is_redelivered(store: HubStore) -> None:
 async def test_released_worker_gets_release_despite_held_task(store: HubStore) -> None:
     """#326: release outranks redelivery."""
 
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task_id = assign(store)
     claimed = await store.await_assignment(agent.context_id, 2.0)
     assert isinstance(claimed, TaskRecord)
@@ -2426,7 +2378,7 @@ async def test_released_worker_gets_release_despite_held_task(store: HubStore) -
 def _complete_then_hold(store: HubStore, first_title: str = "First") -> tuple[str, str]:
     """Complete one task, then hold a second: the #326 lost-track shape."""
 
-    store.check_in("bob")
+    store.register_worker("bob")
     first_id = store.assign_task("bob", "implementer", first_title, "Do first").id
     store._claim_assignment("bob")
     store.submit_result(first_id, "bob", TaskState.COMPLETED, "first done")
@@ -2447,7 +2399,7 @@ def test_report_progress_on_finished_names_held_task(store: HubStore) -> None:
 
 
 def test_report_progress_on_finished_without_held_points_to_await(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     store._claim_assignment("bob")
     store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
@@ -2470,7 +2422,7 @@ def test_submit_result_on_finished_names_held_task(store: HubStore) -> None:
 
 
 def test_submit_result_on_finished_without_held_points_to_await(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     store._claim_assignment("bob")
     store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
@@ -2481,7 +2433,7 @@ def test_submit_result_on_finished_without_held_points_to_await(store: HubStore)
     assert "await_assignment" in message
 
 
-def test_ask_alice_on_finished_names_held_task(store: HubStore) -> None:
+def test_ask_orchestrator_on_finished_names_held_task(store: HubStore) -> None:
     first_id, second_id = _complete_then_hold(store)
     with pytest.raises(ConflictError) as exc_info:
         store.open_question(first_id, "bob", "late question?", "q-9")
@@ -2491,8 +2443,8 @@ def test_ask_alice_on_finished_names_held_task(store: HubStore) -> None:
     assert "use that task_id" in message
 
 
-def test_ask_alice_on_finished_without_held_points_to_await(store: HubStore) -> None:
-    store.check_in("bob")
+def test_ask_orchestrator_on_finished_without_held_points_to_await(store: HubStore) -> None:
+    store.register_worker("bob")
     task_id = assign(store)
     store._claim_assignment("bob")
     store.submit_result(task_id, "bob", TaskState.COMPLETED, "done")
@@ -2504,8 +2456,8 @@ def test_ask_alice_on_finished_without_held_points_to_await(store: HubStore) -> 
 def test_finished_task_error_names_only_the_callers_task(store: HubStore) -> None:
     """#326: never list other workers' tasks in a finished-task error."""
 
-    store.check_in("bob")
-    store.check_in("charlie")
+    store.register_worker("bob")
+    store.register_worker("charlie")
     bob_task = store.assign_task("bob", "implementer", "Bob work", "Do it").id
     store._claim_assignment("bob")
     store.submit_result(bob_task, "bob", TaskState.COMPLETED, "bob done")
@@ -2523,7 +2475,7 @@ async def test_repeated_assignment_paces_until_deadline(
     store: HubStore, frozen_clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A repeat waits the whole requested hold, then returns a reminder (#434)."""
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task_id = assign(store)
     await store.await_assignment(agent.context_id, LIVENESS_S)
     first = await store.await_assignment(agent.context_id, LIVENESS_S)
@@ -2574,7 +2526,7 @@ async def test_repeated_assignment_paces_until_deadline(
 async def test_repeated_assignment_wakes_on_change(
     store: HubStore, action: str, frozen_clock: FrozenClock
 ) -> None:
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task_id = assign(store)
     await store.await_assignment(agent.context_id, LIVENESS_S)
     question_id = None
@@ -2623,7 +2575,7 @@ async def test_terminal_rollback_preserves_worker_diagnostics(
     store: HubStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """r1-2: failed terminal writes cannot erase the in-memory evidence."""
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     task_id = assign(store)
     await store.await_assignment(agent.context_id, 0)
     await store.await_assignment(agent.context_id, 0)
@@ -2657,7 +2609,7 @@ def test_pre_change_short_commits_still_read_back(store: HubStore) -> None:
     The read path returns the stored JSON verbatim without re-validating it as
     ImplementerResult, so a short SHA stored before the change keeps reading.
     """
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     short_result = {
         "outcome": "completed",
@@ -2684,7 +2636,7 @@ def test_pre_change_duplicate_findings_still_read_back(store: HubStore) -> None:
     The read path returns the stored JSON verbatim without re-validating it as
     ReviewerResult, so the duplicate r1-1 stored by run 20261111_8b63f8c6 keeps reading.
     """
-    store.check_in("bob")
+    store.register_worker("bob")
     sha = "0123456789abcdef0123456789abcdef01234567"
     task_id = store.assign_task("bob", "reviewer", "Review", "Review it", pr_head_sha=sha).id
     dup_result = {
@@ -2712,7 +2664,7 @@ def test_pre_change_duplicate_findings_still_read_back(store: HubStore) -> None:
 async def test_reply_hold_wakes_when_task_finishes(
     store: HubStore, frozen_clock: FrozenClock, finish: str
 ) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task_id = assign(store)
     question = store.open_question(task_id, "bob", "Which base?", "q-long")
     pending = asyncio.create_task(store.await_reply(task_id, question, 1800))
@@ -2734,10 +2686,10 @@ async def test_reply_hold_wakes_when_task_finishes(
 
 
 async def test_takeover_fences_already_held_assignment_wait(store: HubStore) -> None:
-    agent = store.check_in("bob", worker_instance_id="old")
+    agent = store.register_worker("bob", worker_instance_id="old")
     pending = asyncio.create_task(store.await_assignment(agent.context_id, 1800))
     await wait_until(lambda: store.signals.waiting(context_key(agent.context_id)), "old hold")
-    store.check_in("bob", worker_instance_id="new", takeover=True)
+    store.register_worker("bob", worker_instance_id="new", takeover=True)
     try:
         await wait_until(pending.done, "superseded assignment hold ends")
         with pytest.raises(ConflictError, match="superseded"):
@@ -2747,14 +2699,14 @@ async def test_takeover_fences_already_held_assignment_wait(store: HubStore) -> 
 
 
 async def test_takeover_fences_already_held_reply_wait(store: HubStore) -> None:
-    store.check_in("bob", worker_instance_id="old")
+    store.register_worker("bob", worker_instance_id="old")
     task_id = assign(store)
     question = store.open_question(task_id, "bob", "Which base?", "q-takeover")
     pending = asyncio.create_task(
         store.await_reply(task_id, question, 1800, worker_instance_id="old")
     )
     await wait_until(lambda: store.signals.waiting(task_key(task_id)), "old reply hold")
-    store.check_in("bob", worker_instance_id="new", takeover=True)
+    store.register_worker("bob", worker_instance_id="new", takeover=True)
     try:
         await wait_until(pending.done, "superseded reply hold ends")
         with pytest.raises(ConflictError, match="superseded"):
@@ -2793,7 +2745,7 @@ def test_status_summary_projects_run_activity_notes_and_latest_gate_reading(
     store.start_workflow(
         "Address issue `RoboNater/robomate#653` and deliver it.", source="submit:stdin"
     )
-    store.check_in("bob", CLAUDE)
+    store.register_worker("bob", CLAUDE)
     task = store.assign_task("bob", "implementer", "IMPLEMENT", "secret instructions")
     note = "ansi \x1b[2J, CR \r, NUL \x00, then a long tail " + "x" * 400
     store.record_progress(task.id, "bob", note)
@@ -2855,7 +2807,7 @@ def test_status_summary_includes_the_hub_named_run_branch(
     store.start_workflow(
         "Address issue `RoboNater/robomate#671` and deliver it.", source="submit:stdin"
     )
-    store.check_in("bob")
+    store.register_worker("bob")
     store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
 
     run = store.status_summary()["run"]
@@ -2866,7 +2818,7 @@ def test_status_summary_includes_the_hub_named_run_branch(
 def test_status_summary_reports_no_gate_reading_and_only_progress_notes(store: HubStore) -> None:
     """#653: a question is never the note, and a run with no gate reading says so."""
 
-    store.check_in("bob")
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Fix", "Do it")
     store.record_progress(task.id, "bob", "the progress note")
     store.open_question(task.id, "bob", "secret question", "q653")
@@ -2894,8 +2846,8 @@ def test_status_summary_names_the_current_review_round_and_last_terminal_task(
 
     head = "a" * 40
     pr = "https://github.com/RoboNater/robomate/pull/653"
-    store.check_in("bob")
-    store.check_in("charlie", AgentProfile(harness="codex"))
+    store.register_worker("bob")
+    store.register_worker("charlie", AgentProfile(harness="codex"))
     implement = store.assign_task("bob", "implementer", "IMPLEMENT", "Do it")
     store.submit_result(
         implement.id,
@@ -2956,7 +2908,7 @@ def test_writer_attribution_covers_every_insertion_path(store: HubStore) -> None
     """M4 Step 6a (#723): every writer names its workflow; hub-level stays NULL."""
 
     workflow_id = store.get_state()["workflow"]["id"]
-    store.check_in("bob")
+    store.register_worker("bob")
     with database(store.path) as connection:
         checkin_msg = connection.execute(
             "SELECT workflow_id FROM message WHERE task_id IS NULL ORDER BY id DESC LIMIT 1"
@@ -3018,7 +2970,7 @@ def test_writer_attribution_covers_every_insertion_path(store: HubStore) -> None
     assert _row_workflow_id(store, "decision", decision_id) == workflow_id
 
     # Terminal transition retains its own workflow even when it activates the queue.
-    store.check_in("charlie")
+    store.register_worker("charlie")
     queued_id = store.start_workflow("Second run", policy={})
     from delivery_support import finish_run as _finish_for_writer
 
@@ -3059,7 +3011,7 @@ def test_taskless_messages_need_live_run_for_attribution(tmp_path: Path) -> None
     path = tmp_path / "taskless.db"
     initialize_database(path)
     lonely = HubStore(path)
-    lonely.check_in("solo")
+    lonely.register_worker("solo")
     with database(path) as connection:
         assert (
             connection.execute("SELECT workflow_id FROM message WHERE task_id IS NULL").fetchone()[
@@ -3073,8 +3025,8 @@ def test_taskless_messages_need_live_run_for_attribution(tmp_path: Path) -> None
             ).fetchone()["workflow_id"]
             is None
         )
-    lonely.initialize_workflow("First")
-    lonely.check_in("bob")
+    lonely.start_workflow("First")
+    lonely.register_worker("bob")
     with database(path) as connection:
         rows = connection.execute(
             "SELECT workflow_id FROM message WHERE task_id IS NULL ORDER BY id"
@@ -3085,7 +3037,7 @@ def test_taskless_messages_need_live_run_for_attribution(tmp_path: Path) -> None
 def test_old_question_answer_after_new_run_keeps_old_workflow(store: HubStore) -> None:
     """Answering an old question after a new run starts attributes to the old run."""
 
-    store.check_in("bob")
+    store.register_worker("bob")
     store.assign_task("bob", "implementer", "Build", "Do work")
     qid = store.ask_user("Merge?", None, actor="alice", session="s1")
     old_workflow = store.get_state()["workflow"]["id"]
@@ -3106,7 +3058,7 @@ def test_old_question_answer_after_new_run_keeps_old_workflow(store: HubStore) -
 def test_source_event_attribution_rejects_other_run_and_recorded(store: HubStore) -> None:
     """Terminal/other-run and hub-only recorded events cannot source new work."""
 
-    store.check_in("bob")
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
     with database(store.path) as connection:
@@ -3117,8 +3069,8 @@ def test_source_event_attribution_rejects_other_run_and_recorded(store: HubStore
     from delivery_support import finish_run as _finish
 
     _finish(store, "Done", actor="alice", session=None)
-    store.initialize_workflow("Next")
-    store.check_in("bob", worker_instance_id="bob-2")
+    store.start_workflow("Next")
+    store.register_worker("bob", worker_instance_id="bob-2")
     with pytest.raises(ConflictError, match="another run"):
         store.assign_task(
             "bob", "implementer", "Build", "Do work", source_event_id=completed_event["id"]
@@ -3136,8 +3088,8 @@ def test_source_event_attribution_rejects_other_run_and_recorded(store: HubStore
 def test_agent_released_record_from_release_agent(store: HubStore) -> None:
     """Exactly one run-attributed recorded row per changed agent; none twice."""
 
-    store.check_in("bob")
-    store.check_in("charlie")
+    store.register_worker("bob")
+    store.register_worker("charlie")
     workflow_id = store.get_state()["workflow"]["id"]
     store.release_agent("bob", actor="alice")
     with database(store.path) as connection:
@@ -3177,9 +3129,9 @@ def test_agent_released_record_from_done_sweep(tmp_path: Path) -> None:
     path = tmp_path / "sweep.db"
     initialize_database(path)
     sweep_store = HubStore(path)
-    sweep_store.initialize_workflow("Run")
-    sweep_store.check_in("bob")
-    sweep_store.check_in("charlie")
+    sweep_store.start_workflow("Run")
+    sweep_store.register_worker("bob")
+    sweep_store.register_worker("charlie")
     workflow_id = sweep_store.get_state()["workflow"]["id"]
     from delivery_support import finish_run as _finish
 
@@ -3208,7 +3160,7 @@ def test_agent_released_no_live_run_is_hub_scoped(tmp_path: Path) -> None:
     path = tmp_path / "hubscoped.db"
     initialize_database(path)
     lonely = HubStore(path)
-    lonely.check_in("bob")
+    lonely.register_worker("bob")
     lonely.release_agent("bob", actor="alice")
     with database(path) as connection:
         row = connection.execute(
@@ -3265,24 +3217,24 @@ def test_two_runs_with_overlapping_timestamps_keep_attribution(
     frozen_clock.install(two)
 
     # Run 1 writes at T0.
-    two.initialize_workflow("First")
-    two.check_in("bob")
+    two.start_workflow("First")
+    two.register_worker("bob")
     run1 = two.get_state()["workflow"]["id"]
     t1 = two.assign_task("bob", "implementer", "First", "Do first")
     two.record_progress(t1.id, "bob", "run1-progress")
     d1 = two.log_decision("Run1 decision", "Because", actor="alice", session=None)
     two.submit_result(t1.id, "bob", TaskState.COMPLETED, summary="Done1")
-    # Taskless check-in message for run 1 is already written by check_in above.
+    # Taskless check-in message for run 1 is already written by join_worker above.
 
     # Run 2 writes at the same wall time (equal), then earlier (backward).
     from delivery_support import finish_run as _finish_two
 
     _finish_two(two, "Done1", actor="alice", session=None)
-    two.initialize_workflow("Second")
+    two.start_workflow("Second")
     run2 = two.get_state()["workflow"]["id"]
     assert run2 != run1
     # Equal: do not advance; run 2's created/ts equal run 1's last write.
-    two.check_in("bob", worker_instance_id="bob-2")
+    two.register_worker("bob", worker_instance_id="bob-2")
     t2 = two.assign_task("bob", "implementer", "Second", "Do second")
     two.record_progress(t2.id, "bob", "run2-progress")
     d2 = two.log_decision("Run2 decision", "Because", actor="alice", session=None)
@@ -3366,7 +3318,7 @@ def test_attribution_work_submitted(tmp_path: Path) -> None:
     path = tmp_path / "worksubmitted.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("First")
+    store.start_workflow("First")
     queued = store.start_workflow("Second statement", emit_work_submitted=True)
     with database(path) as connection:
         row = connection.execute(
@@ -3376,7 +3328,7 @@ def test_attribution_work_submitted(tmp_path: Path) -> None:
 
 
 def test_attribution_set_task_state_message(store: HubStore) -> None:
-    store.check_in("bob")
+    store.register_worker("bob")
     task = store.assign_task("bob", "implementer", "Build", "Do work")
     wid = task.workflow_id
     store.set_task_state(task.id, TaskState.CANCELED, "No longer needed")
@@ -3429,7 +3381,7 @@ def test_attribution_ci_settled_and_expired(tmp_path: Path, frozen_clock: Frozen
     initialize_database(path)
     ci_store = HubStore(path)
     frozen_clock.install(ci_store)
-    ci_store.initialize_workflow(policy={"max_wall_minutes": 60})
+    ci_store.start_workflow(DEFAULT_GOAL, policy={"max_wall_minutes": 60})
     wid = ci_store.get_state()["workflow"]["id"]
     pr = "https://github.com/octo/sandbox/pull/7"
     head = "a" * 40
@@ -3457,8 +3409,8 @@ def test_attribution_closeout_report(tmp_path: Path) -> None:
     path = tmp_path / "closeoutattr.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("Run")
-    store.check_in("bob", worker_instance_id="bob-instance")
+    store.start_workflow("Run")
+    store.register_worker("bob", worker_instance_id="bob-instance")
     task = store.assign_task("bob", "implementer", "Build", "Do")
     store.submit_result(task.id, "bob", TaskState.COMPLETED, summary="Done")
     run_id = store.get_state()["run_id"]
@@ -3485,8 +3437,8 @@ def test_attribution_lease_expired(tmp_path: Path, frozen_clock: FrozenClock) ->
     initialize_database(path)
     store = HubStore(path)
     frozen_clock.install(store)
-    store.initialize_workflow("Run")
-    store.check_in("bob")
+    store.start_workflow("Run")
+    store.register_worker("bob")
     wid = store.get_state()["workflow"]["id"]
     store.assign_task("bob", "implementer", "Build", "Do", lease_min=1)
     frozen_clock.advance(120)
@@ -3505,8 +3457,8 @@ def test_attribution_agent_lost_branches(tmp_path: Path, frozen_clock: FrozenClo
     initialize_database(path)
     store = HubStore(path)
     frozen_clock.install(store)
-    store.initialize_workflow("Run")
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.start_workflow("Run")
+    store.register_worker("bob", worker_instance_id="bob-1")
     wid = store.get_state()["workflow"]["id"]
     store.assign_task("bob", "implementer", "Build", "Do")
     frozen_clock.advance(400)
@@ -3523,8 +3475,8 @@ def test_attribution_agent_lost_branches(tmp_path: Path, frozen_clock: FrozenClo
     initialize_database(path2)
     live_store = HubStore(path2)
     frozen_clock.install(live_store)
-    live_store.initialize_workflow("Run")
-    live_store.check_in("solo", worker_instance_id="solo-1")
+    live_store.start_workflow("Run")
+    live_store.register_worker("solo", worker_instance_id="solo-1")
     live_wid = live_store.get_state()["workflow"]["id"]
     frozen_clock.advance(400)
     live_store.sweep(60)
@@ -3539,7 +3491,7 @@ def test_attribution_agent_lost_branches(tmp_path: Path, frozen_clock: FrozenClo
     initialize_database(path3)
     hub_store = HubStore(path3)
     frozen_clock.install(hub_store)
-    hub_store.check_in("ghost", worker_instance_id="ghost-1")
+    hub_store.register_worker("ghost", worker_instance_id="ghost-1")
     frozen_clock.advance(400)
     hub_store.sweep(60)
     with database(path3) as connection:
@@ -3554,11 +3506,11 @@ def test_attribution_stall_events_and_decisions(tmp_path: Path, frozen_clock: Fr
     initialize_database(path)
     store = HubStore(path, detect_host_pauses=False)
     frozen_clock.install(store)
-    store.initialize_workflow(policy={"stall_after_min": 1, "stall_action_after_min": 3})
+    store.start_workflow(DEFAULT_GOAL, policy={"stall_after_min": 1, "stall_action_after_min": 3})
     wid = store.get_state()["workflow"]["id"]
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     instance = str(agent.worker_instance_id)
-    store.note_worker_call("bob", instance, "check_in")
+    store.note_worker_call("bob", instance, "join")
     task = store.assign_task("bob", "implementer", "Fix", "Do it")
     frozen_clock.advance(70)
     store.heartbeat("bob", instance, task.id)
@@ -3622,9 +3574,9 @@ def test_attribution_ask_withdraw_and_superseded(tmp_path: Path) -> None:
     path = tmp_path / "askattr.db"
     initialize_database(path)
     store = HubStore(path)
-    store.initialize_workflow("Run")
+    store.start_workflow("Run")
     wid = store.get_state()["workflow"]["id"]
-    store.check_in("bob")
+    store.register_worker("bob")
     # ask_user decision.
     qid = store.ask_user("Merge?", None, actor="alice", session="s1")
     with database(path) as connection:
@@ -3669,7 +3621,7 @@ def test_attribution_ask_withdraw_and_superseded(tmp_path: Path) -> None:
 
 
 async def test_attribution_repeated_diagnostic(store: HubStore, frozen_clock: FrozenClock) -> None:
-    agent = store.check_in("bob")
+    agent = store.register_worker("bob")
     wid = store.get_state()["workflow"]["id"]
     store.assign_task("bob", "implementer", "Build", "Do")
     await store.await_assignment(agent.context_id, 0.2)
@@ -3715,7 +3667,7 @@ def test_attribution_host_paused_stays_null(tmp_path: Path) -> None:
     clocks = _Clocks()
     store.clock = clocks
     store.monotonic_clock = clocks.monotonic
-    store.check_in("bob", worker_instance_id="bob-1")
+    store.register_worker("bob", worker_instance_id="bob-1")
     assert store.sweep(180) == []
     clocks.step(4 * 3600, 10)
     events = store.sweep(180)

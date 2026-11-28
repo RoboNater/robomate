@@ -31,7 +31,6 @@ def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_home: Path) -> P
     checkout.mkdir()
     (checkout / "pyproject.toml").touch()
     (checkout / "uv.lock").touch()
-    write_skill(checkout / "skills/worker", b"# Worker\nJoin the hub.\n")
     write_skill(checkout / "skills/alice-orchestrator", b"# Alice\n")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     for name in ("XDG_STATE_HOME", "LOCALAPPDATA"):
@@ -381,15 +380,16 @@ def test_skill_directory_links(
 ) -> None:
     assert run(monkeypatch, setup, "--save") == 0
     capsys.readouterr()
-    original = setup / "skills/worker"
+    original = setup / "skills/alice-orchestrator"
     target = original
     if target_kind == "wrong-skill":
-        target = setup / "skills/alice-orchestrator"
+        target = setup / "skills/alice-relay"
+        write_skill(target, b"# Archived\n")
     elif target_kind != "checkout":
         # A live link to the wrong checkout fails even with identical bytes.
-        target = setup.with_name("checkout-other") / "skills/worker"
+        target = setup.with_name("checkout-other") / "skills/alice-orchestrator"
         write_skill(target, (original / "SKILL.md").read_bytes())
-    installed = user_home / ".claude/skills/worker"
+    installed = user_home / ".claude/skills/alice-orchestrator"
     link_skill(installed, target)
     if target_kind == "broken":
         (target / "SKILL.md").unlink()
@@ -410,7 +410,7 @@ def test_skill_directory_links(
 
 @pytest.mark.parametrize(
     ("content", "status"),
-    [(b"# Worker\nJoin the hub.\n", 0), (b"# Worker\r\nJoin the hub.\r\n", 0), (b"# Old\n", 1)],
+    [(b"# Alice\n", 0), (b"# Alice\r\n", 0), (b"# Old\n", 1)],
 )
 def test_skill_copies(
     setup: Path,
@@ -422,7 +422,7 @@ def test_skill_copies(
 ) -> None:
     assert run(monkeypatch, setup, "--save") == 0
     capsys.readouterr()
-    installed = write_skill(user_home / ".agents/skills/worker", content)
+    installed = write_skill(user_home / ".agents/skills/alice-orchestrator", content)
 
     assert run(monkeypatch, setup) == status
     findings = [line for line in capsys.readouterr().out.splitlines() if str(installed) in line]
@@ -456,7 +456,9 @@ def test_missing_installable_skill_is_reported_without_failing(
     capsys.readouterr()
     assert run(monkeypatch, setup) == 0
     out = capsys.readouterr().out
-    assert f"INFO: Antigravity skill {user_home / '.gemini/config/skills/worker'}" in out
+    assert (
+        f"INFO: Antigravity skill {user_home / '.gemini/config/skills/alice-orchestrator'}" in out
+    )
     assert "absent" in out
 
 

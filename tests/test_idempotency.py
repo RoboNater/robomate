@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +22,8 @@ from agent_hub_common import (
 )
 from conftest import MonotonicClock
 
+pytestmark = pytest.mark.hub_settings(guides_dir=Path(__file__).resolve().parents[1] / "guides")
+
 
 def _rpc(
     method: str,
@@ -32,6 +35,8 @@ def _rpc(
         metadata = message.setdefault("metadata", {})
         if isinstance(metadata, dict):
             metadata.setdefault(MetaKeys.WORKER_INSTANCE_ID, "test-worker-instance")
+            if message.get("parts") == [{"kind": "text", "text": "READY"}]:
+                metadata.setdefault(MetaKeys.STANDING_ROLE, "worker")
     return {
         "jsonrpc": "2.0",
         "id": req_id or uuid4().hex,
@@ -40,7 +45,7 @@ def _rpc(
     }
 
 
-async def test_check_in_idempotency_and_conflict(
+async def test_join_worker_idempotency_and_conflict(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     op_id = "op-checkin-test-1"
@@ -118,7 +123,7 @@ async def test_progress_idempotency_and_conflict(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     # Check in bob
-    hub_store.check_in(
+    hub_store.register_worker(
         "bob",
         AgentProfile(harness="claude-code", capabilities=("python",)),
         worker_instance_id="test-worker-instance",
@@ -197,7 +202,7 @@ async def test_progress_idempotency_and_conflict(
 async def test_result_idempotency_and_conflict(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    hub_store.check_in(
+    hub_store.register_worker(
         "bob",
         AgentProfile(harness="claude-code", capabilities=("python",)),
         worker_instance_id="test-worker-instance",
@@ -289,7 +294,7 @@ async def test_validation_failure_leaves_task_working(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     # 1. Reviewer validation failures
-    hub_store.check_in(
+    hub_store.register_worker(
         "charlie",
         AgentProfile(harness="codex", capabilities=("python",)),
         worker_instance_id="test-worker-instance",
@@ -373,7 +378,7 @@ async def test_validation_failure_leaves_task_working(
     assert "blocking_findings to be empty" in resp.json()["error"]["message"]
 
     # 2. Implementer validation failure
-    hub_store.check_in(
+    hub_store.register_worker(
         "bob",
         AgentProfile(harness="claude-code", capabilities=("python",)),
         worker_instance_id="test-worker-instance",
@@ -487,7 +492,7 @@ async def test_schema_version_rejections(client: httpx.AsyncClient, bad_version:
 async def test_typed_result_roundtrip_a2a_to_get_state(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    hub_store.check_in(
+    hub_store.register_worker(
         "bob",
         AgentProfile(harness="claude-code", capabilities=("python",)),
         worker_instance_id="test-worker-instance",
@@ -550,7 +555,7 @@ async def test_typed_result_roundtrip_a2a_to_get_state(
     assert matching[0]["result"]["resolved_finding_ids"] == ["r1-1", "r1-2"]
 
     # 3. Test ReviewerResult with findings
-    hub_store.check_in(
+    hub_store.register_worker(
         "charlie",
         AgentProfile(harness="codex", capabilities=("python",)),
         worker_instance_id="test-worker-instance",
@@ -661,7 +666,7 @@ async def test_missing_schema_version_and_operation_id_rejected_with_400(
     assert "operation_id is required" in resp.json()["error"]["message"]
 
     # Now valid check-in
-    hub_store.check_in(
+    hub_store.register_worker(
         "bob", AgentProfile(capabilities=("python",)), worker_instance_id="test-worker-instance"
     )
     agent = hub_store.agent_by_name("bob")
@@ -807,7 +812,7 @@ async def test_atomic_rollback_on_failure(client: httpx.AsyncClient, hub_store: 
         raise RuntimeError("Simulated builder failure")
 
     with pytest.raises(RuntimeError, match="Simulated builder failure"):
-        hub_store.check_in(
+        hub_store.register_worker(
             "dave",
             AgentProfile(capabilities=("python",)),
             operation_id=op_id,
@@ -833,7 +838,7 @@ async def test_atomic_rollback_on_failure(client: httpx.AsyncClient, hub_store: 
         )
 
     # Submit result failure rollback
-    hub_store.check_in("dave", AgentProfile(capabilities=("python",)))
+    hub_store.register_worker("dave", AgentProfile(capabilities=("python",)))
     dave = hub_store.agent_by_name("dave")
     assert dave is not None
     task = hub_store.assign_task("dave", "implementer", "T1", "Inst")
@@ -897,16 +902,17 @@ async def test_worker_client_ambiguous_timeout_and_id_reuse(
 
     async def mock_request_with_timeout(*args: Any, **kwargs: Any) -> httpx.Response:
         nonlocal call_count
-        call_count += 1
         json_body = kwargs.get("json")
-        if json_body:
-            captured_payloads.append(json_body)
+        if not json_body:
+            return await original_request(*args, **kwargs)
+        call_count += 1
+        captured_payloads.append(json_body)
         if call_count == 1:
             raise httpx.ReadTimeout("Read timed out")
         return await original_request(*args, **kwargs)
 
     with patch.object(client, "request", side_effect=mock_request_with_timeout):
-        reg = await worker.check_in()
+        reg = await worker.join(worker.settings.agent_name, "worker")
         assert reg["status"] == "registered"
 
     # Verify 2 attempts were made with identical messageId and hub.operation_id
@@ -1007,9 +1013,8 @@ async def test_worker_client_clears_pending_ids_after_success(
     worker = WorkerHubClient(settings, http_client=client)
 
     # 1. First check-in
-    reg1 = await worker.check_in(["python"])
+    reg1 = await worker.join(worker.settings.agent_name, "worker", capabilities=["python"])
     assert reg1["status"] == "registered"
-    assert worker._pending_checkin is None
 
     agent1 = hub_store.agent_by_name("alice-worker")
     assert agent1 is not None and agent1.status == AgentStatus.IDLE
@@ -1063,11 +1068,10 @@ async def test_worker_client_clears_pending_ids_after_success(
     with pytest.raises(Exception, match="not idle"):
         hub_store.assign_task("alice-worker", "implementer", "Task 2", "Inst 2")
 
-    # Calling check_in again on the same client must generate a new operation_id
+    # Calling join_worker again on the same client must generate a new operation_id
     # and re-admit the worker from LOST to IDLE
-    reg2 = await worker.check_in(["python"])
+    reg2 = await worker.join(worker.settings.agent_name, "worker", capabilities=["python"])
     assert reg2["status"] == "registered"
-    assert worker._pending_checkin is None
 
     agent_reopened = hub_store.agent_by_name("alice-worker")
     assert agent_reopened is not None
@@ -1082,9 +1086,8 @@ async def test_worker_client_clears_pending_ids_after_success(
     agent_released = hub_store.agent_by_name("alice-worker")
     assert agent_released is not None and agent_released.status == AgentStatus.RELEASED
 
-    reg3 = await worker.check_in(["python"])
+    reg3 = await worker.join(worker.settings.agent_name, "worker", capabilities=["python"])
     assert reg3["status"] == "registered"
-    assert worker._pending_checkin is None
 
     # Total operations recorded for alice-worker should be 6 distinct IDs
     # (check-in 1, prog 1, prog 2, submit_result 1, check-in 2 re-admission,

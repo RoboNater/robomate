@@ -122,41 +122,6 @@
     }
   },
   {
-    "name": "initialize_workflow",
-    "description": "Persist the initial prompt's goal and policy, or confirm them on restart.\n\n        This must be Alice's first mutating call. Goal and policy are immutable;\n        use get_state to resume the stored workflow after a restart.\n        ",
-    "inputSchema": {
-      "properties": {
-        "goal": {
-          "title": "Goal",
-          "type": "string"
-        },
-        "policy": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Policy"
-        }
-      },
-      "required": [
-        "goal"
-      ],
-      "title": "initialize_workflowArguments",
-      "type": "object"
-    },
-    "outputSchema": {
-      "additionalProperties": true,
-      "title": "initialize_workflowDictOutput",
-      "type": "object"
-    }
-  },
-  {
     "name": "start_workflow",
     "description": "Start the oldest queued run, or create one from chat.\n\n        With no statement, the oldest queued workflow becomes active. With a\n        statement, a new run is created: active when no run is live and nothing\n        is queued, otherwise queued behind the live run. Only one live and one\n        queued run may exist.\n        ",
     "inputSchema": {

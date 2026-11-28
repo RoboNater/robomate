@@ -91,7 +91,7 @@ advance in steps shorter than `lost_after_s` and sweep after each.
 
 ### Holds use real time
 
-`HubStore._wait_for`, which times `await_assignment`, `ask_alice` and
+`HubStore._wait_for`, which times `await_assignment`, `ask_orchestrator` and
 `wait_for_event` holds, measures their `timeout_s` with the module's
 `monotonic()`, not the store's clocks. A frozen clock therefore never hangs a
 hold: its timeout still runs out in real time

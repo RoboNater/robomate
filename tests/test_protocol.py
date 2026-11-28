@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 from agent_hub.activity import HOLD_GRACE_S
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import (
     MAX_MESSAGE_PART_BYTES,
     MAX_TYPED_RESULT_BYTES,
@@ -16,7 +16,7 @@ from agent_hub_common import (
     ModelSource,
     TaskState,
 )
-from conftest import BASE_URL, TOKEN, check_in, message, rpc, sse_results
+from conftest import BASE_URL, TOKEN, join_worker, message, rpc, sse_results
 from fastapi import FastAPI
 from timing import LIVENESS_S, FrozenClock, wait_until
 
@@ -35,7 +35,7 @@ async def post(
 async def assigned_context(client: httpx.AsyncClient, store: HubStore) -> tuple[str, str]:
     """Check Bob in, give him a task, and return his context and task ids."""
 
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     task = store.assign_task("bob", "implementer", "Fix #1", "Open a PR")
     stream = await client.post(
         "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
@@ -44,7 +44,7 @@ async def assigned_context(client: httpx.AsyncClient, store: HubStore) -> tuple[
     return context_id, task.id
 
 
-async def test_check_in_returns_the_context_the_worker_must_use(
+async def test_join_worker_returns_the_context_the_worker_must_use(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     body = await post(
@@ -71,7 +71,7 @@ async def test_check_in_returns_the_context_the_worker_must_use(
 async def test_a_second_live_worker_with_the_same_name_gets_conflict(
     client: httpx.AsyncClient,
 ) -> None:
-    await check_in(client, "bob", worker_instance_id="bob-1")
+    await join_worker(client, "bob", worker_instance_id="bob-1")
 
     body = await post(
         client,
@@ -95,7 +95,7 @@ async def test_a_second_live_worker_with_the_same_name_gets_conflict(
 async def test_heartbeat_is_an_immediate_message_send_intent(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    context_id = await check_in(client, "bob", worker_instance_id="bob-1")
+    context_id = await join_worker(client, "bob", worker_instance_id="bob-1")
     before = hub_store.agent_by_name("bob")
     assert before is not None
 
@@ -123,10 +123,10 @@ async def test_heartbeat_is_an_immediate_message_send_intent(
     assert after is not None and after.last_heartbeat >= before.last_heartbeat
 
 
-async def test_a_detach_heartbeat_frees_the_instance_for_an_immediate_check_in(
+async def test_a_detach_heartbeat_frees_the_instance_for_an_immediate_join_worker(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    context_id = await check_in(client, "bob", worker_instance_id="bob-1")
+    context_id = await join_worker(client, "bob", worker_instance_id="bob-1")
     before = hub_store.agent_by_name("bob")
     assert before is not None
 
@@ -150,7 +150,7 @@ async def test_a_detach_heartbeat_frees_the_instance_for_an_immediate_check_in(
     detached = hub_store.agent_by_name("bob")
     # A detach is not a liveness signal.
     assert detached is not None and detached.last_heartbeat == before.last_heartbeat
-    assert await check_in(client, "bob", worker_instance_id="bob-2") == context_id
+    assert await join_worker(client, "bob", worker_instance_id="bob-2") == context_id
 
 
 @asynccontextmanager
@@ -181,13 +181,13 @@ def heartbeat(context_id: str, instance_id: str) -> dict[str, Any]:
     )
 
 
-async def test_check_in_and_heartbeat_record_the_observed_peer_address(
+async def test_join_worker_and_heartbeat_record_the_observed_peer_address(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     """#126: check-in sets both addresses; a heartbeat moves only the latest."""
 
     async with peer(app, "192.0.2.10") as windows:
-        context_id = await check_in(windows, "bob", worker_instance_id="bob-1")
+        context_id = await join_worker(windows, "bob", worker_instance_id="bob-1")
     bob = hub_store.agent_by_name("bob")
     assert bob is not None
     assert (bob.checkin_remote_addr, bob.last_remote_addr) == ("192.0.2.10", "192.0.2.10")
@@ -216,7 +216,7 @@ async def test_a_header_claiming_an_address_is_ignored(
     }
     async with peer(app, "192.0.2.10") as windows:
         windows.headers.update(claims)
-        context_id = await check_in(windows, "bob", worker_instance_id="bob-1")
+        context_id = await join_worker(windows, "bob", worker_instance_id="bob-1")
         await post(windows, "message/send", heartbeat(context_id, "bob-1"))
 
     bob = hub_store.agent_by_name("bob")
@@ -228,7 +228,7 @@ async def test_a_superseded_heartbeat_leaves_the_live_address_alone(
     app: FastAPI, client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     async with peer(app, "192.0.2.10") as windows:
-        context_id = await check_in(windows, "bob", worker_instance_id="bob-1")
+        context_id = await join_worker(windows, "bob", worker_instance_id="bob-1")
     async with peer(app, "192.0.2.99") as stale:
         body = await post(stale, "message/send", heartbeat(context_id, "bob-0"))
 
@@ -240,7 +240,7 @@ async def test_a_superseded_heartbeat_leaves_the_live_address_alone(
 async def test_worker_calls_require_the_current_instance_id(
     client: httpx.AsyncClient,
 ) -> None:
-    context_id = await check_in(client, "bob", worker_instance_id="bob-1")
+    context_id = await join_worker(client, "bob", worker_instance_id="bob-1")
     params = message("NEXT", context_id=context_id)
     params["message"]["metadata"].pop(MetaKeys.WORKER_INSTANCE_ID)
 
@@ -250,14 +250,14 @@ async def test_worker_calls_require_the_current_instance_id(
     assert "worker_instance_id" in body["error"]["message"]
 
 
-async def test_a_message_with_no_task_must_be_the_check_in(client: httpx.AsyncClient) -> None:
+async def test_a_message_with_no_task_must_be_the_join_worker(client: httpx.AsyncClient) -> None:
     body = await post(client, "message/send", message("hello", metadata={MetaKeys.AGENT: "bob"}))
 
     assert body["error"]["code"] == -32602
     assert "READY" in body["error"]["message"]
 
 
-async def test_check_in_needs_the_agent_name(client: httpx.AsyncClient) -> None:
+async def test_join_worker_needs_the_agent_name(client: httpx.AsyncClient) -> None:
     body = await post(
         client,
         "message/send",
@@ -274,7 +274,7 @@ async def test_check_in_needs_the_agent_name(client: httpx.AsyncClient) -> None:
     assert "agent" in body["error"]["message"].lower()
 
 
-async def test_check_in_records_the_reported_profile(
+async def test_join_worker_records_the_reported_profile(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     body = await post(
@@ -306,7 +306,7 @@ async def test_check_in_records_the_reported_profile(
     assert agent.workspace_id == "ws-charlie"
 
 
-async def test_check_in_records_a_declared_model_beside_a_configured_one(
+async def test_join_worker_records_a_declared_model_beside_a_configured_one(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     body = await post(
@@ -337,7 +337,7 @@ async def test_check_in_records_a_declared_model_beside_a_configured_one(
     assert event.payload["model_mismatch"] is True
 
 
-async def test_a_check_in_from_a_worker_that_predates_declared_model_records_unknown(
+async def test_a_join_worker_from_a_worker_that_predates_declared_model_records_unknown(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     metadata: dict[str, Any] = {
@@ -356,7 +356,7 @@ async def test_a_check_in_from_a_worker_that_predates_declared_model_records_unk
     assert event is not None and event.payload["model_mismatch"] is False
 
 
-async def test_a_check_in_without_a_profile_records_unknown(
+async def test_a_join_worker_without_a_profile_records_unknown(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     # A source with no model describes nothing, so it is dropped too.
@@ -414,7 +414,7 @@ async def test_a_malformed_profile_is_refused(
 async def test_next_holds_until_alice_assigns(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     order: list[str] = []
 
     async def alice() -> str:
@@ -458,7 +458,7 @@ async def test_next_holds_until_alice_assigns(
 async def test_next_returns_a_timeout_marker_when_nothing_is_assigned(
     client: httpx.AsyncClient,
 ) -> None:
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
 
     response = await client.post(
         "/a2a",
@@ -473,7 +473,7 @@ async def test_next_returns_a_timeout_marker_when_nothing_is_assigned(
 
 
 async def test_next_reports_release(client: httpx.AsyncClient, hub_store: HubStore) -> None:
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     hub_store.release_agent("bob")
 
     response = await client.post(
@@ -610,11 +610,11 @@ async def test_a_retried_question_still_receives_a_reply_sent_in_the_gap(
 async def test_a_worker_released_while_away_is_released_when_it_returns(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
-    await check_in(client, "bob")
+    await join_worker(client, "bob")
     hub_store.release_agent("bob")
 
     # The worker restarts and re-announces itself, as after a crash.
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     response = await client.post(
         "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
     )
@@ -737,7 +737,7 @@ async def test_a_reviewer_result_with_duplicate_ids_is_rejected(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     """#478: duplicate finding IDs are rejected at submit time, task stays WORKING."""
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     task = hub_store.assign_task(
         "bob",
         "reviewer",
@@ -918,7 +918,7 @@ HEAD = "0123456789abcdef0123456789abcdef01234567"
 async def assigned_rebase(client: httpx.AsyncClient, store: HubStore) -> tuple[str, dict[str, Any]]:
     """Check Bob in, give him a rebase bound to HEAD, and return what NEXT delivered."""
 
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     store.assign_task("bob", "rebase", "Rebase #7", "Bring #7 up to date", pr_head_sha=HEAD)
     stream = await client.post(
         "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
@@ -1003,7 +1003,7 @@ async def test_a_worker_cannot_act_on_another_workers_task(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     _, task_id = await assigned_context(client, hub_store)
-    charlie = await check_in(client, "charlie")
+    charlie = await join_worker(client, "charlie")
 
     body = await post(
         client,
@@ -1030,10 +1030,10 @@ async def test_a_worker_cannot_act_on_another_workers_task(
 async def test_bad_task_id_suggests_only_callers_open_task(
     client: httpx.AsyncClient, hub_store: HubStore, kind: str, held: bool, other_task: bool
 ) -> None:
-    context = await check_in(client, "bob")
+    context = await join_worker(client, "bob")
     own = hub_store.assign_task("bob", "implementer", "Bob's task", "work") if held else None
     if other_task:
-        await check_in(client, "charlie")
+        await join_worker(client, "charlie")
         target = hub_store.assign_task("charlie", "implementer", "Secret title", "work").id
     else:
         target = "missing-task"
@@ -1115,7 +1115,7 @@ async def test_unknown_methods_and_malformed_bodies_are_rejected(
 async def test_a_requested_timeout_is_clamped_to_the_configured_ceiling(
     client: httpx.AsyncClient,
 ) -> None:
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
 
     # The ceiling is 1s in the test settings; without clamping this would hang.
     response = await client.post(
@@ -1131,7 +1131,7 @@ async def test_a_requested_timeout_is_clamped_to_the_configured_ceiling(
 
 
 async def test_a_non_numeric_timeout_is_rejected(client: httpx.AsyncClient) -> None:
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
 
     body = await post(
         client,
@@ -1200,7 +1200,7 @@ async def test_first_next_has_no_already_held_flag(
 ) -> None:
     """#326: fresh assignments stay unflagged; wire `hub.schema_version` stays 1."""
 
-    context_id = await check_in(client, "bob")
+    context_id = await join_worker(client, "bob")
     hub_store.assign_task("bob", "implementer", "Fix #1", "Open a PR")
     response = await client.post(
         "/a2a", json=rpc("message/stream", message("NEXT", context_id=context_id))
@@ -1304,7 +1304,7 @@ async def test_rejected_task_calls_record_diagnostic_counts(
     client: httpx.AsyncClient, hub_store: HubStore
 ) -> None:
     context_id, held_id = await assigned_context(client, hub_store)
-    other_context = await check_in(client, "charlie")
+    other_context = await join_worker(client, "charlie")
     other = hub_store.assign_task("charlie", "implementer", "Other", "Private")
     assert other_context != context_id
     for task_id in ("mistyped-id", other.id):
@@ -1333,7 +1333,7 @@ async def test_paced_next_preserves_hold_lease_and_stall_progress(
     client: httpx.AsyncClient, app: FastAPI, frozen_clock: FrozenClock
 ) -> None:
     hub_store: HubStore = app.state.store
-    hub_store.initialize_workflow(policy={"stall_after_min": 1})
+    hub_store.start_workflow(DEFAULT_GOAL, policy={"stall_after_min": 1})
     context_id, task_id = await assigned_context(client, hub_store)
     next_request = rpc(
         "message/stream",
@@ -1413,7 +1413,7 @@ async def test_worker_negotiated_hold_matches_the_activity_deadline(
         assert activity is not None
         hold = activity.active_hold(self.clock())
         assert hold is not None
-        assert hold.kind == ("ask_alice" if question else "await_assignment")
+        assert hold.kind == ("ask_orchestrator" if question else "await_assignment")
         durations.append((timeout_s, (hold.deadline - hold.started).total_seconds()))
 
     async def record_assignment(
@@ -1457,7 +1457,7 @@ async def test_worker_negotiated_hold_matches_the_activity_deadline(
 async def test_a2a_rejects_invalid_hold_timeouts(client: httpx.AsyncClient, timeout: Any) -> None:
     import json
 
-    context = await check_in(client, "bob")
+    context = await join_worker(client, "bob")
     body = rpc(
         "message/stream",
         message("NEXT", context_id=context, metadata={MetaKeys.TIMEOUT_S: timeout}),

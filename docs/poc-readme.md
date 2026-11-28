@@ -10,7 +10,7 @@ bearer enforcement), Alice's MCP tools over stdio (including the
 Codex CLI workers to the hub, plus the durability contracts and reference
 harness that precedes Step 5's runtime behavior. The hub-mode
 [`alice-orchestrator`](../skills/alice-orchestrator/SKILL.md) skill,
-runtime-neutral [`guides/`](../guides), and launcher [`prompts/`](../prompts) now
+runtime-neutral [`guides/`](../guides), and launcher [`prompts/`](https://github.com/RoboNater/robomate/tree/b15b064ed7b3a2693e59f35743b7fbbad9f27eba/prompts) now
 encode the Step 5B workflow. The prompts-only
 [`alice-relay`](../skills/alice-relay/SKILL.md) skill remains as its reviewed
 baseline ([trial notes](historical/poc/notes/relay-trial-2026-09.md)).

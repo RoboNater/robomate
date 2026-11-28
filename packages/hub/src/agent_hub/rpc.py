@@ -503,8 +503,9 @@ class RpcDispatcher:
                     raise RpcError(
                         INVALID_PARAMS,
                         f"explicit HUB_WORKSPACE {reported_path or '(unset)'} has no matching "
-                        f"identity for agent {name!r}; run scripts/bootstrap-workspace "
-                        "for that agent, or unset HUB_WORKSPACE to use a generated worktree",
+                        f"identity for agent {name!r}; provision a clone with "
+                        "robomate workspace --clone for that agent, or unset HUB_WORKSPACE "
+                        "to use a generated worktree",
                     )
                 if reported_path is None:
                     raise RpcError(

@@ -147,6 +147,7 @@ def test_hub_entry_point_is_http_only_and_records_socket_peer(tmp_path: Path) ->
                 time.sleep(0.02)
         metadata = {
             MetaKeys.AGENT: "bob",
+            MetaKeys.STANDING_ROLE: "worker",
             MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
             MetaKeys.OPERATION_ID: "op-1",
             MetaKeys.WORKER_INSTANCE_ID: "bob-1",
@@ -386,6 +387,7 @@ def test_hub_entry_point_honours_hub_log_file_and_debug_level(tmp_path: Path) ->
                 "role": "user",
                 "parts": [{"kind": "text", "text": "READY"}],
                 "metadata": {
+                    MetaKeys.STANDING_ROLE: "worker",
                     MetaKeys.AGENT: "bob",
                     MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
                     MetaKeys.OPERATION_ID: "op-1",

@@ -80,8 +80,8 @@ def approved_run(
     policy: dict[str, object] | None = None,
 ) -> tuple[str, str]:
     wid = store.start_workflow("Open a PR and complete the change", policy)
-    store.check_in("bob")
-    store.check_in("charlie")
+    store.register_worker("bob")
+    store.register_worker("charlie")
     implementation(store, pr_url)
     approve(store, pr_url)
     return wid, store.get_workflow(wid)["run_id"]
@@ -314,7 +314,7 @@ async def test_legacy_unbound_rebase_cannot_supply_approval(store: HubStore) -> 
     pr_url = "https://github.com/octo/sandbox/pull/7"
     workflow_id = store.start_workflow("Recover an old run", {"closeout": False})
     run_id = store.get_workflow(workflow_id)["run_id"]
-    store.check_in("bob")
+    store.register_worker("bob")
     task = store.assign_task("bob", "rebase", "Rebase", "Refresh base", pr_head_sha=HEAD)
     store.submit_result(
         task.id,

@@ -79,7 +79,7 @@ def test_verify_endurance_telemetry_requires_timeouts_heartbeat_and_release(
             "timestamp": "2026-09-12T00:00:02Z",
             "event": "tool_call",
             "phase": "success",
-            "tool": "ask_alice",
+            "tool": "ask_orchestrator",
             "outcome": "timeout",
             "worker_instance_id": "current-worker",
         },
@@ -195,7 +195,7 @@ def test_verify_endurance_telemetry_rejects_stale_worker_evidence(tmp_path: Path
             for index, (tool, outcome) in enumerate(
                 (
                     ("await_assignment", "timeout"),
-                    ("ask_alice", "timeout"),
+                    ("ask_orchestrator", "timeout"),
                     ("await_assignment", "release"),
                 )
             )
@@ -232,7 +232,7 @@ def test_verify_endurance_telemetry_rejects_only_approximate_long_work(
         {
             **base,
             "timestamp": "2026-09-12T00:00:02Z",
-            "tool": "ask_alice",
+            "tool": "ask_orchestrator",
             "outcome": "timeout",
         },
         {
@@ -298,7 +298,7 @@ async def test_mock_alice_drives_worker_through_full_task(
         database_path=db_path,
         token=TOKEN,
         token_file=tmp_path / "token",
-        guides_dir=tmp_path / "guides",
+        guides_dir=script_path.parents[1] / "guides",
         default_wait_s=0.5,
         max_wait_s=1.0,
         lost_after_s=60.0,
@@ -340,7 +340,7 @@ async def test_mock_alice_drives_worker_through_full_task(
 
         async def run_worker() -> None:
             # 1. Check in
-            await worker.check_in(["python"])
+            await worker.join(worker.settings.agent_name, "worker", capabilities=["python"])
 
             # 2. Wait for assignment
             assignment = await until_answered(lambda: worker.await_assignment(timeout_s=LIVENESS_S))
@@ -354,7 +354,7 @@ async def test_mock_alice_drives_worker_through_full_task(
 
             # 4. Ask a question and receive answer
             q_res = await until_answered(
-                lambda: worker.ask_alice(task_id, "Confirm design?", timeout_s=LIVENESS_S)
+                lambda: worker.ask_orchestrator(task_id, "Confirm design?", timeout_s=LIVENESS_S)
             )
             assert "Approved" in q_res.get("reply", "")
 
@@ -430,7 +430,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         database_path=db_path,
         token=TOKEN,
         token_file=tmp_path / "token",
-        guides_dir=tmp_path / "guides",
+        guides_dir=script_path.parents[1] / "guides",
         max_wait_s=LIVENESS_S,
         lost_after_s=ENDURANCE_LOST_AFTER_S,
         # The long-work path sweeps at each frozen-clock step below. Keep the
@@ -509,7 +509,7 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
         async def run_worker() -> None:
             nonlocal cycles
             async with WorkerHubClient(worker_settings, http_client=http_client) as worker:
-                await worker.check_in()
+                await worker.join(worker.settings.agent_name, "worker")
                 # Alice starts only after this empty poll returns a timeout.
                 assert await worker.await_assignment(timeout_s=0) == {"timeout": True}
                 assignment_timed_out.set()
@@ -522,11 +522,11 @@ async def test_mock_alice_drives_scaled_endurance_scenario(
                     cycles += 1
                     task_id = assignment["task_id"]
                     if cycles == 1:
-                        assert await worker.ask_alice(
+                        assert await worker.ask_orchestrator(
                             task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=0
                         ) == {"timeout": True}
                         question_timed_out.set()
-                        reply = await worker.ask_alice(
+                        reply = await worker.ask_orchestrator(
                             task_id, mock_alice.ENDURANCE_QUESTION, timeout_s=LIVENESS_S
                         )
                         assert "Approved" in reply.get("reply", "")
@@ -615,7 +615,7 @@ async def test_mock_alice_rejects_unexpected_harness(tmp_path: Path) -> None:
     store = HubStore(db_path)
 
     # Bob checks in as claude-code
-    store.check_in("bob", AgentProfile(harness="claude-code"))
+    store.register_worker("bob", AgentProfile(harness="claude-code"))
 
     # Mock Alice expects codex
     match_msg = "Worker 'bob' checked in with harness 'claude-code', expected 'codex'"
@@ -688,9 +688,9 @@ async def test_mock_alice_agent_already_checked_in_event_consumed(
     store = HubStore(db_path)
 
     # Bob checks in as codex
-    bob = store.check_in("bob", AgentProfile(harness="codex"))
+    bob = store.register_worker("bob", AgentProfile(harness="codex"))
 
-    # Consume the check_in event so wait_for_event returns None
+    # Consume the join_worker event so wait_for_event returns None
     event = await store.wait_for_event(timeout_s=0.01)
     assert event is not None and event.kind.value == "agent_checked_in"
 
@@ -729,9 +729,9 @@ async def test_mock_alice_agent_already_checked_in_mismatch(tmp_path: Path) -> N
     store = HubStore(db_path)
 
     # Bob checks in as codex
-    store.check_in("bob", AgentProfile(harness="codex"))
+    store.register_worker("bob", AgentProfile(harness="codex"))
 
-    # Consume the check_in event
+    # Consume the join_worker event
     await store.wait_for_event(timeout_s=0.01)
 
     match_msg = "Worker 'bob' checked in with harness 'codex', expected 'claude-code'"
@@ -895,7 +895,7 @@ async def test_mock_alice_backends_recover_from_every_crash_point(
     worker_hold_s = 2 * drive_timeout_s
 
     async def run_worker() -> None:
-        bob = store.check_in("bob", AgentProfile(harness="claude-code"))
+        bob = store.register_worker("bob", AgentProfile(harness="claude-code"))
         task = await store.await_assignment(bob.context_id, timeout_s=worker_hold_s)
         if not isinstance(task, TaskRecord):
             pytest.fail(f"worker: no task assigned within {worker_hold_s:g} s")
@@ -991,7 +991,7 @@ async def test_mock_alice_supplies_pr_head_sha_for_reviewer_and_rebase(
     db_path = tmp_path / f"role_{role}_{backend_kind}.db"
     initialize_database(db_path)
     store = HubStore(db_path)
-    bob = store.check_in("bob", AgentProfile(harness="codex"))
+    bob = store.register_worker("bob", AgentProfile(harness="codex"))
 
     async def finish_task() -> None:
         task = await store.await_assignment(bob.context_id, timeout_s=FULL_TASK_TIMEOUT_S)

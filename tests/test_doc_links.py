@@ -16,7 +16,6 @@ DOCS = sorted(
         ROOT / "README.md",
         ROOT / "AGENTS.md",
         ROOT / "guides" / "README.md",
-        ROOT / "runtimes" / "README.md",
         ROOT / "scripts" / "poc" / "README.md",
         *(ROOT / "docs").rglob("*.md"),
     }

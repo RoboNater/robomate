@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Start, resume or ask a joined agent, without generated configs (M2 Step 10, #247).
 
-The successor of ``alice-launcher.py``, ``worker-launcher.py``,
-``agent-recovery.py`` and ``agent-ask.py``, which stay for prepared runs until
-Step 11. It is optional and outside the core: the core experience is still the
-operator starting a harness in a worktree and typing one line (spec §2, §9.4).
+The launcher is optional. You can also start each harness in its own worktree
+and send its join line (spec §2, §9.4).
 Run it from the hub's checkout (or name the hub with ``--hub``)::
 
     uv run --project <robomate checkout> python scripts/agent-launcher.py start bob \\
@@ -87,7 +85,7 @@ sandbox, and ``--pytest-workers`` its ``PYTEST_XDIST_AUTO_NUM_WORKERS`` (0 clear
 an inherited one). The launch rows record them, so ``resume`` applies them again.
 ``start-run.py`` (#268) starts every agent of a scripted run this way.
 
-Exit codes as the prepared launchers: 0 done or released; 1 resumes spent;
+Exit codes: 0 done or released; 1 resumes spent;
 2 usage; 3 hub unreadable; 4 nothing safe to resume (and ``stop``: a recorded
 process it will not guess about, or a stop it cannot confirm); 5 paused; 130
 interrupted. An interactive or ask session returns the harness's own exit code.
@@ -132,7 +130,7 @@ from agent_recovery import (  # noqa: E402
 )
 from agent_sessions import conversation as saved_conversation  # noqa: E402
 from agent_sessions import exact_id  # noqa: E402
-from agent_worker import WorkerLauncher, WorkerReader, telemetry_size  # noqa: E402
+from agent_worker import WorkerLauncher, WorkerReader  # noqa: E402
 from mcp_preflight import check as check_mcp_entry  # noqa: E402
 from run_common import agy_mcp_path, bridge_identity_env, resolve_provider  # noqa: E402
 
@@ -145,7 +143,7 @@ PROGRAMS: dict[str, list[str]] = {
     "antigravity": ["agy"],
     "devin": ["devin"],
 }
-#: The run's permission flags (#335), as the prepared runs use them.
+#: The run's permission flags (#335).
 RUN_PERMISSIONS = {
     "claude-code": ["--permission-mode", "auto"],
     "codex": ["--approve-for-me"],
@@ -201,7 +199,7 @@ ADAPTERS: dict[str, dict[str, str]] = {
 #: Harnesses that accept the join or continuation as the first interactive prompt.
 PROMPTED_HARNESSES = ("claude-code", "codex", "opencode")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-#: The xdist budget a scripted run gives each agent (prepare-run's ``pytest_workers``).
+#: The xdist budget a scripted run gives each agent (``pytest_workers``).
 PYTEST_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 #: How long ``stop`` waits for a signalled launcher's stop row (#534).
 STOP_WAIT_S = 30.0
@@ -235,10 +233,7 @@ def join_line(agent: str, role: str) -> str:
             f"{line} Use the alice-orchestrator skill. {common.ORCHESTRATOR_KICKOFF} "
             f"{common.ORCHESTRATOR_TURN_RULE} {common.ORCHESTRATOR_HUB_BOUNDARY}"
         )
-    return (
-        f"{line} Use the worker skill. Then await your assignment with await_assignment. "
-        f"{common.WORKER_TURN_RULE}"
-    )
+    return f"{line} Then await your assignment with await_assignment. {common.WORKER_TURN_RULE}"
 
 
 def continuation(agent: str, role: str, *, joined: bool) -> str:
@@ -429,7 +424,7 @@ class Identity:
     """What a joined agent's launch exports beside its hub selection (#402, #285, #268).
 
     The bridge reads the declared identity from its environment, as the
-    prepared runs' rendered configs gave it; the harness's shell commands
+    configured MCP entry needs; the harness's shell commands
     inherit the isolated uv cache and the xdist budget. Launch rows record
     the parts a later ``resume`` cannot derive, so it exports them again.
     """
@@ -497,7 +492,7 @@ class Identity:
         }
 
     def prepare(self) -> None:
-        """Create the isolated uv cache owner-only (#285), as prepare-run did."""
+        """Create the isolated uv cache owner-only (#285)."""
 
         if self.uv_cache is None:
             return
@@ -1229,7 +1224,7 @@ def stop_agent(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
 
 
 class Joined(common.Launcher):
-    """What a joined agent's supervision changes in the prepared launchers.
+    """Supervise a single joined agent.
 
     The first prompt is the join line. A resume's continuation asks for a
     takeover only when this conversation has a recorded join (#512); each
@@ -1437,7 +1432,10 @@ class Joined(common.Launcher):
         if resumes == 0 and (not self.args.recover or not (Path(self.args.cwd) / ".venv").is_dir()):
             setup_workspace(self.args.identity.workspace_setup, Path(self.args.cwd), self.args.env)
         self.launched = True
-        offset = telemetry_size(self.bridge_log())
+        try:
+            offset = self.bridge_log().stat().st_size
+        except FileNotFoundError:
+            offset = 0
         self.join_offset = offset
         code = super().run_child(launch, action, resumes)
         self.scan_join(offset)
@@ -1556,9 +1554,8 @@ class JoinedWorker(Joined, WorkerLauncher):
 
         This launcher's own harness has exited; a bridge it left behind is
         superseded by the successor's join with takeover, which reattaches the
-        held task (§5, §7.5). Waiting for that bridge to become lost, as the
-        prepared launcher does before a check-in, would fail the task instead.
-        The first launch, and a manual resume, keep the prepared checks.
+        held task (§5, §7.5). The first launch and manual resume still verify
+        predecessor status.
         """
 
         if resumes == 0:
@@ -1598,8 +1595,6 @@ class JoinedWorker(Joined, WorkerLauncher):
         the pinned hub, so an earlier child's or another hub's record is never
         taken for this launch. A release stays decisive when the hub is gone.
         """
-        if super().released_locally():
-            return True
         if self.join_offset is None or not self.hub_id:
             return False
         return any(
@@ -1631,7 +1626,7 @@ def program_for(tools: Tools, harness: str) -> list[str]:
 
 
 def supervision_args(args: argparse.Namespace, place: Place, **fields: Any) -> argparse.Namespace:
-    """The namespace the prepared launchers' supervision reads."""
+    """Arguments for shared headless supervision."""
 
     values = {
         "hub_url": place.url,
@@ -1642,7 +1637,6 @@ def supervision_args(args: argparse.Namespace, place: Place, **fields: Any) -> a
         "resume_session": None,
         "resume_prompt": None,
         "recover": False,
-        "recovery_config": None,
         "hub_id": None,
         "workflow_id": None,
         "stopped_at": None,
@@ -1679,7 +1673,7 @@ def make_reader(tools: Tools, place: Place, agent: str, role: str) -> common.Hub
 
 
 def supervise(launcher: Joined, sessions: Path) -> int:
-    """common.main's supervision, with this launcher's own hints."""
+    """Run headless supervision with this launcher's recovery hints."""
 
     with common.interrupt_handlers(launcher):
         try:
@@ -2172,9 +2166,7 @@ def resume(args: argparse.Namespace, extra: list[str], tools: Tools) -> int:
     with agent_lock(log):
         supplied_conversation(log, saved, args.resume_session)
     if args.interactive:
-        namespace = argparse.Namespace(
-            harness=harness, sessions=log, recovery_config=None, **recovery
-        )
+        namespace = argparse.Namespace(harness=harness, sessions=log, **recovery)
         with agent_lock(log):
             conversation, _ = prepare(
                 namespace, reader, args.agent, orchestrator=role == "orchestrator"

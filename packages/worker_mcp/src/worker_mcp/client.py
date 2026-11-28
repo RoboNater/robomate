@@ -118,8 +118,6 @@ class WorkerHubClient:
         self._pending_questions: dict[str, tuple[str, str]] = {}
         # Active pending result (result_dict, operation_id) per task (§4.1)
         self._pending_results: dict[str, tuple[dict[str, Any], str]] = {}
-        # Active pending check-in (profile, operation_id)
-        self._pending_checkin: tuple[AgentProfile, str] | None = None
         # Active pending progress (note, operation_id) per task (§4.1)
         self._pending_progress: dict[str, tuple[str, str]] = {}
 
@@ -217,7 +215,7 @@ class WorkerHubClient:
         """
 
         if self.context_id is None:
-            raise RuntimeError("Worker has not checked in yet; call check_in first")
+            raise RuntimeError("Worker has not joined yet; call join first")
         metadata: dict[str, Any] = {
             MetaKeys.KIND: "heartbeat",
             MetaKeys.AGENT: self.settings.agent_name,
@@ -718,85 +716,6 @@ class WorkerHubClient:
         limit = effective.get("max_hold_s", self.settings.default_wait_s)
         return effective | {"default_wait_s": min(self.settings.default_wait_s, limit)}
 
-    async def check_in(
-        self,
-        capabilities: list[str] | None = None,
-        model: str | None = None,
-        operation_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Register the worker with the hub and store the returned contextId."""
-        await self._bind_hub()
-        profile = self.profile(capabilities, model)
-        if operation_id is not None:
-            op_id = operation_id
-        else:
-            if self._pending_checkin is not None and self._pending_checkin[0] == profile:
-                op_id = self._pending_checkin[1]
-            else:
-                op_id = uuid4().hex
-                self._pending_checkin = (profile, op_id)
-
-        metadata: dict[str, Any] = {
-            MetaKeys.AGENT: self.settings.agent_name,
-            MetaKeys.CAPABILITIES: list(profile.capabilities),
-            MetaKeys.HARNESS: profile.harness,
-            MetaKeys.HARNESS_SOURCE: profile.harness_source.value,
-            MetaKeys.HARNESS_VERSION: profile.harness_version,
-            MetaKeys.PROVIDER: profile.provider,
-            MetaKeys.MODEL: profile.model,
-            MetaKeys.MODEL_SOURCE: profile.model_source.value,
-            MetaKeys.DECLARED_MODEL: profile.declared_model,
-            MetaKeys.EFFORT: profile.effort,
-            MetaKeys.EFFORT_SOURCE: profile.effort_source.value,
-            MetaKeys.SCHEMA_VERSION: SCHEMA_VERSION,
-            MetaKeys.OPERATION_ID: op_id,
-            MetaKeys.WORKER_INSTANCE_ID: self.worker_instance_id,
-            **self._registration_metadata(),
-        }
-        if profile.workspace_id is not None:
-            metadata[MetaKeys.WORKSPACE_ID] = profile.workspace_id
-
-        params = {
-            "message": {
-                "messageId": uuid4().hex,
-                "role": "user",
-                "parts": [{"kind": "text", "text": "READY"}],
-                "metadata": metadata,
-            }
-        }
-        result = await self._post_rpc("message/send", params)
-        if not isinstance(result, dict):
-            raise WorkerProtocolError(None, "check_in response was not a dict")
-        res_meta = result.get("metadata") or {}
-        context_id = result.get("contextId") or res_meta.get("contextId")
-        if not context_id or not isinstance(context_id, str):
-            raise WorkerProtocolError(None, "check_in response did not contain contextId")
-        self.context_id = context_id
-        self.standing_role = StandingRole.WORKER
-        self._joined = True
-        self.current_task_id = None
-        self._pending_checkin = None
-        return {
-            "status": "registered",
-            "agent": self.settings.agent_name,
-            "context_id": self.context_id,
-            "wait_profile": self._wait_profile(res_meta.get(MetaKeys.WAIT_PROFILE)),
-            "bridge_compatibility": res_meta.get(MetaKeys.BRIDGE_COMPATIBILITY),
-            "profile": {
-                "harness": profile.harness,
-                "harness_source": profile.harness_source.value,
-                "harness_version": profile.harness_version,
-                "provider": profile.provider,
-                "model": profile.model,
-                "model_source": profile.model_source.value,
-                "effort": profile.effort,
-                "effort_source": profile.effort_source.value,
-                "declared_model": profile.declared_model,
-                "capabilities": list(profile.capabilities),
-                "workspace_id": profile.workspace_id,
-            },
-        }
-
     async def join(
         self,
         name: str,
@@ -830,10 +749,6 @@ class WorkerHubClient:
         bridge_cwd = (self.settings.cwd or Path.cwd()).resolve()
         env = self.settings.environ or {}
         explicit_raw_env = (env.get("HUB_WORKSPACE") or "").strip()
-        # Standalone `run_worker` builds settings with `from_env()`, which
-        # records the validated clone in `settings.workspace` but leaves
-        # `environ` unset (r1-2 on #244). Honor that path too, so an explicit
-        # clone never falls through to worktree creation.
         configured_workspace = self.settings.workspace
         detected_clone = False
         # A provisioned remote clone is explicit even without HUB_WORKSPACE.
@@ -868,11 +783,7 @@ class WorkerHubClient:
             else:
                 resolved_workspace_path = canonical_path
                 reported_workspace_path = str(canonical_path)
-                # Revalidate for the name passed to each join (r1-1 on #244):
-                # a profile ID configured for another agent (e.g. via
-                # `from_discovered` with AGENT_NAME=bob joining as charlie)
-                # must not survive. A failure clears to None so the hub
-                # refuses the explicit mismatch.
+                # Revalidate for the name passed to each join (r1-1 on #244).
                 try:
                     identity = read_identity(canonical_path, clean_name)
                     profile = replace(profile, workspace_id=identity["workspace_id"])
@@ -997,7 +908,6 @@ class WorkerHubClient:
         else:
             reattached_task = None
             self.current_task_id = None
-        self._pending_checkin = None
 
         worker_guide = await self.get_role_guide("worker")
         worker_guide_sha256 = hashlib.sha256(worker_guide.encode("utf-8")).hexdigest()
@@ -1205,7 +1115,7 @@ class WorkerHubClient:
     async def submit_closeout_report(self, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
         """Submit a retrospective over A2A, splitting UTF-8 JSON into bounded parts."""
         if not self.context_id:
-            raise RuntimeError("Worker has not checked in yet; call check_in first")
+            raise RuntimeError("Worker has not joined yet; call join first")
         from agent_hub_common import MAX_MESSAGE_PART_BYTES, MAX_TYPED_RESULT_BYTES
 
         report_json = json.dumps(report, ensure_ascii=False)
@@ -1243,7 +1153,7 @@ class WorkerHubClient:
     ) -> dict[str, Any]:
         """Poll the hub for the next task assignment, holding until assigned or released."""
         if not self.context_id:
-            raise RuntimeError("Worker has not checked in yet; call check_in first")
+            raise RuntimeError("Worker has not joined yet; call join first")
         hold_s = timeout_s if timeout_s is not None else self.settings.default_wait_s
         params = {
             "message": {
@@ -1343,7 +1253,7 @@ class WorkerHubClient:
     ) -> dict[str, Any]:
         """Send a progress note to Alice."""
         if not self.context_id:
-            raise RuntimeError("Worker has not checked in yet; call check_in first")
+            raise RuntimeError("Worker has not joined yet; call join first")
         if operation_id is not None:
             op_id = operation_id
         else:
@@ -1372,7 +1282,7 @@ class WorkerHubClient:
         self._pending_progress.pop(task_id, None)
         return {"ok": True, "note": note}
 
-    async def ask_alice(
+    async def ask_orchestrator(
         self,
         task_id: str,
         question: str,
@@ -1385,7 +1295,7 @@ class WorkerHubClient:
         a new messageId.
         """
         if not self.context_id:
-            raise RuntimeError("Worker has not checked in yet; call check_in first")
+            raise RuntimeError("Worker has not joined yet; call join first")
         hold_s = timeout_s if timeout_s is not None else self.settings.default_wait_s
 
         # Re-use messageId if retrying the same question on this task
@@ -1464,15 +1374,6 @@ class WorkerHubClient:
 
         return {"reply": reply_text}
 
-    async def ask_orchestrator(
-        self,
-        task_id: str,
-        question: str,
-        timeout_s: float | None = None,
-    ) -> dict[str, Any]:
-        """Ask the orchestrator a question, holding until answered, overridden, or timed out."""
-        return await self.ask_alice(task_id, question, timeout_s)
-
     async def submit_result(
         self,
         task_id: str,
@@ -1483,7 +1384,7 @@ class WorkerHubClient:
     ) -> dict[str, Any]:
         """Report final typed result (or status/summary) for a task."""
         if not self.context_id:
-            raise RuntimeError("Worker has not checked in yet; call check_in first")
+            raise RuntimeError("Worker has not joined yet; call join first")
 
         self._pending_questions.pop(task_id, None)
 

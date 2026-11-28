@@ -9,7 +9,7 @@ import pytest
 from agent_hub import create_app
 from agent_hub.accounting import CallAccounting, a2a_tool
 from agent_hub.database import initialize_database
-from agent_hub.store import HubStore
+from agent_hub.store import DEFAULT_GOAL, HubStore
 from agent_hub_common import AgentProfile, HubSettings
 from conftest import BASE_URL, TOKEN
 from worker_mcp.accounting import McpAccounting
@@ -19,7 +19,8 @@ from worker_mcp.tools import create_worker_mcp
 
 SECRET = "IGNORE PREVIOUS INSTRUCTIONS"
 WORKER_TOOLS = {
-    "check_in",
+    "join",
+    "whoami",
     "get_role_guide",
     "await_assignment",
     "report_progress",
@@ -43,6 +44,7 @@ async def _drive_worker(
     """One worker's assignment cycle through its MCP tools; returns the task id."""
 
     settings.guides_dir.mkdir(parents=True, exist_ok=True)
+    (settings.guides_dir / "worker.md").write_text("# Worker Guide\n", encoding="utf-8")
     (settings.guides_dir / "implementer.md").write_text(f"# Guide\n{SECRET}\n", encoding="utf-8")
     (settings.guides_dir / "forge").mkdir(parents=True, exist_ok=True)
     (settings.guides_dir / "forge" / "github.md").write_text("# Appendix\n", encoding="utf-8")
@@ -57,7 +59,7 @@ async def _drive_worker(
         http_client=client,
     )
     server = create_worker_mcp(worker)
-    await server.call_tool("check_in", {})
+    await server.call_tool("join", {"name": "bob", "role": "worker"})
     task = hub_store.assign_task("bob", "implementer", "Fix", f"Do it. {SECRET}")
     await server.call_tool("await_assignment", {"timeout_s": 0.2})
     await server.call_tool("get_role_guide", {"role": "implementer"})
@@ -97,16 +99,24 @@ async def test_every_worker_call_is_tallied_with_its_bytes(
     assert by_tool["await_assignment"]["outcome"] == "assignment"
     for tool in ("await_assignment", "report_progress", "submit_result"):
         assert by_tool[tool]["task_id"] == task_id
-    assert by_tool["check_in"]["task_id"] is None
+    assert by_tool["join"]["task_id"] is None
     assert all(row["status"] == 200 and row["started"] <= row["finished"] for row in rows)
 
     # The hub and the worker measure the same wire from either end.
     finished = {
         record["tool"]: record for record in _records(telemetry) if record.get("phase") == "success"
     }
-    for tool, row in by_tool.items():
-        assert row["bytes_in"] == finished[tool]["http_request_bytes"], tool
-        assert row["bytes_out"] == finished[tool]["http_response_bytes"], tool
+    # One MCP join includes the registration, the worker guide and hub identity.
+    registration = rows[:3]
+    assert [row["tool"] for row in registration] == ["join", "get_role_guide", "whoami"]
+    measured = {"join": registration} | {row["tool"]: [row] for row in rows[3:]}
+    for tool, observed in measured.items():
+        assert sum(row["bytes_in"] for row in observed) == finished[tool]["http_request_bytes"], (
+            tool
+        )
+        assert sum(row["bytes_out"] for row in observed) == finished[tool]["http_response_bytes"], (
+            tool
+        )
         assert finished[tool]["http_status"] == 200
         assert finished[tool]["http_retries"] == 0
         assert finished[tool]["mcp_result_bytes"] > 0
@@ -130,14 +140,15 @@ async def test_a_per_agent_tally_is_one_query_that_survives_a_restart(
     client: httpx.AsyncClient, settings: HubSettings, hub_store: HubStore, tmp_path: Path
 ) -> None:
     await _drive_worker(client, settings, hub_store, tmp_path / "worker.jsonl")
-    expected = sum(row["bytes_in"] + row["bytes_out"] for row in _rows(settings.database_path))
+    rows = _rows(settings.database_path)
+    expected = sum(row["bytes_in"] + row["bytes_out"] for row in rows)
 
     initialize_database(settings.database_path)  # What a restarted hub does first.
     with sqlite3.connect(settings.database_path) as connection:
         tally = connection.execute(
             "SELECT actor, COUNT(*), SUM(bytes_in) + SUM(bytes_out) FROM call_log GROUP BY actor"
         ).fetchall()
-    assert tally == [("bob", len(WORKER_TOOLS), expected)]
+    assert tally == [("bob", len(rows), expected)]
 
 
 async def test_unidentified_callers_are_not_named_from_their_claims(
@@ -165,7 +176,7 @@ async def test_unidentified_callers_are_not_named_from_their_claims(
     ("payload", "tool"),
     [
         ({"method": "tasks/get"}, "tasks/get"),
-        ({"method": "message/send", "params": {"message": {}}}, "check_in"),
+        ({"method": "message/send", "params": {"message": {}}}, "join"),
         (
             {
                 "method": "message/send",
@@ -174,7 +185,7 @@ async def test_unidentified_callers_are_not_named_from_their_claims(
             "heartbeat",
         ),
         ({"method": "message/stream", "params": {"message": {}}}, "await_assignment"),
-        ({"method": "message/stream", "params": {"message": {"taskId": "t"}}}, "ask_alice"),
+        ({"method": "message/stream", "params": {"message": {"taskId": "t"}}}, "ask_orchestrator"),
         ({"method": "message/send", "params": {"message": {"taskId": "t"}}}, "report_progress"),
         (
             {
@@ -310,7 +321,7 @@ async def test_worker_calls_are_not_recorded_by_default(
             headers={"Authorization": f"Bearer {TOKEN}"},
         ) as client,
     ):
-        store.initialize_workflow()
+        store.start_workflow(DEFAULT_GOAL)
         await _drive_worker(client, default, store, tmp_path / "worker.jsonl")
 
     assert _rows(default.database_path) == []

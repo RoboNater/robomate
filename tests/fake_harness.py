@@ -361,3 +361,19 @@ def fake_supervision(
     monkeypatch.setenv(PIDS_ENV, str(pids))
     with supervision(pids) as sup:
         yield sup
+
+
+CODEX_ID = "019a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
+IDS = {
+    "claude-code": None,
+    "codex": CODEX_ID,
+    "opencode": "ses_7Fa9b2C",
+    "antigravity": "conv-1234abcd",
+    "devin": "brisk-otter",
+}
+# What each harness prints that carries its conversation ID.
+ID_LINES = {
+    "codex": f"session id: {CODEX_ID}",
+    "opencode": json.dumps({"type": "step_start", "sessionID": IDS["opencode"]}),
+    "antigravity": json.dumps({"type": "init", "conversation_id": IDS["antigravity"]}),
+}

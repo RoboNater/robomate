@@ -1,4 +1,4 @@
-"""The scripted run start, prep-standard-run's M2 successor (#268).
+"""The scripted run start (#268).
 
 Settings tests load ``scripts/start-run.py`` in process: precedence (defaults,
 then the file, then the command line), refused keys, the issue/work-file choice,
@@ -42,7 +42,6 @@ def load(name: str, path: Path) -> Any:
 
 START = load("start_run_cli", ROOT / "scripts/start-run.py")
 HARNESS = load("mock_harness_cli", ROOT / "scripts/mock-harness.py")
-PREP = load("prep_standard_run_area_for_start_run", ROOT / "scripts/prep-standard-run-area.py")
 
 
 def settings(*words: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -280,9 +279,13 @@ def test_generated_config_saves_the_merged_settings_for_the_next_run(
     assert (again, policy_again) == (original, original_policy)
 
 
-def test_a_prep_standard_run_config_is_read_as_it_is(tmp_path: Path) -> None:
+def test_top_level_stall_settings_in_older_config_are_policy(tmp_path: Path) -> None:
     path = tmp_path / "standard.toml"
-    PREP.write_config(path, PREP.DEFAULTS | {"stall_after_min": 25, "alice_harness": "codex"})
+    path.write_text(
+        "stall_after_min = 25\nstall_action_after_min = 0\n"
+        'auto_start = true\nalice_harness = "codex"\n',
+        encoding="utf-8",
+    )
 
     values, policy = START.load_config(path)
 
@@ -290,7 +293,6 @@ def test_a_prep_standard_run_config_is_read_as_it_is(tmp_path: Path) -> None:
     assert values["auto_start"] is True
     # Its top-level stall keys are policy keys now.
     assert policy == {"stall_after_min": 25, "stall_action_after_min": 0}
-    assert set(PREP.DEFAULTS) - set(START.DEFAULTS) == set(START.POLICY_SHORTHANDS)
     # So are its stall options, and --policy, given later, wins.
     _, policy = settings(
         "--config", str(path), "--stall-action-after-min", "60", "--stall-after-min", "30",

@@ -414,7 +414,7 @@ async def test_bridge_close_detaches_its_held_wait(
             with pytest.raises(RuntimeError, match="join with takeover=true"):
                 await successor.call("get_state", {})
             await successor.call("join", {"name": "alice", "takeover": True})
-            hub_store.check_in("bob")
+            hub_store.register_worker("bob")
             result = await successor.call("wait_for_event", {"timeout_s": 0})
             assert result["event"]["payload"]["agent"] == "bob"
             assert result["event"]["delivery_attempts"] == 1
@@ -426,7 +426,9 @@ async def test_bridge_close_detaches_its_held_wait(
         await bridge.close()
 
 
-@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+@pytest.mark.hub_settings(
+    max_wait_s=LIVENESS_S, guides_dir=Path(__file__).resolve().parents[1] / "guides"
+)
 async def test_worker_task_survives_orchestrator_session_restart(
     app: FastAPI, hub_store: HubStore, tmp_path: Path
 ) -> None:
@@ -459,7 +461,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
             worker = create_worker_mcp(worker_client, server_name="robomate")
             try:
                 assert (await _call(old, "get_state"))["workflow"] is not None
-                await _call(worker, "check_in")
+                await _call(worker, "join", name="bob", role="implementer")
                 checked_in = (await _call(old, "wait_for_event", timeout_s=0))["event"]
                 assert checked_in["kind"] == "agent_checked_in"
                 task = await _call(
@@ -476,7 +478,11 @@ async def test_worker_task_survives_orchestrator_session_restart(
                 assert await worker_client.heartbeat()
                 pending = asyncio.create_task(
                     _call(
-                        worker, "ask_alice", task_id=task["id"], question="Which?", timeout_s=0.05
+                        worker,
+                        "ask_orchestrator",
+                        task_id=task["id"],
+                        question="Which?",
+                        timeout_s=0.05,
                     )
                 )
                 question = (
@@ -510,7 +516,7 @@ async def test_worker_task_survives_orchestrator_session_restart(
                     pending = asyncio.create_task(
                         _call(
                             worker,
-                            "ask_alice",
+                            "ask_orchestrator",
                             task_id=task["id"],
                             question="Which?",
                             timeout_s=LIVENESS_S,
@@ -587,13 +593,13 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         }
         orchestrator = StdioServerParameters(
             command=command,
-            args=["mcp", "--role", "orchestrator"],
+            args=["mcp"],
             env=bridge_env,
             cwd=repo,
         )
         worker = StdioServerParameters(
             command=command,
-            args=["mcp", "--role", "worker", "--name", "bob"],
+            args=["mcp"],
             env=bridge_env,
             cwd=repo,
         )
@@ -605,11 +611,14 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
         ):
             await alice.initialize()
             await bob.initialize()
-            assert len((await alice.list_tools()).tools) == 19
-            assert len((await bob.list_tools()).tools) == 12
-            created = await alice.call_tool("initialize_workflow", {"goal": "One task"})
+            assert {tool.name for tool in (await alice.list_tools()).tools} == {
+                tool.name for tool in (await bob.list_tools()).tools
+            }
+            joined = await alice.call_tool("join", {"name": "alice", "role": "orchestrator"})
+            assert not joined.isError
+            created = await alice.call_tool("start_workflow", {"statement": "One task"})
             assert created.structuredContent is not None
-            checked = await bob.call_tool("check_in")
+            checked = await bob.call_tool("join", {"name": "bob", "role": "implementer"})
             assert checked.structuredContent is not None
             event = await alice.call_tool("wait_for_event", {"timeout_s": 0})
             assert event.structuredContent is not None
@@ -630,7 +639,7 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             assert received.structuredContent["task_id"] == assigned.structuredContent["id"]
             pending = asyncio.create_task(
                 bob.call_tool(
-                    "ask_alice",
+                    "ask_orchestrator",
                     {
                         "task_id": assigned.structuredContent["id"],
                         "question": "Which?",
@@ -656,7 +665,9 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
                 ClientSession(new_read, new_write) as resumed,
             ):
                 await resumed.initialize()
-                joined = await resumed.call_tool("join", {"name": "alice", "takeover": True})
+                joined = await resumed.call_tool(
+                    "join", {"name": "alice", "role": "orchestrator", "takeover": True}
+                )
                 assert not joined.isError
                 repeated = await resumed.call_tool("wait_for_event", {"timeout_s": 0})
                 assert repeated.structuredContent is not None
@@ -707,14 +718,14 @@ async def test_stdio_bridges_drive_one_task_against_a_live_hub(tmp_path: Path) -
             ).fetchall()
         assert rows
         assert any(tool == "join" and content_bytes > 0 for tool, content_bytes in rows)
-        assert any(
-            tool == "initialize_workflow" and content_bytes > 0 for tool, content_bytes in rows
-        )
+        assert any(tool == "start_workflow" and content_bytes > 0 for tool, content_bytes in rows)
     finally:
         stop(repo, env, hub)
 
 
-@pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
+@pytest.mark.hub_settings(
+    max_wait_s=LIVENESS_S, guides_dir=Path(__file__).resolve().parents[1] / "guides"
+)
 async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
     app: FastAPI, hub_store: HubStore
 ) -> None:
@@ -735,11 +746,18 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
         alice = create_orchestrator_mcp(bridge)
         worker_client = WorkerHubClient(
             WorkerSettings(hub_url=BASE_URL, token=TOKEN, agent_name="bob"),
-            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=BASE_URL),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=BASE_URL,
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            ),
         )
         async with worker_client:
             worker = create_worker_mcp(worker_client, server_name="robomate")
             try:
+                await _call(worker, "join", name="bob", role="worker")
+                registration = (await _call(alice, "wait_for_event", timeout_s=0))["event"]
+                assert registration["kind"] == "agent_checked_in"
                 asked = await _call(alice, "ask_user", question="Merge?", options=["yes", "no"])
                 question_id = asked["question_id"]
                 assert hub_store.get_state()["workflow"]["status"] == "escalated"
@@ -747,7 +765,14 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
                 assert unanswered["status"] == "unanswered" and unanswered["answer"] is None
 
                 # Alice is already holding when the operator answers.
-                waiting = asyncio.create_task(_call(alice, "wait_for_event", timeout_s=LIVENESS_S))
+                waiting = asyncio.create_task(
+                    _call(
+                        alice,
+                        "wait_for_event",
+                        timeout_s=LIVENESS_S,
+                        ack=registration["delivery_id"],
+                    )
+                )
                 await wait_until(
                     lambda: hub_store.signals.waiting(EVENT_KEY) > 0,
                     "Alice to hold on wait_for_event",
@@ -779,7 +804,6 @@ async def test_an_operator_question_reaches_the_orchestrator_and_the_worker(
                     await _call(worker, "get_operator_answer", question_id=99)
 
                 await _call(alice, "set_workflow_status", status="active", summary="Answered")
-                hub_store.check_in("bob")
                 task = hub_store.assign_task("bob", "implementer", "Fix", "Do it")
                 bound = await _call(
                     alice, "ask_user", question="Wait or reassign?", waiting_on_task_id=task.id
@@ -862,7 +886,6 @@ ORCHESTRATOR_ONLY_ARGS: dict[str, dict[str, Any]] = {
     "get_state": {},
     "request_closeout_reports": {"run_id": "20261121_00000000"},
     "get_closeout_reports": {"run_id": "20261121_00000000"},
-    "initialize_workflow": {"goal": "Address issue #594"},
     "start_workflow": {},
     "wait_for_event": {},
     "assign_task": {

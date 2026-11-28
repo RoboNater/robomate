@@ -40,6 +40,17 @@ from worker_mcp.config import WorkerSettings
 HEARTBEAT_WAIT_TIMEOUT_S = 10.0
 
 
+@pytest.fixture(autouse=True)
+def worker_guide(settings: HubSettings) -> None:
+    guide = settings.guides_dir / "worker.md"
+    if not guide.is_file():
+        settings.guides_dir.mkdir(parents=True, exist_ok=True)
+        guide.write_text("# Worker Guide\n", encoding="utf-8")
+        forge = settings.guides_dir / "forge"
+        forge.mkdir(exist_ok=True)
+        (forge / "github.md").write_text("# Forge appendix\n", encoding="utf-8")
+
+
 @pytest.fixture
 def worker_settings() -> WorkerSettings:
     return WorkerSettings(
@@ -53,11 +64,13 @@ def worker_settings() -> WorkerSettings:
     )
 
 
-async def test_worker_check_in_and_state(
+async def test_worker_join_worker_and_state(
     client: httpx.AsyncClient, worker_settings: WorkerSettings, hub_store: HubStore
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    res = await worker.check_in(["python", "testing"])
+    res = await worker.join(
+        worker.settings.agent_name, "worker", capabilities=["python", "testing"]
+    )
 
     assert res["status"] == "registered"
     assert res["agent"] == "bob"
@@ -65,7 +78,7 @@ async def test_worker_check_in_and_state(
     assert hub_store.agent_by_name("bob") is not None
 
 
-@pytest.mark.parametrize("entry_point", ["join", "check_in"])
+@pytest.mark.parametrize("entry_point", ["join", "join"])
 @pytest.mark.parametrize("case", ["version", "fingerprint", "legacy"])
 async def test_worker_registration_checks_bridge_compatibility(
     entry_point: str,
@@ -97,7 +110,7 @@ async def test_worker_registration_checks_bridge_compatibility(
     async def register() -> dict[str, Any]:
         if entry_point == "join":
             return await worker.join("bob", "implementer")
-        return await worker.check_in()
+        return await worker.join(worker.settings.agent_name, "worker")
 
     if case == "fingerprint":
         with pytest.raises(WorkerProtocolError, match="result schema fingerprint mismatch"):
@@ -151,7 +164,7 @@ async def test_background_heartbeat_runs_without_llm_tool_calls(
 ) -> None:
     configured = replace(worker_settings, heartbeat_s=0.01)
     async with WorkerHubClient(configured, http_client=client) as worker:
-        await worker.check_in()
+        await worker.join(worker.settings.agent_name, "worker")
         task = hub_store.assign_task("bob", "implementer", "Long tests", "Run them")
         assignment = await worker.await_assignment(timeout_s=0.2)
         assert assignment["task_id"] == task.id
@@ -190,7 +203,7 @@ async def test_telemetry_records_the_hub_url_at_startup_and_on_each_heartbeat(
     telemetry_path = tmp_path / "bob.jsonl"
     configured = replace(worker_settings, heartbeat_s=0.01, telemetry_log=telemetry_path)
     async with WorkerHubClient(configured, http_client=client) as worker:
-        await worker.check_in()
+        await worker.join(worker.settings.agent_name, "worker")
         # The same scheduler race as the background-heartbeat test (#264).
         # Observe the emitted record, so the request and telemetry write finish.
         async with asyncio.timeout(HEARTBEAT_WAIT_TIMEOUT_S):
@@ -245,7 +258,7 @@ async def test_a_restarted_worker_checks_in_at_once_and_finishes_its_task(
     telemetry_path = tmp_path / "bob.jsonl"
     configured = replace(worker_settings, telemetry_log=telemetry_path)
     async with WorkerHubClient(configured, http_client=client) as first:
-        await first.check_in()
+        await first.join(first.settings.agent_name, "worker")
         task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
         assert (await first.await_assignment(timeout_s=0.2))["task_id"] == task.id
 
@@ -256,7 +269,7 @@ async def test_a_restarted_worker_checks_in_at_once_and_finishes_its_task(
     assert events[-2:] == ["detach", "session_stopped"]
 
     async with WorkerHubClient(configured, http_client=client) as second:
-        assert (await second.check_in())["status"] == "registered"
+        assert (await second.join(second.settings.agent_name, "worker"))["status"] == "registered"
         res = await second.submit_result(
             task.id,
             ImplementerResult(
@@ -271,7 +284,7 @@ async def test_a_restarted_worker_checks_in_at_once_and_finishes_its_task(
     assert stored is not None and stored.state is TaskState.COMPLETED
 
 
-async def test_check_in_reports_the_launcher_profile_to_get_state(
+async def test_join_worker_reports_the_launcher_profile_to_get_state(
     client: httpx.AsyncClient, worker_settings: WorkerSettings, hub_store: HubStore
 ) -> None:
     configured = AgentProfile(
@@ -286,7 +299,9 @@ async def test_check_in_reports_the_launcher_profile_to_get_state(
 
     # The launcher's model wins over the agent's own belief about itself, but
     # that belief is recorded beside it rather than discarded (#77).
-    res = await worker.check_in(["gh", "python"], model="something-else")
+    res = await worker.join(
+        worker.settings.agent_name, "worker", capabilities=["gh", "python"], model="something-else"
+    )
 
     expected = {
         "harness": "codex",
@@ -332,7 +347,7 @@ async def test_a_declared_model_is_used_only_when_the_launcher_names_none(
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
 
-    await worker.check_in(model=declared)
+    await worker.join(worker.settings.agent_name, "worker", model=declared)
 
     [agent] = hub_store.get_state()["agents"]
     assert (agent["harness"], agent["model"], agent["model_source"]) == (
@@ -388,10 +403,10 @@ async def test_await_assignment_and_release(
     worker = WorkerHubClient(worker_settings, http_client=client)
 
     # Calling before check-in raises error
-    with pytest.raises(RuntimeError, match="call check_in first"):
+    with pytest.raises(RuntimeError, match="call join first"):
         await worker.await_assignment()
 
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
 
     # Timeout when no assignment pending
     timeout_res = await worker.await_assignment(timeout_s=0.05)
@@ -427,7 +442,7 @@ async def test_report_progress_and_submit_result(
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
 
     # Progress
@@ -455,13 +470,13 @@ async def test_report_progress_and_submit_result(
 
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
-async def test_ask_alice_reply_and_retry_correlation(
+async def test_ask_orchestrator_reply_and_retry_correlation(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Instructions")
     while hub_store.next_event() is not None:
         pass
@@ -484,14 +499,14 @@ async def test_ask_alice_reply_and_retry_correlation(
         )
 
     ask_task = asyncio.create_task(
-        worker.ask_alice(task.id, "Which database?", timeout_s=LIVENESS_S)
+        worker.ask_orchestrator(task.id, "Which database?", timeout_s=LIVENESS_S)
     )
     await asyncio.gather(answer(), ask_task)
     reply = ask_task.result()
     assert reply == {"reply": "Use SQLite for persistence."}
 
     # 2. Ask question that times out
-    timeout_res = await worker.ask_alice(task.id, "Second question?", timeout_s=0.05)
+    timeout_res = await worker.ask_orchestrator(task.id, "Second question?", timeout_s=0.05)
     assert timeout_res == {"timeout": True}
     assert task.id in worker._pending_questions
     saved_msg_id = worker._pending_questions[task.id][1]
@@ -507,29 +522,29 @@ async def test_ask_alice_reply_and_retry_correlation(
     )
 
     # 3. Retry uses the saved message_id and picks up the answer
-    retry_res = await worker.ask_alice(task.id, "Second question?", timeout_s=LIVENESS_S)
+    retry_res = await worker.ask_orchestrator(task.id, "Second question?", timeout_s=LIVENESS_S)
     assert retry_res == {"reply": "The answer given in the gap."}
     assert task.id not in worker._pending_questions
 
     # 4. Asking a different question after timeout generates a new message_id
-    timeout_diff_1 = await worker.ask_alice(task.id, "Question A?", timeout_s=0.05)
+    timeout_diff_1 = await worker.ask_orchestrator(task.id, "Question A?", timeout_s=0.05)
     assert timeout_diff_1 == {"timeout": True}
     msg_id_a = worker._pending_questions[task.id][1]
 
-    timeout_diff_2 = await worker.ask_alice(task.id, "Question B?", timeout_s=0.05)
+    timeout_diff_2 = await worker.ask_orchestrator(task.id, "Question B?", timeout_s=0.05)
     assert timeout_diff_2 == {"timeout": True}
     msg_id_b = worker._pending_questions[task.id][1]
     assert msg_id_b != msg_id_a
 
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
-async def test_ask_alice_manual_termination_override(
+async def test_ask_orchestrator_manual_termination_override(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Instructions")
 
     async def cancel_task() -> None:
@@ -543,7 +558,7 @@ async def test_ask_alice_manual_termination_override(
         hub_store.set_task_state(task.id, TaskState.CANCELED, "Task aborted by user")
 
     ask_task = asyncio.create_task(
-        worker.ask_alice(task.id, "How to proceed?", timeout_s=LIVENESS_S)
+        worker.ask_orchestrator(task.id, "How to proceed?", timeout_s=LIVENESS_S)
     )
     await asyncio.gather(cancel_task(), ask_task)
 
@@ -555,13 +570,13 @@ async def test_ask_alice_manual_termination_override(
 
 
 @pytest.mark.hub_settings(max_wait_s=LIVENESS_S)
-async def test_ask_alice_cancellation_without_result_summary(
+async def test_ask_orchestrator_cancellation_without_result_summary(
     client: httpx.AsyncClient,
     worker_settings: WorkerSettings,
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Instructions")
 
     async def cancel_task() -> None:
@@ -575,7 +590,7 @@ async def test_ask_alice_cancellation_without_result_summary(
         hub_store.cancel_task(task.id)
 
     ask_task = asyncio.create_task(
-        worker.ask_alice(task.id, "How to proceed?", timeout_s=LIVENESS_S)
+        worker.ask_orchestrator(task.id, "How to proceed?", timeout_s=LIVENESS_S)
     )
     await asyncio.gather(cancel_task(), ask_task)
 
@@ -598,12 +613,13 @@ async def test_stream_rpc_json_error_raises_protocol_error(
         await worker.await_assignment(timeout_s=0.5)
     assert "unknown context" in exc_info.value.message.lower()
 
-    # 2. ask_alice on a task not assigned to bob raises WorkerProtocolError
-    await worker.check_in()
-    hub_store.check_in("charlie")
+    # 2. ask_orchestrator on a task not assigned to bob raises WorkerProtocolError
+    worker.context_id = None
+    await worker.join(worker.settings.agent_name, "worker")
+    hub_store.register_worker("charlie")
     charlie_task = hub_store.assign_task("charlie", "implementer", "Task Charlie", "Inst")
     with pytest.raises(WorkerProtocolError) as exc_info:
-        await worker.ask_alice(charlie_task.id, "Question?", timeout_s=0.5)
+        await worker.ask_orchestrator(charlie_task.id, "Question?", timeout_s=0.5)
     assert "not assigned to bob" in exc_info.value.message.lower()
 
 
@@ -666,7 +682,7 @@ async def test_worker_submit_typed_implementer_result(
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
 
     res = await worker.submit_result(
@@ -694,7 +710,7 @@ async def test_worker_submit_typed_reviewer_result(
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task(
         "bob",
         "reviewer",
@@ -730,7 +746,7 @@ async def test_worker_rebase_assignment_and_result(
     head = "0123456789abcdef0123456789abcdef01234567"
     rebased = "abcdef0123456789abcdef0123456789abcdef01"
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     hub_store.assign_task("bob", "rebase", "Rebase #7", "Bring it up to date", pr_head_sha=head)
 
     assignment = await worker.await_assignment(timeout_s=1.0)
@@ -760,7 +776,7 @@ async def test_worker_submit_result_validation_failure_leaves_task_working(
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
     assignment = await worker.await_assignment()
     assert assignment["task_id"] == task.id
@@ -799,7 +815,7 @@ async def test_worker_idempotent_submit_result_and_conflict(
     hub_store: HubStore,
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
 
     result = {
@@ -968,7 +984,7 @@ async def test_await_assignment_redelivers_held_task_with_flag(
     """#326: second await_assignment returns the held task, flagged."""
 
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
 
     first = await worker.await_assignment(timeout_s=1.0)
@@ -988,7 +1004,7 @@ async def test_finished_task_errors_name_held_task(
     """#326: progress/result on a finished task name the held open task."""
 
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     first = hub_store.assign_task("bob", "implementer", "First", "Do first")
     first_claim = await worker.await_assignment(timeout_s=1.0)
     assert first_claim["task_id"] == first.id
@@ -1015,7 +1031,7 @@ async def test_finished_task_errors_name_held_task(
     assert second.id in res_info.value.message
 
     with pytest.raises(WorkerProtocolError) as ask_info:
-        await worker.ask_alice(first.id, "late question?", timeout_s=0.2)
+        await worker.ask_orchestrator(first.id, "late question?", timeout_s=0.2)
     assert second.id in ask_info.value.message
 
 
@@ -1027,7 +1043,7 @@ async def test_finished_task_errors_without_held_point_to_await(
     """#326: with no held task, finished-task errors direct to await_assignment."""
 
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Task 1", "Do it")
     claimed = await worker.await_assignment(timeout_s=1.0)
     assert claimed["task_id"] == task.id
@@ -1064,7 +1080,7 @@ async def test_worker_await_assignment_surfaces_branch(
             ("Address issue `o/r#99`, merge it.", workflow_id),
         )
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Build", "Do it")
     assert task.branch == "robomate/testhub/bob/99"
     assignment = await worker.await_assignment(timeout_s=1.0)
@@ -1076,7 +1092,7 @@ async def test_repeat_reminder_is_compact_and_bridge_restart_recovers_full_text(
     client: httpx.AsyncClient, worker_settings: WorkerSettings, hub_store: HubStore
 ) -> None:
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     task = hub_store.assign_task("bob", "implementer", "Recovery", "Full task text")
     fresh = await worker.await_assignment(timeout_s=0)
     recovery = await worker.await_assignment(timeout_s=0)
@@ -1459,7 +1475,7 @@ async def test_real_http_hub_restart_interrupts_long_holds_and_same_bridges_reco
         ):
             bridge = OrchestratorBridge(http_client=http)
             try:
-                joined = await worker.check_in()
+                joined = await worker.join(worker.settings.agent_name, "worker")
                 assert joined["wait_profile"]["max_hold_s"] == 1800
                 alice = await bridge.register(codex, ad=ad)
                 assert alice["wait_profile"]["max_hold_s"] == 1800
@@ -1516,17 +1532,19 @@ async def test_superseded_held_stream_returns_protocol_error(
     from worker_mcp.client import WorkerProtocolError
 
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     if reply_wait:
         task = hub_store.assign_task("bob", "implementer", "Build", "Build")
         await worker.await_assignment(timeout_s=0)
-        pending = asyncio.create_task(worker.ask_alice(task.id, "Which base?", timeout_s=1800))
+        pending = asyncio.create_task(
+            worker.ask_orchestrator(task.id, "Which base?", timeout_s=1800)
+        )
         key = task_key(task.id)
     else:
         pending = asyncio.create_task(worker.await_assignment(timeout_s=1800))
         key = context_key(str(worker.context_id))
     await wait_until(lambda: hub_store.signals.waiting(key), "old instance stream")
-    hub_store.check_in("bob", worker_instance_id="replacement", takeover=True)
+    hub_store.register_worker("bob", worker_instance_id="replacement", takeover=True)
     try:
         await wait_until(pending.done, "superseded stream rejected")
         with pytest.raises(WorkerProtocolError, match="superseded"):
@@ -1542,12 +1560,12 @@ async def test_replaced_instance_cannot_claim_work_when_stream_body_starts_late(
     from agent_hub.protocol import A2AProtocol
     from agent_hub.store import TaskRecord
 
-    old = hub_store.check_in("bob", worker_instance_id="old")
+    old = hub_store.register_worker("bob", worker_instance_id="old")
     protocol = A2AProtocol(store=hub_store, settings=settings)
     # StreamingResponse starts the body after sending its headers; takeover can
     # land between request authentication and that first generator iteration.
     stream = protocol._assignment_stream("request", old, 1800)
-    replacement = hub_store.check_in("bob", worker_instance_id="new", takeover=True)
+    replacement = hub_store.register_worker("bob", worker_instance_id="new", takeover=True)
     task = hub_store.assign_task("bob", "implementer", "Build", "Build")
     chunks = [chunk async for chunk in stream]
     body = json.loads(chunks[0].decode().removeprefix("data: ").strip())
@@ -1589,7 +1607,7 @@ async def test_assignment_metadata_contract(
 
     monkeypatch.setattr(protocol, "_task_object", capture)
     worker = WorkerHubClient(worker_settings, http_client=client)
-    await worker.check_in()
+    await worker.join(worker.settings.agent_name, "worker")
     workflow_id = hub_store.get_state()["workflow"]["id"]
     head = "a" * 40
     branch = "robomate/testhub/bob/99"

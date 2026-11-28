@@ -112,7 +112,7 @@ JOIN_COLUMNS = {
 }
 # Agent workspace path and kind (#244, v25). Worktrees created at join record
 # their path with kind `worktree`; an explicit `HUB_WORKSPACE` clone records
-# its path with kind `clone`. Rows written before v25 (and legacy `check_in`
+# its path with kind `clone`. Rows written before v25 (and legacy registrations
 # clones that report no path) hold NULL, which the CHECK admits.
 WORKSPACE_COLUMNS = {
     "workspace_path": "TEXT",
