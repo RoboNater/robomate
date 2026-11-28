@@ -8,15 +8,12 @@ authority to joined workers and is not a role guide for `get_role_guide`.
 Use the consultation command printed by `scripts/start-run.py`, or call
 `agent-launcher.py doctor` from the hub checkout or run directory (with
 optional `--hub`, `--run` and `--harness` overrides). It supports Claude Code,
-Codex, OpenCode and AntiGravity. The joined launcher is the M2 Step 10 entry
-and carries the consultation forward into the Step 11 handoff. For diagnosis
-of older prepared runs, preserve the Step 1 `run.json` doctor metadata.
+Codex, OpenCode and AntiGravity.
 
 ## Establish context
 
 Read the selected run's `manifest.json` and the context file printed by
-`doctor`, under `denise/consultations/<id>/`. For a prepared run, use its
-`run.json` and `denise/context.json`. Verify the run directory, expected hub ID,
+`doctor`, under `denise/consultations/<id>/`. Verify the run directory, expected hub ID,
 hub checkout, state and host before any action.
 Robomate's recorded tooling root is separate from the target repository: read
 its instructions, code and [recovery documentation](../development/agent-recovery.md),
@@ -61,14 +58,14 @@ reversible repairs already requested need no repeated permission. A restart,
 handoff or intervention needs a corresponding operator request; silence is not
 consent. Check whether Alice is still acting and agree on a quiet handoff before
 competing actions. Leave ordinary workflow progression with Alice. Never create
-a worker identity, check in, take assignments, instantiate an orchestrator MCP
+a worker identity, join, take assignments, instantiate an orchestrator MCP
 bridge, call orchestrator RPC or change workflow state by impersonating Alice.
 
 Restore a selected hub only when requested, using `robomate up` in its recorded
 checkout with the same durable state and hub ID, never a fresh workflow. Preserve
 tokens, DB, uncommitted edits, pending questions/results and harness conversations.
 For a returned-to-shell agent, use `agent-launcher.py resume <agent>` on that
-agent's host, or its generated `resume-<agent>` for a prepared run. Follow
+agent's host. Follow
 [the guarded resume procedure](../development/agent-recovery.md):
 exact saved conversation/config/identity and predecessor checks. Never use
 `start-<agent>` or replay preparation as recovery.

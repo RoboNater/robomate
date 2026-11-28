@@ -51,7 +51,7 @@ packages/hub/         agent_hub         — HTTP A2A and RPC server + SQLite
 packages/worker_mcp/  worker_mcp        — MCP bridge for Alice and workers
 packages/win32_compat/ win32job etc.    — ctypes stand-in for the pywin32 calls mcp makes (#181)
 guides/               role guides the hub serves; forge/ holds forge appendices
-skills/, prompts/, runtimes/  Alice's skill, run prompts, harness configs (pre-M2 run path)
+skills/               orchestrator join skill and retired skill pointers
 tests/                one test_<module>.py per module, top-level
 scripts/              operator and test-harness scripts; scripts/poc/ is the PoC's: not in CI, not maintained
 docs/development/     milestone plans and operator procedures
@@ -88,7 +88,6 @@ uv sync --locked --all-packages --dev
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
-uv run --locked python scripts/sync-worker-prompt.py --check
 uv run --locked pytest -n auto
 uv run --locked python scripts/dependency-licenses.py --check
 uv run --locked python scripts/dependency-licenses.py --update && git diff --exit-code docs/
@@ -222,18 +221,13 @@ a test that passes on Linux also runs in the required `windows` job. Clocks and 
 
 ## Changing things
 
-Editing `guides/worker.md` requires regenerating `prompts/worker.md` in the same PR with
-`uv run --locked python scripts/sync-worker-prompt.py`.
-Issue and statement scope lists that include `guides/worker.md` must also include
-`prompts/worker.md`.
-
 A new or upgraded dependency must meet the policy in
 [`docs/dependency-licenses.md`](docs/dependency-licenses.md); an exception needs
 the owner's approval before merge.
 
 When a change alters shared behaviour or instructions (a rule, phrase, name,
 field, constant, query or validator), search the repository for its copies
-(guides, `prompts/`, scripts, docs, tests) and trace its callers and any readers
+(guides, skills, scripts, docs, tests) and trace its callers and any readers
 of persisted data. Fix copies within the task's scope and report the rest
 separately. A reviewer reports every instance of the same defect as one finding.
 When a check or test covers a set (every place that sets an environment

@@ -77,9 +77,9 @@ restarts and laptop standby don't strand a run; token usage per run is measured 
 
 ```sh
 uv tool install git+https://github.com/RoboNater/robomate    # once per machine
-robomate install claude-code --scope user                   # once per harness
-cd ~/src/my-repo && robomate up                             # starts this checkout's hub
-# In each harness session, one line:
+# Install one static user-level MCP entry per harness (see the user guide).
+cd ~/src/my-repo && robomate up --agents alice,bob,charlie  # dedicated terminal
+# Start each harness in its assigned worktree and send one line:
 #   "Join robomate as alice, orchestrator."
 #   "Join robomate as bob, implementer."
 #   "Join robomate as charlie, reviewer."
@@ -90,7 +90,8 @@ robomate inbox             # questions for you; answer with: robomate answer 3 "
 robomate log --timeline [--notes]  # drill down; --notes shows labelled agent text
 ```
 
-Alice's join response supplies the next steps for starting a queued run.
+Alice's join response supplies the next steps for starting a queued run. The
+[user guide](user-guide.md) covers the manual and scripted starts.
 
 - `robomate up` runs in a checkout: the main checkout or a linked worktree. The hub belongs
   to that checkout (§4). A second team working in the same repository at the same time
@@ -142,7 +143,7 @@ Alice's join response supplies the next steps for starting a queued run.
 | Hub runs inside Alice's stdio MCP process | Hub is a standalone process started by `robomate up`; the orchestrator is an ordinary client |
 | `worker-mcp` for workers; Alice speaks MCP to the hub directly | One bridge, `robomate mcp`, for every role; it discovers the hub, carries the heartbeat, and relays tool calls over HTTP |
 | Identity, workspace, token baked into per-agent env and config | Static MCP entry; identity and role given at `join`; token found by discovery |
-| Full clone per worker, created by `prepare-run.py` | Worktree per agent, created by the hub on demand; clone fallback for other hosts/OS |
+| Full clone per worker, generated before launch | Worktree per agent, created by the hub on demand; clone fallback for other hosts/OS |
 | Alice's goal and policy in her kickoff prompt | Statement of work submitted to the hub, stored verbatim with its SHA-256 (#9) |
 | Alice instructions in a Claude Code skill | `guides/orchestrator.md` served by the hub; any harness can orchestrate |
 | One workflow per hub state dir, fresh state per run | Persistent per-checkout hub; sequential workflows with history and a queue, per hub |
@@ -365,9 +366,6 @@ the operator did not select. A binding to a hub that is missing or stopped is an
 error naming that hub and its owning checkout; it never falls through to another hub.
 Before a bound or selected local hub is used, its `hub_id` is checked against `/healthz`.
 
-In M1, before `join` exists, `robomate mcp` resolves the hub on its first tool call. An
-ambiguous or empty discovery returns the live-hub list as a tool error.
-
 **Identify-the-hub** — `robomate status` and the `whoami` tool (backed by Bearer-authenticated
 `GET /whoami` on the hub) both report the hub name,
 owning checkout, repository, origin, forge, URL, and the agents joined, so neither the
@@ -375,8 +373,7 @@ operator nor an agent can confuse two hubs, even two of one repository. `whoami`
 before `join` (reporting what discovery selects and `joined: false`) and after `join`
 (adding the joined agent's name, standing role, and context). `robomate status`
 also shows the hub's state location, and `robomate status --json` reports it with the token
-file (`state_dir`, `token_file`) for a hub that is stopped as well, which operator tools take
-(`scripts/prepare-run.py`, `scripts/hub-report.py`).
+file (`state_dir`, `token_file`) for a hub that is stopped as well. `scripts/hub-report.py` uses that projection.
 
 **Remote agents** (e.g. hub in WSL, agent on Windows — proven in PoC Step 7): `robomate up --bind
 0.0.0.0 --public-url http://<addr>:<port>`; the remote side sets `ROBOMATE_HUB_URL` and a token
@@ -430,16 +427,11 @@ unjoined session can call besides `whoami`. Its description is the install-free 
   tasks; `worker` accepts any. The hub refuses an incompatible `assign_task` (-32602, naming
   the agent's standing role).
 - **One orchestrator per hub.** A second orchestrator join is refused unless `takeover`.
-- **Unjoined bridge and `--role` compatibility:** `robomate mcp` starts unjoined when
-  `--role` and `AGENT_NAME` are omitted, serving the static tool list (§8) and refusing every
-  tool except `join` and `whoami` (naming `join`) until `join` succeeds. Worker `join` uses
-  the extended A2A check-in route; workers never call `/rpc` (§12). `robomate mcp --role
-  orchestrator|worker [--name NAME]` (or `AGENT_NAME`) and `check_in` (which defaults
-  `standing_role` to `worker`) remain as aliases for prepared runs until M2 Step 11 removes
-  them. Orchestrator `join` uses `/rpc` with `X-Robomate-Actor` and
-  `X-Robomate-Session` (UUID); the name must match the actor header. The prepared-run
-  bridge may attach on its first operation, but no subsequent new session implicitly
-  replaces it. A different session must join with `takeover=true` (otherwise -32002),
+- **Bridge startup:** `robomate mcp` starts unjoined. Only `join` and `whoami`
+  are available until registration. Workers join over A2A with a standing role.
+  Orchestrators join over RPC with `X-Robomate-Actor` and `X-Robomate-Session`
+  (UUID), and the name must match the actor header. Replacing a live
+  orchestrator session requires `takeover=true`,
   fencing the old session's operations and heartbeats and releasing outstanding event
   leases for redelivery. Orchestrator operations renew unexpired event delivery leases
   at the start of the call and while the request stays open. Bridge heartbeats and
@@ -797,9 +789,6 @@ permissions, which certification catches per harness.
   from chat. With a `statement` it stores the statement (§7.1) and creates `active` when no
   run is live and nothing is queued, otherwise `queued` behind the live run. A further
   `start_workflow` while one run is live and one is queued is refused with -32002.
-  `initialize_workflow` stays as an alias until M2 Step 11, scoped to the current run: with
-  the same goal it confirms the live run, and after `done` it starts a new run with a new
-  `run_id`. That alone removes the fresh-checkout-per-run rule (#53) for prepared runs.
 - **One run = one PR/MR** (locked). Completed typed work and review results
   establish the run's durable PR/MR binding. Results reporting a different
   change request are rejected. Later implementer tasks reuse the stored branch.
@@ -968,7 +957,7 @@ execution, link following or automatic issue/lesson/nit filing. POSIX exports us
 private per-user ACL; POSIX modes do not establish Windows access control. These
 are sensitive run artifacts: review them before sharing. The exports are readable
 with the hub stopped. Export on abandonment, the run-report appendix and replacing
-the prepared-run file prompt remain outside this feature (#357).
+local consultation reports remain outside this feature (#357).
 
 **Counter reservations (#408).** Ordinary runs do no roadmap decision comment
 or completion edit. `Closes #N` closes the issue and triage maintains the plan.
@@ -1100,9 +1089,8 @@ Legacy questions and another session's questions still require an operator answe
 - **Orchestrator restart:** join as orchestrator → re-briefing in the join response; the guide's
   "On resume" procedure (PoC skill) reconciles with the forge before acting.
 - **Operator-assisted recovery:** Denise (§5.1) can help inspect failures and use the
-  generated guarded resume scripts (#173), without joining or replacing the orchestrator.
-  Her startup and report remain usable while hub HTTP/MCP is unavailable. Before M2,
-  today's launcher/check-in rules apply; future `join`/takeover is not assumed to exist.
+  launcher's guarded `resume` command with the operator's authorization.
+  Her startup and report remain usable while hub HTTP/MCP is unavailable.
 - **Host standby (#19):** the sweeper detects a wall-clock jump against the monotonic clock and
   grants a grace window before declaring anyone lost, expiring task/event leases, or
   reporting stalls. A forward wall/monotonic discrepancy over 5 seconds, or a gap
@@ -1129,15 +1117,15 @@ tools and supported operator CLI commands, without consuming events or taking a 
 
 | Tool | Who | Change from PoC |
 |---|---|---|
-| `join`, `whoami` | any | **new**: only tools callable before `join`; worker `join` over A2A (`check_in` alias kept until M2 Step 11); `whoami` over `GET /whoami` (#238) |
+| `join`, `whoami` | any | Only tools callable before `join`; worker `join` over A2A; `whoami` over `GET /whoami` (#238) |
 | `await_assignment`, `get_role_guide`, `report_progress` | worker | adds the durable `closeout_requested` response (§7.3); NEXT uses the joined instance’s hold cap (§9.2) |
 | `request_closeout_reports(run_id, timeout_s=None)`, `get_closeout_reports(run_id)` | orchestrator | **new** (#215): durable bounded pre-release collection; submitted reports and explicit missing reasons (§7.3); omitted `timeout_s` uses run `closeout_wait_s` (default 300 s, maximum 1800 s, #386) |
 | `submit_closeout_report(run_id, report)` | worker, orchestrator | **new** (#215): one strict retrospective per run/author; worker A2A submission, caller-derived attribution, identical-retry receipt (§7.3) |
 | `submit_result` | worker | accepts `CloseoutResult` for `closeout` tasks (§7.3) |
-| `ask_orchestrator` | worker | renamed from `ask_alice` (`ask_alice` alias kept until M2 Step 11; #238); question waits use the joined instance’s hold cap (§9.2) |
+| `ask_orchestrator` | worker | Question waits use the joined instance’s hold cap (§9.2) |
 | `get_operator_answer(question_id)` | worker | **new** (#129): reads `hub.operator_answer`, so a worker can check an operator decision it is told of |
 | `get_statement(sha)` | worker, orchestrator | **new** (#9) |
-| `start_workflow` | orchestrator | **new**; replaces `initialize_workflow` |
+| `start_workflow` | orchestrator | Starts a queued workflow or creates one from a statement |
 | `get_state` | orchestrator | adds run summary, queue, close-out status, listening state; compact by default |
 | `wait_for_event` | orchestrator | new event kinds `work_submitted`, `user_answered` (payload `question_id`, `answer`; #129), `ci_settled` (payload `workflow_id`, `pr_url`, `head_sha`, `ci`, `checks`; #621), and `ci_watch_expired` (payload `workflow_id`, `pr_url`, `head_sha`, `deadline`; #621); waits use the joined session’s hold cap (§9.2) |
 | `assign_task` | orchestrator | adds `statement_sha256` and role `closeout` (hub snapshots and appends pending findings and steps); refuses incompatible standing role (-32602, naming the agent's standing role; #238); refused (-32002) while `escalated`, naming the open question ids (#132) |
@@ -1165,7 +1153,7 @@ restart long-lived bridge processes when upgrading; workers do not perform
 that lifecycle action. Current bridges and mock consumers handle the response
 explicitly.
 
-**Worker result schema compatibility (#504).** Worker `join` and `check_in`
+**Worker result schema compatibility (#504).** Worker `join` calls
 advertise their bridge package version and a fingerprint of their typed result
 schemas. The hub compares these with its own version and the schemas it
 validates by task role. A version mismatch with a matching fingerprint warns
@@ -1521,7 +1509,7 @@ non-goal (§1) and post-MVP (§16). Neither is ever written into a harness confi
   in place (§4 Migration) keeps `token` in its state directory, `.robomate/token`, until
   the operator relocates it.
 - **How a bridge reads it:** an explicit `ROBOMATE_TOKEN` or `ROBOMATE_TOKEN_FILE` comes
-  first (today set by `prepare-run.py`, and always for remote agents). Otherwise
+  first when supplied, for example on remote agents. Otherwise
   `robomate mcp` reads the token of the hub discovery selected (§4): it follows the
   checkout's binding, which holds no token, to the token file the binding names, either path
   above, and reads it on the agent's behalf; a legacy hub's checkout that was never bound
@@ -1587,24 +1575,19 @@ itself.
 | M1 | Standalone hub + `robomate` CLI | `robomate up/down/status/ls`, `.robomate/` layout, registry, port reuse; orchestrator JSON-RPC route; `robomate mcp` bridge for all roles (existing tool names) with heartbeat and discovery; accounting on (#7); fix flaky tests (#6) | A real run completes with the hub from `robomate up`, and the orchestrator's session is restarted mid-run without disturbing workers |
 | Pre-M2 | Checkout-scoped hubs: identity, discovery, lifecycle | The checkout owns its hub, bare-repository layouts included; hub names; per-hub registry entries, `up.lock`, and port; discovery without silent attach and an explicit hub selector for the CLI; legacy hubs keep their state (§4). State stays in the checkout's `.robomate/`, reached through one resolver | Two hubs from two linked worktrees of one repository run at once with distinct names, state, and ports, and `robomate ls` shows both; stopping one leaves the other running; `down` and `status` in a checkout with no hub refuse and list both; a hub created before the change starts with its old state; the standard run path is unchanged |
 | M7 | Denise: interactive doctor agent | Run-specific `agent-launcher.py doctor` command from `start-run.py`; harness/model/effort inheritance and overrides; short run-specific context with robomate and target-repository references; local guide, selected-run repair access and operator authority rules (§5.1); hub-independent recovery reports | The operator starts Denise only when needed, with no hand-assembled briefing, on Bash and native PowerShell. Diagnosis works with the hub down and with a separate target repository. Recorded acceptance covers a stopped hub, an agent returned to the shell, an attached/orphan predecessor, a pending question or pause, and preservation of uncommitted work. Normal team launch and orchestration remain usable |
-| M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR — with no `prepare-run.py`, no generated team configs, no pasted launch prompts; Denise's separate context/profile/report files remain (§5.1). The same again from a second worktree's hub while the first runs |
+| M2 | Join, worktrees, work intake | `join`/`whoami`, standing roles, takeover + task reattach; hub state and token moved to `<worktree_root>/<hub>/` with checkout bindings (§4, §12); worktree manager (§6): generated worktrees per `(hub, agent)` for every agent, locks, `robomate/<hub>/<agent>/<label>` branches; configuration layers (§4); `robomate submit`, queue, `get_statement` (#8, #9); `guides/orchestrator.md` served; `robomate workspace`, `robomate clean`, and hub selection for each; the agent boundaries and operator-only steps of §12 | On Claude Code + Codex: `robomate up`, three one-line joins, `robomate submit`, merged PR. Denise keeps her separate context, profile and reports (§5.1). The same again from a second worktree's hub while the first runs |
 | M3 | Harness breadth | `robomate install` (both scopes), harness profiles, `robomate certify`, `docs/harnesses.md`; supervisor/nudge path; per-harness record of the bridge's read grant (§12) | OpenCode and AntiGravity certified; Cline attempted and recorded; Devin CLI certified, or attempted and recorded; Devin Desktop (Devin Local) attempted via `join` and recorded; one real run with a non-Claude orchestrator |
 | M4 | Close-out and resilience | per-agent closeout report models, durable bounded collection before release (#215), `closeout` task role, `CloseoutResult` + validator, `done` check, run report + `robomate report`, `robomate abandon`, repo settings (`nits_issue`, `followup_label`, `closeout_steps`); `ask_user` inbox with `robomate inbox/answer`; resume (§7.5, #18 reduced, #19); `robomate log --timeline` (#20) | Scripted tests: all-three and crashed-worker report collection survive restart with explicit missing reasons; report retries, identity/size/credential validation and pause-aware expiry; `done` refused with an unmerged PR and with no completed close-out; a `CloseoutResult` missing a pending finding, a URL, a `none` reason, or a step is rejected; the report lists every finding with its disposition; kill/restart of the hub, a worker, and the orchestrator each resume without duplicate actions; simulated standby loses no one. One real run on robomate itself ends with its follow-ups filed and any used counter claim closed out in the reservations issue, with no operator chat |
 | M5 | GitLab | Forge detection, `GitLabGate` via `glab api`, forge appendix guides, preflight for unsupported settings | A multi-round run with a changes-requested round and a stale-base rebase merges on the self-hosted GitLab |
 | M6 | Token budget + MVP acceptance | Baseline from accounting; #22 levers; retention (#23) | Two acceptance runs (GitHub, GitLab), mixed certified harnesses, each with a changes-requested round, one component restart, and two queued statements; per-run bytes by role reported against the baseline; setup from `robomate up` to first assignment timed |
 
 **Order:** M1, M5, pre-M2, then **M2 and M7 in parallel**, followed by M3, M4 and M6.
-Existing milestone numbers stay fixed. M7 starts on the prepared-run topology (#174);
-only M2 Step 11, retirement of that path, waits for M7 completion and its replacement.
-The [M2 plan](development/implementation-plan-mvp-m2.md) and
-[M7 plan](development/implementation-plan-mvp-m7-denise.md) split implementation into
-reviewable steps; M2 Step 1 (#238, DB schema v21) lands worker `join`/`whoami`, standing
-roles, takeover + task reattach, and `ask_orchestrator` while keeping `--role`, `check_in`,
-and `ask_alice` aliases for prepared runs through Step 10. #174 delivers M7's specification
-and plan, not the completed milestone.
-Roadmap #2 tracks the step issues, operational track/lane assignments and completion
-evidence. M2 implementation proceeds while M7 is built; the retirement gate preserves
-Denise rather than blocking the other M2 steps. Other work can continue independently.
+Existing milestone numbers stay fixed. M2 Step 11 retires the prepared launch
+path after M7 demonstrates the supported doctor entry. Step-by-step history and
+acceptance evidence are in the [M2 plan](development/implementation-plan-mvp-m2.md),
+[M7 plan](development/implementation-plan-mvp-m7-denise.md) and
+[M7 operator evidence](evidence/m7-20261127.md#guidance-for-248).
+Roadmap #2 tracks delivery and dependencies.
 
 **Checkout scope (#54)** is delivered in three steps, so that nothing ships which M2 would
 have to undo:
@@ -1622,21 +1605,14 @@ have to undo:
 (#129, #130), and the hub's escalation guard (#132), all after #99, in which a run was
 escalated and resumed without an operator answer.
 
-**Parallelism:** M5 goes first after M1. GitLab is an MVP goal (§1), its gate and forge
-detection need neither `join` nor worktrees, and #50 already prototyped both. It runs on the
-M1 topology, with runs prepared by `prepare-run.py`
-([M5 plan](development/implementation-plan-mvp-m5-gitlab.md)). For M2 this means the role
-guides are already forge-neutral and composed with a forge appendix at serve time.
-`guides/orchestrator.md` follows the same pattern, `join` reports the hub's forge (§5), and
-the GitLab preflight that `prepare-run.py` runs moves to `robomate submit` when M2 removes
-the script. M3's certification checks `glab` as well as `gh` (§9.3), and needs M2's join and
-worktrees. M4 depends on M2.
-M7 uses the existing prepared-run topology and recovery helpers (#173), not M2's `join`,
-configuration layers or state relocation. M2 Steps 10/11 carry forward Denise's optional
-startup, run context, separate local guide, isolated profile, repair access and local
-reports through the successor launcher and locally readable run metadata. Step 10 can
-proceed before M7; Step 11 must prove that handoff before deleting the prepared-run path.
-Denise remains usable while the hub is down and outside the joined team.
+**Dependencies.** GitHub and GitLab use forge-neutral role guides with a
+forge-specific appendix. `robomate up` runs GitLab startup checks, and
+`robomate submit` enforces the forge's policy checks. M3 certification uses
+M2's join and workspace support. M4 also depends on M2.
+
+The optional launcher preserves Denise's separate context, isolated profile,
+repair access and local reports from the run manifest. Her consultation
+remains available while the selected hub is stopped (§5.1).
 
 ---
 
@@ -1735,13 +1711,12 @@ milestone shown, linking the robo-agents original for history.
 |---|---|
 | `docs/poc-spec.md`, PoC evidence, plans for Steps 6/7 | Frozen; historical record |
 | `scripts/step5*`, `step6*`, `step7*`, `launch-step*`, `verify-step*`, `run-step6-disturbances.py`, their tests | Move to `scripts/poc/`; not maintained; tests moved out of the default CI run |
-| `scripts/prepare-run.py`, `bootstrap-workspace.*` | Kept until M2 covers their topologies (incl. remote workers) and M7's optional Denise startup/context, then removed |
-| `scripts/alice-launcher.py`, `worker-launcher.py`, `agent-recovery.py`, `agent-ask.py` and the generated `start-*`, `resume-*` and `ask-*` scripts | Replaced for joined agents by the optional `scripts/agent-launcher.py` (`start`, `resume`, `ask`, and Denise's `doctor`), outside the core (M2 Step 10, §9.4); kept for prepared runs until M2 Step 11. M3 Step 6 keeps it a script with per-workflow supervision; no `robomate supervisor` command is added in the MVP |
+| Prepared run generators, bootstrap, archive command, launchers, generated scripts and harness templates | Retired in M2 Step 11. Use `robomate workspace`, `robomate submit` and the optional `scripts/start-run.py` and `scripts/agent-launcher.py` tooling. |
 | `scripts/mock-alice.py`, `mock-worker.py` | Kept; become the engine of `robomate certify` and the scripted E2E tests |
-| `scripts/supervise-claude-code.sh` | Kept; referenced from the Claude Code harness profile |
+| PoC Claude Code supervisor | Historical alongside the PoC scripts. |
 | `scripts/hub-report.py` | Folded into `robomate log` / `robomate status` |
-| `skills/alice-orchestrator` | Content served as forge-neutral `guides/orchestrator.md` with orchestrator-only forge appendix (M2 Step 2, #239); skill is a thin pointer to `join`. `prompts/alice.md` remains for prepared runs until Step 11 |
+| `skills/alice-orchestrator` | Content served as forge-neutral `guides/orchestrator.md` with orchestrator-only forge appendix (M2 Step 2, #239); the skill points to `join`. |
 | `skills/alice-relay`, `docs/historical/poc/notes/relay-trial-*` | Archived |
-| `skills/worker`, `prompts/*.md` | Joined-team content replaced by join responses (M2); Denise's local startup context and guide remain available without a hub |
+| Prepared worker skill and team prompt files | Retired. Join and `get_role_guide` supply the team's instructions. Denise retains her local guide and startup context. |
 | `docs/user-guide.md` | Rewritten around `robomate` (M2, M3) |
 | `packages/worker_mcp` | Becomes `robomate mcp` |

@@ -19,8 +19,8 @@ kickoff names another.
 
 1. **Start a hub on a fresh clone of the sandbox repository.**
 2. **Start a workflow on a seeded sandbox issue.** The orchestrator calls
-   `initialize_workflow` naming the issue; an implementer and a reviewer check
-   in.
+   `start_workflow` with a statement naming the issue. The implementer and
+   reviewer call `join` with their standing roles.
 3. **Assign an implementer task. The PR is opened.** The implementer pushes a
    branch, opens a PR that closes the issue, and submits its result with the PR
    head.

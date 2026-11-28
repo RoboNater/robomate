@@ -75,9 +75,7 @@ current test on `main`, and the **failure it catches**.
   specific-PID `signal.SIGTERM` on Windows; tests for POSIX graceful-SIGTERM
   handlers skip Windows explicitly
   (`test_without_auto_start_it_prints_the_starts_and_sigterm_stops_its_hub` in
-  [`tests/test_start_run.py`](../../tests/test_start_run.py) and
-  `test_sigterm_to_the_launcher_process_stops_its_harness` in
-  [`tests/test_alice_launcher.py`](../../tests/test_alice_launcher.py)).
+  [`tests/test_start_run.py`](../../tests/test_start_run.py)).
 - **Failure it catches:** Windows has no POSIX `SIGTERM` delivery;
   `os.kill(pid, signal.SIGTERM)` calls `TerminateProcess(handle, SIGTERM)`,
   killing the target immediately with exit code `15` (`signal.SIGTERM`). A test
@@ -91,17 +89,13 @@ current test on `main`, and the **failure it catches**.
 ### Assert the environment and profile the fake child receives, not only `argv`
 
 - **Trigger:** a test exercises a launcher, recovery wrapper, or supervisor
-  (`scripts/agent_launcher.py`, `scripts/prepare-run.py`,
-  `scripts/start-run.py`, `scripts/alice-launcher.py`,
-  `scripts/worker-launcher.py`) that spawns a harness or tool subprocess.
+  (`scripts/agent-launcher.py`, `scripts/start-run.py`) that spawns a harness or tool subprocess.
 - **Example:** have the fake child dump selected `os.environ` keys, `os.getcwd()`
   and generated profile files alongside `sys.argv[1:]`, and assert what the
   child actually received — including when conflicting ambient variables are set
   in the parent environment — as `FAKE_HARNESS` and
   `test_doctor_login_and_no_inherited_hub_selection` in
-  [`tests/test_agent_launcher.py`](../../tests/test_agent_launcher.py) (and
-  `test_start_and_resume_scripts_run_the_launcher_to_done` in
-  [`tests/test_prepare_run.py`](../../tests/test_prepare_run.py)) do:
+  [`tests/test_agent_launcher.py`](../../tests/test_agent_launcher.py) do:
 
   ```python
   (launch,) = launches(area)

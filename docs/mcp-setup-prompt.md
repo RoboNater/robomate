@@ -29,7 +29,6 @@ Rules:
 - **No token, no hub URL, no identity and no paths other than `--project`.** Don't set `ROBOMATE_HUB_URL`, `ROBOMATE_TOKEN*`, `AGENT_NAME` or any `HUB_*` variable in the static entry except `HUB_MCP_TIMEOUT_S` where specified in the table below. The bridge finds the hub from the agent's worktree. robomate's launcher supplies identity on each launch: for Codex it adds `-c mcp_servers.robomate.env.<KEY>=…` overrides, which must merge into this entry.
 - No `--role` and no `--name`. The agent declares both when it calls `join`.
 - Don't limit the tool list (no `enabled_tools`-style allow-list) unless the harness requires one. The same entry serves orchestrators and workers.
-- Older robomate docs and the `runtimes/*` templates show per-agent entries with a hub URL, token file and identity. Those belong to the older prepared-run route. Don't copy their `env` blocks.
 
 Settings that unattended runs need. Harness config formats change, so confirm the current location and key names in each harness's official documentation (search the web) for the installed version. If a key has been renamed, use the current name and say so in your report.
 

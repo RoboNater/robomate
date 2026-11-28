@@ -1184,15 +1184,23 @@ Issue: [#248](https://github.com/RoboNater/robomate/issues/248).
 
 **Tests.** The full suite on Linux and native Windows, and:
 
-Run the doctor integration cases from Step 10 and M7's live acceptance through the
-replacement entry point before removing the old wrappers. Record the commands and
-evidence for both platforms; fake-harness tests alone do not prove real access grants.
+Use [M7 Step 4 operator evidence](../evidence/m7-20261127.md#guidance-for-248)
+for the doctor handoff on Bash and native PowerShell. The November 26 schedule
+update on #248 accepts that recorded live evidence for this step.
 
 ```sh
-git grep -n 'prepare-run\|check_in\|ask_alice\|initialize_workflow' -- ':!docs/historical' ':!docs/evidence' ':!docs/development/implementation-plan-mvp-m*.md'
-#   -> no hits outside historical records
-uv run --locked pytest
+git grep -n 'prepare-run\|check_in\|ask_alice\|initialize_workflow\|run\.json\|work\.goal_sha256' -- ':!docs/historical' ':!docs/evidence' ':!docs/development/implementation-plan-mvp-m*.md'
+uv run --locked pytest -n auto
 ```
+
+Expected matches are historical records: the PoC and harness investigations,
+early milestone validation and planning notes, archived scripts under
+`scripts/poc/`, and saved test reports. The byte accounting replay and the
+benchmark pilot require their pre-retirement tooling revision. See
+[#337](https://github.com/RoboNater/robomate/issues/337) for the benchmark
+follow-up and [#681](https://github.com/RoboNater/robomate/issues/681) for the
+development tools layout. There should be no hits in maintained workflows or
+served instructions.
 
 **Size:** large, mostly deletions. Split documentation from removal if review needs it.
 
@@ -1290,6 +1298,6 @@ PowerShell. Every interactive entry point keeps a per-launch `--safe-mode`
 (prompting defaults) and `--harness-args` marker (opaque, ordered argv following
 generated flags and before positionals). Print the permission mode and extra
 words before launch. Preserve ask's hub MCP suppression and recovery's guards.
-See [the user guide](../user-guide.md#ask-an-agent-after-the-run) for the control
+See [the user guide](../user-guide.md#asking-an-agent-after-the-run) for the control
 contract and harness details. Keep #287's PowerShell 5.1 inline OpenCode JSON
 quoting interaction in view; #335 does not resolve it.

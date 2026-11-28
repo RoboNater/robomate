@@ -15,8 +15,8 @@ the hub, tell each agent to join, submit the work, and read the report at the en
 The MVP experience, as the [spec](docs/mvp-spec.md) (§2) defines it:
 
 ```sh
-robomate up                       # in a checkout of your repo: starts that checkout's hub
-# In each agent's harness, one line:
+robomate up --agents alice,bob,charlie  # in the target checkout, in its own terminal
+# Start each harness in its printed worktree and tell it to join:
 #   "Join robomate as alice, orchestrator."
 #   "Join robomate as bob, implementer."
 #   "Join robomate as charlie, reviewer."
@@ -38,14 +38,9 @@ run branch when none is recorded (status otherwise makes no forge call). The
 full hub, workflow and agent detail follows the headline, and
 `--json` carries the same facts additively for tools.
 
-**Works today (M1, M5):** `robomate up`, `down`, `status`, and `ls`, the `robomate mcp`
-bridge that connects every agent to the hub, and both GitHub and GitLab workflows. A hub belongs
-to the checkout where `up` runs, so each linked worktree of a repository can run its own named
-hub. Runs are still
-prepared with `scripts/prepare-run.py`, which writes each agent's configuration and launch prompt
-(see the [user guide](docs/user-guide.md)), and each worker uses its own full clone.
-**Planned:** the one-line joins, worktrees, and `robomate submit` (M2); harness installs and
-certification (M3); close-out and `robomate report` (M4).
+Set up the static MCP entry for each harness before the first run. The user
+guide also covers starting the whole team from a TOML file and joining workers
+from another host. [Run robomate on a repository](docs/user-guide.md)
 
 - **Pull model.** Agents connect to the hub over MCP and ask for work. The hub holds each
   request open until there is something to do, so no agent polls or spins.
@@ -83,10 +78,9 @@ certification (M3); close-out and `robomate report` (M4).
 
 ## Status
 
-robomate is in early development, and is now built with itself. M1 and M5 (GitLab) are done:
-the standalone hub with `robomate up/down/status/ls`, `robomate mcp`, and dual-forge support
-(GitHub and GitLab). M2 is next. Milestone status is on the
-[roadmap](https://github.com/RoboNater/robomate/issues/2).
+robomate is built with itself. The joined workflow supports GitHub and GitLab.
+The [roadmap](https://github.com/RoboNater/robomate/issues/2) tracks milestones
+and remaining harness certification work.
 
 robomate grew out of a proof of concept, robo-agents, which ran the full
 issue → PR → review → merge loop on GitHub:
@@ -102,7 +96,7 @@ The PoC's design is in [`docs/poc-spec.md`](docs/poc-spec.md), its run evidence 
 
 - [MVP spec](docs/mvp-spec.md): goals, architecture, interfaces, and plan
 - [Milestone plans](docs/development/): [M1](docs/development/implementation-plan-mvp-m1.md)
-  (done) and [M5, GitLab](docs/development/implementation-plan-mvp-m5-gitlab.md) (done; M2 next)
+  (done) and [M5, GitLab](docs/development/implementation-plan-mvp-m5-gitlab.md) (done)
 - GitLab: the [feasibility study](docs/feasibility-and-impact-of-supporting-gitlab-centric-workflows.md)
   and the [investigation and prototype report](docs/gitlab-forge-support-investigation.md)
 - [Harness investigation](docs/harness-investigation-opencode-antigravity.md): OpenCode and
