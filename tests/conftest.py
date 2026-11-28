@@ -56,6 +56,12 @@ TEST_MAX_WAIT_S = 1.0
 # ``packages/`` (discovery, config_layers), so it is stripped too; this fixture
 # then sets its own isolated value below so code under test never sees a
 # fallback into the real user config.
+#
+# ``OPENCODE_CONFIG_CONTENT`` (#725) is the harness's own config, but
+# ``scripts/opencode_headless.py`` merges the inherited value into the overlay
+# it pins, so an OpenCode-hosted worker's v1 keys reached launcher tests that
+# assert a clean v2 overlay. Stripped here; a test that needs an inherited value
+# sets it itself.
 LAUNCHER_ENV = (
     "AGENT_NAME",
     "AGENT_RUNTIME",
@@ -70,6 +76,7 @@ LAUNCHER_ENV = (
     "HUB_PROVIDER",
     "HUB_TELEMETRY_LOG",
     "HUB_WORKSPACE",
+    "OPENCODE_CONFIG_CONTENT",
     "ROBOMATE_HUB_ID",
     "ROBOMATE_HUB_URL",
     "ROBOMATE_LAUNCH_HUB_CHECKOUT",
@@ -87,7 +94,6 @@ LAUNCHER_KEPT: dict[str, str] = {
     "UV_CACHE_DIR": "isolated uv cache location for the harness",
     "PYTEST_XDIST_AUTO_NUM_WORKERS": "the run's xdist budget; the suite must honour it",
     "PWD": "working directory launch_environment writes into the child",
-    "OPENCODE_CONFIG_CONTENT": "harness config, read by opencode, not by robomate's packages",
     "ROBOMATE_PERMISSION_STATUS_DIR": (
         "permission-observation status dir, read by the launcher, not under packages/"
     ),

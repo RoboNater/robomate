@@ -139,8 +139,8 @@ points by hand, but only as the isolated smoke run in
 [`guides/worker.md`](guides/worker.md): its own state directory, operator
 token file, `XDG_STATE_HOME`/`LOCALAPPDATA` and `XDG_CONFIG_HOME`/`APPDATA`,
 `ROBOMATE_HUB_URL`, `ROBOMATE_TOKEN*`, `ROBOMATE_HUB_ID`,
-`ROBOMATE_LAUNCH_HUB_CHECKOUT`, `AGENT_NAME` and every `HUB_*` launcher
-variable (for example `HUB_TELEMETRY_LOG`, `HUB_HARNESS`,
+`ROBOMATE_LAUNCH_HUB_CHECKOUT`, `AGENT_NAME`, `OPENCODE_CONFIG_CONTENT` and
+every `HUB_*` launcher variable (for example `HUB_TELEMETRY_LOG`, `HUB_HARNESS`,
 `HUB_HARNESS_VERSION`, `HUB_HARNESS_MODE`, `HUB_MODEL`, `HUB_PROVIDER`,
 `HUB_EFFORT`) unset, its own port and a temporary
 checkout with an origin remote and `origin/HEAD` set (a GitHub-origin clone
