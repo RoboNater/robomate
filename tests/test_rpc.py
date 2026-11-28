@@ -2292,6 +2292,7 @@ async def test_orchestrator_explicit_workspace_mismatch_is_refused(
     code, message = error_of(body)
     assert code == INVALID_PARAMS
     assert "HUB_WORKSPACE" in message
+    assert "provision a clone with robomate workspace --clone" in message
 
 
 async def test_hub_workspace_needs_operator_and_validates_name(

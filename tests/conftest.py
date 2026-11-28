@@ -340,8 +340,8 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """#461: keep a no-``cwd`` bridge default off a worker-lane clone identity.
 
     ``WorkerHubClient.join`` resolves ``settings.cwd or Path.cwd()`` and detects
-    ``.git/robo-agents-workspace.json`` there. A prepared worker clone (or a
-    ``bootstrap-workspace`` clone) carries that file, so a bridge built without
+    ``.git/robo-agents-workspace.json`` there. A worker clone provisioned by
+    ``robomate workspace --clone`` carries that file, so a bridge built without
     ``cwd=`` would adopt the lane identity — or refuse it when it names another
     agent — behaviour a plain CI checkout never shows. Chdir every test to its
     own clean, identity-free ``tmp_path`` (outside any git checkout) so the

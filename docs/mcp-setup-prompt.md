@@ -64,6 +64,8 @@ Read `SKILL_INSTALLABLE` in [`scripts/check-mcp-tools.py`](../scripts/check-mcp-
 from ROBOMATE_CHECKOUT. Each entry set to `True` installs the corresponding
 `ROBOMATE_CHECKOUT/skills/<name>/` directory. Entries set to `False` are
 retired. Keep backups of those entries outside the harness discovery paths.
+If you previously installed the robomate `worker` skill, remove it from the
+harness skill directories below because `join` supplies the worker guide.
 
 The setup and checker cover these user skill directories. Use the native
 user home for `~` (`%USERPROFILE%` on Windows).

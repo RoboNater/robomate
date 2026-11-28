@@ -37,6 +37,8 @@ For unattended Codex runs, add an approval table like the one for `join` for eac
 
 MCP launches the bridge over stdio, where it waits for requests. Put the actual executable and argument list in the entry. Shell aliases belong in your interactive terminal. Keep hub URLs, credentials and agent identities out of the static entry.
 
+If you previously installed the robomate `worker` skill, remove it from your harness's skill directories. The `join` response supplies the worker guide.
+
 ## Start the hub and join the agents
 
 From the target repository, start its hub in a terminal you can leave open.
