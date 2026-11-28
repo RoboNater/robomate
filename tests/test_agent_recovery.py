@@ -20,7 +20,7 @@ from fake_harness import CODEX_ID
 from timing import FrozenClock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-LAUNCHER = importlib.import_module("agent_launcher")
+LAUNCHER = importlib.import_module("launcher_common")
 RECOVERY = importlib.import_module("agent_recovery")
 
 

@@ -116,8 +116,8 @@ from urllib.parse import urlsplit
 SCRIPTS = Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
-import agent_launcher as common  # noqa: E402
 import denise  # noqa: E402
+import launcher_common as common  # noqa: E402
 from agent_hub_common.discovery import HUB_ID_ENV, validate_agent_name  # noqa: E402
 from agent_interactive import split_arguments  # noqa: E402
 from agent_recovery import (  # noqa: E402

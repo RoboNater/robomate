@@ -182,12 +182,8 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
         opencode_headless = _load_script(
             "launcher_env_opencode_headless", "scripts/opencode_headless.py"
         )
-        agent_launcher_cli = _load_script(
-            "launcher_env_agent_launcher_cli", "scripts/agent-launcher.py"
-        )
-        agent_launcher_common = _load_script(
-            "launcher_env_agent_launcher", "scripts/agent_launcher.py"
-        )
+        launcher_cli = _load_script("launcher_env_cli", "scripts/agent-launcher.py")
+        launcher_common = _load_script("launcher_env_common", "scripts/launcher_common.py")
 
         produced: dict[str, set[str]] = {}
 
@@ -215,11 +211,11 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
 
         # ``run_child`` is a method that launches a harness, so read the keys it
         # assigns to its local environment from the AST instead (#592).
-        produced["agent_launcher.run_child"] = _script_subscript_keys(
-            _ROOT / "scripts/agent_launcher.py", "environment"
+        produced["launcher_common.run_child"] = _script_subscript_keys(
+            _ROOT / "scripts/launcher_common.py", "environment"
         )
 
-        place = agent_launcher_cli.Place(
+        place = launcher_cli.Place(
             url="http://127.0.0.1:8420",
             token_file=Path("/tmp/token"),
             sessions=Path("/tmp/sessions"),
@@ -228,16 +224,14 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
             checkout=Path("/tmp/checkout"),
             hub_id="hub-1",
         )
-        produced["agent-launcher.hub_selection_env"] = set(
-            agent_launcher_cli.hub_selection_env(place)
-        )
+        produced["agent-launcher.hub_selection_env"] = set(launcher_cli.hub_selection_env(place))
         # child_environment returns a full environment; keep only added keys.
         baseline = {"LAUNCHER_ENV_BASELINE": "1"}
         with mock.patch.dict(os.environ, baseline, clear=True):
-            child = agent_launcher_cli.child_environment(place)
+            child = launcher_cli.child_environment(place)
         produced["agent-launcher.child_environment"] = set(child) - set(baseline)
 
-        identity = agent_launcher_cli.Identity(
+        identity = launcher_cli.Identity(
             harness="opencode",
             model="m",
             effort="high",
@@ -248,13 +242,13 @@ def collect_launcher_env_keys() -> dict[str, set[str]]:
         )
         produced["agent-launcher.Identity.environment"] = set(identity.environment())
         produced["agent-launcher.opencode_environment"] = set(
-            agent_launcher_cli.opencode_environment("high", safe=True)
+            launcher_cli.opencode_environment("high", safe=True)
         )
 
         # launch_environment returns a full environment; keep only added keys.
         launch_base: dict[str, str] = {}
-        launch_out = agent_launcher_common.launch_environment("/tmp/work", launch_base)
-        produced["agent_launcher.launch_environment"] = set(launch_out) - set(launch_base)
+        launch_out = launcher_common.launch_environment("/tmp/work", launch_base)
+        produced["launcher_common.launch_environment"] = set(launch_out) - set(launch_base)
 
         return produced
     finally:
